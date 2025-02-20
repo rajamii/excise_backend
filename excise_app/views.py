@@ -1,7 +1,7 @@
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from .serializers import UserRegistrationSerializer,LoginSerializer
+from .serializers import *
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
 from captcha.models import CaptchaStore
@@ -94,8 +94,6 @@ class DistrictAdd(APIView):
 
 
 class DistrictView(APIView):
-   
-
     def get(self, request, pk=None, format=None):
         id = pk
         if id is not None:
@@ -104,12 +102,38 @@ class DistrictView(APIView):
             return Response(serializer.data)
         datas = District.objects.filter()
         serializer = DistrictSerializer(datas, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)  
+        return Response(serializer.data, status=status.HTTP_200_OK) 
+
+class SubdivisionView(APIView):
+    def get(self, request, pk=None, format=None):
+        if pk is not None:
+            try:
+                subdivision = Subdivision.objects.get(id=pk)
+                serializer = SubDivisonSerializer(subdivision)
+                return Response(serializer.data)
+            except Subdivision.DoesNotExist:
+                raise NotFound(detail="Subdivision not found", code=status.HTTP_404_NOT_FOUND)
+        
+        # If no pk, return all subdivisions
+        subdivisions = Subdivision.objects.all()
+        serializer = SubDivisonSerializer(subdivisions, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK) 
+
+class GetSubdivisionByDistrictCode(APIView):
+    def get(self, request, district_code=None, format=None):
+        if district_code is not None:
+            subdivisions = Subdivision.objects.filter(DistrictCode__DistrictCode=district_code)
+            
+            if not subdivisions.exists():
+                raise NotFound(detail="No subdivisions found for this district code", code=status.HTTP_404_NOT_FOUND)
+
+            serializer = SubDivisonSerializer(subdivisions, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        
+        return Response({"detail": "District code is required"}, status=status.HTTP_400_BAD_REQUEST)        
 
 
 class SubDivisonApi(APIView):
-   
-
     def post(self, request, format=None):
         serializer = SubDivisonSerializer(data=request.data)
         if serializer.is_valid():
@@ -139,7 +163,6 @@ class SubDivisonApi(APIView):
 
 
 class DashboardCountView(APIView):
-
     def get(self, request, *args, **kwargs):
         user = request.user
         user_role = user.role

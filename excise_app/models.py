@@ -1,6 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser, BaseUserManager, PermissionsMixin
-from .validators import *  # Ensure these exist and are correct.
+from .validators import * 
 from django.utils.text import slugify
 import random
 

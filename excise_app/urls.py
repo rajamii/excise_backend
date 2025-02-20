@@ -20,6 +20,8 @@ urlpatterns = [
         # Subdivision Add, put and view
     path('subdivision/', SubDivisonApi.as_view(), name='subdivision'),
     path('subdivision/<int:id>/', SubDivisonApi.as_view(), name='subdivision-isActive'),
+    path('subdivision/view/',SubdivisionView.as_view(),name='subdivision-view'),
+    path('subdivision/by-district-code/<int:district_code>/', GetSubdivisionByDistrictCode.as_view(), name='subdivision-by-district-code'),
 
     path('dashboard/', DashboardCountView.as_view(), name='dashboard'),
 ]
