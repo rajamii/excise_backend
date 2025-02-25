@@ -91,7 +91,7 @@ DATABASES = {
         'NAME': 'excise_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
         'PASSWORD': 'postgres',  # Your PostgreSQL password
-        'HOST': 'localhost',        # Default host
+        'HOST': '10.182.153.61',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
     }
 }

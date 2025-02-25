@@ -2,9 +2,9 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-     path('license-categories/', views.LicenseCategoryList.as_view(), name='license-category-list'),
-     path('license-type/', views.LicenseTypeList.as_view(), name='license-type-list'),
-     path('subdivision/', views.SubDivisonApi.as_view(), name='subdivision-create'),  # POST for creating a subdivision
+    path('license-categories/', views.LicenseCategoryList.as_view(), name='license-category-list'),
+    path('license-type/', views.LicenseTypeList.as_view(), name='license-type-list'),
+    path('subdivision/', views.SubDivisonApi.as_view(), name='subdivision-create'),  # POST for creating a subdivision
     path('subdivision/<int:pk>/', views.SubDivisonApi.as_view(), name='subdivision-detail'),  # GET, PUT for a specific subdivision
 
     # District API Endpoints
