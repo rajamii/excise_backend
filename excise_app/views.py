@@ -1,4 +1,4 @@
-from rest_framework import status
+from rest_framework import status, generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from .serializers import *
@@ -8,7 +8,8 @@ from django.contrib.auth import authenticate
 from captcha.models import CaptchaStore
 from captcha.helpers import captcha_image_url
 from django.http import JsonResponse
-from otp.views import send_otp
+from otp.views import send_otp, delete
+from masters.models import *
 
 #User Registration/Signup
 class UserRegistrationView(APIView):
@@ -63,6 +64,10 @@ class OTPLoginView(APIView):
             refresh= RefreshToken.for_user(user)
             access_token = str(refresh.access_token)
             refresh_token = str(refresh)
+
+            # Delete the OTP after successful login
+            phone_number = serializer.validated_data['phone_number']
+            delete(phone_number)
             
             response_data = {
                  'success': True,
@@ -76,6 +81,11 @@ class OTPLoginView(APIView):
             }                      
             return Response(response_data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+#Get User List
+class UserListView(generics.ListCreateAPIView):
+    queryset = CustomUser.objects.all()
+    serializer_class = UserListSerializer
     
 
 #Get User Details

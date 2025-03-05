@@ -98,6 +98,13 @@ class OTPLoginSerializer(serializers.Serializer):
         data['user'] = user
         return data
 
+#UserList Serializer
+class UserListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomUser
+        fields = ['id', 'username', 'email', 'role', 'first_name', 'last_name', 'phonenumber', 'district', 'subdivision', 'address', 'created_by']
+
+
 class DistrictSerializer(serializers.ModelSerializer):
     stateName = serializers.CharField(source='StateCode.State', read_only=True)
     class Meta: 
