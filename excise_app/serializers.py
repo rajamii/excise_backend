@@ -5,6 +5,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from captcha.models import CaptchaStore
 from rest_framework_simplejwt.tokens import RefreshToken
+from otp.views import verify_otp
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -72,6 +73,30 @@ class LoginSerializer(serializers.Serializer):
             'access': access_token,
             'refresh': refresh_token,
         }
+    
+class OTPLoginSerializer(serializers.Serializer):
+    phone_number = serializers.CharField(max_length=10)
+    otp = serializers.CharField(max_length=6)
+
+    def validate(self, data):
+        phone_number = data.get('phone_number')
+        otp = data.get('otp')
+
+        if not phone_number or not otp:
+            raise serializers.ValidationError("Both phone number and OTP are required.")
+        
+        # Validate OTP
+        if not verify_otp(phone_number=phone_number, otp=otp):
+            raise serializers.ValidationError("Invalid OTP.")
+        
+        # Authenticate user
+        try:
+            user = CustomUser.objects.get(phonenumber=phone_number)
+        except CustomUser.DoesNotExist:
+            raise serializers.ValidationError("User not found.")
+        
+        data['user'] = user
+        return data
 
 class DistrictSerializer(serializers.ModelSerializer):
     stateName = serializers.CharField(source='StateCode.State', read_only=True)

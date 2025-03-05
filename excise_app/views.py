@@ -3,11 +3,14 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from .serializers import *
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.exceptions import NotFound
 from django.contrib.auth import authenticate
 from captcha.models import CaptchaStore
 from captcha.helpers import captcha_image_url
 from django.http import JsonResponse
+from otp.views import send_otp
 
+#User Registration/Signup
 class UserRegistrationView(APIView):
     def post(self, request, *args, **kwargs):
         serializer = UserRegistrationSerializer(data=request.data)
@@ -19,9 +22,9 @@ class UserRegistrationView(APIView):
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+#Login using Username & Password
 class UserLoginView(APIView):
     serializer_class = LoginSerializer
-
     def post(self, request):
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)  # Automatically raises ValidationError if invalid
@@ -42,10 +45,41 @@ class UserLoginView(APIView):
         }
 
         return Response(response_data, status=status.HTTP_200_OK)
-
-class UserDetails(APIView):
+    
+#Login using Phone Number & OTP
+class SendOTP(APIView):
+    def post(self, request):
+        phone_number = request.data.get('phone_number')
+        if not phone_number:
+            return Response({"detail": "Phone number is required"}, status=status.HTTP_400_BAD_REQUEST)
+        send_otp(phone_number)
+        return Response({"detail": "OTP sent successfully"}, status=status.HTTP_200_OK)
+    
+class OTPLoginView(APIView):
+    def post(self, request):
+        serializer = OTPLoginSerializer(data=request.data)
+        if serializer.is_valid():
+            user=serializer.validated_data['user']
+            refresh= RefreshToken.for_user(user)
+            access_token = str(refresh.access_token)
+            refresh_token = str(refresh)
+            
+            response_data = {
+                 'success': True,
+                 'statusCode': status.HTTP_200_OK,
+                 'message': 'User logged in successfully',
+                 'authenticated_user': {
+                      'username': user.username,
+                      'access': access_token,
+                      'refresh': refresh_token,
+                 },
+            }                      
+            return Response(response_data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
 
+#Get User Details
+class UserDetails(APIView):   
     def get(self, request):
         user = request.user
         if user.is_authenticated:
@@ -73,8 +107,6 @@ def get_captcha(request):
 
 
 class DistrictAdd(APIView):
-
-
     def post(self, request, format=None):
         serializer = DistrictSerializer(data=request.data)
         if serializer.is_valid():

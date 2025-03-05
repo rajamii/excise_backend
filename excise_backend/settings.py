@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'excise_app',
     'masters',
+    'otp',
     'rest_framework',
     'captcha',
     'corsheaders',

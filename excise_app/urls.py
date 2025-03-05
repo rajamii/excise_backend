@@ -3,12 +3,20 @@ from django.urls import path
 from .views import *
 
 urlpatterns = [
+    # User Registration/Signup
     path('register/', UserRegistrationView.as_view(), name='user-register'),
-     path('login/', UserLoginView.as_view(), name='user-login'),
-     #getcaptcha endpoint
+
+    # Login using Username & Password
+    path('login/', UserLoginView.as_view(), name='user-login'),
+
+    # Login using Phone Number & OTP
+    path('send_otp/', SendOTP.as_view(), name='send-otp'),
+    path('otp_login/', OTPLoginView.as_view(), name='otp-login'),
+    
+    #getcaptcha endpoint
     path('get_captcha/', get_captcha, name='captcha'), 
 
-      #UserDetails endpoint
+    #UserDetails endpoint
     path('userdetails/',UserDetails.as_view(), name='user_details'),
 
 
