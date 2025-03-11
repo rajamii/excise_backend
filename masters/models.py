@@ -1,12 +1,16 @@
 from django.db import models
 from excise_app.validators import *
-# Create your models here.
+
+
+#License Category
 class LicenseCategory(models.Model):
     licenseCategoryDescription= models.CharField(max_length=200,default=None,null=False)
-    
+
+#License Type  
 class LicenseType(models.Model):
     licenseType= models.CharField(max_length=200,default=None,null=False)    
-    
+
+#State 
 class State(models.Model):
     State = models.CharField(default='Sikkim')
     StateNameLL=models.CharField(max_length=30,validators=[validate_name])
@@ -15,7 +19,8 @@ class State(models.Model):
 
     def _str_(self):
         return self.State
-    
+
+#District
 class District(models.Model):
 
     District=models.CharField(max_length=30,validators=[validate_name])
@@ -28,6 +33,7 @@ class District(models.Model):
     def _str_(self):
         return self.District
 
+#Subdivision
 class Subdivision(models.Model):
 
     SubDivisionName=models.CharField(max_length=30,validators=[validate_name],null=True)
@@ -39,6 +45,7 @@ class Subdivision(models.Model):
     def _str_(self):
         return self.SubDivisionName
 
+#PoliceStation
 class PoliceStation(models.Model):
     PoliceStationName=models.CharField(max_length=30,validators=[validate_name],null=True)
     PoliceStationCode= models.IntegerField(unique=True,default=11999)
