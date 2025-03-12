@@ -10,6 +10,8 @@ from captcha.helpers import captcha_image_url
 from django.http import JsonResponse
 from otp.views import send_otp
 
+#create views in masters 
+
 #User Registration/Signup
 class UserRegistrationView(APIView):
     def post(self, request, *args, **kwargs):

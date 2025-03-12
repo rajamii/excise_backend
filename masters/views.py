@@ -25,6 +25,7 @@ class SubDivisonApi(generics.ListCreateAPIView):
 
 # DistrictAdd for listing, creating, and updating
 class DistrictAdd(generics.ListCreateAPIView):
+
     queryset = masters_model.District.objects.all()  # Added queryset
     serializer_class = placemaster_serializer.DistrictSerializer
 
@@ -63,6 +64,7 @@ class PoliceStationAPI(generics.ListCreateAPIView):
     queryset = masters_model.PoliceStation.objects.all()  # Added queryset
     serializer_class = placemaster_serializer.PoliceStationSerializer
 
+
     def post(self, request, format=None):
         serializer = placemaster_serializer.PoliceStationSerializer(data=request.data)
         if serializer.is_valid():
@@ -70,14 +72,18 @@ class PoliceStationAPI(generics.ListCreateAPIView):
             return response.Response(serializer.data, status=status.HTTP_201_CREATED)
         return response.Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
     def get(self, request, pk=None, format=None):
         if pk:
             policestation = masters_model.PoliceStation.objects.get(id=pk)
             serializer = placemaster_serializer.PoliceStationSerializer(policestation)
             return response.Response(serializer.data, status=status.HTTP_200_OK)
+
         police_stations = masters_model.PoliceStation.objects.all()
         serializer = placemaster_serializer.PoliceStationSerializer(police_stations, many=True)
         return response.Response(serializer.data, status=status.HTTP_200_OK)
+
+
 
     def put(self, request, id, format=None):
         policestation = masters_model.PoliceStation.objects.get(id=id)
