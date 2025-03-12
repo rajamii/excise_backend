@@ -3,7 +3,14 @@ from . import views
 
 urlpatterns = [
     path('license-categories/', views.LicenseCategoryList.as_view(), name='license-category-list'),
+    path('license-categories/<int:pk>/', views.LicenseCategoryDetail.as_view(), name='license-category-detail'),  # GET, PUT, DELETE
     path('license-type/', views.LicenseTypeList.as_view(), name='license-type-list'),
+<<<<<<< HEAD
+=======
+    path('license-types/<int:pk>/', views.LicenseTypeDetail.as_view(), name='license-type-detail'),  # GET, PUT, DELETE   
+    path('subdivision/', views.SubDivisonApi.as_view(), name='subdivision-create'),  # POST for creating a subdivision
+    path('subdivision/<int:pk>/', views.SubDivisonApi.as_view(), name='subdivision-detail'),  # GET, PUT for a specific subdivision
+>>>>>>> main
 
     # POST for creating a subdivision
 

@@ -3,8 +3,9 @@ from django.urls import path, include
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/', include('excise_app.urls')),  # This will include the urls.py of the 'excise' app
+    path('api/', include('excise_app.urls')),
     path('captcha/',include('captcha.urls')),
     path('masters/', include('masters.urls')),
+    path('registration_renewal/', include('registration_renewal.urls')),
 
 ]

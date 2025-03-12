@@ -1,8 +1,8 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser, BaseUserManager, PermissionsMixin
 from .validators import * 
-from django.utils.text import slugify
 import random
+from masters.models import *
 
 class CustomUserManager(BaseUserManager):
     def create_user(self, email, password=None, role=None, **extra_fields):
@@ -70,39 +70,39 @@ class CustomUser(AbstractUser, PermissionsMixin):
         permissions = []
 
 
-# District Model
-class District(models.Model):
-    District = models.CharField(max_length=30, validators=[validate_name])
-    DistrictNameLL = models.CharField(max_length=30, validators=[validate_name], null=True)
-    DistrictCode = models.IntegerField(unique=True, default=117)
-    IsActive = models.BooleanField(default=True)
-    StateCode = models.ForeignKey(
-        'State', to_field='StateCode', on_delete=models.CASCADE, related_name='districts', null=True
-    )
+# # District Model
+# class District(models.Model):
+#     District = models.CharField(max_length=30, validators=[validate_name])
+#     DistrictNameLL = models.CharField(max_length=30, validators=[validate_name], null=True)
+#     DistrictCode = models.IntegerField(unique=True, default=117)
+#     IsActive = models.BooleanField(default=True)
+#     StateCode = models.ForeignKey(
+#         'State', to_field='StateCode', on_delete=models.CASCADE, related_name='districts', null=True
+#     )
 
-    def __str__(self):
-        return self.District
+#     def __str__(self):
+#         return self.District
 
 
-# Subdivision Model
-class Subdivision(models.Model):
-    SubDivisionName = models.CharField(max_length=30, validators=[validate_name], null=True)
-    SubDivisionNameLL = models.CharField(max_length=30, validators=[validate_name], null=True)
-    SubDivisionCode = models.IntegerField(unique=True, default=1001)
-    IsActive = models.BooleanField(default=True)
-    DistrictCode = models.ForeignKey(
-        District, to_field='DistrictCode', on_delete=models.CASCADE, related_name='subdivisions', null=True
-    )
+# # Subdivision Model
+# class Subdivision(models.Model):
+#     SubDivisionName = models.CharField(max_length=30, validators=[validate_name], null=True)
+#     SubDivisionNameLL = models.CharField(max_length=30, validators=[validate_name], null=True)
+#     SubDivisionCode = models.IntegerField(unique=True, default=1001)
+#     IsActive = models.BooleanField(default=True)
+#     DistrictCode = models.ForeignKey(
+#         District, to_field='DistrictCode', on_delete=models.CASCADE, related_name='subdivisions', null=True
+#     )
 
-    def __str__(self):
-        return self.Subdivision
+#     def __str__(self):
+#         return self.Subdivision
 
-# State Model
-class State(models.Model):
-    State = models.CharField(max_length=100, default='Sikkim')  # Specify max_length
-    StateNameLL = models.CharField(max_length=30, validators=[validate_name])
-    StateCode = models.IntegerField(unique=True, default=11)
-    IsActive = models.BooleanField(default=True)
+# # State Model
+# class State(models.Model):
+#     State = models.CharField(max_length=100, default='Sikkim')  # Specify max_length
+#     StateNameLL = models.CharField(max_length=30, validators=[validate_name])
+#     StateCode = models.IntegerField(unique=True, default=11)
+#     IsActive = models.BooleanField(default=True)
 
-    def __str__(self):
-        return self.State
+#     def __str__(self):
+#         return self.State
