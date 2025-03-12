@@ -7,8 +7,16 @@ class LicenseCategoryList(generics.ListCreateAPIView):
     queryset = masters_model.LicenseCategory.objects.all().order_by('-id')
     serializer_class = licensecategory_serializer.LicenseCategorySerializer
 
+class LicenseCategoryDetail(generics.RetrieveUpdateDestroyAPIView):
+    queryset = masters_model.LicenseCategory.objects.all().order_by('-id')
+    serializer_class = licensecategory_serializer.LicenseCategorySerializer
+
 # LicenseTypeList for listing and creating
 class LicenseTypeList(generics.ListCreateAPIView):
+    queryset = masters_model.LicenseType.objects.all().order_by('-id')
+    serializer_class = licensetype_serializer.LicenseTypeSerializer
+
+class LicenseTypeDetail(generics.RetrieveUpdateDestroyAPIView):
     queryset = masters_model.LicenseType.objects.all().order_by('-id')
     serializer_class = licensetype_serializer.LicenseTypeSerializer
 
