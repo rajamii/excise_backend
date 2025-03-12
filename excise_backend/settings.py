@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     'excise_app',
     'masters',
     'otp',
+    'registration_renewal',
     'rest_framework',
     'captcha',
     'corsheaders',
@@ -91,8 +92,8 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'excise_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'postgres',  # Your PostgreSQL password
-        'HOST': '10.182.153.61',        # Default host
+        'PASSWORD': 'Tashi!342',  # Your PostgreSQL password
+        'HOST': 'localhost',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
     }
 }
