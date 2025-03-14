@@ -23,17 +23,28 @@
 
 ## Api endpoints provided by masters 
 
-| URL Pattern                  | View Class                 | Request Type(s) | Functionality                                                                  |
-| ---------------------------- | -------------------------- | --------------- | ------------------------------------------------------------------------------ |
-| `license-categories/`        | `LicenseCategoryList`      | GET, POST       | Lists all license categories and creates a new license category.               |
-| `license-type/`              | `LicenseTypeList`          | GET, POST       | Lists all license types and creates a new license type.                    |
-| `subdivision/`               | `SubDivisonApi`            | POST            | Creates a new subdivision.                                                     |
-| `subdivision/<int:pk>/`      | `SubDivisonApi`            | GET, PUT        | Retrieves or updates a specific subdivision.                               |
-| `district/`                  | `DistrictAdd`              | POST            | Creates a new district.                                                       |
-| `district/<int:id>/`         | `DistrictAdd`              | PUT             | Updates a specific district.                                                 |
-| `districts/`                 | `DistrictView`             | GET             | Lists all districts.                                                          |
-| `districts/<int:pk>/`        | `DistrictView`             | GET             | Retrieves a specific district.                                               |
-| `policestation/`             | `PoliceStationAPI`         | POST            | Creates a new police station.                                                 |
-| `policestation/<int:id>/`    | `PoliceStationAPI`         | PUT             | Updates a specific police station.                                           |
-| `policestations/`            | `PoliceStationAPI`         | GET             | Lists all police stations.                                                    |
-| `policestations/<int:pk>/`   | `PoliceStationAPI`         | GET             | Retrieves a specific police station.                                         |
+| URL Pattern                  | View Class                 | Request Type(s) | Functionality                                                           |
+| ---------------------------- | -------------------------- | --------------- | ----------------------------------------------------------------------- |
+| `license-categories/`        | `LicenseCategoryList`      | GET, POST       | Lists all license categories and creates a new license category.        |
+| `license-type/`              | `LicenseTypeList`          | GET, POST       | Lists all license types and creates a new license type.                 |
+| `subdivision/`               | `SubDivisonApi`            | POST            | Creates a new subdivision.                                              |
+| `subdivision/<int:pk>/`      | `SubDivisonApi`            | GET, PUT        | Retrieves or updates a specific subdivision.                            |
+| `district/`                  | `DistrictAdd`              | POST            | Creates a new district.                                                 |
+| `district/<int:id>/`         | `DistrictAdd`              | PUT             | Updates a specific district.                                            |
+| `districts/`                 | `DistrictView`             | GET             | Lists all districts.                                                    |
+| `districts/<int:pk>/`        | `DistrictView`             | GET             | Retrieves a specific district.                                          |
+| `policestation/`             | `PoliceStationAPI`         | POST            | Creates a new police station.                                           |
+| `policestation/<int:id>/`    | `PoliceStationAPI`         | PUT             | Updates a specific police station.                                      |
+| `policestations/`            | `PoliceStationAPI`         | GET             | Lists all police stations.                                              |
+| `policestations/<int:pk>/`   | `PoliceStationAPI`         | GET             | Retrieves a specific police station.                                    |
+
+
+## Api endpoints provided by salesman_barman
+
+
+| URL Pattern                        | View Class                 | Request Type(s) | Functionality                                     |
+| ---------------------------------- | -------------------------- | --------------- | ------------------------------------------------- |
+| `salesman_barman/`                 | `SalesmanBarmanView`       | POST            | Creates a new Salesman_barman                     |
+| `salesman_barman/<int:sb>/`        | `SalesmanBarmanView`       | GET             | List a specific police station                    |
+| `salesman_barmans/<int:id>/`       | `SalesmanBarmanView`       | PUT             | Updates a specific police station                 |
+| `salesman_barmans/`                | `SalesmanBarmanView`       | GET             | Lists all salesman_barman                         |
