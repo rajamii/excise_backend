@@ -1,6 +1,6 @@
 from django.urls import path
 
-form .views import SalesmanBarmanView
+from .views import SalesmanBarmanView
 
 urlpatterns = [
 

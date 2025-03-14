@@ -54,6 +54,8 @@ urlpatterns = [
     # GET for listing all police stations
     
     path('policestations/', views.PoliceStationAPI.as_view(), name='policestation-list'),
+
+    # GET for listing one policestation at pk
      
     path('policestations/<int:pk>/', views.PoliceStationAPI.as_view(), name='policestation-detail'),  
 ]

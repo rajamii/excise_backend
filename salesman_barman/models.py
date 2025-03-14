@@ -3,14 +3,14 @@ from django.db import models
 # gender selection for salesman/barman 
 
 GENDER = {
-    ('M' = 'Male'),
-    ('F' = 'Female'),
+    ('M' , 'Male'),
+    ('F' , 'Female'),
 }
 
 
 # SalesMan model 
 
-class SalesmanBarman (models.Model )
+class SalesmanBarman (models.Model ):
     Barman_first_name  = models.CharField(max_length = 100)
     Barman_middle_name = models.CharField(max_length = 100)
     Barman_last_name   = models.CharField(max_length = 100)
@@ -23,7 +23,7 @@ class SalesmanBarman (models.Model )
     Barman_Mobile_No   = models.CharField(max_length = 10 , unique = True)
     Barman_DOB         = models.DateTimeField(blank = True , null = True )
 
-    Barman_PAN_ID      = models.CharFlied(max_length = 10 , unique = True)
+    Barman_PAN_ID      = models.CharField(max_length = 10 , unique = True)
     Barman_Aadhar_ID   = models.CharField(max_length = 12 , unique = True )
     Barman_Gender      = models.CharField(max_length = 1 , choices = GENDER )
 

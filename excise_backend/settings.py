@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'salesman_barman',
     'excise_app',
     'masters',
     'otp',
@@ -92,11 +93,9 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'excise_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-<<<<<<< HEAD
+
         'PASSWORD': 'postgres',  # Your PostgreSQL password
-=======
-        'PASSWORD': 'Tashi!342',  # Your PostgreSQL password
->>>>>>> main
+
         'HOST': 'localhost',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
     }
