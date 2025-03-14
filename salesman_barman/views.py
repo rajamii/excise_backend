@@ -18,7 +18,11 @@ class SalesmanBarmanView (APIView ):
 
          return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
+    def get (self , request ):
 
+        salesman_barman = SalesmanBarman.objects.all()
+        serializer = SalesmanBarmanSerializer(salesman_barman , many=True)
+        return Response(serializer.data)
 
 
 
