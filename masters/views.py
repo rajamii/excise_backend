@@ -1,8 +1,12 @@
 from rest_framework import generics, response, status
 from masters import models as masters_model
 from masters.serializers import (licensecategory_serializer, licensetype_serializer, placemaster_serializer)
+from django.views.decorators.http import require_http_methods
+from django.utils.decorators import method_decorator
+
 
 # LicenseCategoryList for listing , creating , Updating and Deleting 
+
 
 class LicenseCategoryAPI ( generics.ListCreateAPIView , generics.RetrieveUpdateDestroyAPIView):
 
@@ -10,12 +14,15 @@ class LicenseCategoryAPI ( generics.ListCreateAPIView , generics.RetrieveUpdateD
     serializer_class = licensecategory_serializer.LicenseCategorySerializer
     lookup_field = 'id'
 
+
     def post(self , request , format=None):
         serializer = licensecategory_serializer.LicenseCategorySerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
             return response.Response(serializer.data, status=status.HTTP_201_CREATED)
         return response.Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
         
     def get(self, request, id=None, format=None):
 
@@ -28,6 +35,9 @@ class LicenseCategoryAPI ( generics.ListCreateAPIView , generics.RetrieveUpdateD
         serializer = licensecategory_serializer.LicenseCategorySerializer(license_categories, many=True)
         return response.Response(serializer.data, status=status.HTTP_200_OK)
 
+
+
+
     def put(self, request, id, format=None):
         license_category = masters_model.LicenseCategory.objects.get(id=id)
         serializer = licensecategory_serializer.LicenseCategorySerializer(license_category, data=request.data, partial=True)
@@ -35,6 +45,9 @@ class LicenseCategoryAPI ( generics.ListCreateAPIView , generics.RetrieveUpdateD
             serializer.save()
             return response.Response(serializer.data, status=status.HTTP_200_OK)
         return response.Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+
 
     def delete(self, request, id, format=None):
         try:
@@ -61,6 +74,8 @@ class LicenseTypeAPI (generics.ListCreateAPIView , generics.RetrieveUpdateDestro
             return response.Response(serializer.data, status=status.HTTP_201_CREATED)
         return response.Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
+    
     def get(self, request, id=None, format=None):
         if id:
             try:
@@ -74,6 +89,8 @@ class LicenseTypeAPI (generics.ListCreateAPIView , generics.RetrieveUpdateDestro
         serializer = self.serializer_class(license_types, many=True)
         return response.Response(serializer.data, status=status.HTTP_200_OK)
 
+
+
     def put(self, request, id, format=None):
         try:
             license_type = masters_model.LicenseType.objects.get(id=id)
@@ -84,6 +101,8 @@ class LicenseTypeAPI (generics.ListCreateAPIView , generics.RetrieveUpdateDestro
             return response.Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         except masters_model.LicenseType.DoesNotExist:
             return response.Response(status=status.HTTP_404_NOT_FOUND)
+
+
 
     def delete(self, request, id, format=None):
         try:
@@ -100,27 +119,45 @@ class SubDivisonApi(generics.ListCreateAPIView , generics.RetrieveUpdateDestroyA
 
     queryset = masters_model.Subdivision.objects.all()  # Added queryset
     serializer_class = placemaster_serializer.SubDivisonSerializer
+    lookup_field = 'id'
 
+     
     def post(self, request, format=None):
         serializer = placemaster_serializer.SubDivisonSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
             return response.Response(serializer.data, status=status.HTTP_201_CREATED)
-        return response.Responese(serializer.errors ,  stats=status.HTTP_400_BAD_REQUEST)
+        return response.Response(serializer.errors ,  stats=status.HTTP_400_BAD_REQUEST)
 
-    def get(self, request, id=None, format=None):
+
+    
+    def get(self, request, id=None, dc=None, format=None):
         if id:
             try:
                 subdivision = masters_model.Subdivision.objects.get(id=id)
                 serializer = self.serializer_class(subdivision)
                 return response.Response(serializer.data, status=status.HTTP_200_OK)
+
             except masters_model.Subdivision.DoesNotExist:
                 return response.Response(status=status.HTTP_404_NOT_FOUND)
+
+        if dc is not None:  # Changed district_code to dc for consistency
+
+            subdivisions = masters_model.Subdivision.objects.filter(DistrictCode=dc) 
+
+            if not subdivisions.exists():
+                raise NotFound(detail="No subdivisions found for this district code", code=status.HTTP_404_NOT_FOUND)
+
+            serializer = self.serializer_class(subdivisions, many=True)
+            return response.Response(serializer.data, status=status.HTTP_200_OK)
+
 
         subdivisions = masters_model.Subdivision.objects.all()
         serializer = self.serializer_class(subdivisions, many=True)
         return response.Response(serializer.data, status=status.HTTP_200_OK)
 
+
+     
     def put(self, request, id, format=None):
         try:
             subdivision = masters_model.Subdivision.objects.get(id=id)
@@ -131,6 +168,9 @@ class SubDivisonApi(generics.ListCreateAPIView , generics.RetrieveUpdateDestroyA
             return response.Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         except masters_model.Subdivision.DoesNotExist:
             return response.Response(status=status.HTTP_404_NOT_FOUND)
+
+
+     
 
     def delete(self, request, id, format=None):
         try:
@@ -158,6 +198,8 @@ class DistrictAPI(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAPIV
         else:
             return response.Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
+    
     def get(self, request, id=None, format=None):
         if id:
             try:
@@ -171,6 +213,8 @@ class DistrictAPI(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAPIV
         serializer = self.serializer_class(districts, many=True)
         return response.Response(serializer.data, status=status.HTTP_200_OK)
 
+
+    
     def put(self, request, id, format=None):
         try:
             district = masters_model.District.objects.get(id=id)
@@ -182,6 +226,9 @@ class DistrictAPI(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAPIV
         except masters_model.District.DoesNotExist:
             return response.Response(status=status.HTTP_404_NOT_FOUND)
 
+
+
+        
     def delete(self, request, id, format=None):
         try:
             district = masters_model.District.objects.get(id=id)
@@ -201,6 +248,7 @@ class PoliceStationAPI(generics.ListCreateAPIView , generics.RetrieveUpdateDestr
     serializer_class = placemaster_serializer.PoliceStationSerializer
     lookup_field = 'id'
 
+    
     def post(self, request, format=None):
         serializer = placemaster_serializer.PoliceStationSerializer(data=request.data)
         if serializer.is_valid():
@@ -209,6 +257,7 @@ class PoliceStationAPI(generics.ListCreateAPIView , generics.RetrieveUpdateDestr
         return response.Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+    
     def get(self, request, id=None, format=None):
         if id:
             policestation = masters_model.PoliceStation.objects.get(id=id)
@@ -220,7 +269,6 @@ class PoliceStationAPI(generics.ListCreateAPIView , generics.RetrieveUpdateDestr
         return response.Response(serializer.data, status=status.HTTP_200_OK)
 
 
-
     def put(self, request, id, format=None):
         policestation = masters_model.PoliceStation.objects.get(id=id)
         serializer = placemaster_serializer.PoliceStationSerializer(policestation, data=request.data, partial=True)
@@ -230,6 +278,7 @@ class PoliceStationAPI(generics.ListCreateAPIView , generics.RetrieveUpdateDestr
         return response.Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+    
     def delete(self , request , id , format=None ):
 
         try:

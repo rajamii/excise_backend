@@ -23,19 +23,20 @@ urlpatterns = [
     path('licensetypes/update/<int:id>/'     , LicenseTypeAPI.as_view(), name='licensetype-update'),
     path('licensetypes/delete/<int:id>/'     , LicenseTypeAPI.as_view(), name='licensetype-delete'),
 
-    # Subdivision URLs
-    path('subdivisions/list/'                , SubDivisonApi.as_view(), name='subdivision-list'),
-    path('subdivisions/detail/<int:id>/'     , SubDivisonApi.as_view(), name='subdivision-detail'),
-    path('subdivisions/create/'              , SubDivisonApi.as_view(), name='subdivision-create'),
-    path('subdivisions/update/<int:id>/'     , SubDivisonApi.as_view(), name='subdivision-update'),
-    path('subdivisions/delete/<int:id>/'     , SubDivisonApi.as_view(), name='subdivision-delete'),
-
     # District URLs
     path('districts/list/'                  , DistrictAPI.as_view(), name='district-list'),
     path('districts/detail/<int:id>/'       , DistrictAPI.as_view(), name='district-detail'),
     path('districts/create/'                , DistrictAPI.as_view(), name='district-create'),
     path('districts/update/<int:id>/'       , DistrictAPI.as_view(), name='district-update'),
     path('districts/delete/<int:id>/'       , DistrictAPI.as_view(), name='district-delete'),
+
+    # Subdivision URLs
+    path('subdivisions/list/'                , SubDivisonApi.as_view(), name='subdivision-list'),
+    path('subdivisions/detail/<int:id>/'     , SubDivisonApi.as_view(), name='subdivision-detail'),
+    path('subdivisions/detail/<int:dc>/'     , SubDivisonApi.as_view(), name='subdivision-detail-by-code'),
+    path('subdivisions/create/'              , SubDivisonApi.as_view(), name='subdivision-create'),
+    path('subdivisions/update/<int:id>/'     , SubDivisonApi.as_view(), name='subdivision-update'),
+    path('subdivisions/delete/<int:id>/'     , SubDivisonApi.as_view(), name='subdivision-delete'),
 
     # Police Station URLs
     path('policestations/list/'             , PoliceStationAPI.as_view(), name='policestation-list'),
