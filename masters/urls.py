@@ -1,33 +1,46 @@
 from django.urls import path
-from . import views
+
+from .views import (
+    LicenseCategoryAPI,
+    LicenseTypeAPI,
+    SubDivisonApi,
+    DistrictAPI,
+    PoliceStationAPI,
+)
 
 urlpatterns = [
-    # LicenseCategory API Endpoints
-    path('license-categories-get-all/', views.LicenseCategoryList.as_view(), name='license-category-list'),  # GET for listing all license categories
-    path('license-categories-get-one/<int:pk>/', views.LicenseCategoryDetail.as_view(), name='license-category-detail'),  # GET, PUT, DELETE for a specific license category
+    # License Category URLs
+    path('licensecategories/list/'             , LicenseCategoryAPI.as_view(), name='licensecategory-list'),
+    path('licensecategories/detail/<int:id>/'  , LicenseCategoryAPI.as_view(), name='licensecategory-detail'),
+    path('licensecategories/create/'           , LicenseCategoryAPI.as_view(), name='licensecategory-create'),
+    path('licensecategories/update/<int:id>/'  , LicenseCategoryAPI.as_view(), name='licensecategory-update'),
+    path('licensecategories/delete/<int:id>/'  , LicenseCategoryAPI.as_view(), name='licensecategory-delete'),
 
-    # LicenseType API Endpoints
-    path('license-type-get-all/', views.LicenseTypeList.as_view(), name='license-type-list'),  # GET for listing all license types
-    path('license-type-get-one/<int:pk>/', views.LicenseTypeDetail.as_view(), name='license-type-detail'),  # GET for a specific license type
-    path('license-type-update/<int:pk>/', views.LicenseTypeDetail.as_view(), name='license-type-update'),  # PUT for updating a specific license type
-    path('license-type-delete/<int:pk>/', views.LicenseTypeDetail.as_view(), name='license-type-delete'),  # DELETE for deleting a specific license type
+    # License Type URLs
+    path('licensetypes/list/'                , LicenseTypeAPI.as_view(), name='licensetype-list'),
+    path('licensetypes/detail/<int:id>/'     , LicenseTypeAPI.as_view(), name='licensetype-detail'),
+    path('licensetypes/create/'              , LicenseTypeAPI.as_view(), name='licensetype-create'),
+    path('licensetypes/update/<int:id>/'     , LicenseTypeAPI.as_view(), name='licensetype-update'),
+    path('licensetypes/delete/<int:id>/'     , LicenseTypeAPI.as_view(), name='licensetype-delete'),
 
-    # Subdivision API Endpoints
-    path('subdivision-create/', views.SubDivisonApi.as_view(), name='subdivision-create'),  # POST for creating a subdivision
-    path('subdivision-get-one/<int:pk>/', views.SubDivisonApi.as_view(), name='subdivision-detail'),  # GET for a specific subdivision
-    path('subdivision-update/<int:pk>/', views.SubDivisonApi.as_view(), name='subdivision-update'),  # PUT for updating a specific subdivision
-    path('subdivision-delete/<int:pk>/', views.SubDivisonApi.as_view(), name='subdivision-delete'),  # DELETE for deleting a specific subdivision
+    # Subdivision URLs
+    path('subdivisions/list/'                , SubDivisonApi.as_view(), name='subdivision-list'),
+    path('subdivisions/detail/<int:id>/'     , SubDivisonApi.as_view(), name='subdivision-detail'),
+    path('subdivisions/create/'              , SubDivisonApi.as_view(), name='subdivision-create'),
+    path('subdivisions/update/<int:id>/'     , SubDivisonApi.as_view(), name='subdivision-update'),
+    path('subdivisions/delete/<int:id>/'     , SubDivisonApi.as_view(), name='subdivision-delete'),
 
-    # District API Endpoints
-    path('district-create/', views.DistrictAdd.as_view(), name='district-create'),  # POST for creating a district
-    path('district-update/<int:id>/', views.DistrictAdd.as_view(), name='district-update'),  # PUT for updating a district
-    path('districts-get-all/', views.DistrictView.as_view(), name='district-list'),  # GET for listing all districts
-    path('district-get-one/<int:pk>/', views.DistrictView.as_view(), name='district-detail'),  # GET for a specific district
+    # District URLs
+    path('districts/list/'                  , DistrictAPI.as_view(), name='district-list'),
+    path('districts/detail/<int:id>/'       , DistrictAPI.as_view(), name='district-detail'),
+    path('districts/create/'                , DistrictAPI.as_view(), name='district-create'),
+    path('districts/update/<int:id>/'       , DistrictAPI.as_view(), name='district-update'),
+    path('districts/delete/<int:id>/'       , DistrictAPI.as_view(), name='district-delete'),
 
-    # PoliceStation API Endpoints
-    path('policestation-create/', views.PoliceStationAPI.as_view(), name='policestation-create'),  # POST for creating a police station
-    path('policestation-update/<int:id>/', views.PoliceStationAPI.as_view(), name='policestation-update'),  # PUT for updating a police station
-    path('policestations-get-all/', views.PoliceStationAPI.as_view(), name='policestation-list'),  # GET for listing all police stations
-    path('policestation-get-one/<int:pk>/', views.PoliceStationAPI.as_view(), name='policestation-detail'),  # GET for a specific police station
+    # Police Station URLs
+    path('policestations/list/'             , PoliceStationAPI.as_view(), name='policestation-list'),
+    path('policestations/detail/<int:id>/'  , PoliceStationAPI.as_view(), name='policestation-detail'),
+    path('policestations/create/'           , PoliceStationAPI.as_view(), name='policestation-create'),
+    path('policestations/update/<int:id>/'  , PoliceStationAPI.as_view(), name='policestation-update'),
+    path('policestations/delete/<int:id>/'  , PoliceStationAPI.as_view(), name='policestation-delete'),
 ]
-
