@@ -1,60 +1,43 @@
 from django.contrib.auth.models import User
+from .models import CustomUser
 from django.contrib.auth import authenticate , login , logout
 
 import json
 from django.http import JsonResponse
 
 from django.shortcuts import render
+
 from django.views import View
+from rest_framework.views import APIView
+from rest_framework.response import Response
+
 from rest_framework import response , status
 from .impl import (
-    registerUser,
     update_user_details,
     delete_user_by_username,
 )
 
 from captcha.models import CaptchaStore
+from .serializer import UserRegistrationSerializer , LoginSerializer
 
 
-
-class UserAPI (View ):
+class UserAPI (APIView ):
 
     def post(self, request, *args, **kwargs):
-        try:
-            data = json.loads(request.body)
-            
-            if User.objects.filter(username=data.get('username')).exists():
-
-                return JsonResponse({'error': 'Username already exists'}, status=status.HTTP_400_BAD_REQUEST)
-
-            if User.objects.filter(email=data.get('email')).exists():
-
-                return JsonResponse({'error': 'Email already exists'}, status=status.HTTP_400_BAD_REQUEST)
-
-            user = registerUser(
-                username    = data.get('username'),
-                email       = data.get('email'),
-                password    = data.get('password'),
-                first_name  = data.get('first_name'),
-                last_name   = data.get('last_name'),
-            ) 
-
-            
-            return JsonResponse({'message': 'User registered successfully'}, status=status.HTTP_201_CREATED)
-
-
-        except json.JSONDecodeError:
-            return JsonResponse({'error': 'Invalid JSON data'}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            return JsonResponse({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-
+        serializer = UserRegistrationSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()  # This will create the user and generate the username
+            return Response({
+                "message": "User registered successfully",
+                "username": user.username  # Return the generated username
+            }, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
     def get(self, request, username=None, *args, **kwargs):
         if username:
             try:
-                user = User.objects.get(username=username)
+                user = CustomUser.objects.get(username=username)
                 user_data = {
                     'username': user.username,
                     'email': user.email,
@@ -67,7 +50,7 @@ class UserAPI (View ):
             except Exception as e:
                 return JsonResponse({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         else:
-            users = User.objects.all()
+            users = CustomUser.objects.all()
             user_list = [{'username': user.username, 'email': user.email, 'first_name': user.first_name, 'last_name': user.last_name} for user in users]
             return JsonResponse(user_list, safe=False, status=status.HTTP_200_OK)
 
@@ -106,45 +89,33 @@ class UserAPI (View ):
 
 
 
-class LoginAPI(View):
+class LoginAPI(APIView):
 
-    def post(self, request, *args, **kwargs):
+    serializer_class = LoginSerializer
 
-        try:
-            data = json.loads(request.body)
-            username = data.get('username')
-            password = data.get('password')
-            hashkey  = data.get('hashkey' )
-            response = data.get('response')
+    def post(self, request):
 
-            try:
-                CaptchaStore.objects.get(hashkey=hashkey , response=response.strip().lower())
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)  # Automatically raises ValidationError if invalid
 
-            except CaptchaStore.DoesNotExist:
+        # If validation passes, get the validated data
+        validated_data = serializer.validated_data
 
-                return JsonResponse({'error': 'Invalid Captcha'}, status=status.HTTP_401_UNAUTHORIZED)
-                
-            
-            user = authenticate(request, username=username, password=password)
+        # Prepare the response
+        response_data = {
+            'success': True,
+            'statusCode': status.HTTP_200_OK,
+            'message': 'User logged in successfully',
+            'authenticated_user': {
+                'username': validated_data['username'],
+                'access': validated_data['access'],
+                'refresh': validated_data['refresh'],
+            },
+        }
 
-            if user is not None:
+        return Response(response_data, status=status.HTTP_200_OK)
 
-                login(request, user)
-                return JsonResponse({'message': 'Login successful'}, status=status.HTTP_200_OK)
 
-            else:
-
-                return JsonResponse({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
-
-        except json.JSONDecodeError:
-
-            return JsonResponse({'error': 'Invalid JSON data'}, status=status.HTTP_400_BAD_REQUEST)
-
-        except Exception as e:
-
-            return JsonResponse({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-        
 class LogoutAPI(View):
 
     def post(self, request, *args, **kwargs):

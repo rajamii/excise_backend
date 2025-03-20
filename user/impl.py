@@ -4,32 +4,7 @@ from django.views import View
 from rest_framework import response , status
 from .models import CustomUser
 
-# genereate new username 
-
-
-# function for registering a user
-
-def registerUser(username , email , password , first_name , last_name , mobile_no ):
-    try:
-
-        user = CustomUser.objects.create_user(
-
-            username=username,
-            email=email,
-            password=password,
-            first_name=first_name,
-            last_name=last_name,
-            phonenumber=mobile_no,
-         )
-
-        user.save()
-
-        return user
-
-    except Exception as e:
-
-        print(f'Error creating user {e}')
-        return None
+ 
 
 
 # function for deleting a user by username 
