@@ -1,7 +1,9 @@
 # bookapp/admin.py
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
-from excise_app.models import CustomUser,District, Subdivision
+from user.models import CustomUser
+from masters.models import District, Subdivision
+
 
 @admin.register(CustomUser)
 class CustomUserAdmin(UserAdmin):

@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'captcha',
     'corsheaders',
     'rest_framework_simplejwt',
+    'user',
 ]
 
 MIDDLEWARE = [
@@ -101,7 +102,7 @@ DATABASES = {
     }
 }
 
-AUTH_USER_MODEL = 'excise_app.CustomUser'
+AUTH_USER_MODEL = 'user.CustomUser'
 
 
 # Password validation

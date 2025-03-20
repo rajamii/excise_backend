@@ -13,41 +13,42 @@ from masters.models import *
 
 #create views in masters 
 
-#User Registration/Signup
-class UserRegistrationView(APIView):
-    def post(self, request, *args, **kwargs):
-        serializer = UserRegistrationSerializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()  # This will create the user and generate the username
-            return Response({
-                "message": "User registered successfully",
-                "username": user.username  # Return the generated username
-            }, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+# #User Registration/Signup
+# class UserRegistrationView(APIView):
+#     def post(self, request, *args, **kwargs):
+#         serializer = UserRegistrationSerializer(data=request.data)
+#         if serializer.is_valid():
+#             user = serializer.save()  # This will create the user and generate the username
+#             return Response({
+#                 "message": "User registered successfully",
+#                 "username": user.username  # Return the generated username
+#             }, status=status.HTTP_201_CREATED)
+#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-#Login using Username & Password
-class UserLoginView(APIView):
-    serializer_class = LoginSerializer
-    def post(self, request):
-        serializer = self.serializer_class(data=request.data)
-        serializer.is_valid(raise_exception=True)  # Automatically raises ValidationError if invalid
+# #Login using Username & Password
+# class UserLoginView(APIView):
+#     serializer_class = LoginSerializer
+#     def post(self, request):
+#         serializer = self.serializer_class(data=request.data)
+#         serializer.is_valid(raise_exception=True)  # Automatically raises ValidationError if invalid
 
-        # If validation passes, get the validated data
-        validated_data = serializer.validated_data
+#         # If validation passes, get the validated data
+#         validated_data = serializer.validated_data
 
-        # Prepare the response
-        response_data = {
-            'success': True,
-            'statusCode': status.HTTP_200_OK,
-            'message': 'User logged in successfully',
-            'authenticated_user': {
-                'username': validated_data['username'],
-                'access': validated_data['access'],
-                'refresh': validated_data['refresh'],
-            },
-        }
+#         # Prepare the response
+#         response_data = {
+#             'success': True,
+#             'statusCode': status.HTTP_200_OK,
+#             'message': 'User logged in successfully',
+#             'authenticated_user': {
+#                 'username': validated_data['username'],
+#                 'access': validated_data['access'],
+#                 'refresh': validated_data['refresh'],
+#             },
+#         }
 
-        return Response(response_data, status=status.HTTP_200_OK)
+#         return Response(response_data, status=status.HTTP_200_OK)
+
     
 #Login using Phone Number & OTP
 class SendOTP(APIView):
@@ -58,6 +59,8 @@ class SendOTP(APIView):
         send_otp(phone_number)
         return Response({"detail": "OTP sent successfully"}, status=status.HTTP_200_OK)
     
+
+
 class OTPLoginView(APIView):
     def post(self, request):
         serializer = OTPLoginSerializer(data=request.data)
@@ -84,10 +87,12 @@ class OTPLoginView(APIView):
             return Response(response_data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
-#Get User List
-class UserListView(generics.ListCreateAPIView):
-    queryset = CustomUser.objects.all()
-    serializer_class = UserListSerializer
+
+
+# #Get User List
+# class UserListView(generics.ListCreateAPIView):
+#     queryset = CustomUser.objects.all()
+#     serializer_class = UserListSerializer
     
 
 #Get User Details

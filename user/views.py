@@ -1,85 +1,20 @@
-from django.shortcuts import render
 from django.contrib.auth.models import User
+from django.contrib.auth import authenticate , login , logout
+
+import json
+from django.http import JsonResponse
+
+from django.shortcuts import render
 from django.views import View
 from rest_framework import response , status
-# function for registering a user
+from .impl import (
+    registerUser,
+    update_user_details,
+    delete_user_by_username,
+)
 
-def registerUser(username , email , password , first_name , last_name ):
-    try:
+from captcha.models import CaptchaStore
 
-        user = User.objects.create(
-
-             username=username,
-             email=email,
-             password=password,
-             first_name=first_name,
-             last_name=last_name,
-         )
-
-        user.save()
-
-        return user
-
-    except Exception as e:
-
-        print(f'Error creating user {e}')
-        return None
-
-
-# function for deleting a user by username 
-
-def delete_user_by_username(username):
-    try:
-        user = User.objects.get(username=username)
-        user.delete()
-        print(f"User {username} deleted successfully.")
-    except User.DoesNotExist:
-        print(f"User {username} not found.")
-    except Exception as e:
-        print(f"Error deleting user: {e}")
-
-
-
-# function for updating a user by username  
-
-def update_user_details(
-
-    username,
-    new_username=None,
-    new_email=None,
-    new_first_name=None,
-    new_last_name=None,
-    new_password=None
-
-):
-    try:
-
-        user = User.objects.get(username=username)
-
-        if new_username:
-            user.username = new_username
-        if new_email:
-            user.email = new_email
-        if new_first_name:
-            user.first_name = new_first_name
-        if new_last_name:
-            user.last_name = new_last_name
-        if new_password:
-            user.set_password(new_password)
-
-        user.save()
-        return True #Return True for Success.
-
-    except User.DoesNotExist:
-
-        print(f"User {username} not found.")
-        return False
-
-    except Exception as e:
-
-        print(f"Error updating user details: {e}")
-        return False 
-        
 
 
 class UserAPI (View ):
@@ -167,3 +102,52 @@ class UserAPI (View ):
             return JsonResponse({'message': 'User deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
         except Exception as e:
             return JsonResponse({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+
+class LoginAPI(View):
+
+    def post(self, request, *args, **kwargs):
+
+        try:
+            data = json.loads(request.body)
+            username = data.get('username')
+            password = data.get('password')
+            hashkey  = data.get('hashkey' )
+            response = data.get('response')
+
+            try:
+                CaptchaStore.objects.get(hashkey=hashkey , response=response.strip().lower())
+
+            except CaptchaStore.DoesNotExist:
+
+                return JsonResponse({'error': 'Invalid Captcha'}, status=status.HTTP_401_UNAUTHORIZED)
+                
+            
+            user = authenticate(request, username=username, password=password)
+
+            if user is not None:
+
+                login(request, user)
+                return JsonResponse({'message': 'Login successful'}, status=status.HTTP_200_OK)
+
+            else:
+
+                return JsonResponse({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        except json.JSONDecodeError:
+
+            return JsonResponse({'error': 'Invalid JSON data'}, status=status.HTTP_400_BAD_REQUEST)
+
+        except Exception as e:
+
+            return JsonResponse({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        
+class LogoutAPI(View):
+
+    def post(self, request, *args, **kwargs):
+
+        logout(request)
+        return JsonResponse({'message': 'Logout successful'}, status=status.HTTP_200_OK)
