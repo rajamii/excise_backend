@@ -11,6 +11,8 @@ from django.http import JsonResponse
 from otp.views import send_otp, delete
 from masters.models import *
 
+#create views in masters 
+
 #User Registration/Signup
 class UserRegistrationView(APIView):
     def post(self, request, *args, **kwargs):

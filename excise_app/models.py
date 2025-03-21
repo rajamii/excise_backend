@@ -10,6 +10,7 @@ class CustomUserManager(BaseUserManager):
             raise ValueError('The Email field must be set')
         
         # Generate a unique username based on initials, phone number, district, and subdivision
+
         username = self.generate_unique_username(extra_fields['first_name'], extra_fields['last_name'], extra_fields['phonenumber'], extra_fields['district'], extra_fields['subdivision'])
 
         user = self.model(email=email, username=username, role=role, **extra_fields)
@@ -19,10 +20,12 @@ class CustomUserManager(BaseUserManager):
 
     def generate_unique_username(self, first_name, last_name, phone_number, district, subdivision):
         # Get initials and create a base username
+
         initials = first_name[0].upper() + last_name[0].upper()
         base_username = f"{initials}{phone_number[-4:]}{district}{subdivision}"
         
         # Ensure username is unique, adding random digits if needed
+
         username = base_username[:10]  # Truncate to 10 characters if needed
         while self.model.objects.filter(username=username).exists():
             username = f"{base_username[:7]}{random.randint(100, 999)}"
