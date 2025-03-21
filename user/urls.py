@@ -1,4 +1,4 @@
-<<<<<<< HEAD:user/urls.py
+
 from django.urls import path
 from .views import (
     UserAPI,
@@ -21,14 +21,5 @@ urlpatterns = [
 
     path('user/login/'   ,LoginAPI.as_view()  , name='user-login'  ),
     path('user/logout/'  ,LogoutAPI.as_view() , name='user-logout' ),
-=======
-from django.urls import path, include
-from rest_framework.routers import DefaultRouter
-from .views import SalesmanBarmanDetailsViewSet, DocumentsDetailsViewSet
 
-router = DefaultRouter()
-router.register(r'salesman_barman_details', SalesmanBarmanDetailsViewSet)
-urlpatterns = [
-    path('api/', include(router.urls)),
->>>>>>> 9395cec (Your commit message):salesman_barman/urls.py
 ]

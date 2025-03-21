@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import path , include
 
 from .views import (
     LicenseCategoryAPI,
@@ -7,6 +7,10 @@ from .views import (
     DistrictAPI,
     PoliceStationAPI,
 )
+
+from salesman_barman import urls as salesman_barman_urls
+from registration_renewal import urls as registration_renewel_urls
+
 
 urlpatterns = [
     # License Category URLs
@@ -44,4 +48,7 @@ urlpatterns = [
     path('policestations/create/'           , PoliceStationAPI.as_view(), name='policestation-create'),
     path('policestations/update/<int:id>/'  , PoliceStationAPI.as_view(), name='policestation-update'),
     path('policestations/delete/<int:id>/'  , PoliceStationAPI.as_view(), name='policestation-delete'),
+
+    path('' ,include(salesman_barman_urls) ),
+    path('' ,include(registration_renewel_urls)),
 ]
