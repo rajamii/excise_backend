@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'captcha',
     'corsheaders',
     'rest_framework_simplejwt',
+    'salesman_barman',
 ]
 
 MIDDLEWARE = [
