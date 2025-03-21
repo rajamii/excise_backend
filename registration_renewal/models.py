@@ -1,48 +1,80 @@
+
 from django.db import models
-from .choices import LICENSE_TYPE_CHOICES, APPLICATION_YEAR_CHOICES, COUNTRY_CHOICES, STATE_CHOICES
+from .helpers import validate_name, validate_pan_number, validate_address, validate_mobile_number, validate_email
+from masters.models import LicenseType
+from .choices import APPLICATION_YEAR_CHOICES, COUNTRY_CHOICES, STATE_CHOICES
 
 class CompanyDetails(models.Model):
-    # Fields for company details model
-    license_type = models.CharField(max_length=50, choices=LICENSE_TYPE_CHOICES, default='Retail')
+
+    license_type = models.ForeignKey(LicenseType, on_delete=models.SET_NULL, null=True, blank=True)
     application_year = models.IntegerField(choices=APPLICATION_YEAR_CHOICES, default=2023)
     country = models.CharField(max_length=50, choices=COUNTRY_CHOICES, default='India')
-    state = models.CharField(max_length=50, choices=STATE_CHOICES, default='Maharashtra')
-    name = models.CharField(max_length=100)
-    pan_number = models.CharField(max_length=10)
-    registered_office_address = models.CharField(max_length=255)
-    mobile_number = models.CharField(max_length=15)
+    state = models.CharField(max_length=50, choices=STATE_CHOICES, default='Sikkim')
 
-    # You can add other fields as necessary
+    name = models.CharField(
+        max_length=100,
+        validators=[validate_name]
+    )
+
+    pan_number = models.CharField(
+        max_length=10,
+        validators=[validate_pan_number]
+    )
+
+    registered_office_address = models.CharField(
+        max_length=255,
+        validators=[validate_address]
+    )
+    
+    mobile_number = models.CharField(
+        max_length=10,
+        validators=[validate_mobile_number]
+    )
+
     class Meta:
-        db_table = 'company_details'  # Table name will be 'company_details'
+        db_table = 'company_details'
 
     def __str__(self):
         return self.name
 
+
 class MemberDetails(models.Model):
-    member_name = models.CharField(max_length=100)
-    member_designation = models.CharField(max_length=100)
-    mobile_number = models.CharField(max_length=15)
-    email = models.EmailField(max_length=100)
-    member_address = models.CharField(max_length=255)
+    member_name = models.CharField(
+        max_length=100,
+        validators=[validate_name]
+    )
+    
+    member_designation = models.CharField(
+        max_length=100,
+        validators=[validate_address]  # Assuming address validation can also be used for designation, adjust if needed.
+    )
+    
+    mobile_number = models.CharField(
+        max_length=10,
+        validators=[validate_mobile_number]
+    )
+    
+    email = models.EmailField(
+        max_length=100,
+        validators=[validate_email]
+    )
+    
+    member_address = models.CharField(
+        max_length=255,
+        validators=[validate_address]
+    )
 
     class Meta:
-        db_table = 'member_details'  # Table name will be 'member_details'
+        db_table = 'member_details'
 
     def __str__(self):
         return self.member_name
 
+
 class DocumentDetails(models.Model):
-    # Upload document field
-    document = models.FileField(upload_to='documents/%Y/%m/%d/', null=True, blank=True)  # Save the uploaded files in a folder
-    
-    # Payment reference ID field
+    document = models.FileField(upload_to='documents/%Y/%m/%d/', null=True, blank=True)
     payment_reference_id = models.CharField(max_length=100, unique=True)
-
-    # Payment date (select option - DateField with a dropdown)
     payment_date = models.DateField()
-
-    # Remarks field
     remarks = models.TextField(null=True, blank=True)
 
     def __str__(self):

@@ -7,5 +7,7 @@ urlpatterns = [
     path('captcha/',include('captcha.urls')),
     path('masters/', include('masters.urls')),
     path('registration_renewal/', include('registration_renewal.urls')),
+     path('salesman_barman/', include('salesman_barman.urls')),
+
 
 ]
