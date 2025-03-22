@@ -1,6 +1,5 @@
 from django.contrib.auth.models import User
 from .models import CustomUser
-from django.contrib.auth import authenticate , login , logout
 
 import json
 from django.http import JsonResponse
@@ -35,7 +34,10 @@ class UserAPI (APIView ):
 
 
     def get(self, request, username=None, *args, **kwargs):
+
+        
         if username:
+        
             try:
                 user = CustomUser.objects.get(username=username)
                 user_data = {
@@ -50,10 +52,20 @@ class UserAPI (APIView ):
             except Exception as e:
                 return JsonResponse({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         else:
-            users = CustomUser.objects.all()
-            user_list = [{'username': user.username, 'email': user.email, 'first_name': user.first_name, 'last_name': user.last_name} for user in users]
-            return JsonResponse(user_list, safe=False, status=status.HTTP_200_OK)
 
+            user = request.user
+            if user.is_authenticated:
+                user_data = {
+                    'username': user.username,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'email': user.email,
+                    'role': user.role,
+                    
+                }
+                return Response(user_data, status=status.HTTP_200_OK)
+            else:
+                return Response({"detail": "User not authenticated."}, status=status.HTTP_401_UNAUTHORIZED)
 
 
 

@@ -4,7 +4,7 @@ from .views import SalesmanBarmanDetailsViewSet, DocumentsDetailsViewSet
 
 router = DefaultRouter()
 router.register(r'salesman-barman', SalesmanBarmanDetailsViewSet, basename='salesman-barman')
-router.register(r'documents', DocumentsDetailsViewSet, basename='documents')
+router.register(r'salesman-barman/documents', DocumentsDetailsViewSet, basename='documents')
 
 urlpatterns = [
     path('', include(router.urls)),

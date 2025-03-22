@@ -8,12 +8,12 @@ import random
 
 class CustomUserManager(BaseUserManager):
 
-    def get(self, username):
+    # def get(self, username):
 
-        try:
-            return self.model.objects.get(username=username)
-        except ObjectDoesNotExist:
-            return None 
+    #     try:
+    #         return self.model.objects.get(username=username)
+    #     except ObjectDoesNotExist:
+    #         return None 
 
     
     def create_user(self, email, password=None, role=None, **extra_fields):

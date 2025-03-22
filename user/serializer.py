@@ -4,6 +4,7 @@ from django.contrib.auth.password_validation import validate_password
 
 from captcha.models import CaptchaStore
 from rest_framework_simplejwt.tokens import RefreshToken
+from django.contrib.auth import authenticate , login , logout
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -40,7 +41,7 @@ class LoginSerializer(serializers.Serializer):
     response = serializers.CharField()
 
     def validate(self, data):
-        username = data.get('username')
+        username = data.get('username') 
         password = data.get('password')
         hashkey = data.get('hashkey')
         response = data.get('response')
@@ -56,9 +57,12 @@ class LoginSerializer(serializers.Serializer):
 
         # Validate captcha
         try:
-            CaptchaStore.objects.get(hashkey=hashkey, response=response.strip().lower())
+            captcha_store = CaptchaStore.objects.get(hashkey=hashkey)
+            if captcha_store.response.strip().lower() != response.strip().lower():
+               raise serializers.ValidationError("Invalid captcha.")
+            captcha_store.delete() # delete the captcha after it is validated.
         except CaptchaStore.DoesNotExist:
-            print('captcha chainai')
+            print("exception : captcha not found ")
             raise serializers.ValidationError("Invalid captcha.")
 
         # Generate JWT tokens

@@ -116,6 +116,7 @@ class UserDetails(APIView):
 def get_captcha(request):
     hashkey = CaptchaStore.generate_key()
     imageurl = captcha_image_url(hashkey)
+
     response = JsonResponse({
         'key': hashkey,
         'image_url': imageurl
