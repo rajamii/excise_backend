@@ -51,4 +51,5 @@ urlpatterns = [
 
     path('' ,include(salesman_barman_urls) ),
     path('' ,include(registration_renewel_urls)),
+
 ]
