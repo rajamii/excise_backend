@@ -30,7 +30,10 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         validated_data.pop('confirm_password', None)  # Remove confirm_password from validated_data
         
         # Call create_user method to handle username generation and user creation
-        user = CustomUser.objects.create_user(**validated_data)
+        try:
+            user = CustomUser.objects.create_user(**validated_data)
+        except Exception as e:
+            raise serializers.ValidationError({"error": str(e)})
         return user
 
         
@@ -56,9 +59,7 @@ class LoginSerializer(serializers.Serializer):
             raise serializers.ValidationError("Invalid login credentials.")
 
         # Validate captcha
-        try:
-            CaptchaStore.objects.get(hashkey=hashkey, response=response.strip().lower())
-        except CaptchaStore.DoesNotExist:
+        if not CaptchaStore.objects.filter(hashkey=hashkey, response=response.strip().lower()).exists():
             raise serializers.ValidationError("Invalid captcha.")
 
         # Generate JWT tokens
@@ -105,16 +106,16 @@ class UserListSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'email', 'role', 'first_name', 'last_name', 'phonenumber', 'district', 'subdivision', 'address', 'created_by']
 
 
-class DistrictSerializer(serializers.ModelSerializer):
-    stateName = serializers.CharField(source='StateCode.State', read_only=True)
-    class Meta: 
-        model= District
-        fields = '__all__'
+# class DistrictSerializer(serializers.ModelSerializer):
+#     stateName = serializers.CharField(source='StateCode.State', read_only=True)
+#     class Meta: 
+#         model= District
+#         fields = '__all__'
 
-#SubDividionSerializer
-class SubDivisonSerializer(serializers.ModelSerializer):
-    District = serializers.CharField(source='DistrictCode.District', read_only=True)
+# #SubDividionSerializer
+# class SubDivisonSerializer(serializers.ModelSerializer):
+#     District = serializers.CharField(source='DistrictCode.District', read_only=True)
 
-    class Meta: 
-        model= Subdivision
-        fields = '__all__'        
+#     class Meta: 
+#         model= Subdivision
+#         fields = '__all__'
