@@ -1,8 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser, BaseUserManager, PermissionsMixin
-from .validators import * 
+from .validators import validate_name, validate_Numbers 
 import random
-from masters.models import *
 
 class CustomUserManager(BaseUserManager):
     def create_user(self, email, password=None, role=None, **extra_fields):
@@ -26,7 +25,7 @@ class CustomUserManager(BaseUserManager):
         
         # Ensure username is unique, adding random digits if needed
 
-        username = base_username[:10]  # Truncate to 10 characters if needed
+        username = base_username[:10] if len(base_username) >= 10 else base_username  # Truncate to 10 characters if needed
         while self.model.objects.filter(username=username).exists():
             username = f"{base_username[:7]}{random.randint(100, 999)}"
         
