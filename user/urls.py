@@ -4,6 +4,8 @@ from .views import (
     UserAPI,
     LoginAPI,
     LogoutAPI,
+    send_otp_API,
+    verify_otp_API,
 )
 
 
@@ -21,5 +23,8 @@ urlpatterns = [
 
     path('user/login/'   ,LoginAPI.as_view()  , name='user-login'  ),
     path('user/logout/'  ,LogoutAPI.as_view() , name='user-logout' ),
+
+    path('user/otp/get/' ,send_otp_API , name='send-otp'),
+    path('user/otp/login/' , verify_otp_API , name='otp-login'),
 
 ]

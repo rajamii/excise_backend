@@ -40,7 +40,6 @@ INSTALLED_APPS = [
     'salesman_barman',
     'excise_app',
     'masters',
-    'otp',
     'registration_renewal',
     'rest_framework',
     'captcha',
