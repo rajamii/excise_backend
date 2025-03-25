@@ -1,61 +1,55 @@
-from django.urls import path
-from . import views
+from django.urls import path , include
+
+from .views import (
+    LicenseCategoryAPI,
+    LicenseTypeAPI,
+    SubDivisonApi,
+    DistrictAPI,
+    PoliceStationAPI,
+)
+
+from salesman_barman import urls as salesman_barman_urls
+from registration_renewal import urls as registration_renewel_urls
+
 
 urlpatterns = [
-    path('license-categories/', views.LicenseCategoryList.as_view(), name='license-category-list'),
-    path('license-categories/<int:pk>/', views.LicenseCategoryDetail.as_view(), name='license-category-detail'),  # GET, PUT, DELETE
-    path('license-type/', views.LicenseTypeList.as_view(), name='license-type-list'),
+    # License Category URLs
+    path('licensecategories/list/'             , LicenseCategoryAPI.as_view(), name='licensecategory-list'),
+    path('licensecategories/detail/<int:id>/'  , LicenseCategoryAPI.as_view(), name='licensecategory-detail'),
+    path('licensecategories/create/'           , LicenseCategoryAPI.as_view(), name='licensecategory-create'),
+    path('licensecategories/update/<int:id>/'  , LicenseCategoryAPI.as_view(), name='licensecategory-update'),
+    path('licensecategories/delete/<int:id>/'  , LicenseCategoryAPI.as_view(), name='licensecategory-delete'),
 
-    path('license-types/<int:pk>/', views.LicenseTypeDetail.as_view(), name='license-type-detail'),  # GET, PUT, DELETE   
+    # License Type URLs
+    path('licensetypes/list/'                , LicenseTypeAPI.as_view(), name='licensetype-list'),
+    path('licensetypes/detail/<int:id>/'     , LicenseTypeAPI.as_view(), name='licensetype-detail'),
+    path('licensetypes/create/'              , LicenseTypeAPI.as_view(), name='licensetype-create'),
+    path('licensetypes/update/<int:id>/'     , LicenseTypeAPI.as_view(), name='licensetype-update'),
+    path('licensetypes/delete/<int:id>/'     , LicenseTypeAPI.as_view(), name='licensetype-delete'),
 
-    path('subdivision/', views.SubDivisonApi.as_view(), name='subdivision-create'),  # POST for creating a subdivision
-    path('subdivision/<int:pk>/', views.SubDivisonApi.as_view(), name='subdivision-detail'),  # GET, PUT for a specific subdivision
+    # District URLs
+    path('districts/list/'                  , DistrictAPI.as_view(), name='district-list'),
+    path('districts/detail/<int:id>/'       , DistrictAPI.as_view(), name='district-detail'),
+    path('districts/create/'                , DistrictAPI.as_view(), name='district-create'),
+    path('districts/update/<int:id>/'       , DistrictAPI.as_view(), name='district-update'),
+    path('districts/delete/<int:id>/'       , DistrictAPI.as_view(), name='district-delete'),
 
+    # Subdivision URLs
+    path('subdivisions/list/'                , SubDivisonApi.as_view(), name='subdivision-list'),
+    path('subdivisions/detail/<int:id>/'     , SubDivisonApi.as_view(), name='subdivision-detail'),
+    path('subdivisions/detail/<int:dc>/'     , SubDivisonApi.as_view(), name='subdivision-detail-by-code'),
+    path('subdivisions/create/'              , SubDivisonApi.as_view(), name='subdivision-create'),
+    path('subdivisions/update/<int:id>/'     , SubDivisonApi.as_view(), name='subdivision-update'),
+    path('subdivisions/delete/<int:id>/'     , SubDivisonApi.as_view(), name='subdivision-delete'),
 
-    # POST for creating a subdivision
+    # Police Station URLs
+    path('policestations/list/'             , PoliceStationAPI.as_view(), name='policestation-list'),
+    path('policestations/detail/<int:id>/'  , PoliceStationAPI.as_view(), name='policestation-detail'),
+    path('policestations/create/'           , PoliceStationAPI.as_view(), name='policestation-create'),
+    path('policestations/update/<int:id>/'  , PoliceStationAPI.as_view(), name='policestation-update'),
+    path('policestations/delete/<int:id>/'  , PoliceStationAPI.as_view(), name='policestation-delete'),
 
-    path('subdivision/', views.SubDivisonApi.as_view(), name='subdivision-create'),
+    path('' ,include(salesman_barman_urls) ),
+    path('' ,include(registration_renewel_urls)),
 
-    # GET, PUT for a specific subdivision
-
-    path('subdivision/<int:pk>/', views.SubDivisonApi.as_view(), name='subdivision-detail'), 
-
-
-
-    ### District API Endpoints ###
-
-    # POST for creating a district
-
-    path('district/', views.DistrictAdd.as_view(), name='district-create'),
-
-    # PUT for updating a district
-
-    path('district/<int:id>/', views.DistrictAdd.as_view(), name='district-update'),
-
-    # GET for listing all districts      
-
-    path('districts/', views.DistrictView.as_view(), name='district-list'),
-
-    # GET for a specific district
-
-    path('districts/<int:pk>/', views.DistrictView.as_view(), name='district-detail'),  
-
-
-    ### PoliceStation API Endpoints ###
-
-    # POST for creating a police station
-    
-    path('policestation/', views.PoliceStationAPI.as_view(), name='policestation-create'),
-
-    # PUT for updating a police station
-
-    path('policestation/<int:id>/', views.PoliceStationAPI.as_view(), name='policestation-update'),
-
-    # GET for listing all police stations
-    
-    path('policestations/', views.PoliceStationAPI.as_view(), name='policestation-list'),
-
-    # GET for listing one policestation at pk
-     
-    path('policestations/<int:pk>/', views.PoliceStationAPI.as_view(), name='policestation-detail'),  
 ]

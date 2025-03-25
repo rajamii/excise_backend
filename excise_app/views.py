@@ -13,41 +13,42 @@ from masters.models import *
 
 #create views in masters 
 
-#User Registration/Signup
-class UserRegistrationView(APIView):
-    def post(self, request, *args, **kwargs):
-        serializer = UserRegistrationSerializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()  # This will create the user and generate the username
-            return Response({
-                "message": "User registered successfully",
-                "username": user.username  # Return the generated username
-            }, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+# #User Registration/Signup
+# class UserRegistrationView(APIView):
+#     def post(self, request, *args, **kwargs):
+#         serializer = UserRegistrationSerializer(data=request.data)
+#         if serializer.is_valid():
+#             user = serializer.save()  # This will create the user and generate the username
+#             return Response({
+#                 "message": "User registered successfully",
+#                 "username": user.username  # Return the generated username
+#             }, status=status.HTTP_201_CREATED)
+#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-#Login using Username & Password
-class UserLoginView(APIView):
-    serializer_class = LoginSerializer
-    def post(self, request):
-        serializer = self.serializer_class(data=request.data)
-        serializer.is_valid(raise_exception=True)  # Automatically raises ValidationError if invalid
+# #Login using Username & Password
+# class UserLoginView(APIView):
+#     serializer_class = LoginSerializer
+#     def post(self, request):
+#         serializer = self.serializer_class(data=request.data)
+#         serializer.is_valid(raise_exception=True)  # Automatically raises ValidationError if invalid
 
-        # If validation passes, get the validated data
-        validated_data = serializer.validated_data
+#         # If validation passes, get the validated data
+#         validated_data = serializer.validated_data
 
-        # Prepare the response
-        response_data = {
-            'success': True,
-            'statusCode': status.HTTP_200_OK,
-            'message': 'User logged in successfully',
-            'authenticated_user': {
-                'username': validated_data['username'],
-                'access': validated_data['access'],
-                'refresh': validated_data['refresh'],
-            },
-        }
+#         # Prepare the response
+#         response_data = {
+#             'success': True,
+#             'statusCode': status.HTTP_200_OK,
+#             'message': 'User logged in successfully',
+#             'authenticated_user': {
+#                 'username': validated_data['username'],
+#                 'access': validated_data['access'],
+#                 'refresh': validated_data['refresh'],
+#             },
+#         }
 
-        return Response(response_data, status=status.HTTP_200_OK)
+#         return Response(response_data, status=status.HTTP_200_OK)
+
     
 #Login using Phone Number & OTP
 class SendOTP(APIView):
@@ -58,6 +59,8 @@ class SendOTP(APIView):
         send_otp(phone_number)
         return Response({"detail": "OTP sent successfully"}, status=status.HTTP_200_OK)
     
+
+
 class OTPLoginView(APIView):
     def post(self, request):
         serializer = OTPLoginSerializer(data=request.data)
@@ -84,10 +87,12 @@ class OTPLoginView(APIView):
             return Response(response_data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
-#Get User List
-class UserListView(generics.ListCreateAPIView):
-    queryset = CustomUser.objects.all()
-    serializer_class = UserListSerializer
+
+
+# #Get User List
+# class UserListView(generics.ListCreateAPIView):
+#     queryset = CustomUser.objects.all()
+#     serializer_class = UserListSerializer
     
 
 #Get User Details
@@ -111,99 +116,12 @@ class UserDetails(APIView):
 def get_captcha(request):
     hashkey = CaptchaStore.generate_key()
     imageurl = captcha_image_url(hashkey)
+
     response = JsonResponse({
         'key': hashkey,
         'image_url': imageurl
     })
     return response        
-
-
-# class DistrictAdd(APIView):
-#     def post(self, request, format=None):
-#         serializer = DistrictSerializer(data=request.data)
-#         if serializer.is_valid():
-#             serializer.save()
-#             return Response(serializer.data, status=status.HTTP_201_CREATED)
-#         else:
-#             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-#     def put(self, request, id, format=None):
-#         district = District.objects.get(id=id)
-#         serializer = DistrictSerializer(
-#             district, data=request.data, partial=True)
-#         if serializer.is_valid():
-#             serializer.save()
-#             return Response(serializer.data, status=status.HTTP_200_OK)
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-# class DistrictView(APIView):
-#     def get(self, request, pk=None, format=None):
-#         id = pk
-#         if id is not None:
-#             datas = District.objects.get(id=id)
-#             serializer = DistrictSerializer(datas)
-#             return Response(serializer.data)
-#         datas = District.objects.filter()
-#         serializer = DistrictSerializer(datas, many=True)
-#         return Response(serializer.data, status=status.HTTP_200_OK) 
-
-# class SubdivisionView(APIView):
-#     def get(self, request, pk=None, format=None):
-#         if pk is not None:
-#             try:
-#                 subdivision = Subdivision.objects.get(id=pk)
-#                 serializer = SubDivisonSerializer(subdivision)
-#                 return Response(serializer.data)
-#             except Subdivision.DoesNotExist:
-#                 raise NotFound(detail="Subdivision not found", code=status.HTTP_404_NOT_FOUND)
-        
-#         # If no pk, return all subdivisions
-#         subdivisions = Subdivision.objects.all()
-#         serializer = SubDivisonSerializer(subdivisions, many=True)
-#         return Response(serializer.data, status=status.HTTP_200_OK) 
-
-# class GetSubdivisionByDistrictCode(APIView):
-#     def get(self, request, district_code=None, format=None):
-#         if district_code is not None:
-#             subdivisions = Subdivision.objects.filter(DistrictCode__DistrictCode=district_code)
-            
-#             if not subdivisions.exists():
-#                 raise NotFound(detail="No subdivisions found for this district code", code=status.HTTP_404_NOT_FOUND)
-
-#             serializer = SubDivisonSerializer(subdivisions, many=True)
-#             return Response(serializer.data, status=status.HTTP_200_OK)
-        
-#         return Response({"detail": "District code is required"}, status=status.HTTP_400_BAD_REQUEST)        
-
-
-# class SubDivisonApi(APIView):
-#     def post(self, request, format=None):
-#         serializer = SubDivisonSerializer(data=request.data)
-#         if serializer.is_valid():
-#             serializer.save()
-#             return Response(serializer.data, status=status.HTTP_201_CREATED)
-#         else:
-#             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-#     def get(self, request, pk=None, format=None):
-#         id = pk
-#         if id is not None:
-#             datas = Subdivision.objects.get(id=id)
-#             serializer = SubDivisonSerializer(datas)
-#             return Response(serializer.data)
-#         datas = Subdivision.objects.filter()
-#         serializer = SubDivisonSerializer(datas, many=True)
-#         return Response(serializer.data, status=status.HTTP_200_OK)
-
-#     def put(self, request, id, format=None):
-#         subdivision = Subdivision.objects.get(id=id)
-#         serializer = SubDivisonSerializer(
-#             subdivision, data=request.data, partial=True)
-#         if serializer.is_valid():
-#             serializer.save()
-#             return Response(serializer.data, status=status.HTTP_200_OK)
-#         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class DashboardCountView(APIView):

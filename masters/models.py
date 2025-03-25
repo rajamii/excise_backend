@@ -1,6 +1,5 @@
 from django.db import models
-from excise_app.validators import *
-
+from .validators import validate_name , validate_Numbers
 
 #License Category
 class LicenseCategory(models.Model):
