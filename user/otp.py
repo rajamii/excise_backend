@@ -3,12 +3,13 @@ import time
 
 class OTP :
 
-    username   : str 
-    otp        : int 
-    index      : int 
-    used       : bool
-    created_on : int 
+    def __init__(self, username: str, otp: int, index: int):
 
+        self.username = username
+        self.otp = otp
+        self.index = index
+        self.used = False
+        self.created_on = time.time()
 
     def is_used(self):
 
@@ -18,6 +19,7 @@ class OTP :
 
         return self.created_on
 
+    @staticmethod
     def check_otp(in_otp , in_username , in_index ):
 
         used = True
@@ -28,19 +30,9 @@ class OTP :
 
         return False
 
-
-
+    @staticmethod
     def gen_otp(username , index):
-
-        retval = OTP;
-
-        retval.username = username
-        retval.otp = random.randint(1000,9999)
-        retval.index = index 
-        retval.used = False
-        retval.created_on = time.time
-
-        return retval
+        return OTP(username , random.randint(1000 , 9999 ) , index)
     
 
 
@@ -61,33 +53,24 @@ class OTPLIST:
 
     def check_time_and_mark(self ):
 
-        if len(self.otplist) < 0: 
-            return
+        if len(self.otplist) > 1: 
+
+            current_time = time.time()
+    
+            for i in self.otplist:
+    
+                elapsed_time = current_time - i.get_creation_time()
+    
+                if elapsed_time > 600 :
+    
+                    i.used = True
+
         
 
-        current_time = time.time()
 
-        for i in self.otplist:
-
-            elapsed_time = current_time - i.get_creation_time()
-
-            if elapsed_time > 600 :
-
-                i.used = True
-
-    def cleanup(self):
-
-        cleanup_ok = True
-
-        for i in self.otplist:
-            if i.is_used == false :
-
-                cleanup_ok = False
-                break
-
-        if cleanup_ok == True :
+    def cleanup(self) -> None:
+        if not self.otplist:
+            return
+        if all(otp.is_used() for otp in self.otplist):
             self.otplist.clear()
-            self.index = 0
-
-
-            
+            self.index = 0            

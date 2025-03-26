@@ -26,7 +26,6 @@ from rest_framework.decorators import api_view
 
 
 
-
 class UserAPI (APIView ):
 
     def post(self, request, *args, **kwargs):
@@ -148,11 +147,19 @@ class LoginAPI(APIView):
 
 class LogoutAPI(View):
 
-    def post(self, request, *args, **kwargs):
+    def post(self, request):
+        try :
+            refresh_token = request.data["refresh_token"]
+            token = RefreshToken(refresh_token)
+            token.blacklist()
 
-        logout(request)
-        return JsonResponse({'message': 'Logout successful'}, status=status.HTTP_200_OK)
+            return Response(status=status.HTTP_205_RESET_CONTENT)
 
+        except Exception as e:
+
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+
+        
 
 static_otp_list = OTPLIST()
 
@@ -171,7 +178,7 @@ def send_otp_API(request):
             return JsonResponse({'error':'user with this username does not exist'})
 
 
-        if len(static_otp_list.otplist) > 0:
+        if len(static_otp_list.otplist) > 1:
             static_otp_list.check_time_and_mark()
             static_otp_list.cleanup()
 
