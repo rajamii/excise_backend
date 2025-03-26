@@ -52,6 +52,12 @@ class UserAPI (APIView ):
                     'email': user.email,
                     'first_name': user.first_name,
                     'last_name': user.last_name,
+                    'phonenumber':user.phonenumber,
+                    'subdivison' : user.subdivision,
+                    'address' : user.address,
+                    'role': user.role,
+                    'created_by': user.created_by,
+
                 }
                 return JsonResponse(user_data, status=status.HTTP_200_OK)
             except User.DoesNotExist:
@@ -64,12 +70,17 @@ class UserAPI (APIView ):
             if user.is_authenticated:
                 user_data = {
                     'username': user.username,
+                    'email': user.email,
                     'first_name': user.first_name,
                     'last_name': user.last_name,
-                    'email': user.email,
+                    'phonenumber':user.phonenumber,
+                    'subdivison' : user.subdivision,
+                    'address' : user.address,
                     'role': user.role,
-                    
+                    'created_by': user.created_by,
+
                 }
+
                 return Response(user_data, status=status.HTTP_200_OK)
             else:
                 return Response({"detail": "User not authenticated."}, status=status.HTTP_401_UNAUTHORIZED)
