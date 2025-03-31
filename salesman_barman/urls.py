@@ -14,13 +14,5 @@ urlpatterns = [
     path('salesmanbarman/detail/<int:pk>' , SalesmanBarmanDetails.as_view() , name='salesmanbarman-detail'),
     path('salesmanbarman/update/<int:pk>' , SalesmanBarmanDetails.as_view() , name='salesmanbarman-update'),
     path('salesmanbarman/delete/<int:pk>' , SalesmanBarmanDetails.as_view() , name='salesmanbarman-delete'),
-    
-
-    path('salesmanbarman/document/list/' ,   DocumentsDetailsList.as_view() ,            name='salesmanbarman-document-list'),
-    path('salesmanbarman/document/create/' , DocumentsDetailsList.as_view() ,            name='salesmanbarman-document-create'),
-    
-    path('salesmanbarman/document/detail/<int:pk>' , DocumentsDetailsDetails.as_view() , name='salesmanbarman-document-detail'),
-    path('salesmanbarman/document/update/<int:pk>' , DocumentsDetailsDetails.as_view() , name='salesmanbarman-document-update'),
-    path('salesmanbarman/document/delete/<int:pk>' , DocumentsDetailsDetails.as_view() , name='salesmanbarman-document-delete'),
-    
+       
 ]

@@ -22,11 +22,12 @@ from .serializer import UserRegistrationSerializer , LoginSerializer
 # from django.views.decorators.csrf import csrf_protect
 from .otp import OTPLIST
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework.decorators import api_view
+from rest_framework.decorators import method_decorator
 
 
 
 class UserAPI (APIView ):
+
 
     def post(self, request, *args, **kwargs):
         serializer = UserRegistrationSerializer(data=request.data)
