@@ -23,6 +23,8 @@ class CustomUserManager(BaseUserManager):
         # Generate a unique username based on initials, phone number, district, and subdivision
 
         username = self.generate_unique_username(extra_fields['first_name'], extra_fields['last_name'], extra_fields['phonenumber'], extra_fields['district'], extra_fields['subdivision'])
+        
+        extra_fields.pop('username', None)
 
         user = self.model(email=email, username=username, role=role, **extra_fields)
         user.set_password(password)
