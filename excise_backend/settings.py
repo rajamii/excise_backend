@@ -46,7 +46,8 @@ INSTALLED_APPS = [
     'captcha',
     'corsheaders',
     'rest_framework_simplejwt',
-    'salesman_barman',
+    'contact_us'
+    
 ]
 
 MIDDLEWARE = [
@@ -94,8 +95,8 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'excise_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'postgres',  # Your PostgreSQL password
-        'HOST': '10.182.153.61',        # Default host
+        'PASSWORD': 'Tashi!342',  # Your PostgreSQL password
+        'HOST': 'localhost',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
     }
 }

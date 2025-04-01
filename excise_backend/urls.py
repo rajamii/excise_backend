@@ -6,11 +6,9 @@ urlpatterns = [
     path('api/', include('excise_app.urls')),
     path('captcha/',include('captcha.urls')),
     path('masters/', include('masters.urls')),
-
-    path('salesman_barman/' , include( 'salesman_barman.urls')),
-
     path('registration_renewal/', include('registration_renewal.urls')),
-     path('salesman_barman/', include('salesman_barman.urls')),
+    path('salesman_barman/', include('salesman_barman.urls')),
+    path('contact_us/', include('contact_us.urls')),
 
 
 ]
