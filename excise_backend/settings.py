@@ -40,7 +40,6 @@ INSTALLED_APPS = [
     'salesman_barman',
     'excise_app',
     'masters',
-    'otp',
     'registration_renewal',
     'rest_framework',
     'captcha',
@@ -48,6 +47,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'contact_us'
     
+    'user',
 ]
 
 MIDDLEWARE = [
@@ -55,7 +55,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
+    # 'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
@@ -95,13 +95,15 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'excise_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'Tashi!342',  # Your PostgreSQL password
+
+        'PASSWORD': 'postgres',  # Your PostgreSQL password
+
         'HOST': 'localhost',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
     }
 }
 
-AUTH_USER_MODEL = 'excise_app.CustomUser'
+AUTH_USER_MODEL = 'user.CustomUser'
 
 
 # Password validation

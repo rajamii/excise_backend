@@ -1,14 +1,35 @@
-from django.urls import path, include
-from rest_framework.routers import DefaultRouter
-from .views import CompanyDetailsViewSet, MemberDetailsViewSet, DocumentDetailsViewSet
-
-# Create a router and register viewsets
-router = DefaultRouter()
-router.register(r'companies', CompanyDetailsViewSet)
-router.register(r'members', MemberDetailsViewSet)
-router.register(r'documents', DocumentDetailsViewSet)
+from django.urls import path 
+from .views import (
+    CompanyDetailsList ,
+    CompanyDetailsDetail ,
+    MemberDetailsList ,
+    MemberDetailsDetail ,
+    DocumentDetailsList ,
+    DocumentDetailsDetail ,
+)
 
 urlpatterns = [
+    path('companies/list/', CompanyDetailsList.as_view(), name='companydetails-list'),
+    path('companies/create/', CompanyDetailsList.as_view(), name='companydetails-list'),
     
-    path('api/', include(router.urls)),  # Include DRF router URLs
+    path('companies/detail/<int:pk>/', CompanyDetailsDetail.as_view(), name='companydetails-detail'),
+    path('companies/update/<int:pk>/', CompanyDetailsDetail.as_view(), name='companydetails-detail'),
+    path('companies/delete/<int:pk>/', CompanyDetailsDetail.as_view(), name='companydetails-detail'),
+    
+
+    path('members/list/', MemberDetailsList.as_view(), name='memberdetails-list'),
+    path('members/create/', MemberDetailsList.as_view(), name='memberdetails-list'),
+    
+    path('members/detail/<int:pk>/', MemberDetailsDetail.as_view(), name='memberdetails-detail'),
+    path('members/update/<int:pk>/', MemberDetailsDetail.as_view(), name='memberdetails-detail'),
+    path('members/delete/<int:pk>/', MemberDetailsDetail.as_view(), name='memberdetails-detail'),
+    
+
+    path('documents/list/', DocumentDetailsList.as_view(), name='documentdetails-list'),
+    path('documents/create/', DocumentDetailsList.as_view(), name='documentdetails-list'),
+    
+    path('documents/detail/<int:pk>/', DocumentDetailsDetail.as_view(), name='documentdetails-detail'),
+    path('documents/update/<int:pk>/', DocumentDetailsDetail.as_view(), name='documentdetails-detail'),
+    path('documents/delete/<int:pk>/', DocumentDetailsDetail.as_view(), name='documentdetails-detail'),
+    
 ]

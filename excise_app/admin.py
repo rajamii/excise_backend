@@ -1,7 +1,9 @@
 # bookapp/admin.py
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
-from excise_app.models import CustomUser
+from user.models import CustomUser
+from masters.models import District, Subdivision
+
 
 @admin.register(CustomUser)
 class CustomUserAdmin(UserAdmin):
@@ -23,16 +25,16 @@ class CustomUserAdmin(UserAdmin):
     )
     filter_horizontal = ('user_permissions', 'groups')
 
-# @admin.register(District)
-# class DistrictAdmin(admin.ModelAdmin):
-#     list_display = ('District', 'DistrictCode', 'IsActive', 'StateCode')
-#     search_fields = ('District', 'DistrictCode')
-#     list_filter = ('IsActive', 'StateCode')  # Filter by active status and state
-#     ordering = ('DistrictCode',)
+@admin.register(District)
+class DistrictAdmin(admin.ModelAdmin):
+    list_display = ('District', 'DistrictCode', 'IsActive', 'StateCode')
+    search_fields = ('District', 'DistrictCode')
+    list_filter = ('IsActive', 'StateCode')  # Filter by active status and state
+    ordering = ('DistrictCode',)
 
-# @admin.register(Subdivision)
-# class SubdivisionAdmin(admin.ModelAdmin):
-#     list_display = ('SubDivisionName', 'SubDivisionCode', 'IsActive', 'DistrictCode')
-#     search_fields = ('SubDivisionName', 'SubDivisionCode')
-#     list_filter = ('IsActive', 'DistrictCode')  # Filter by active status and district
-#     ordering = ('SubDivisionCode',)
+@admin.register(Subdivision)
+class SubdivisionAdmin(admin.ModelAdmin):
+    list_display = ('SubDivisionName', 'SubDivisionCode', 'IsActive', 'DistrictCode')
+    search_fields = ('SubDivisionName', 'SubDivisionCode')
+    list_filter = ('IsActive', 'DistrictCode')  # Filter by active status and district
+    ordering = ('SubDivisionCode',)
