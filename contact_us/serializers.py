@@ -6,15 +6,18 @@ class NodalOfficerSerializer(serializers.ModelSerializer):
         model = NodalOfficer
         fields = '__all__'
 
+
 class PublicInformationOfficerSerializer(serializers.ModelSerializer):
     class Meta:
         model = PublicInformationOfficer
         fields = '__all__'
 
+
 class DirectorateAndDistrictOfficialsSerializer(serializers.ModelSerializer):
     class Meta:
         model = DirectorateAndDistrictOfficials
         fields = '__all__'
+
 
 class GrievanceRedressalOfficerSerializer(serializers.ModelSerializer):
     class Meta:

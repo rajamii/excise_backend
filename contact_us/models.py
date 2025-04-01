@@ -1,10 +1,26 @@
 from django.db import models
+from .validators import validate_phone_number, validate_email, validate_department_name, validate_designation, validate_non_empty, validate_location, validate_office_level
 
 class NodalOfficer(models.Model):
-    department = models.CharField(max_length=255, default="Excise Department")
-    cell = models.CharField(max_length=255, default="IT Cell")
-    phone_number = models.CharField(max_length=20, default="(035) 9220-3963")
-    email = models.EmailField(default="helpdesk-excise@sikkim.gov.in")
+    department = models.CharField(
+        max_length=255, 
+        default="Excise Department", 
+        validators=[validate_department_name]
+    )
+    cell = models.CharField(
+        max_length=255, 
+        default="IT Cell", 
+        validators=[validate_non_empty]
+    )
+    phone_number = models.CharField(
+        max_length=20, 
+        default="(035) 9220-3963", 
+        validators=[validate_phone_number]
+    )
+    email = models.EmailField(
+        default="helpdesk-excise@sikkim.gov.in", 
+        validators=[validate_email]
+    )
 
     def __str__(self):
         return f"Nodal Officer - {self.department}"
@@ -13,13 +29,24 @@ class NodalOfficer(models.Model):
         return f"{self.phone_number}, {self.email}"
 
 class Official(models.Model):
-    name = models.CharField(max_length=255)
-    designation = models.CharField(max_length=255)
-    phone_number = models.CharField(max_length=20)
-    email = models.EmailField()
+    name = models.CharField(
+        max_length=255, 
+        validators=[validate_non_empty]
+    )
+    designation = models.CharField(
+        max_length=255, 
+        validators=[validate_designation]
+    )
+    phone_number = models.CharField(
+        max_length=20, 
+        validators=[validate_phone_number]
+    )
+    email = models.EmailField(
+        validators=[validate_email]
+    )
 
     class Meta:
-        abstract = True  # This is an abstract class, so it won't be used directly in the database
+        abstract = True
 
     def __str__(self):
         return f"{self.name} - {self.designation}"
@@ -37,20 +64,62 @@ class PublicInformationOfficer(Official):
         max_length=10,
         choices=LOCATION_CHOICES,
         default=HEADQUARTER,
+        validators=[validate_location]
     )
     
-    # Fields for headquarter information
-    officer_name_headquarter = models.CharField(max_length=255, null=True, blank=True)
-    designation_headquarter = models.CharField(max_length=255, null=True, blank=True)
-    address_headquarter = models.TextField(null=True, blank=True)
-    phone_number_headquarter = models.CharField(max_length=20, null=True, blank=True)
+    officer_name_headquarter = models.CharField(
+        max_length=255, 
+        null=True, 
+        blank=True, 
+        validators=[validate_non_empty]
+    )
+    designation_headquarter = models.CharField(
+        max_length=255, 
+        null=True, 
+        blank=True, 
+        validators=[validate_designation]
+    )
+    address_headquarter = models.TextField(
+        null=True, 
+        blank=True, 
+        validators=[validate_non_empty]
+    )
+    phone_number_headquarter = models.CharField(
+        max_length=20, 
+        null=True, 
+        blank=True, 
+        validators=[validate_phone_number]
+    )
 
-    # Fields for district information
-    district = models.CharField(max_length=255, null=True, blank=True)
-    officer_name_district = models.CharField(max_length=255, null=True, blank=True)
-    designation_district = models.CharField(max_length=255, null=True, blank=True)
-    address_district = models.TextField(null=True, blank=True)
-    phone_number_district = models.CharField(max_length=20, null=True, blank=True)
+    district = models.CharField(
+        max_length=255, 
+        null=True, 
+        blank=True, 
+        validators=[validate_non_empty]
+    )
+    officer_name_district = models.CharField(
+        max_length=255, 
+        null=True, 
+        blank=True, 
+        validators=[validate_non_empty]
+    )
+    designation_district = models.CharField(
+        max_length=255, 
+        null=True, 
+        blank=True, 
+        validators=[validate_designation]
+    )
+    address_district = models.TextField(
+        null=True, 
+        blank=True, 
+        validators=[validate_non_empty]
+    )
+    phone_number_district = models.CharField(
+        max_length=20, 
+        null=True, 
+        blank=True, 
+        validators=[validate_phone_number]
+    )
 
     def __str__(self):
         return f"Public Information Officer - {self.location}"
@@ -62,7 +131,7 @@ class PublicInformationOfficer(Official):
         return self.location == self.DISTRICT
 
 class DirectorateAndDistrictOfficials(Official):
-    pass  # Inherits all fields from Official
+    pass
 
 class GrievanceRedressalOfficer(Official):
     OFFICE_LEVEL_CHOICES = [
@@ -70,16 +139,21 @@ class GrievanceRedressalOfficer(Official):
         ('Permit Section', 'Permit Section'),
         ('Administration Section', 'Administration Section'), 
         ('Accounts Section', 'Accounts Section'),
-        ('IT Cell', 'IT Cell'),  # Option for any other office level
+        ('IT Cell', 'IT Cell'),
     ]
 
-    # Define fields for the Grievance Redressal Officer
     office_level = models.CharField(
         max_length=255, 
         choices=OFFICE_LEVEL_CHOICES, 
-        default='Excise Head Office'
+        default='Excise Head Office',
+        validators=[validate_office_level]
     )
-    office_sub_level = models.CharField(max_length=255, null=True, blank=True)
+    office_sub_level = models.CharField(
+        max_length=255, 
+        null=True, 
+        blank=True,
+        validators=[validate_non_empty]
+    )
 
     def __str__(self):
         return f"Grievance Redressal Officer - {self.name}, {self.office_level}"

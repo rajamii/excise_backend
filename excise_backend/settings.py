@@ -45,8 +45,7 @@ INSTALLED_APPS = [
     'captcha',
     'corsheaders',
     'rest_framework_simplejwt',
-    'contact_us'
-    
+    'contact_us',
     'user',
 ]
 
@@ -96,7 +95,7 @@ DATABASES = {
         'NAME': 'excise_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
 
-        'PASSWORD': 'postgres',  # Your PostgreSQL password
+        'PASSWORD': 'Tashi!342',  # Your PostgreSQL password
 
         'HOST': 'localhost',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
