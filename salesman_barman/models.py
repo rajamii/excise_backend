@@ -1,6 +1,5 @@
 from django.db import models
 from django.core.exceptions import ValidationError
-
 from .helpers import (
 
 # choises 
@@ -14,38 +13,20 @@ from .helpers import (
 # validators
     validate_pan_number,
     validate_aadhar_number,
-    validate_phone_number
+    validate_phone_number,
     validate_address,
     validate_email,
 )
-
-
-# Document details model
-class SalesmanBarmanDocumentModel(models.Model):
-
-    upload_path = ""
-    passPhoto              = models.ImageField(upload_to=upload_path)
-    aadharCard             = models.FileField(upload_to=upload_path)
-    residentialCertificate = models.FileField(upload_to=upload_path)
-    dateofBirthProof       = models.FileField(upload_to=upload_path)
-        
-    class Meta:
-        db_table = 'documents_details'
-
-    def get_upload_path(self , in_upload_path ):
-        self.upload_path = in_upload_path
-
-    def __str__(self):
-        return f"Documents for {self.id}"
+def upload_document_path(instance, filename):
+    user_email = getattr(instance, '_usr_email', 'default')
+    return f'salesmanbarman/documents/{user_email}/{filename}'
 
 
 
 
-
-# Combined Salesman and Barman Details model
 class SalesmanBarmanModel(models.Model):
 
-    role              = models.CharField(max_len=10 , choices=MODE_OF_OPERATION_CHOICES)
+    role              = models.CharField(max_length=10 , choices=MODE_OF_OPERATION_CHOICES)
 
     firstName         = models.CharField(max_length=100)
     middleName        = models.CharField(max_length=100, blank=True)
@@ -63,6 +44,7 @@ class SalesmanBarmanModel(models.Model):
 
     
     # License fields
+    
     applicationYear    = models.IntegerField(choices=[(year, year) for year in range(2000, 2051)], default=2025)
     applicationId      = models.CharField(max_length=100, unique=True)
     applicationDate    = models.DateField()
@@ -70,7 +52,13 @@ class SalesmanBarmanModel(models.Model):
     licenseCategory   = models.CharField(max_length=100, choices=LICENSE_CATEGORY_CHOICES)
     licenseType       = models.CharField(max_length=100, choices=LICENSE_CATEGORY_CHOICES)
 
+    # Files associated with the salesman / barman 
 
+    passPhoto              = models.ImageField(upload_to=upload_document_path)
+    aadharCard             = models.FileField(upload_to=upload_document_path)
+    residentialCertificate = models.FileField(upload_to=upload_document_path)
+    dateofBirthProof       = models.FileField(upload_to=upload_document_path)
+        
     
     # Foreign Key to DocumentsDetails (for document uploads)
     # documents = models.OneToOneField(DocumentsDetails, null=True, blank=True, on_delete=models.CASCADE)

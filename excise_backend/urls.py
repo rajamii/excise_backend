@@ -8,8 +8,4 @@ urlpatterns = [
     path('masters/', include('masters.urls')),
 
 
-    # path('captcha/',include('captcha.urls')),
-#   path('salesman_barman/' , include( 'salesman_barman.urls')),
-#   path('registration_renewal/', include('registration_renewal.urls')),
-
 ]

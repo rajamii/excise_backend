@@ -22,7 +22,7 @@ from .serializer import UserRegistrationSerializer , LoginSerializer
 # from django.views.decorators.csrf import csrf_protect
 from .otp import OTPLIST
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework.decorators import method_decorator
+# from rest_framework.decorators import method_decorator
 
 
 
@@ -194,7 +194,7 @@ def send_otp_API(request):
 
 
 
-@api_view(['POST'])
+# @api_view(['POST'])
 def verify_otp_API(request):
 
     if request.method == 'POST':
