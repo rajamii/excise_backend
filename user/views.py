@@ -178,7 +178,7 @@ def send_otp_API(request):
             return JsonResponse({'error':'user with this username does not exist'})
 
 
-        if len(static_otp_list.otplist) > 1:
+        if len(static_otp_list.otplist) > 0:
             static_otp_list.check_time_and_mark()
             static_otp_list.cleanup()
 
