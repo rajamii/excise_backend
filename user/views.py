@@ -22,12 +22,12 @@ from .serializer import UserRegistrationSerializer , LoginSerializer
 # from django.views.decorators.csrf import csrf_protect
 from .otp import OTPLIST
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework.decorators import api_view
-
+# from rest_framework.decorators import method_decorator
 
 
 
 class UserAPI (APIView ):
+
 
     def post(self, request, *args, **kwargs):
         serializer = UserRegistrationSerializer(data=request.data)
@@ -52,6 +52,12 @@ class UserAPI (APIView ):
                     'email': user.email,
                     'first_name': user.first_name,
                     'last_name': user.last_name,
+                    'phonenumber':user.phonenumber,
+                    'subdivison' : user.subdivision,
+                    'address' : user.address,
+                    'role': user.role,
+                    'created_by': user.created_by,
+
                 }
                 return JsonResponse(user_data, status=status.HTTP_200_OK)
             except User.DoesNotExist:
@@ -64,12 +70,17 @@ class UserAPI (APIView ):
             if user.is_authenticated:
                 user_data = {
                     'username': user.username,
+                    'email': user.email,
                     'first_name': user.first_name,
                     'last_name': user.last_name,
-                    'email': user.email,
+                    'phonenumber':user.phonenumber,
+                    'subdivison' : user.subdivision,
+                    'address' : user.address,
                     'role': user.role,
-                    
+                    'created_by': user.created_by,
+
                 }
+
                 return Response(user_data, status=status.HTTP_200_OK)
             else:
                 return Response({"detail": "User not authenticated."}, status=status.HTTP_401_UNAUTHORIZED)
@@ -137,11 +148,19 @@ class LoginAPI(APIView):
 
 class LogoutAPI(View):
 
-    def post(self, request, *args, **kwargs):
+    def post(self, request):
+        try :
+            refresh_token = request.data["refresh_token"]
+            token = RefreshToken(refresh_token)
+            token.blacklist()
 
-        logout(request)
-        return JsonResponse({'message': 'Logout successful'}, status=status.HTTP_200_OK)
+            return Response(status=status.HTTP_205_RESET_CONTENT)
 
+        except Exception as e:
+
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+
+        
 
 static_otp_list = OTPLIST()
 
@@ -160,7 +179,7 @@ def send_otp_API(request):
             return JsonResponse({'error':'user with this username does not exist'})
 
 
-        if len(static_otp_list.otplist) > 0:
+        if len(static_otp_list.otplist) > 1:
             static_otp_list.check_time_and_mark()
             static_otp_list.cleanup()
 
@@ -175,7 +194,7 @@ def send_otp_API(request):
 
 
 
-@api_view(['POST'])
+# @api_view(['POST'])
 def verify_otp_API(request):
 
     if request.method == 'POST':
