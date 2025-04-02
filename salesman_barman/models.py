@@ -12,7 +12,7 @@ from .helpers import (
     
 # validators
     validate_pan_number,
-    validate_aadhar_number,
+    validate_aadhaar_number,
     validate_phone_number,
     validate_address,
     validate_email,
@@ -37,7 +37,7 @@ class SalesmanBarmanModel(models.Model):
     nationality       = models.CharField(max_length=50, choices=NATIONALITY_CHOICES)
     address           = models.TextField(validators=[validate_address])
     pan_number        = models.CharField(max_length=10,validators=[validate_pan_number])
-    aadhaar           = models.CharField(max_length=12,validators=[validate_aadhar_number])
+    aadhaar           = models.CharField(max_length=12,validators=[validate_aadhaar_number])
     mobileNumber      = models.CharField(max_length=10 , validators=[validate_phone_number] )
     emailId           = models.EmailField(validators=[validate_email])
     sikkimSubject     = models.BooleanField(default=False)
@@ -55,7 +55,7 @@ class SalesmanBarmanModel(models.Model):
     # Files associated with the salesman / barman 
 
     passPhoto              = models.ImageField(upload_to=upload_document_path)
-    aadharCard             = models.FileField(upload_to=upload_document_path)
+    aadhaarCard             = models.FileField(upload_to=upload_document_path)
     residentialCertificate = models.FileField(upload_to=upload_document_path)
     dateofBirthProof       = models.FileField(upload_to=upload_document_path)
         

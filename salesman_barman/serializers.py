@@ -13,7 +13,7 @@ from .helpers import (
     GENDER_CHOICES,
     NATIONALITY_CHOICES,
     validate_pan_number,
-    validate_aadhar_number,
+    validate_aadhaar_number,
     validate_phone_number,
     validate_address,
     validate_email,
@@ -50,12 +50,12 @@ class Base64FileField(serializers.FileField):
 
 class SalesmanBarmanSerializer(serializers.ModelSerializer):
     passPhoto_base64 = Base64ImageField(write_only=True, required=False, allow_null=True)
-    aadharCard_base64 = Base64FileField(write_only=True, required=False, allow_null=True)
+    aadhaarCard_base64 = Base64FileField(write_only=True, required=False, allow_null=True)
     residentialCertificate_base64 = Base64FileField(write_only=True, required=False, allow_null=True)
     dateofBirthProof_base64 = Base64FileField(write_only=True, required=False, allow_null=True)
 
     passPhoto = serializers.ImageField(read_only=True)
-    aadharCard = serializers.FileField(read_only=True)
+    aadhaarCard = serializers.FileField(read_only=True)
     residentialCertificate = serializers.FileField(read_only=True)
     dateofBirthProof = serializers.FileField(read_only=True)
 
@@ -66,11 +66,11 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
             'gender', 'dob', 'nationality', 'address', 'pan_number', 'aadhaar',
             'mobileNumber', 'emailId', 'sikkimSubject', 'applicationYear',
             'applicationId', 'applicationDate', 'district', 'licenseCategory',
-            'licenseType', 'passPhoto', 'aadharCard', 'residentialCertificate',
-            'dateofBirthProof', 'passPhoto_base64', 'aadharCard_base64',
+            'licenseType', 'passPhoto', 'aadhaarCard', 'residentialCertificate',
+            'dateofBirthProof', 'passPhoto_base64', 'aadhaarCard_base64',
             'residentialCertificate_base64', 'dateofBirthProof_base64'
         ]
-        read_only_fields = ['id', 'passPhoto', 'aadharCard', 'residentialCertificate', 'dateofBirthProof']
+        read_only_fields = ['id', 'passPhoto', 'aadhaarCard', 'residentialCertificate', 'dateofBirthProof']
         extra_kwargs = {
             'applicationId': {'read_only': True} # Assuming applicationId is generated or set elsewhere
         }
@@ -84,7 +84,7 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
         return value
 
     def validate_aadhaar(self, value):
-        validate_aadhar_number(value)
+        validate_aadhaar_number(value)
         return value
 
     def validate_mobileNumber(self, value):
@@ -97,7 +97,7 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         passPhoto_base64 = validated_data.pop('passPhoto_base64', None)
-        aadharCard_base64 = validated_data.pop('aadharCard_base64', None)
+        aadhaarCard_base64 = validated_data.pop('aadhaarCard_base64', None)
         residentialCertificate_base64 = validated_data.pop('residentialCertificate_base64', None)
         dateofBirthProof_base64 = validated_data.pop('dateofBirthProof_base64', None)
 
@@ -109,8 +109,8 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
 
         if passPhoto_base64:
             instance.passPhoto.save(passPhoto_base64.name, passPhoto_base64, save=False)
-        if aadharCard_base64:
-            instance.aadharCard.save(aadharCard_base64.name, aadharCard_base64, save=False)
+        if aadhaarCard_base64:
+            instance.aadhaarCard.save(aadhaarCard_base64.name, aadhaarCard_base64, save=False)
         if residentialCertificate_base64:
             instance.residentialCertificate.save(residentialCertificate_base64.name, residentialCertificate_base64, save=False)
         if dateofBirthProof_base64:
@@ -122,7 +122,7 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
 
         passPhoto_base64 = validated_data.pop('passPhoto_base64', None)
-        aadharCard_base64 = validated_data.pop('aadharCard_base64', None)
+        aadhaarCard_base64 = validated_data.pop('aadhaarCard_base64', None)
         residentialCertificate_base64 = validated_data.pop('residentialCertificate_base64', None)
         dateofBirthProof_base64 = validated_data.pop('dateofBirthProof_base64', None)
 
@@ -150,8 +150,8 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
 
         if passPhoto_base64:
             instance.passPhoto.save(passPhoto_base64.name, passPhoto_base64, save=False)
-        if aadharCard_base64:
-            instance.aadharCard.save(aadharCard_base64.name, aadharCard_base64, save=False)
+        if aadhaarCard_base64:
+            instance.aadhaarCard.save(aadhaarCard_base64.name, aadhaarCard_base64, save=False)
         if residentialCertificate_base64:
             instance.residentialCertificate.save(residentialCertificate_base64.name, residentialCertificate_base64, save=False)
         if dateofBirthProof_base64:
