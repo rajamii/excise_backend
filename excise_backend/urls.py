@@ -1,5 +1,9 @@
 from django.contrib import admin
 from django.urls import path, include
+from django.conf import settings
+from django.conf.urls.static import static 
+
+
 
 urlpatterns = [
  
@@ -8,8 +12,8 @@ urlpatterns = [
     path('masters/', include('masters.urls')),
 
 
-    # path('captcha/',include('captcha.urls')),
-#   path('salesman_barman/' , include( 'salesman_barman.urls')),
-#   path('registration_renewal/', include('registration_renewal.urls')),
+] + static(settings.MEDIA_URL , document_root=settings.MEDIA_ROOT)
 
-]
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    
