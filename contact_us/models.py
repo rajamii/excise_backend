@@ -12,10 +12,11 @@ class NodalOfficer(models.Model):
         default="IT Cell", 
         validators=[validate_non_empty]
     )
-    phone_number = models.CharField(
+    phoneNumber = models.CharField(
         max_length=20, 
         default="(035) 9220-3963", 
-        validators=[validate_phone_number]
+        validators=[validate_phone_number],
+        db_column='phone_number'
     )
     email = models.EmailField(
         default="helpdesk-excise@sikkim.gov.in", 
@@ -37,9 +38,10 @@ class Official(models.Model):
         max_length=255, 
         validators=[validate_designation]
     )
-    phone_number = models.CharField(
+    phoneNumber = models.CharField(
         max_length=20, 
-        validators=[validate_phone_number]
+        validators=[validate_phone_number],
+        db_column='phone_number'
     )
     email = models.EmailField(
         validators=[validate_email]
@@ -52,77 +54,24 @@ class Official(models.Model):
         return f"{self.name} - {self.designation}"
 
 class PublicInformationOfficer(Official):
-    HEADQUARTER = 'HQ'
+    HEADQUARTER = 'Headquarter'
     DISTRICT = 'District'
 
-    LOCATION_CHOICES = [
+    LOCATION_TYPE_CHOICES = [
         (HEADQUARTER, 'Headquarter'),
         (DISTRICT, 'District'),
     ]
 
-    location = models.CharField(
-        max_length=10,
-        choices=LOCATION_CHOICES,
-        default=HEADQUARTER,
-        validators=[validate_location]
+    locationType = models.CharField(
+        max_length=20,
+        choices=LOCATION_TYPE_CHOICES,
+        db_column='location_type'
     )
-    
-    officer_name_headquarter = models.CharField(
-        max_length=255, 
-        null=True, 
-        blank=True, 
-        validators=[validate_non_empty]
-    )
-    designation_headquarter = models.CharField(
-        max_length=255, 
-        null=True, 
-        blank=True, 
-        validators=[validate_designation]
-    )
-    address_headquarter = models.TextField(
-        null=True, 
-        blank=True, 
-        validators=[validate_non_empty]
-    )
-    phone_number_headquarter = models.CharField(
-        max_length=20, 
-        null=True, 
-        blank=True, 
-        validators=[validate_phone_number]
-    )
-
-    district = models.CharField(
-        max_length=255, 
-        null=True, 
-        blank=True, 
-        validators=[validate_non_empty]
-    )
-    officer_name_district = models.CharField(
-        max_length=255, 
-        null=True, 
-        blank=True, 
-        validators=[validate_non_empty]
-    )
-    designation_district = models.CharField(
-        max_length=255, 
-        null=True, 
-        blank=True, 
-        validators=[validate_designation]
-    )
-    address_district = models.TextField(
-        null=True, 
-        blank=True, 
-        validators=[validate_non_empty]
-    )
-    phone_number_district = models.CharField(
-        max_length=20, 
-        null=True, 
-        blank=True, 
-        validators=[validate_phone_number]
-    )
+    location = models.CharField(max_length=100) 
+    address = models.CharField(max_length=255, default='Not Available')
 
     def __str__(self):
-        return f"Public Information Officer - {self.location}"
+        return f"{self.name} ({self.designation}) - {self.location}"
 
     def is_headquarter(self):
         return self.location == self.HEADQUARTER
@@ -130,8 +79,16 @@ class PublicInformationOfficer(Official):
     def is_district(self):
         return self.location == self.DISTRICT
 
-class DirectorateAndDistrictOfficials(Official):
-    pass
+
+class DirectorateAndDistrictOfficials(models.Model):
+    name = models.CharField(max_length=255)
+    designation = models.CharField(max_length=255)
+    phoneNumber = models.CharField(max_length=20, blank=True, null=True, db_column='phone_number')
+    email = models.EmailField(validators=[validate_email], blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.name} - {self.designation}"
+
 
 class GrievanceRedressalOfficer(Official):
     OFFICE_LEVEL_CHOICES = [
@@ -142,17 +99,19 @@ class GrievanceRedressalOfficer(Official):
         ('IT Cell', 'IT Cell'),
     ]
 
-    office_level = models.CharField(
+    officeLevel = models.CharField(
         max_length=255, 
         choices=OFFICE_LEVEL_CHOICES, 
         default='Excise Head Office',
-        validators=[validate_office_level]
+        validators=[validate_office_level],
+        db_column='office_level'
     )
-    office_sub_level = models.CharField(
+    officeSubLevel = models.CharField(
         max_length=255, 
         null=True, 
         blank=True,
-        validators=[validate_non_empty]
+        validators=[validate_non_empty],
+        db_column='office_sub_level'
     )
 
     def __str__(self):

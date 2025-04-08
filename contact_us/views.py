@@ -1,5 +1,5 @@
 from rest_framework import generics
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from .models import NodalOfficer, PublicInformationOfficer, DirectorateAndDistrictOfficials, GrievanceRedressalOfficer
 from .serializers import NodalOfficerSerializer, PublicInformationOfficerSerializer, DirectorateAndDistrictOfficialsSerializer, GrievanceRedressalOfficerSerializer
 
@@ -8,6 +8,12 @@ class NodalOfficerCreateAPIView(generics.CreateAPIView):
     queryset = NodalOfficer.objects.all()
     serializer_class = NodalOfficerSerializer
     permission_classes = [IsAuthenticated]
+
+    # NodalOfficer List API
+class NodalOfficerListAPIView(generics.ListAPIView):
+    queryset = NodalOfficer.objects.all()
+    serializer_class = NodalOfficerSerializer
+    permission_classes = [AllowAny]
 
 # View NodalOfficer API
 class NodalOfficerDetailAPIView(generics.RetrieveAPIView):
@@ -27,11 +33,18 @@ class NodalOfficerDeleteAPIView(generics.DestroyAPIView):
     serializer_class = NodalOfficerSerializer
     permission_classes = [IsAuthenticated]
 
+
 # Create PublicInformationOfficer API
 class PublicInformationOfficerCreateAPIView(generics.CreateAPIView):
     queryset = PublicInformationOfficer.objects.all()
     serializer_class = PublicInformationOfficerSerializer
     permission_classes = [IsAuthenticated]
+
+    # PublicInformationOfficer List API
+class PublicInformationOfficerListAPIView(generics.ListAPIView):
+    queryset = PublicInformationOfficer.objects.all()
+    serializer_class = PublicInformationOfficerSerializer
+    permission_classes = [AllowAny]
 
 # View PublicInformationOfficer API
 class PublicInformationOfficerDetailAPIView(generics.RetrieveAPIView):
@@ -51,11 +64,18 @@ class PublicInformationOfficerDeleteAPIView(generics.DestroyAPIView):
     serializer_class = PublicInformationOfficerSerializer
     permission_classes = [IsAuthenticated]
 
+
 # Create DirectorateAndDistrictOfficials API
 class DirectorateAndDistrictOfficialsCreateAPIView(generics.CreateAPIView):
     queryset = DirectorateAndDistrictOfficials.objects.all()
     serializer_class = DirectorateAndDistrictOfficialsSerializer
     permission_classes = [IsAuthenticated]
+
+    # DirectorateAndDistrictOfficials List API
+class DirectorateAndDistrictOfficialsListAPIView(generics.ListAPIView):
+    queryset = DirectorateAndDistrictOfficials.objects.all()
+    serializer_class = DirectorateAndDistrictOfficialsSerializer
+    permission_classes = [AllowAny]
 
 # View DirectorateAndDistrictOfficials API
 class DirectorateAndDistrictOfficialsDetailAPIView(generics.RetrieveAPIView):
@@ -75,11 +95,18 @@ class DirectorateAndDistrictOfficialsDeleteAPIView(generics.DestroyAPIView):
     serializer_class = DirectorateAndDistrictOfficialsSerializer
     permission_classes = [IsAuthenticated]
 
+
 # Create GrievanceRedressalOfficer API
 class GrievanceRedressalOfficerCreateAPIView(generics.CreateAPIView):
     queryset = GrievanceRedressalOfficer.objects.all()
     serializer_class = GrievanceRedressalOfficerSerializer
     permission_classes = [IsAuthenticated]
+
+    # GrievanceRedressalOfficer List API
+class GrievanceRedressalOfficerListAPIView(generics.ListAPIView):
+    queryset = GrievanceRedressalOfficer.objects.all()
+    serializer_class = GrievanceRedressalOfficerSerializer
+    permission_classes = [AllowAny]
 
 # View GrievanceRedressalOfficer API
 class GrievanceRedressalOfficerDetailAPIView(generics.RetrieveAPIView):

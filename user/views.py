@@ -49,14 +49,16 @@ class UserAPI (APIView ):
                 user = CustomUser.objects.get(username=username)
                 user_data = {
                     'username': user.username,
+                    'firstName': user.first_name,
+                    'middleName': user.middle_name,
+                    'lastName': user.last_name,
                     'email': user.email,
-                    'first_name': user.first_name,
-                    'last_name': user.last_name,
-                    'phonenumber':user.phonenumber,
-                    'subdivison' : user.subdivision,
-                    'address' : user.address,
+                    'phoneNumber': user.phonenumber,
+                    'district': user.district,
+                    'subDivision': user.subdivision,
                     'role': user.role,
-                    'created_by': user.created_by,
+                    'address': user.address,
+                    'createdBy': user.created_by, 
 
                 }
                 return JsonResponse(user_data, status=status.HTTP_200_OK)
@@ -70,14 +72,16 @@ class UserAPI (APIView ):
             if user.is_authenticated:
                 user_data = {
                     'username': user.username,
+                    'firstName': user.first_name,
+                    'middleName': user.middle_name,
+                    'lastName': user.last_name,
                     'email': user.email,
-                    'first_name': user.first_name,
-                    'last_name': user.last_name,
-                    'phonenumber':user.phonenumber,
-                    'subdivison' : user.subdivision,
-                    'address' : user.address,
+                    'phoneNumber': user.phonenumber,
+                    'district': user.district,
+                    'subDivision': user.subdivision,
                     'role': user.role,
-                    'created_by': user.created_by,
+                    'address': user.address,
+                    'createdBy': user.created_by, 
 
                 }
 
@@ -146,19 +150,21 @@ class LoginAPI(APIView):
         return Response(response_data, status=status.HTTP_200_OK)
 
 
-class LogoutAPI(View):
+class LogoutAPI(APIView):
 
     def post(self, request):
-        try :
-            refresh_token = request.data["refresh_token"]
+        try:
+            refresh_token = request.data.get("refresh")
+            if not refresh_token:
+                return Response({"error": "Refresh token is required"}, status=status.HTTP_400_BAD_REQUEST)
+
             token = RefreshToken(refresh_token)
             token.blacklist()
 
-            return Response(status=status.HTTP_205_RESET_CONTENT)
+            return Response({"message": "User logged out successfully"}, status=status.HTTP_205_RESET_CONTENT)
 
         except Exception as e:
-
-            return Response(status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         
 
@@ -231,7 +237,7 @@ def verify_otp_API(request):
                 },
             }
 
-            return Response(response_data, status=status.HTTP_200_OK)
+            return JsonResponse(response_data, status=status.HTTP_200_OK)
         
         else:
             return JsonResponse({'error':' wrong otp'})

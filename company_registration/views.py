@@ -3,15 +3,15 @@ from django.http import JsonResponse
 from rest_framework.response import Response
 from rest_framework import status
 from django.shortcuts import get_object_or_404
-from .serializers import SalesmanBarmanSerializer
-from .models import SalesmanBarmanModel
+from .serializers import CompanySerializer
+from .models import CompanyModel
 from rest_framework.parsers import MultiPartParser, FormParser
 
-class SalesmanCreateView(APIView):
+class CompanyCreateView(APIView):
     parser_classes = (MultiPartParser, FormParser)
 
     def post(self, request, *args, **kwargs):
-        serializer = SalesmanBarmanSerializer(data=request.data)
+        serializer = CompanySerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -19,16 +19,16 @@ class SalesmanCreateView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)     
 
 
-class SalesmanListView(APIView):
+class CompanyListView(APIView):
 
     def get(self, request, pk=None):
         if pk is not None:
-            instance = get_object_or_404(SalesmanBarmanModel, pk=pk)
-            serializer = SalesmanBarmanSerializer(instance)
+            instance = get_object_or_404(CompanyModel, pk=pk)
+            serializer = CompanySerializer(instance)
             return Response(serializer.data)
     
-        queryset = SalesmanBarmanModel.objects.all()
-        serializer = SalesmanBarmanSerializer(queryset, many=True)
+        queryset = CompanyModel.objects.all()
+        serializer = CompanySerializer(queryset, many=True)
         return Response(serializer.data)
 
             

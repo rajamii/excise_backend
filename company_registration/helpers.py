@@ -9,7 +9,7 @@ def validate_name(value):
     name_validator(value)
 
 # Validator for PAN number (uppercase and alphanumeric only)
-def validate_pan_number(value):
+def validate_pan(value):
     pan_validator = RegexValidator(regex=r'^[A-Z0-9]+$', message='PAN number should be uppercase and alphanumeric.', code='invalid_pan')
     pan_validator(value)
 

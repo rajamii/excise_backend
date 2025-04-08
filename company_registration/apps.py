@@ -1,6 +1,6 @@
 from django.apps import AppConfig
 
 
-class RegistrationRenewalConfig(AppConfig):
+class CompanyRegistrationConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
-    name = 'registration_renewal'
+    name = 'company_registration'

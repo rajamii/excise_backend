@@ -1,15 +1,6 @@
 from django.db import models
 from django.core.exceptions import ValidationError
-from .helpers import (
-
-# choises 
-    MODE_OF_OPERATION_CHOICES,
-    DISTRICT_CHOICES,
-    LICENSE_CATEGORY_CHOICES,
-    GENDER_CHOICES,
-    NATIONALITY_CHOICES,
-
-    
+from .helpers import (  
 # validators
     validate_pan_number,
     validate_aadhaar_number,
@@ -18,50 +9,44 @@ from .helpers import (
     validate_email,
 )
 def upload_document_path(instance, filename):
-    user_email = getattr(instance, '_usr_email', 'default')
-    return f'salesmanbarman/documents/{user_email}/{filename}'
-
-
+    return f'salesman_barman_registration/{instance.role}{' '}{instance.firstName}{' '}{instance.lastName}/{filename}'
 
 
 class SalesmanBarmanModel(models.Model):
 
-    role              = models.CharField(max_length=10 , choices=MODE_OF_OPERATION_CHOICES)
+    role = models.CharField(max_length=10)
 
-    firstName         = models.CharField(max_length=100)
-    middleName        = models.CharField(max_length=100, blank=True)
-    lastName          = models.CharField(max_length=100)
-    fatherHusbandName = models.CharField(max_length=100)
-    gender            = models.CharField(max_length=6, choices=GENDER_CHOICES)
-    dob               = models.DateField()
-    nationality       = models.CharField(max_length=50, choices=NATIONALITY_CHOICES)
-    address           = models.TextField(validators=[validate_address])
-    pan_number        = models.CharField(max_length=10,validators=[validate_pan_number])
-    aadhaar           = models.CharField(max_length=12,validators=[validate_aadhaar_number])
-    mobileNumber      = models.CharField(max_length=10 , validators=[validate_phone_number] )
-    emailId           = models.EmailField(validators=[validate_email])
-    sikkimSubject     = models.BooleanField(default=False)
+    firstName = models.CharField(max_length=100, db_column='first_name')
+    middleName = models.CharField(max_length=100, blank=True, db_column='middle_name')
+    lastName = models.CharField(max_length=100, db_column='last_name')
+    fatherHusbandName = models.CharField(max_length=100, db_column='father_husband_name')
+    gender = models.CharField(max_length=6)
+    dob = models.DateField()
+    nationality = models.CharField(max_length=50)
+    address = models.TextField(validators=[validate_address])
+    pan = models.CharField(max_length=10, validators=[validate_pan_number])
+    aadhaar = models.CharField(max_length=12, validators=[validate_aadhaar_number])
+    mobileNumber = models.CharField(max_length=10, validators=[validate_phone_number], db_column='mobile_number')
+    emailId = models.EmailField(blank=True, validators=[validate_email], db_column='email_id')
+    sikkimSubject = models.BooleanField(default=False, db_column='sikkim_subject')
 
     
     # License fields
     
-    applicationYear    = models.IntegerField(choices=[(year, year) for year in range(2000, 2051)], default=2025)
-    applicationId      = models.CharField(max_length=100, unique=True)
-    applicationDate    = models.DateField()
-    district           = models.CharField(max_length=100, choices=DISTRICT_CHOICES)
-    licenseCategory   = models.CharField(max_length=100, choices=LICENSE_CATEGORY_CHOICES)
-    licenseType       = models.CharField(max_length=100, choices=LICENSE_CATEGORY_CHOICES)
+    applicationYear = models.CharField(max_length=9, default='2025-2026', db_column='application_year')
+    applicationId = models.CharField(max_length=100, unique=True, db_column='application_id')
+    applicationDate = models.DateField(db_column='application_date')
+    district = models.CharField(max_length=100)
+    licenseCategory = models.CharField(max_length=100, db_column='license_category')
+    license = models.CharField(max_length=100, db_column='license')
 
     # Files associated with the salesman / barman 
 
-    passPhoto              = models.ImageField(upload_to=upload_document_path)
-    aadhaarCard             = models.FileField(upload_to=upload_document_path)
-    residentialCertificate = models.FileField(upload_to=upload_document_path)
-    dateofBirthProof       = models.FileField(upload_to=upload_document_path)
+    passPhoto = models.ImageField(upload_to=upload_document_path, db_column='pass_photo')
+    aadhaarCard = models.FileField(upload_to=upload_document_path, db_column='aadhaar_card')
+    residentialCertificate = models.FileField(upload_to=upload_document_path, db_column='residential_certificate')
+    dateofBirthProof = models.FileField(upload_to=upload_document_path, db_column='dateof_birth_proof')
         
-    
-    # Foreign Key to DocumentsDetails (for document uploads)
-    # documents = models.OneToOneField(DocumentsDetails, null=True, blank=True, on_delete=models.CASCADE)
 
     class Meta:
         db_table = 'salesman_barman_details'

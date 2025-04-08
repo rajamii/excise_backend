@@ -9,7 +9,8 @@ from .views import (
 )
 
 from salesman_barman import urls as salesman_barman_urls
-from registration_renewal import urls as registration_renewel_urls
+from company_registration import urls as company_registration_urls
+from contact_us import urls as contact_us_urls
 
 
 urlpatterns = [
@@ -50,6 +51,7 @@ urlpatterns = [
     path('policestations/delete/<int:id>/'  , PoliceStationAPI.as_view(), name='policestation-delete'),
 
     path('' ,include(salesman_barman_urls) ),
-    path('' ,include(registration_renewel_urls)),
+    path('' ,include(company_registration_urls)),
+    path ( '', include(contact_us_urls))
 
 ]

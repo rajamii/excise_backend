@@ -1,16 +1,16 @@
 from rest_framework import serializers
-from .models import SalesmanBarmanModel
+from .models import CompanyModel
 from .helpers import (
-    validate_pan_number,
-    validate_aadhaar_number,
-    validate_phone_number,
+    validate_name,
+    validate_pan,
+    validate_mobile_number,
     validate_address,
     validate_email,
 )
 
-class SalesmanBarmanSerializer(serializers.ModelSerializer):
+class CompanySerializer(serializers.ModelSerializer):
     class Meta:
-        model = SalesmanBarmanModel
+        model = CompanyModel
         fields = '__all__'
         read_only_fields = ['id']
 
@@ -19,16 +19,16 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
             validate_email(value)
         return value
 
-    def validate_pan_number(self, value):
-        validate_pan_number(value)
+    def validate_pan(self, value):
+        validate_pan(value)
         return value
 
-    def validate_aadhaar(self, value):
-        validate_aadhaar_number(value)
+    def name(self, value):
+        validate_name(value)
         return value
 
     def validate_mobileNumber(self, value):
-        validate_phone_number(value)
+        validate_mobile_number(value)
         return value
 
     def validate_address(self, value):
