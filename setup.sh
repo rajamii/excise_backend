@@ -28,7 +28,8 @@ then
  "$venv_dir/bin/pip" install requests                       &&                
  "$venv_dir/bin/pip" install sqlparse                       &&               
  "$venv_dir/bin/pip" install tzdata                         &&              
- "$venv_dir/bin/pip" install urllib3
+ "$venv_dir/bin/pip" install urllib3                        &&
+ "$venv_dir/bin/pip" install standard-imghdr
 
 
 elif [ "$1" == "test" ];
