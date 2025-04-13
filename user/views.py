@@ -1,53 +1,41 @@
 from django.contrib.auth.models import User
 from .models import CustomUser
-
 import json
 from django.http import JsonResponse
-
 from django.shortcuts import render
-
 from django.views import View
 from rest_framework.views import APIView
 from rest_framework.response import Response
-
-from rest_framework import response , status
-
+from rest_framework import response, status
 from .impl import (
     update_user_details,
     delete_user_by_username,
 )
-
 from captcha.models import CaptchaStore
-from .serializer import UserRegistrationSerializer , LoginSerializer
-# from django.views.decorators.csrf import csrf_protect
+from .serializer import UserRegistrationSerializer, LoginSerializer
 from .otp import OTPLIST
 from rest_framework_simplejwt.tokens import RefreshToken
-# from rest_framework.decorators import method_decorator
 
+# UserAPI class handles user registration, fetching user data, updating user details, and deleting user accounts.
+class UserAPI(APIView):
 
-
-class UserAPI (APIView ):
-
-
+    # POST method for user registration
     def post(self, request, *args, **kwargs):
         serializer = UserRegistrationSerializer(data=request.data)
         if serializer.is_valid():
-            user = serializer.save()  # This will create the user and generate the username
+            user = serializer.save()  # Create the user and generate username
             return Response({
                 "message": "User registered successfully",
                 "username": user.username  # Return the generated username
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-
+    # GET method to retrieve user data by username or the logged-in user
     def get(self, request, username=None, *args, **kwargs):
-
-        
         if username:
-        
             try:
                 user = CustomUser.objects.get(username=username)
-                user_data = {
+                user_data = {  # Structure user data for response
                     'username': user.username,
                     'firstName': user.first_name,
                     'middleName': user.middle_name,
@@ -58,8 +46,7 @@ class UserAPI (APIView ):
                     'subDivision': user.subdivision,
                     'role': user.role,
                     'address': user.address,
-                    'createdBy': user.created_by, 
-
+                    'createdBy': user.created_by,
                 }
                 return JsonResponse(user_data, status=status.HTTP_200_OK)
             except User.DoesNotExist:
@@ -67,10 +54,9 @@ class UserAPI (APIView ):
             except Exception as e:
                 return JsonResponse({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         else:
-
             user = request.user
             if user.is_authenticated:
-                user_data = {
+                user_data = {  # Structure logged-in user's data for response
                     'username': user.username,
                     'firstName': user.first_name,
                     'middleName': user.middle_name,
@@ -81,16 +67,13 @@ class UserAPI (APIView ):
                     'subDivision': user.subdivision,
                     'role': user.role,
                     'address': user.address,
-                    'createdBy': user.created_by, 
-
+                    'createdBy': user.created_by,
                 }
-
                 return Response(user_data, status=status.HTTP_200_OK)
             else:
                 return Response({"detail": "User not authenticated."}, status=status.HTTP_401_UNAUTHORIZED)
 
-
-
+    # PUT method to update user details
     def put(self, request, username, *args, **kwargs):
         try:
             data = json.loads(request.body)
@@ -111,8 +94,7 @@ class UserAPI (APIView ):
         except Exception as e:
             return JsonResponse({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-
-
+    # DELETE method to remove a user by username
     def delete(self, request, username, *args, **kwargs):
         try:
             delete_user_by_username(username)
@@ -120,22 +102,16 @@ class UserAPI (APIView ):
         except Exception as e:
             return JsonResponse({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-
-
-
+# LoginAPI handles user login functionality via JWT.
 class LoginAPI(APIView):
-
     serializer_class = LoginSerializer
 
+    # POST method for logging in the user
     def post(self, request):
-
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)  # Automatically raises ValidationError if invalid
+        validated_data = serializer.validated_data  # Extract validated data
 
-        # If validation passes, get the validated data
-        validated_data = serializer.validated_data
-
-        # Prepare the response
         response_data = {
             'success': True,
             'statusCode': status.HTTP_200_OK,
@@ -146,12 +122,12 @@ class LoginAPI(APIView):
                 'refresh': validated_data['refresh'],
             },
         }
-
         return Response(response_data, status=status.HTTP_200_OK)
 
-
+# LogoutAPI handles the user logout by invalidating the refresh token.
 class LogoutAPI(APIView):
 
+    # POST method for logging out by blacklisting the refresh token
     def post(self, request):
         try:
             refresh_token = request.data.get("refresh")
@@ -159,72 +135,59 @@ class LogoutAPI(APIView):
                 return Response({"error": "Refresh token is required"}, status=status.HTTP_400_BAD_REQUEST)
 
             token = RefreshToken(refresh_token)
-            token.blacklist()
+            token.blacklist()  # Blacklist the refresh token
 
             return Response({"message": "User logged out successfully"}, status=status.HTTP_205_RESET_CONTENT)
 
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-        
-
+# OTP Handling: Static OTP list to manage OTP requests and verification.
 static_otp_list = OTPLIST()
 
-# @csrf_protect
+# send_otp_API generates and sends OTP for a given username
 def send_otp_API(request):
-
     if request.method == 'POST':
         username = request.POST.get('username')
 
-        if not username :
-            return JsonResponse({'error' : 'username is required for otp login'})
+        if not username:
+            return JsonResponse({'error': 'username is required for otp login'})
 
         try:
-            user = CustomUser.objects.get(username=username)
+            user = CustomUser.objects.get(username=username)  # Ensure the user exists
         except User.DoesNotExist:
-            return JsonResponse({'error':'user with this username does not exist'})
+            return JsonResponse({'error': 'user with this username does not exist'})
 
-
+        # Cleanup and check expired OTPs before generating a new one
         if len(static_otp_list.otplist) > 0:
             static_otp_list.check_time_and_mark()
             static_otp_list.cleanup()
 
-        otp = static_otp_list.get_new_otp(in_username=username)
+        otp = static_otp_list.get_new_otp(in_username=username)  # Generate new OTP
+        print(f"OTP: {otp.otp}")  # For debugging purpose
 
-        print(f"OTP : {otp.otp}" ) 
-        
-        return JsonResponse({'index' : otp.index})
+        return JsonResponse({'index': otp.index})
 
     else:
         return JsonResponse({'error': 'Invalid request sent'})
 
-
-
-# @api_view(['POST'])
+# verify_otp_API checks and verifies the OTP entered by the user
 def verify_otp_API(request):
-
     if request.method == 'POST':
-
         username = request.POST.get('username')
-        otp = int( request.POST.get('otp'))
-        index = int( request.POST.get('index'))
+        otp = int(request.POST.get('otp'))
+        index = int(request.POST.get('index'))
 
-        print(index)
-        print(static_otp_list.otplist[index].username)
-        
-        if static_otp_list.otplist[index].username == username and static_otp_list.otplist[index].otp == otp :
-
+        # Verify if OTP, username, and index match
+        if static_otp_list.otplist[index].username == username and static_otp_list.otplist[index].otp == otp:
             user = CustomUser.objects.get(username=username)
 
             if not user:
-                return JsonResponse({'error' : 'user does not exist in the database'})
-
+                return JsonResponse({'error': 'user does not exist in the database'})
 
             refresh = RefreshToken.for_user(user)
             access_token = str(refresh.access_token)
             refresh_token = str(refresh)
-
-
 
             response_data = {
                 'success': True,
@@ -240,8 +203,7 @@ def verify_otp_API(request):
             return JsonResponse(response_data, status=status.HTTP_200_OK)
         
         else:
-            return JsonResponse({'error':' wrong otp'})
-            
-    
+            return JsonResponse({'error': 'wrong otp'})
+
     else:
         return JsonResponse({'error': 'Invalid request'})

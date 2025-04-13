@@ -7,29 +7,32 @@ from .serializers import CompanySerializer
 from .models import CompanyModel
 from rest_framework.parsers import MultiPartParser, FormParser
 
+# View to handle company creation
 class CompanyCreateView(APIView):
+    # Enable support for file uploads (PDFs, documents, etc.)
     parser_classes = (MultiPartParser, FormParser)
 
+    # Handle POST request to create a new company record
     def post(self, request, *args, **kwargs):
-        serializer = CompanySerializer(data=request.data)
+        serializer = CompanySerializer(data=request.data)  # Deserialize incoming data
         if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        print("Validation Errors:", serializer.errors)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)     
+            serializer.save()  # Save the new company to the database
+            return Response(serializer.data, status=status.HTTP_201_CREATED)  # Return created data
+        print("Validation Errors:", serializer.errors)  # Debug print for server logs
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)  # Return validation errors
 
-
+# View to handle listing or retrieving companies
 class CompanyListView(APIView):
 
+    # Handle GET requests to either list all companies or get one by ID
     def get(self, request, pk=None):
         if pk is not None:
+            # Retrieve a single company by primary key (ID)
             instance = get_object_or_404(CompanyModel, pk=pk)
             serializer = CompanySerializer(instance)
             return Response(serializer.data)
-    
+
+        # If no pk provided, list all companies
         queryset = CompanyModel.objects.all()
         serializer = CompanySerializer(queryset, many=True)
         return Response(serializer.data)
-
-            
-        
