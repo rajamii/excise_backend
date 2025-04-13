@@ -7,7 +7,14 @@ from .views import (
 )
 
 urlpatterns = [
+    # Endpoint to create a new company entry (POST)
     path('company/create/', CompanyCreateView.as_view(), name='company-create'),
+
+    # Endpoint to list all company entries (GET)
     path('company/list/', CompanyListView.as_view(), name='company-list-all'),
+
+    # Endpoint to get details of a specific company by primary key (GET)
     path('company/detail/<int:pk>/', CompanyListView.as_view(), name='company-details'),
-] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+]
+
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

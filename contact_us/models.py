@@ -1,34 +1,47 @@
 from django.db import models
-from .validators import validate_phone_number, validate_email, validate_department_name, validate_designation, validate_non_empty, validate_location, validate_office_level
+from .validators import (
+    validate_phone_number,
+    validate_email,
+    validate_department_name,
+    validate_designation,
+    validate_non_empty,
+    validate_location,
+    validate_office_level
+)
 
+# Model: NodalOfficer
+# Stores contact info for a main department contact
 class NodalOfficer(models.Model):
     department = models.CharField(
         max_length=255, 
         default="Excise Department", 
-        validators=[validate_department_name]
+        validators=[validate_department_name]  # Custom validator for department name
     )
     cell = models.CharField(
         max_length=255, 
         default="IT Cell", 
-        validators=[validate_non_empty]
+        validators=[validate_non_empty]  # Ensures field is not empty
     )
     phoneNumber = models.CharField(
         max_length=20, 
         default="(035) 9220-3963", 
-        validators=[validate_phone_number],
-        db_column='phone_number'
+        validators=[validate_phone_number],  # Validates phone number format
+        db_column='phone_number'  # Custom column name in DB
     )
     email = models.EmailField(
         default="helpdesk-excise@sikkim.gov.in", 
-        validators=[validate_email]
+        validators=[validate_email]  # Validates email format
     )
 
     def __str__(self):
         return f"Nodal Officer - {self.department}"
 
     def get_contact_details(self):
+        # Returns a formatted string of contact info
         return f"{self.phone_number}, {self.email}"
 
+# Abstract Model: Official
+# Base class for all officer types
 class Official(models.Model):
     name = models.CharField(
         max_length=255, 
@@ -48,11 +61,13 @@ class Official(models.Model):
     )
 
     class Meta:
-        abstract = True
+        abstract = True  # Not a table; used for inheritance
 
     def __str__(self):
         return f"{self.name} - {self.designation}"
 
+# Model: PublicInformationOfficer
+# Inherits from Official; adds location-related fields
 class PublicInformationOfficer(Official):
     HEADQUARTER = 'Headquarter'
     DISTRICT = 'District'
@@ -67,8 +82,8 @@ class PublicInformationOfficer(Official):
         choices=LOCATION_TYPE_CHOICES,
         db_column='location_type'
     )
-    location = models.CharField(max_length=100) 
-    address = models.CharField(max_length=255, default='Not Available')
+    location = models.CharField(max_length=100)  # Specific location name
+    address = models.CharField(max_length=255, default='Not Available')  # Full address
 
     def __str__(self):
         return f"{self.name} ({self.designation}) - {self.location}"
@@ -79,17 +94,28 @@ class PublicInformationOfficer(Official):
     def is_district(self):
         return self.location == self.DISTRICT
 
-
+# Model: DirectorateAndDistrictOfficials
+# Basic model for officials at both levels
 class DirectorateAndDistrictOfficials(models.Model):
     name = models.CharField(max_length=255)
     designation = models.CharField(max_length=255)
-    phoneNumber = models.CharField(max_length=20, blank=True, null=True, db_column='phone_number')
-    email = models.EmailField(validators=[validate_email], blank=True, null=True)
+    phoneNumber = models.CharField(
+        max_length=20, 
+        blank=True, 
+        null=True, 
+        db_column='phone_number'
+    )
+    email = models.EmailField(
+        validators=[validate_email], 
+        blank=True, 
+        null=True
+    )
 
     def __str__(self):
         return f"{self.name} - {self.designation}"
 
-
+# Model: GrievanceRedressalOfficer
+# Inherits from Official; adds office level info
 class GrievanceRedressalOfficer(Official):
     OFFICE_LEVEL_CHOICES = [
         ('Head Quarter', 'Head Quarter'),
