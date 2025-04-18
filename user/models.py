@@ -1,20 +1,30 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser, BaseUserManager, PermissionsMixin
 from django.core.exceptions import ObjectDoesNotExist
-from .validators import validate_name, validate_Numbers  # Custom validators for name and phone number
-import random  # For generating random numbers to ensure unique usernames
+from .validators import validate_name, validate_Numbers  
+import random
 
-# Custom manager for the CustomUser model
+
+'''
+Custom manager for the CustomUser model
+  
+'''
 class CustomUserManager(BaseUserManager):
 
-    # This method has been commented out in the original code, but it could be used for retrieving users
-    # def get(self, username):
-    #     try:
-    #         return self.model.objects.get(username=username)
-    #     except ObjectDoesNotExist:
-    #         return None
+
+'''
+    This method has been commented out in the original code, but it could be used for retrieving users
+
+    def get(self, username):
+        try:
+            return self.model.objects.get(username=username)
+        except ObjectDoesNotExist:
+            return None
+    
+'''
 
     # Method for creating a user with the necessary fields
+    
     def create_user(self, email, password=None, role=None, **extra_fields):
         if not email:
             raise ValueError('The Email field must be set')
@@ -37,7 +47,6 @@ class CustomUserManager(BaseUserManager):
         user.save(using=self._db)  # Save the user instance to the database
         return user
 
-    # Method to generate a unique username based on initials, phone number, district, and subdivision
     def generate_unique_username(self, first_name, last_name, phone_number, district, subdivision):
         # Generate initials from the first and last name
         initials = first_name[0].upper() + last_name[0].upper()
@@ -53,18 +62,22 @@ class CustomUserManager(BaseUserManager):
         
         return username
 
-    # Method for creating a superuser (admin) with default values for extra fields
     def create_superuser(self, email, password=None, **extra_fields):
-        extra_fields.setdefault('is_staff', True)  # Ensure the user has staff privileges
-        extra_fields.setdefault('is_superuser', True)  # Ensure the user has superuser privileges
-        extra_fields.setdefault('first_name', 'Admin')  # Default first name for superuser
-        extra_fields.setdefault('last_name', 'User')  # Default last name for superuser
-        extra_fields.setdefault('phonenumber', '9999999999')  # Default phone number for superuser
-        extra_fields.setdefault('district', 117)  # Default district for superuser
-        extra_fields.setdefault('subdivision', 1001)  # Default subdivision for superuser
+        extra_fields.setdefault('is_staff', True)                                                # Ensure the user has staff privileges
+        extra_fields.setdefault('is_superuser', True)                                            # Ensure the user has superuser privileges
+        extra_fields.setdefault('first_name', 'Admin')                                           # Default first name for superuser
+        extra_fields.setdefault('last_name', 'User')                                             # Default last name for superuser
+        extra_fields.setdefault('phonenumber', '9999999999')                                     # Default phone number for superuser
+        extra_fields.setdefault('district', 117)                                                 # Default district for superuser
+        extra_fields.setdefault('subdivision', 1001)                                             # Default subdivision for superuser
         return self.create_user(email, password, role='site_admin', **extra_fields)
 
+
+
+'''
 # Custom user model extending AbstractUser and PermissionsMixin
+    
+'''
 class CustomUser(AbstractUser, PermissionsMixin):
 
     # Define available roles for the user

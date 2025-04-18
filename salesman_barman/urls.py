@@ -7,7 +7,7 @@ from .views import (
 )
 
 urlpatterns = [
-    path('salesmanbarman/create/', SalesmanCreateView.as_view(), name='salesmanbarman-create'),
-    path('salesmanbarman/list/', SalesmanListView.as_view(), name='salesmanbarman-list-all'),
-    path('salesmanbarman/detail/<int:pk>/', SalesmanListView.as_view(), name='salesmanbarman-detail'),
+    path('create/', SalesmanCreateView.as_view(), name='salesmanbarman-create'),
+    path('list/', SalesmanListView.as_view(), name='salesmanbarman-list-all'),
+    path('detail/<int:pk>/', SalesmanListView.as_view(), name='salesmanbarman-detail'),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

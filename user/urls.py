@@ -14,17 +14,17 @@ from .views import (
 urlpatterns = [
 
     # path('user/', include('djano.contrib.auth.urls')),
-    path('user/register/'               ,UserAPI.as_view() , name='user-register'),
-    path('user/detail/<str:username>/'  ,UserAPI.as_view() , name='user-detail'  ),
-    path('user/list/'                   ,UserAPI.as_view() , name='user-list'    ),
-    path('user/update/<str:username>/'  ,UserAPI.as_view() , name='user-update'  ),
-    path('user/delete/<str:username>/'  ,UserAPI.as_view() , name='user-delete'  ),
+    path('register/'               ,UserAPI.as_view() , name='user-register'),
+    path('detail/<str:username>/'  ,UserAPI.as_view() , name='user-detail'  ),
+    path('list/'                   ,UserAPI.as_view() , name='user-list'    ),
+    path('update/<str:username>/'  ,UserAPI.as_view() , name='user-update'  ),
+    path('delete/<str:username>/'  ,UserAPI.as_view() , name='user-delete'  ),
 
 
-    path('user/login/'   ,LoginAPI.as_view()  , name='user-login'  ),
-    path('user/logout/'  ,LogoutAPI.as_view() , name='user-logout' ),
+    path('login/'   ,LoginAPI.as_view()  , name='user-login'  ),
+    path('logout/'  ,LogoutAPI.as_view() , name='user-logout' ),
 
-    path('user/otp/get/' ,send_otp_API , name='send-otp'),
-    path('user/otp/login/' , verify_otp_API , name='otp-login'),
+    path('otp/get/' ,send_otp_API , name='send-otp'),
+    path('otp/login/' , verify_otp_API , name='otp-login'),
 
 ]

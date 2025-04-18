@@ -7,7 +7,7 @@ from django.views import View
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import response, status
-from .impl import (
+from .helpers import (
     update_user_details,
     delete_user_by_username,
 )
