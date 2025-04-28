@@ -18,6 +18,10 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             'first_name', 'middle_name', 'last_name', 'phonenumber', 
             'district', 'subdivision', 'address', 'created_by', 
         ]
+        extra_kwargs = {
+            'password': {'write_only': True},
+            'confirm_password': {'write_only': True}
+        }
     
     def validate(self, data):
         # Confirm that password and confirm_password match

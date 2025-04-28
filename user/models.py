@@ -60,9 +60,10 @@ class CustomUserManager(BaseUserManager):
 class CustomUser(AbstractUser, PermissionsMixin):
 
     ROLE_CHOICES = (
-        ('site_admin', 'site_admin'),
-        ('1', 'system_admin'),
-        ('2', 'licensee'),
+        ('site_admin', 'Site Admin'),
+        ('commissioner', 'Commissioner'),
+        ('joint_commissioner', 'Joint Commissioner'),
+        ('2', 'Licensee'),
     )
 
     email = models.EmailField(unique=True)

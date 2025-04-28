@@ -58,8 +58,6 @@ class UserAPI (APIView ):
                     'subDivision': user.subdivision,
                     'role': user.role,
                     'address': user.address,
-                    'createdBy': user.created_by, 
-
                 }
                 return JsonResponse(user_data, status=status.HTTP_200_OK)
             except User.DoesNotExist:
