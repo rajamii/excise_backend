@@ -14,6 +14,7 @@ from contact_us import urls as contact_us_urls
 
 
 urlpatterns = [
+
     # License Category URLs
     path('licensecategories/list/'             , LicenseCategoryAPI.as_view(), name='licensecategory-list'),
     path('licensecategories/detail/<int:id>/'  , LicenseCategoryAPI.as_view(), name='licensecategory-detail'),
@@ -50,8 +51,5 @@ urlpatterns = [
     path('policestations/update/<int:id>/'  , PoliceStationAPI.as_view(), name='policestation-update'),
     path('policestations/delete/<int:id>/'  , PoliceStationAPI.as_view(), name='policestation-delete'),
 
-    path('' ,include(salesman_barman_urls) ),
-    path('' ,include(company_registration_urls)),
-    path ( '', include(contact_us_urls))
 
 ]

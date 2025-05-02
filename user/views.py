@@ -7,7 +7,7 @@ from django.views import View
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import response, status
-from .impl import (
+from .helpers import (
     update_user_details,
     delete_user_by_username,
 )
@@ -46,7 +46,6 @@ class UserAPI(APIView):
                     'subDivision': user.subdivision,
                     'role': user.role,
                     'address': user.address,
-                    'createdBy': user.created_by,
                 }
                 return JsonResponse(user_data, status=status.HTTP_200_OK)
             except User.DoesNotExist:

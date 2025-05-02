@@ -42,7 +42,6 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework_simplejwt.token_blacklist',
     'salesman_barman',
-    'excise_app',
     'masters',
     'company_registration',
     'rest_framework',
