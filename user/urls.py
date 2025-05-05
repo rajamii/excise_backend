@@ -1,17 +1,21 @@
 
-from django.urls import path
+from django.urls import path, include
 from .views import (
     UserAPI,
     LoginAPI,
     LogoutAPI,
     send_otp_API,
     verify_otp_API,
+    get_captcha
 )
 
 
 # from django.contrib import admin
 
 urlpatterns = [
+    # captcha
+    path('get_captcha/', get_captcha, name='captcha'), 
+    path('',include('captcha.urls')), 
 
     # path('user/', include('djano.contrib.auth.urls')),
     path('register/'               ,UserAPI.as_view() , name='user-register'),

@@ -11,18 +11,6 @@ Custom manager for the CustomUser model
 '''
 class CustomUserManager(BaseUserManager):
 
-
-'''
-    This method has been commented out in the original code, but it could be used for retrieving users
-
-    def get(self, username):
-        try:
-            return self.model.objects.get(username=username)
-        except ObjectDoesNotExist:
-            return None
-    
-'''
-
     # Method for creating a user with the necessary fields
     
     def create_user(self, email, password=None, role=None, **extra_fields):
@@ -85,7 +73,8 @@ class CustomUser(AbstractUser, PermissionsMixin):
         ('site_admin', 'Site Admin'),
         ('commissioner', 'Commissioner'),
         ('joint_commissioner', 'Joint Commissioner'),
-        ('2', 'Licensee'),
+        ('permit_section', 'Permit Section'),
+        ('licensee', 'Licensee'),
     )
 
     # Define the fields for the custom user model

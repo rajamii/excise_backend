@@ -57,12 +57,12 @@ def validate_longitude(value):
     return value
 
 def validate_gender(value):
-    if value not in ["Male", "Female", "Other"]:
+    if value not in ["Male", "Female"]:
         raise ValidationError("Gender must be 'Male', 'Female', or 'Other'.")
     return value
 
 def validate_status(value):
-    if value not in ["Active", "Inactive"]:
+    if value not in ["Single", "Married", "Divorced"]:
         raise ValidationError("Status must be 'Active' or 'Inactive'.")
     return value
 
