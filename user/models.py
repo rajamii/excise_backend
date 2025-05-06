@@ -11,6 +11,9 @@ Custom manager for the CustomUser model
 '''
 class CustomUserManager(BaseUserManager):
 
+
+
+
     # Method for creating a user with the necessary fields
     
     def create_user(self, email, password=None, role=None, **extra_fields):
