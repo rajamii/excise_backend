@@ -22,7 +22,7 @@ urlpatterns = [
     path('company_registration/' , include('company_registration.urls')),
 
     path('contact_us/' , include('contact_us.urls')),
-    
+      
     # captcha storage class required url pattern
     path('' , include('captcha.urls'))
 

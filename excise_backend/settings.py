@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     'contact_us',
     'user',
     'licenseapplication',
+    
 ]
 
 MIDDLEWARE = [
