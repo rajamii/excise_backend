@@ -15,6 +15,17 @@ from captcha.models import CaptchaStore
 from .serializer import UserRegistrationSerializer, LoginSerializer
 from .otp import OTPLIST
 from rest_framework_simplejwt.tokens import RefreshToken
+from captcha.helpers import captcha_image_url
+
+def get_captcha(request):
+    hashkey = CaptchaStore.generate_key()
+    imageurl = captcha_image_url(hashkey)
+
+    response = JsonResponse({
+        'key': hashkey,
+        'image_url': imageurl
+    })
+    return response  
 
 # UserAPI class handles user registration, fetching user data, updating user details, and deleting user accounts.
 class UserAPI(APIView):

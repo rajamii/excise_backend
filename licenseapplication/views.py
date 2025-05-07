@@ -3,12 +3,21 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.core.exceptions import ValidationError
 
+from rest_framework import generics
 from .models import LicenseApplication
 from .serializers import LicenseApplicationSerializer
 from .services.workflow import advance_application
 
 
-class LicenseApplicationViewSet(viewsets.ModelViewSet):
+class LicenseApplicationCreateView(generics.CreateAPIView):
+    queryset = LicenseApplication.objects.all()
+    serializer_class = LicenseApplicationSerializer
+
+class LicenseApplicationListView(generics.ListAPIView):
+    queryset = LicenseApplication.objects.all()
+    serializer_class = LicenseApplicationSerializer
+
+class LicenseApplicationDetailView(generics.RetrieveAPIView):
     queryset = LicenseApplication.objects.all()
     serializer_class = LicenseApplicationSerializer
 

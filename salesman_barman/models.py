@@ -50,7 +50,7 @@ class SalesmanBarmanModel(models.Model):
     passPhoto = models.ImageField(upload_to=upload_document_path, db_column='pass_photo')  # Passport-size photograph
     aadhaarCard = models.FileField(upload_to=upload_document_path, db_column='aadhaar_card')  # Aadhaar card copy
     residentialCertificate = models.FileField(upload_to=upload_document_path, db_column='residential_certificate')  # Proof of residence
-    dateofBirthProof = models.FileField(upload_to=upload_document_path, db_column='dateofbirth_proof')  # DOB proof document
+    dateofBirthProof = models.FileField(upload_to=upload_document_path, db_column='dateof_birth_proof')  # DOB proof document
 
     class Meta:
         db_table = 'salesman_barman_details'  # Custom table name in the DB
