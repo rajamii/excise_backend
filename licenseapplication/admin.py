@@ -3,7 +3,7 @@ from .models import LicenseApplication, LicenseApplicationTransaction
 
 @admin.register(LicenseApplication)
 class LicenseApplicationAdmin(admin.ModelAdmin):
-    list_display = ('id', 'establishment_name', 'current_stage', 'is_approved')
+    list_display = ('id', 'establishmentName', 'current_stage', 'is_approved')
 
 @admin.register(LicenseApplicationTransaction)
 class LicenseApplicationTransactionAdmin(admin.ModelAdmin):

@@ -4,6 +4,9 @@ from masters.serializers import (licensecategory_serializer, licensetype_seriali
 from django.views.decorators.http import require_http_methods
 from django.utils.decorators import method_decorator
 
+from roles.models import Role
+from roles.views import is_role_capable_of
+
 # LicenseCategoryAPI: For listing, creating, updating, and deleting license categories
 class LicenseCategoryAPI(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAPIView):
     queryset = masters_model.LicenseCategory.objects.all()  # Fetch all license categories
@@ -128,7 +131,9 @@ class SubDivisonApi(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAP
         if dc is not None:  # Fetch by district code
             subdivisions = masters_model.Subdivision.objects.filter(DistrictCode=dc)
             if not subdivisions.exists():
-                raise NotFound(detail="No subdivisions found for this district code", code=status.HTTP_404_NOT_FOUND)
+                raise NotFound(
+                               detail="No subdivisions found for this district code",
+                               code=status.HTTP_404_NOT_FOUND)
             serializer = self.serializer_class(subdivisions, many=True)
             return response.Response(serializer.data, status=status.HTTP_200_OK)
 

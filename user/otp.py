@@ -2,12 +2,14 @@ import random
 import time
 
 # OTP Class to represent an OTP (One Time Password)
+
+
 class OTP:
-    username: str  # The username for which the OTP is generated
-    otp: int       # The OTP value (4-digit number)
-    index: int     # Unique index for the OTP
-    used: bool     # Flag to check if the OTP has been used
-    created_on: int # Timestamp when the OTP was created
+    username: str    # The username for which the OTP is generated
+    otp: int         # The OTP value (4-digit number)
+    index: int       # Unique index for the OTP
+    used: bool       # Flag to check if the OTP has been used
+    created_on: int  # Timestamp when the OTP was created
 
     # Method to check if the OTP has been used
     def is_used(self):
@@ -20,7 +22,9 @@ class OTP:
     # Method to check if the provided OTP, username, and index match the stored OTP
     def check_otp(in_otp, in_username, in_index):
         if in_otp == otp and in_username == username and in_index == index:
+
             return True
+
         return False
 
     # Method to generate a new OTP for a given username and index
