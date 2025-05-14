@@ -29,10 +29,11 @@ then
  "$venv_dir/bin/pip" install sqlparse                       &&               
  "$venv_dir/bin/pip" install tzdata                         &&              
  "$venv_dir/bin/pip" install urllib3                        &&
- "$venv_dir/bin/pip" install standard-imghdr
+ "$venv_dir/bin/pip" install standard-imghdr                &&
+ "$venv_dir/bin/pip" install "python-lsp-server[all]"
 
 
 elif [ "$1" == "test" ];
 then
-  "$venv_dir/bin/python3" manage.py runserver
+  "$venv_dir/bin/python3" manage.py runserver 192.168.31.127:8000
 fi

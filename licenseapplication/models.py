@@ -24,7 +24,7 @@ class LicenseApplication(models.Model):
     yearlyLicenseFee = models.CharField(max_length=100, null=True, blank=True, db_column='yearly_license_fee')
     licenseNature = models.CharField(max_length=100, db_column='license_nature')
     functioningStatus = models.CharField(max_length=100, db_column='functioning_status')
-    modeofOperation = models.CharField(max_length=100, db_column='mode_of_operation')
+    modeofOperation = models.CharField(max_length=100, db_column='mode_of_operation' , default='none')
 
     # Address
     siteSubDivision = models.CharField(max_length=100, db_column='site_sub_division')

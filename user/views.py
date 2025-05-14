@@ -16,18 +16,26 @@ from .serializer import UserRegistrationSerializer, LoginSerializer
 from .otp import OTPLIST
 from rest_framework_simplejwt.tokens import RefreshToken
 from captcha.helpers import captcha_image_url
+from roles.views import is_role_capable_of
+from roles.models import Role
 
 def get_captcha(request):
     hashkey = CaptchaStore.generate_key()
     imageurl = captcha_image_url(hashkey)
 
-    response = JsonResponse({
+    send_response = JsonResponse({
         'key': hashkey,
         'image_url': imageurl
     })
-    return response  
+    return send_response
 
-# UserAPI class handles user registration, fetching user data, updating user details, and deleting user accounts.
+
+'''
+ UserAPI class handles user registration, fetching user data,
+ updating user details, and deleting user accounts.
+'''
+
+
 class UserAPI(APIView):
 
     # POST method for user registration
@@ -43,6 +51,13 @@ class UserAPI(APIView):
 
     # GET method to retrieve user data by username or the logged-in user
     def get(self, request, username=None, *args, **kwargs):
+
+        if is_role_capable_of(request=request,
+                              operation=Role.READ,
+                              model='user') is False:
+
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+
         if username:
             try:
                 user = CustomUser.objects.get(username=username)
@@ -85,6 +100,12 @@ class UserAPI(APIView):
 
     # PUT method to update user details
     def put(self, request, username, *args, **kwargs):
+        if is_role_capable_of(request=request,
+                              operation=Role.READ_WRITE,
+                              model='user') is False:
+
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+
         try:
             data = json.loads(request.body)
             success = update_user_details(
@@ -106,6 +127,12 @@ class UserAPI(APIView):
 
     # DELETE method to remove a user by username
     def delete(self, request, username, *args, **kwargs):
+        if is_role_capable_of(request=request,
+                              operation=Role.READ_WRITE,
+                              model='user') is False:
+
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+
         try:
             delete_user_by_username(username)
             return JsonResponse({'message': 'User deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
@@ -113,13 +140,16 @@ class UserAPI(APIView):
             return JsonResponse({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 # LoginAPI handles user login functionality via JWT.
+
+
 class LoginAPI(APIView):
     serializer_class = LoginSerializer
 
     # POST method for logging in the user
     def post(self, request):
         serializer = self.serializer_class(data=request.data)
-        serializer.is_valid(raise_exception=True)  # Automatically raises ValidationError if invalid
+        # Automatically raises ValidationError if invalid
+        serializer.is_valid(raise_exception=True)
         validated_data = serializer.validated_data  # Extract validated data
 
         response_data = {
@@ -135,6 +165,8 @@ class LoginAPI(APIView):
         return Response(response_data, status=status.HTTP_200_OK)
 
 # LogoutAPI handles the user logout by invalidating the refresh token.
+
+
 class LogoutAPI(APIView):
 
     # POST method for logging out by blacklisting the refresh token
@@ -152,48 +184,65 @@ class LogoutAPI(APIView):
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
+
 # OTP Handling: Static OTP list to manage OTP requests and verification.
 static_otp_list = OTPLIST()
 
-# send_otp_API generates and sends OTP for a given username
+# Send OTP API
 def send_otp_API(request):
     if request.method == 'POST':
-        username = request.POST.get('username')
+        phonenumber = request.POST.get('phonenumber')
 
-        if not username:
-            return JsonResponse({'error': 'username is required for otp login'})
+        if not phonenumber:
+            return JsonResponse({'error': 'Phone number is required for OTP login'})
 
         try:
-            user = CustomUser.objects.get(username=username)  # Ensure the user exists
-        except User.DoesNotExist:
-            return JsonResponse({'error': 'user with this username does not exist'})
+            user = CustomUser.objects.get(phonenumber=phonenumber)
+        except CustomUser.DoesNotExist:
+            return JsonResponse({'error': 'User with this phone number does not exist'})
 
-        # Cleanup and check expired OTPs before generating a new one
-        if len(static_otp_list.otplist) > 0:
+        # Cleanup expired OTPs before generating a new one
+        if static_otp_list.otplist:
             static_otp_list.check_time_and_mark()
             static_otp_list.cleanup()
 
-        otp = static_otp_list.get_new_otp(in_username=username)  # Generate new OTP
-        print(f"OTP: {otp.otp}")  # For debugging purpose
+        otp = static_otp_list.get_new_otp(in_phone_number=phonenumber)
+
+        print(f"OTP sent to {phonenumber}: {otp.otp}")  # For debugging
 
         return JsonResponse({'index': otp.index})
 
-    else:
-        return JsonResponse({'error': 'Invalid request sent'})
+    return JsonResponse({'error': 'Invalid request method'}, status=405)
 
-# verify_otp_API checks and verifies the OTP entered by the user
+
+# Verify OTP API
 def verify_otp_API(request):
     if request.method == 'POST':
-        username = request.POST.get('username')
-        otp = int(request.POST.get('otp'))
-        index = int(request.POST.get('index'))
+        phonenumber = request.POST.get('phonenumber')
+        otp_input = request.POST.get('otp')
+        index = request.POST.get('index')
 
-        # Verify if OTP, username, and index match
-        if static_otp_list.otplist[index].username == username and static_otp_list.otplist[index].otp == otp:
-            user = CustomUser.objects.get(username=username)
+        if not (phonenumber and otp_input and index):
+            return JsonResponse({'error': 'Phone number, OTP, and index are required'}, status=400)
 
-            if not user:
-                return JsonResponse({'error': 'user does not exist in the database'})
+        try:
+            otp_input = int(otp_input)
+            index = int(index)
+        except ValueError:
+            return JsonResponse({'error': 'OTP and index must be integers'}, status=400)
+
+        try:
+            otp_obj = static_otp_list.otplist[index]
+        except IndexError:
+            return JsonResponse({'error': 'Invalid OTP index'}, status=400)
+
+        if otp_obj.check_otp(otp_input, phonenumber, index) and not otp_obj.is_used():
+            try:
+                user = CustomUser.objects.get(phonenumber=phonenumber)
+            except CustomUser.DoesNotExist:
+                return JsonResponse({'error': 'User does not exist in the database'}, status=400)
+
+            otp_obj.used = True  # Mark OTP as used
 
             refresh = RefreshToken.for_user(user)
             access_token = str(refresh.access_token)
@@ -204,16 +253,14 @@ def verify_otp_API(request):
                 'statusCode': status.HTTP_200_OK,
                 'message': 'User logged in successfully',
                 'authenticated_user': {
-                    'username': user.username,
+                    'phonenumber': user.phonenumber,
                     'access': access_token,
                     'refresh': refresh_token,
                 },
             }
 
             return JsonResponse(response_data, status=status.HTTP_200_OK)
-        
         else:
-            return JsonResponse({'error': 'wrong otp'})
+            return JsonResponse({'error': 'Invalid or expired OTP'}, status=401)
 
-    else:
-        return JsonResponse({'error': 'Invalid request'})
+    return JsonResponse({'error': 'Invalid request method'}, status=405)
