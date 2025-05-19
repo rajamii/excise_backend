@@ -22,7 +22,7 @@ then
  "$venv_dir/bin/pip" install djangorestframework_simplejwt  &&               
  "$venv_dir/bin/pip" install idna                           &&                   
  "$venv_dir/bin/pip" install pillow                         &&               
- "$venv_dir/bin/pip" install psycopg                       &&              
+ "$venv_dir/bin/pip" install psycopg                        &&              
  "$venv_dir/bin/pip" install psycopg2-binary                &&         
  "$venv_dir/bin/pip" install PyJWT                          &&           
  "$venv_dir/bin/pip" install requests                       &&                
@@ -30,10 +30,17 @@ then
  "$venv_dir/bin/pip" install tzdata                         &&              
  "$venv_dir/bin/pip" install urllib3                        &&
  "$venv_dir/bin/pip" install standard-imghdr                &&
+ "$venv_dir/bin/pip" install pygraphviz                     && 
+ "$venv_dir/bin/pip" install django-extensions              && 
  "$venv_dir/bin/pip" install "python-lsp-server[all]"
 
 
 elif [ "$1" == "test" ];
 then
   "$venv_dir/bin/python3" manage.py runserver 192.168.31.127:8000
+
+elif [ "$1" == "draw" ];
+then
+  "$venv_dir/bin/python3" manage.py graph_models -o docs/classdiagram.svg --all-applications
+
 fi

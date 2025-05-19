@@ -8,59 +8,30 @@ def is_dev(request: HttpRequest):
     return False
 
 
+ACCESS_ATTRIBUTE_MAP = {
+    'user': 'user_access',
+    'company_registration': 'company_registration_access',
+    'contact_us': 'contact_us_access',
+    'licenseapplication': 'licenseapplication_access',
+    'masters': 'masters_access',
+    'roles': 'roles_access',
+    'salesman_barman': 'salesman_barman_access',
+}
+
+
 def is_role_capable_of(request: HttpRequest, operation, model):
-    if model == 'user':
-        if request.user.role.user_access == Role.READ_WRITE:
-            return True
-        elif request.user.role.user_access == operation:
-            return True
-        else:
-            return False
+    if model in ACCESS_ATTRIBUTE_MAP:
 
-    if model == 'company_registration':
-        if request.user.role.company_registration_access == Role.READ_WRITE:
-            return True
-        elif request.user.role.company_registration_access == operation:
-            return True
-        else:
-            return False
+        # Get the model from the map
+        access_attribute = ACCESS_ATTRIBUTE_MAP[model]
 
-    if model == 'contact_us':
-        if request.user.role.contact_us_access == Role.READ_WRITE:
-            return True
-        elif request.user.role.contact_us_access == operation:
-            return True
-        else:
-            return False
+        # Get the role from the request
+        role = request.user.role
 
-    if model == 'licenseapplication':
-        if request.user.role.licenseapplication_access == Role.READ_WRITE:
-            return True
-        elif request.user.role.licenseapplication_access == operation:
-            return True
-        else:
-            return False
+        # check to see if the accesss level
+        # is above or equal to the  level of role
 
-    if model == 'masters':
-        if request.user.role.masters_access == Role.READ_WRITE:
-            return True
-        elif request.user.role.masters_access == operation:
-            return True
-        else:
-            return False
+        access_level = getattr(role, access_attribute, None)
+        return access_level == Role.READ_WRITE or access_level == operation
 
-    if model == 'roles':
-        if request.user.role.roles_access == Role.READ_WRITE:
-            return True
-        elif request.user.role.roles_access == operation:
-            return True
-        else:
-            return False
-
-    if model == 'salesman_barman':
-        if request.user.role.salesman_barman_access == Role.READ_WRITE:
-            return True
-        elif request.user.role.salesman_barman_access == operation:
-            return True
-        else:
-            return False
+    return False  # Handle cases where the model is not in the map

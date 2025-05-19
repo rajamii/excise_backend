@@ -19,7 +19,9 @@ from captcha.helpers import captcha_image_url
 from roles.views import is_role_capable_of
 from roles.models import Role
 
+
 def get_captcha(request):
+
     hashkey = CaptchaStore.generate_key()
     imageurl = captcha_image_url(hashkey)
 
@@ -52,11 +54,13 @@ class UserAPI(APIView):
     # GET method to retrieve user data by username or the logged-in user
     def get(self, request, username=None, *args, **kwargs):
 
-        if is_role_capable_of(request=request,
-                              operation=Role.READ,
-                              model='user') is False:
+        if request.user.username != username:
 
-            return Response(status=status.HTTP_401_UNAUTHORIZED)
+            if is_role_capable_of(request=request,
+                                  operation=Role.READ,
+                                  model='user') is False:
+
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
 
         if username:
             try:
@@ -223,7 +227,10 @@ def verify_otp_API(request):
         index = request.POST.get('index')
 
         if not (phonenumber and otp_input and index):
-            return JsonResponse({'error': 'Phone number, OTP, and index are required'}, status=400)
+            return JsonResponse(
+                        {'error': 'Phone number, OTP, and index are required'},
+                        status=400
+                        )
 
         try:
             otp_input = int(otp_input)

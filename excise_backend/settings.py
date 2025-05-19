@@ -28,7 +28,7 @@ SECRET_KEY = 'django-insecure-&9z_bt2h_b0gz8dho0u$j-g@569rl^@i071z4&j&p!qz7ez*(m
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['192.168.31.127']
+ALLOWED_HOSTS = ['192.168.31.118']
 
 
 # Application definition
@@ -51,7 +51,8 @@ INSTALLED_APPS = [
     'contact_us',
     'user',
     'licenseapplication',
-    'roles'
+    'roles',
+    'django_extensions'
 ]
 
 MIDDLEWARE = [
@@ -100,7 +101,7 @@ DATABASES = {
         'NAME': 'excise_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
 
-        'PASSWORD': 'Tashi!342',  # Your PostgreSQL password
+        'PASSWORD': 'postgres',  # Your PostgreSQL password
 
         'HOST': 'localhost',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
