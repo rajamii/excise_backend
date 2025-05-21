@@ -60,7 +60,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
-    # 'django.middleware.csrf.CsrfViewMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
@@ -98,12 +98,10 @@ REST_FRAMEWORK = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'excise_db',       # Database name
+        'NAME': 'eAbkari',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-
         'PASSWORD': 'postgres',  # Your PostgreSQL password
-
-        'HOST': 'localhost',        # Default host
+        'HOST': '10.182.153.61',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
     }
 }
