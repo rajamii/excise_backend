@@ -3,7 +3,7 @@ from django.core.exceptions import ValidationError
 from . import helpers
 
 def upload_document_path(instance, filename):
-    return f'license_application/{instance.id}/{filename}'
+    return f'license_application/{instance.memberName}{' '}{instance.companyName}/{filename}'
 
 class LicenseApplication(models.Model):
     # Select License
@@ -88,12 +88,13 @@ class LicenseApplication(models.Model):
     current_stage = models.CharField(
         max_length=30,
         choices=[
-            ('draft', 'Draft'),
             ('permit_section', 'Permit Section'),
             ('joint_commissioner', 'Joint Commissioner'),
             ('commissioner', 'Commissioner'),
             ('approved', 'Approved'),
-            ('rejected', 'Rejected'),
+            ('rejected_by_permit_section', 'Rejected By Commissioner'),
+            ('rejected_by_commissioner', 'Rejected By Commissioner'),
+            ('rejected_by_joint_commissioner', 'Rejected By Joint Commissioner'),
         ],
         default='draft'
     )
@@ -110,7 +111,9 @@ class LicenseApplicationTransaction(models.Model):
         ('joint_commissioner', 'Joint Commissioner'),
         ('commissioner', 'Commissioner'),
         ('approved', 'Approved'),
-        ('rejected', 'Rejected'),
+        ('rejected_by_permit_section', 'Rejected By Commissioner'),
+        ('rejected_by_commissioner', 'Rejected By Commissioner'),
+        ('rejected_by_joint_commissioner', 'Rejected By Joint Commissioner'),
     ]
 
     license_application = models.ForeignKey(
@@ -123,3 +126,10 @@ class LicenseApplicationTransaction(models.Model):
 
     class Meta:
         db_table = 'license_application_transaction'
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if self.license_application.current_stage != self.stage:
+            self.license_application.current_stage = self.stage
+            self.license_application.save(update_fields=['current_stage'])
+

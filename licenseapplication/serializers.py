@@ -22,10 +22,17 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
     current_stage = serializers.CharField(read_only=True)
     is_approved = serializers.BooleanField(read_only=True)
     transactions = LicenseApplicationTransactionSerializer(many=True, read_only=True)
+    latest_transaction = serializers.SerializerMethodField()
 
     class Meta:
         model = LicenseApplication
         fields = '__all__'
+
+    def get_latest_transaction(self, obj):
+        # Safely get the latest transaction (assuming timestamp or ID ordering)
+        return LicenseApplicationTransactionSerializer(
+            obj.transactions.order_by('-timestamp').first()
+        ).data if obj.transactions.exists() else None
 
     def validate_mobile_number(self, value):
         return helpers.validate_mobile_number(value)
@@ -71,3 +78,8 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
 
     def validate_license_type(self, value):
         return helpers.validate_license_type(value)
+    
+class DashboardCountsSerializer(serializers.Serializer):
+    pending = serializers.IntegerField()
+    approved = serializers.IntegerField()
+    rejected = serializers.IntegerField()
