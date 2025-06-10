@@ -28,7 +28,7 @@ SECRET_KEY = 'django-insecure-&9z_bt2h_b0gz8dho0u$j-g@569rl^@i071z4&j&p!qz7ez*(m
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['192.168.31.118']
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -41,18 +41,18 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework_simplejwt.token_blacklist',
-    'salesman_barman',
-    'masters',
-    'company_registration',
     'rest_framework',
+    'django_extensions',
     'captcha',
     'corsheaders',
     'rest_framework_simplejwt',
+    'salesman_barman',
+    'masters',
+    'company_registration',
     'contact_us',
     'user',
     'licenseapplication',
     'roles',
-    'django_extensions'
 ]
 
 MIDDLEWARE = [

@@ -15,6 +15,7 @@ urlpatterns = [
     path('user/', include('user.urls')),
 
     path('masters/', include('masters.urls')),
+    
     path('licenseapplication/', include('licenseapplication.urls')),
 
     path('salesman_barman/', include('salesman_barman.urls')),

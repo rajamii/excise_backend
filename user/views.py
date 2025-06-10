@@ -12,7 +12,7 @@ from .helpers import (
     delete_user_by_username,
 )
 from captcha.models import CaptchaStore
-from .serializer import UserRegistrationSerializer, LoginSerializer
+from .serializers import UserRegistrationSerializer, LoginSerializer
 from .otp import OTPLIST
 from rest_framework_simplejwt.tokens import RefreshToken
 from captcha.helpers import captcha_image_url
@@ -202,7 +202,7 @@ def send_otp_API(request):
 
         try:
             user = CustomUser.objects.get(phonenumber=phonenumber)
-        except CustomUser.DoesNotExist:
+        except user.DoesNotExist:
             return JsonResponse({'error': 'User with this phone number does not exist'})
 
         # Cleanup expired OTPs before generating a new one
