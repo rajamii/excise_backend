@@ -100,8 +100,8 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'eAbkari',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'postgres',  # Your PostgreSQL password
-        'HOST': '10.182.153.61',        # Default host
+        'PASSWORD': 'admin',  # Your PostgreSQL password
+        'HOST': 'localhost',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
     }
 }

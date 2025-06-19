@@ -18,17 +18,19 @@ urlpatterns = [
     path('',include('captcha.urls')), 
 
     # path('user/', include('djano.contrib.auth.urls')),
+    # User CRUD
     path('register/'               ,UserAPI.as_view() , name='user-register'),
     path('detail/<str:username>/'  ,UserAPI.as_view() , name='user-detail'  ),
     path('list/'                   ,UserAPI.as_view() , name='user-list'    ),
     path('update/<str:username>/'  ,UserAPI.as_view() , name='user-update'  ),
     path('delete/<str:username>/'  ,UserAPI.as_view() , name='user-delete'  ),
 
-
+    #Auth
     path('login/'   ,LoginAPI.as_view()  , name='user-login'  ),
     path('logout/'  ,LogoutAPI.as_view() , name='user-logout' ),
 
-    path('otp/get/' ,send_otp_API , name='send-otp'),
+    # OTP
+    path('otp/' ,send_otp_API , name='send-otp'),
     path('otp/login/' , verify_otp_API , name='otp-login'),
 
 ]

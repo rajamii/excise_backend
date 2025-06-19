@@ -10,6 +10,7 @@ from django.contrib.auth import authenticate
 class UserRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
     confirm_password = serializers.CharField(write_only=True, required=True)
+    middle_name = serializers.CharField(required=False, allow_blank=True) # middle name is optional
     
     class Meta:
         model = CustomUser
@@ -22,6 +23,11 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             'password': {'write_only': True},
             'confirm_password': {'write_only': True}
         }
+
+    def validate_email(self, value):
+        if CustomUser.objects.filter(email=value).exists():
+            raise serializers.ValidationError("Email is already in use.")
+        return value
     
     def validate(self, data):
         if data['password'] != data['confirm_password']:
@@ -51,6 +57,8 @@ class LoginSerializer(serializers.Serializer):
         user = authenticate(username=username, password=password)
         if not user:
             raise serializers.ValidationError("Invalid login credentials.")
+        if not user.is_active:
+            raise serializers.ValidationError("User account is inactive.")
 
         try:
             captcha_store = CaptchaStore.objects.get(hashkey=hashkey)
@@ -99,13 +107,13 @@ class LoginSerializer(serializers.Serializer):
     #     salesman_barman_instance.save()
     #     return salesman_barman_instance
 
-    def update(self, instance, validated_data):
-        documents_data = validated_data.pop('documents', None)
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        if documents_data:
-            for attr, value in documents_data.items():
-                setattr(instance.documents, attr, value)
-            instance.documents.save()
-        instance.save()
-        return instance
+    # def update(self, instance, validated_data):
+    #     documents_data = validated_data.pop('documents', None)
+    #     for attr, value in validated_data.items():
+    #         setattr(instance, attr, value)
+    #     if documents_data:
+    #         for attr, value in documents_data.items():
+    #             setattr(instance.documents, attr, value)
+    #         instance.documents.save()
+    #     instance.save()
+    #     return instance
