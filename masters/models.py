@@ -21,7 +21,6 @@ class State(models.Model):
 
 #District
 class District(models.Model):
-
     District=models.CharField(max_length=30,validators=[validate_name])
     DistrictNameLL=models.CharField(max_length=30,validators=[validate_name],null=True)
     # if Null !=True:every Subdivision would require a valid District to be assigned. 
@@ -34,7 +33,6 @@ class District(models.Model):
 
 #Subdivision
 class Subdivision(models.Model):
-
     SubDivisionName=models.CharField(max_length=30,validators=[validate_name],null=True)
     SubDivisionNameLL=models.CharField(max_length=30,validators=[validate_name],null=True)
     SubDivisionCode= models.IntegerField(unique=True,default=1001)

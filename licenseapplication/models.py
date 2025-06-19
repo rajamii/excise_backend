@@ -24,7 +24,7 @@ class LicenseApplication(models.Model):
     yearlyLicenseFee = models.CharField(max_length=100, null=True, blank=True, db_column='yearly_license_fee')
     licenseNature = models.CharField(max_length=100, db_column='license_nature')
     functioningStatus = models.CharField(max_length=100, db_column='functioning_status')
-    modeofOperation = models.CharField(max_length=100, db_column='mode_of_operation')
+    modeofOperation = models.CharField(max_length=100, db_column='mode_of_operation' , default='none')
 
     # Address
     siteSubDivision = models.CharField(max_length=100, db_column='site_sub_division')
@@ -85,5 +85,41 @@ class LicenseApplication(models.Model):
         if self.longitude:
             helpers.validate_longitude(self.longitude)
 
+    current_stage = models.CharField(
+        max_length=30,
+        choices=[
+            ('draft', 'Draft'),
+            ('permit_section', 'Permit Section'),
+            ('joint_commissioner', 'Joint Commissioner'),
+            ('commissioner', 'Commissioner'),
+            ('approved', 'Approved'),
+            ('rejected', 'Rejected'),
+        ],
+        default='draft'
+    )
+
+    is_approved = models.BooleanField(default=False)
+
     class Meta:
         db_table = 'license_application'
+
+
+class LicenseApplicationTransaction(models.Model):
+    STAGES = [
+        ('permit_section', 'Permit Section'),
+        ('joint_commissioner', 'Joint Commissioner'),
+        ('commissioner', 'Commissioner'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    ]
+
+    license_application = models.ForeignKey(
+        LicenseApplication, on_delete=models.CASCADE, related_name='transactions'
+    )
+    performed_by = models.ForeignKey('user.CustomUser', on_delete=models.SET_NULL, null=True)
+    stage = models.CharField(max_length=30, choices=STAGES)
+    remarks = models.TextField(blank=True, null=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'license_application_transaction'
