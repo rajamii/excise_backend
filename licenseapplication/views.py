@@ -1,164 +1,354 @@
-from rest_framework import viewsets, status
-from rest_framework.decorators import action
-from rest_framework.views import APIView
+from django.shortcuts import get_object_or_404
+from django.http import JsonResponse
+from django.db import transaction
+from django.views.decorators.csrf import csrf_exempt
+from rest_framework.decorators import api_view, parser_classes
+from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework.response import Response
+from rest_framework import status
 from django.core.exceptions import ValidationError
-from rest_framework import generics
-from .models import LicenseApplication
-from .serializers import LicenseApplicationSerializer
+
+from .models import LicenseApplication, SiteEnquiryReport, LocationFee, Objection
+from .serializers import LicenseApplicationSerializer, SiteEnquiryReportSerializer, LocationFeeSerializer, ObjectionSerializer
 from .services.workflow import advance_application
 from .models import LicenseApplicationTransaction
+from masters.models import LicenseCategory 
+from django.utils import timezone
 
-# View to handle creation of license applications
-class LicenseApplicationCreateView(generics.CreateAPIView):
-    queryset = LicenseApplication.objects.all()
-    serializer_class = LicenseApplicationSerializer
+@api_view(['POST'])
+@parser_classes([MultiPartParser, FormParser])
+def create_license_application(request):
+    serializer = LicenseApplicationSerializer(data=request.data)
+    if serializer.is_valid():
+        with transaction.atomic():
+            # Save license application with current_stage set to 'permit_section'
+            application = serializer.save(current_stage='level_1')
 
-    def perform_create(self, serializer):
-        # Save the application and set the initial stage to 'permit_section'
-        application = serializer.save(current_stage='permit_section')
-        # Log the transaction for the created application
-        LicenseApplicationTransaction.objects.create(
-            license_application=application,
-            performed_by=self.request.user,
-            stage='permit_section',
-            remarks='License Applied'
+            # Create the transaction log entry
+            LicenseApplicationTransaction.objects.create(
+                license_application=application,
+                performed_by=request.user,
+                stage='level_1',
+                remarks='License Applied'
+            )
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+def list_license_applications(request):
+    applications = LicenseApplication.objects.all()
+    serializer = LicenseApplicationSerializer(applications, many=True)
+    return Response(serializer.data)
+
+
+@api_view(['GET'])
+def license_application_detail(request, pk):
+    application = get_object_or_404(LicenseApplication, pk=pk)
+    serializer = LicenseApplicationSerializer(application)
+    return Response(serializer.data)
+
+
+@api_view(['POST'])
+@parser_classes([JSONParser])
+def advance_license_application(request, application_id):
+    application = get_object_or_404(LicenseApplication, pk=application_id) 
+    user = request.user
+
+    remarks = request.data.get("remarks", "")
+    fee_amount = request.data.get("feeAmount")
+    new_license_category_id = request.data.get("new_license_category")
+    action = request.data.get("action")
+    objections = request.data.get("objections", [])  # objection fields with remarks
+
+    # Resolve LicenseCategory object if ID is provided
+    new_license_category = None
+    if new_license_category_id:
+        try:
+            new_license_category = LicenseCategory.objects.get(pk=new_license_category_id)
+        except LicenseCategory.DoesNotExist:
+            return Response({"detail": "Invalid license category ID."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        # === New: Handle objections ===
+        if action == 'raise_objection':
+            if not isinstance(objections, list) or not all('field' in obj and 'remarks' in obj for obj in objections):
+                return Response({"detail": "Invalid objections format."}, status=status.HTTP_400_BAD_REQUEST)
+            
+        advance_application(
+            application,
+            user,
+            remarks=remarks,
+            action=action,
+            new_license_category=new_license_category,
+            fee_amount=fee_amount,
+            objections=objections
         )
 
-# View to list all license applications
-class LicenseApplicationListView(generics.ListAPIView):
-    queryset = LicenseApplication.objects.all()
-    serializer_class = LicenseApplicationSerializer
+        return Response({"detail": "Application advanced successfully."}, status=status.HTTP_200_OK)
 
-# View to retrieve details of a specific license application
-class LicenseApplicationDetailView(generics.RetrieveAPIView):
-    queryset = LicenseApplication.objects.all()
-    serializer_class = LicenseApplicationSerializer
+    except ValidationError as ve:
+        return Response({"detail": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
 
-# View to update a specific license application
-class LicenseApplicationUpdateView(generics.UpdateAPIView):
-    queryset = LicenseApplication.objects.all()
-    serializer_class = LicenseApplicationSerializer
-    lookup_field = 'pk'
 
-class LicenseApplicationDeleteView(generics.DestroyAPIView):
-    queryset = LicenseApplication.objects.all()
-    serializer_class = LicenseApplicationSerializer
-    lookup_field = 'pk'
 
-    def perform_destroy(self, instance):
-        # Delete all related transactions first
-        LicenseApplicationTransaction.objects.filter(license_application=instance).delete()
-        # Then delete the application itself
-        instance.delete()
+@api_view(['GET', 'POST'])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
+def level2_site_enquiry(request, application_id):
+    application = get_object_or_404(LicenseApplication, pk=application_id)
 
-# View to handle advancing the application to the next stage
-class LicenseApplicationAdvanceView(APIView):
-    def post(self, request, pk):
-        try:
-            # Fetch the application by primary key
-            application = LicenseApplication.objects.get(pk=pk)
-        except LicenseApplication.DoesNotExist:
-            return Response({"detail": "Application not found."}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        report = application.site_enquiry_report
+    except SiteEnquiryReport.DoesNotExist:
+        report = None
 
-        user = request.user
-        action = request.data.get("action", "")
-        remarks = request.data.get("remarks", "")
+    if request.method == 'POST':
+        serializer = SiteEnquiryReportSerializer(data=request.data, instance=report)
+        if serializer.is_valid():
+            serializer.save(application=application)
+            return Response(serializer.data, status=200)
+        else:
+            print(serializer.errors)    
+            return Response(serializer.errors, status=400)
 
-        try:
-            # Advance the application using the workflow service
-            advance_application(application, user, action, remarks)
-            return Response({"detail": "Application advanced successfully."}, status=status.HTTP_200_OK)
-        except ValidationError as ve:
-            # Handle validation errors
-            return Response({"detail": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
+    if report:
+        serializer = SiteEnquiryReportSerializer(report)
+        return Response(serializer.data)
+    else:
+        return Response({"detail": "No report found."}, status=404)
+
+
+@api_view(['POST'])
+@csrf_exempt
+@parser_classes([JSONParser])
+def print_license_view(request, application_id):
+    license = get_object_or_404(LicenseApplication, application_id=application_id)
+
+    if not license.is_approved:
+        return Response({"error": "License is not approved yet."}, status=403)
+
+    can_print, fee = license.can_print_license()
+
+    if not can_print:
+        return Response({
+            "error": "Print limit exceeded. Please pay ₹500 to continue printing.",
+            "fee_required": fee
+        }, status=403)
+
+    if fee > 0 and not license.print_fee_paid:
+        return Response({"error": "₹500 fee not paid yet."}, status=403)
+
+    license.record_license_print(fee_paid=(fee > 0))
+
+    return Response({
+        "success": "License printed.",
+        "print_count": license.print_count
+    })
+
+@api_view(['GET'])
+def get_location_fees(request):
+    fees = LocationFee.objects.all()
+    serializer = LocationFeeSerializer(fees, many=True)
+    return Response(serializer.data)
+
+@api_view(['GET'])
+def get_objections(request, application_id):
+    objections = Objection.objects.filter(application_id=application_id).order_by('-raised_on')
+    serializer = ObjectionSerializer(objections, many=True)
+    return Response(serializer.data)
+
+@api_view(['POST'])
+@parser_classes([MultiPartParser, FormParser])
+def resolve_objections(request, application_id):
+    try:
+        application = LicenseApplication.objects.get(application_id=application_id)
+    except LicenseApplication.DoesNotExist:
+        return Response({"error": "Application not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Update fields from form data
+    for key, value in request.data.items():
+        if hasattr(application, key):
+            setattr(application, key, value)
+
+    # Handle file field separately if needed
+    if 'photo' in request.FILES:
+        application.photo = request.FILES['photo']
+
+    # === Handle stage rollback ===
+    if application.current_stage.endswith('_objection'):
+        original_stage = application.current_stage.replace('_objection', '')
+        application.current_stage = original_stage
+
+    application.save()
+
+    # Mark related objections as resolved
+    Objection.objects.filter(application=application, resolved=False).update(
+    resolved=True,
+    resolved_on=timezone.now()
+    )
+
+    # === Log to transaction table ===
+    LicenseApplicationTransaction.objects.create(
+        license_application=application,
+        performed_by=request.user,
+        stage=application.current_stage,
+        remarks="Objection resolved and application moved back to review stage."
+    )
+
+    return Response({"message": "Objections resolved and application reverted to previous stage."})
 
 # View to fetch dashboard counts based on the user's role
-class DashboardCountsView(APIView):
-    def get(self, request):
-        role = request.user.role
+@api_view(['GET'])
+@parser_classes([JSONParser])
+def dashboard_counts(request):
+    role = request.user.role
 
-        if role == 'permit_section':
-            # Fetch counts for applications in 'permit_section' stage
-            pending_count = LicenseApplication.objects.filter(current_stage='permit_section').count()
-            approved_count = LicenseApplication.objects.filter(current_stage__in=['commissioner', 'joint_commissioner']).count()
-            rejected_by_permit_section_count = LicenseApplication.objects.filter(current_stage='rejected_by_permit_section').count()
+    level_map = {
+        'level_1': {
+            "pending": ['level_1', 'level_1_objection'],
+            "approved": 'level_2',
+            "rejected": 'rejected_by_level_1',
+        },
+        'level_2': {
+            "pending": ['level_2', 'level_2_objection'],
+            "approved": 'level_3',
+            "rejected": 'rejected_by_level_2',
+        },
+        'level_3': {
+            "pending": ['level_3', 'level_3_objection'],
+            "approved": 'level_4',
+            "rejected": 'rejected_by_level_3',
+        },
+        'level_4': {
+            "pending": ['level_4', 'level_4_objection'],
+            "approved": 'level_5',
+            "rejected": 'rejected_by_level_4',
+        },
+        'level_5': {
+            "pending": ['level_5', 'level_5_objection'],
+            "approved": 'approved',
+            "rejected": 'rejected_by_level_5',
+        }
+    }
 
-            return Response({
-                "pending": pending_count,
-                "approved": approved_count,
-                "rejected": rejected_by_permit_section_count
-            })
-        elif role == 'joint_commissioner' or role == 'commissioner':
-            # Fetch counts for applications forwarded to higher authorities
-            pending_count = LicenseApplication.objects.filter(current_stage__in=['commissioner', 'joint_commissioner']).count()
-            approved_count = LicenseApplication.objects.filter(current_stage='approved').count()
-            rejected_by_me = LicenseApplication.objects.filter(current_stage=f'rejected_by_{role}').count()
+    if role in level_map:
+        config = level_map[role]
+        counts = {}
 
-            return Response({
-                "pending": pending_count,
-                "approved": approved_count,
-                "rejected": rejected_by_me
-            })
-        elif role == 'licensee':
-            # Fetch counts for applications submitted by the licensee
-            applied_count = LicenseApplication.objects.filter(current_stage='permit_section').count()
-            pending_count = LicenseApplication.objects.filter(current_stage__in=['commissioner', 'joint_commissioner']).count()
-            approved_count = LicenseApplication.objects.filter(current_stage='approved', is_approved=True).count()
-            rejected_count = LicenseApplication.objects.filter(current_stage__in=['rejected_by_permit_section', 'rejected_by_commissioner', 'rejected_by_joint_commissioner']).count()
+        for key, stage in config.items():
+            if isinstance(stage, list):
+                counts[key] = LicenseApplication.objects.filter(current_stage__in=stage).count()
+            else:
+                counts[key] = LicenseApplication.objects.filter(current_stage=stage).count()
 
-            return Response({
-                "applied": applied_count,
-                "pending": pending_count,
-                "approved": approved_count,
-                "rejected": rejected_count
-            })
-        else:
-            # Handle invalid roles
-            return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(counts)
 
-# View to fetch application lists based on the user's role
-class ApplicationListView(APIView):
-    def get(self, request):
-        role = request.user.role
+    elif role == 'licensee':
+        counts = {
+            "applied": LicenseApplication.objects.filter(current_stage='level_1').count(),
+            "pending": LicenseApplication.objects.filter(current_stage__in=[
+                'level_1_objection',
+                'level_2', 'level_2_objection',
+                'level_3', 'level_3_objection',
+                'level_4', 'level_4_objection',
+                'level_5', 'level_5_objection',
+            ]).count(),
+            "approved": LicenseApplication.objects.filter(
+                current_stage='approved', is_approved=True
+            ).count(),
+            "rejected": LicenseApplication.objects.filter(
+                current_stage__in=
+                [
+                    'rejected_by_level_1', 
+                    'rejected_by_level_2',
+                    'rejected_by_level_3',
+                    'rejected_by_level_4',
+                    'rejected_by_level_5',
+                    'rejected',
+                ]
+            ).count()
+        }
+        return Response(counts)
 
-        if role == 'permit_section':
-            # Fetch applications for 'permit_section' role
-            pending_apps = LicenseApplication.objects.filter(current_stage='permit_section')
-            approved_apps = LicenseApplication.objects.filter(current_stage__in=['commissioner', 'joint_commissioner'])
-            rejected_by_permit_section_apps = LicenseApplication.objects.filter(current_stage='rejected_by_permit_section', is_approved=False)
-        
-            return Response({
-                "pending": LicenseApplicationSerializer(pending_apps, many=True).data,
-                "approved": LicenseApplicationSerializer(approved_apps, many=True).data,
-                "rejected": LicenseApplicationSerializer(rejected_by_permit_section_apps, many=True).data,
-            })
+    return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
 
-        elif role in ['joint_commissioner', 'commissioner']:
-            # Fetch applications for 'joint_commissioner' or 'commissioner' roles
-            pending_apps = LicenseApplication.objects.filter(current_stage__in=['commissioner', 'joint_commissioner'])
-            approved_apps = LicenseApplication.objects.filter(current_stage='approved')
-            rejected_by_me = LicenseApplication.objects.filter(current_stage__in=['rejected_by_commissioner', 'rejected_by_joint_commissioner'])
 
-            return Response({
-                "pending": LicenseApplicationSerializer(pending_apps, many=True).data,
-                "approved": LicenseApplicationSerializer(approved_apps, many=True).data,
-                "rejected": LicenseApplicationSerializer(rejected_by_me, many=True).data
-            })
-        
-        elif role == 'licensee':
-            # Fetch applications for 'licensee' role
-            applied_apps = LicenseApplication.objects.filter(current_stage='permit_section')
-            pending_apps = LicenseApplication.objects.filter(current_stage__in=['commissioner', 'joint_commissioner'])
-            approved_apps = LicenseApplication.objects.filter(current_stage='approved')
-            rejected_apps = LicenseApplication.objects.filter(current_stage__in=['rejected_by_permit_section', 'rejected_by_commissioner', 'rejected_by_joint_commissioner'])
+@api_view(['GET'])
+@parser_classes([JSONParser])
+def application_group(request):
+    role = request.user.role
 
-            return Response({
-                "applied": LicenseApplicationSerializer(applied_apps, many=True).data,
-                "pending": LicenseApplicationSerializer(pending_apps, many=True).data,
-                "approved": LicenseApplicationSerializer(approved_apps, many=True).data,
-                "rejected": LicenseApplicationSerializer(rejected_apps, many=True).data
-            })
+    level_map = {
+        'level_1': {
+            "pending": ['level_1', 'level_1_objection'],
+            "approved": ['level_2'],
+            "rejected": ['rejected_by_level_1'],
+        },
+        'level_2': {
+            "pending": ['level_2', 'level_2_objection'],
+            "approved": ['level_3'],
+            "rejected": ['rejected_by_level_2'],
+        },
+        'level_3': {
+            "pending": ['level_3', 'level_3_objection'],
+            "approved": ['level_4'],
+            "rejected": ['rejected_by_level_3'],
+        },
+        'level_4': {
+            "pending": ['level_4', 'level_4_objection'],
+            "approved": ['level_5'],
+            "rejected": ['rejected_by_level_4'],
+        },
+        'level_5': {
+            "pending": ['level_5', 'level_5_objection'],
+            "approved": ['approved'],
+            "rejected": ['rejected_by_level_5'],
+        }
+    }
 
-        # Handle invalid roles
-        return Response({"detail": "Invalid role"}, status=400)
+    if role in level_map:
+        result = {}
+        config = level_map[role]
+
+        for key, stages in config.items():
+            queryset = LicenseApplication.objects.filter(current_stage__in=stages)
+
+            # Add is_approved=False filter for rejected
+            if key == 'rejected':
+                queryset = queryset.filter(is_approved=False)
+
+            result[key] = LicenseApplicationSerializer(queryset, many=True).data
+
+        return Response(result)
+
+    elif role == 'licensee':
+        result = {
+            "applied": LicenseApplicationSerializer(
+                LicenseApplication.objects.filter(current_stage='level_1'),
+                many=True
+            ).data,
+            "pending": LicenseApplicationSerializer(
+                LicenseApplication.objects.filter(current_stage__in=[
+                    'level_2', 'level_2_objection',
+                    'level_3', 'level_3_objection',
+                    'level_4', 'level_4_objection',
+                    'level_5', 'level_5_objection'
+                ]),
+                many=True
+            ).data,
+            "approved": LicenseApplicationSerializer(
+                LicenseApplication.objects.filter(current_stage='approved'),
+                many=True
+            ).data,
+            "rejected": LicenseApplicationSerializer(
+                LicenseApplication.objects.filter(current_stage__in=[
+                    'rejected_by_level_1', 'rejected_by_level_2',
+                    'rejected_by_level_3', 'rejected_by_level_4',
+                    'rejected_by_level_5', 'rejected'
+                ]),
+                many=True
+            ).data
+        }
+        return Response(result)
+
+    return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)

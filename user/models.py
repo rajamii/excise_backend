@@ -54,10 +54,12 @@ class CustomUser(AbstractUser, PermissionsMixin):
     
     ROLE_CHOICES = (
         ('site_admin', 'Site Admin'),
-        ('commissioner', 'Commissioner'),
-        ('joint_commissioner', 'Joint Commissioner'),
-        ('permit_section', 'Permit Section'),
         ('licensee', 'Licensee'),
+        ('level_1', 'Level 1'),
+        ('level_2', 'Level 2'),
+        ('level_3', 'Level 3'),
+        ('level_4', 'Level 4'),
+        ('level_5', 'Level 5'),
     )
     role = models.CharField(max_length=30, choices=ROLE_CHOICES, default='2')
 

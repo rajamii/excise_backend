@@ -191,7 +191,10 @@ def send_otp_API(request):
 
         print(f"OTP sent to {phonenumber}: {otp.otp}")  # For debugging
 
-        return JsonResponse({'index': otp.index})
+        return JsonResponse({
+            'index': otp.index,
+            'otp': otp.otp  # Return the OTP index and OTP value
+        })
 
     return JsonResponse({'error': 'Invalid request method'}, status=405)
 
