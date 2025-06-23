@@ -1,9 +1,7 @@
 from rest_framework import generics, response, status
+from rest_framework.exceptions import NotFound
 from masters import models as masters_model
-from masters.serializers import (licensecategory_serializer,
-                                 licensetype_serializer,
-                                 placemaster_serializer)
-
+from masters import serializers as ser
 from roles.models import Role
 from roles.views import is_role_capable_of
 
@@ -17,7 +15,7 @@ class LicenseCategoryAPI(generics.ListCreateAPIView,
     queryset = masters_model.LicenseCategory.objects.all()
 
     # Define the serializer for LicenseCategory
-    serializer_class = licensecategory_serializer.LicenseCategorySerializer
+    serializer_class = ser.LicenseCategorySerializer
 
     lookup_field = 'id'  # Define the field for lookup (by id)
 
@@ -31,7 +29,7 @@ class LicenseCategoryAPI(generics.ListCreateAPIView,
         ) is False:
             return response.Response(status=status.HTTP_401_UNAUTHORIZED)
 
-        serializer = licensecategory_serializer.LicenseCategorySerializer(
+        serializer = ser.LicenseCategorySerializer(
             data=request.data)
 
         if serializer.is_valid():
@@ -55,7 +53,7 @@ class LicenseCategoryAPI(generics.ListCreateAPIView,
         if id:
             # Fetch a specific LicenseCategory by id
             license_category = masters_model.LicenseCategory.objects.get(id=id)
-            serializer = licensecategory_serializer.LicenseCategorySerializer(
+            serializer = ser.LicenseCategorySerializer(
                 license_category)
             return response.Response(serializer.data,
                                      status=status.HTTP_200_OK)
@@ -63,7 +61,7 @@ class LicenseCategoryAPI(generics.ListCreateAPIView,
         # Fetch all LicenseCategories if no specific id provided
 
         license_categories = masters_model.LicenseCategory.objects.all()
-        serializer = licensecategory_serializer.LicenseCategorySerializer(
+        serializer = ser.LicenseCategorySerializer(
             license_categories,
             many=True
         )
@@ -81,7 +79,7 @@ class LicenseCategoryAPI(generics.ListCreateAPIView,
             return response.Response(status=status.HTTP_401_UNAUTHORIZED)
 
         license_category = masters_model.LicenseCategory.objects.get(id=id)
-        serializer = licensecategory_serializer.LicenseCategorySerializer(
+        serializer = ser.LicenseCategorySerializer(
             license_category, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
@@ -116,7 +114,7 @@ class LicenseTypeAPI(generics.ListCreateAPIView,
 
     queryset = masters_model.LicenseType.objects.all()  # Fetch all license types
     # Define the serializer for LicenseType
-    serializer_class = licensetype_serializer.LicenseTypeSerializer
+    serializer_class = ser.LicenseTypeSerializer
     lookup_field = 'id'  # Define the field for lookup (by id)
 
     # POST request to create a new LicenseType
@@ -129,7 +127,7 @@ class LicenseTypeAPI(generics.ListCreateAPIView,
         ) is False:
             return response.Response(status=status.HTTP_401_UNAUTHORIZED)
 
-        serializer = licensetype_serializer.LicenseTypeSerializer(
+        serializer = ser.LicenseTypeSerializer(
             data=request.data)
         if serializer.is_valid():
             serializer.save()
@@ -204,7 +202,7 @@ class LicenseTypeAPI(generics.ListCreateAPIView,
 class SubDivisonApi(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAPIView):
     queryset = masters_model.Subdivision.objects.all()  # Fetch all subdivisions
     # Define the serializer for Subdivision
-    serializer_class = placemaster_serializer.SubDivisonSerializer
+    serializer_class = ser.SubDivisionSerializer
     lookup_field = 'id'  # Define the field for lookup (by id)
 
     def post(self, request, format=None):
@@ -217,7 +215,7 @@ class SubDivisonApi(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAP
         ) is False:
             return response.Response(status=status.HTTP_401_UNAUTHORIZED)
 
-        serializer = placemaster_serializer.SubDivisonSerializer(
+        serializer = ser.SubDivisonSerializer(
             data=request.data)
         if serializer.is_valid():
             serializer.save()
@@ -302,7 +300,7 @@ class SubDivisonApi(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAP
 class DistrictAPI(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAPIView):
     queryset = masters_model.District.objects.all()  # Fetch all districts
     # Define the serializer for District
-    serializer_class = placemaster_serializer.DistrictSerializer
+    serializer_class = ser.DistrictSerializer
     lookup_field = 'id'  # Define the field for lookup (by id)
 
     def post(self, request, format=None):
@@ -389,7 +387,7 @@ class DistrictAPI(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAPIV
 class PoliceStationAPI(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAPIView):
     queryset = masters_model.PoliceStation.objects.all()  # Fetch all police stations
     # Define the serializer for PoliceStation
-    serializer_class = placemaster_serializer.PoliceStationSerializer
+    serializer_class = ser.PoliceStationSerializer
     lookup_field = 'id'  # Define the field for lookup (by id)
 
     def post(self, request, format=None):
@@ -402,7 +400,7 @@ class PoliceStationAPI(generics.ListCreateAPIView, generics.RetrieveUpdateDestro
         ) is False:
             return response.Response(status=status.HTTP_401_UNAUTHORIZED)
 
-        serializer = placemaster_serializer.PoliceStationSerializer(
+        serializer = ser.PoliceStationSerializer(
             data=request.data)
         if serializer.is_valid():
             serializer.save()
@@ -422,13 +420,13 @@ class PoliceStationAPI(generics.ListCreateAPIView, generics.RetrieveUpdateDestro
         if id:
             # Fetch a specific PoliceStation by id
             policestation = masters_model.PoliceStation.objects.get(id=id)
-            serializer = placemaster_serializer.PoliceStationSerializer(
+            serializer = ser.PoliceStationSerializer(
                 policestation)
             return response.Response(serializer.data, status=status.HTTP_200_OK)
 
         # Fetch all PoliceStations if no specific id provided
         police_stations = masters_model.PoliceStation.objects.all()
-        serializer = placemaster_serializer.PoliceStationSerializer(
+        serializer = ser.PoliceStationSerializer(
             police_stations, many=True)
         return response.Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -443,7 +441,7 @@ class PoliceStationAPI(generics.ListCreateAPIView, generics.RetrieveUpdateDestro
             return response.Response(status=status.HTTP_401_UNAUTHORIZED)
 
         policestation = masters_model.PoliceStation.objects.get(id=id)
-        serializer = placemaster_serializer.PoliceStationSerializer(
+        serializer = ser.PoliceStationSerializer(
             policestation, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
@@ -463,6 +461,6 @@ class PoliceStationAPI(generics.ListCreateAPIView, generics.RetrieveUpdateDestro
         try:
             policestation = masters_model.PoliceStation.objects.get(id=id)
             policestation.delete()
-            return response.Response(status=status.HTTP_205_RESET_CONTENT)
+            return response.Response(status=status.HTTP_204_NO_CONTENT)
         except masters_model.PoliceStation.DoesNotExist:
             return response.Response(status=status.HTTP_404_NOT_FOUND)
