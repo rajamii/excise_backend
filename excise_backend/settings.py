@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 
 import os
 from pathlib import Path
+from datetime import timedelta
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -86,10 +87,18 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'excise_backend.wsgi.application'
 
+# Rest Framework settings
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ],
+}
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),  # Access token lifetime
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),  # Refresh token lifetime
+    'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
 # Database

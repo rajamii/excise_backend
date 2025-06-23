@@ -32,5 +32,4 @@ urlpatterns = [
     # OTP
     path('otp/' ,send_otp_API , name='send-otp'),
     path('otp/login/' , verify_otp_API , name='otp-login'),
-
 ]
