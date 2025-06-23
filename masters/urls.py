@@ -8,10 +8,6 @@ from .views import (
     PoliceStationAPI,
 )
 
-from salesman_barman import urls as salesman_barman_urls
-from company_registration import urls as company_registration_urls
-from contact_us import urls as contact_us_urls
-
 
 urlpatterns = [
 
