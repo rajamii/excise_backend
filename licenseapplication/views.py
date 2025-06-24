@@ -49,6 +49,21 @@ def license_application_detail(request, pk):
     return Response(serializer.data)
 
 
+@api_view(['DELETE'])
+def delete_license_application(request, application_id):
+    application = get_object_or_404(LicenseApplication, application_id=application_id)
+
+    # Only allow deletion if current stage is 'level_1'
+    if application.current_stage != 'level_1':
+        return Response(
+            {'detail': 'Deletion not allowed. Application has already been forwarded.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    application.delete()
+    return Response({'detail': 'Application deleted successfully.'}, status=status.HTTP_204_NO_CONTENT)
+
+
 @api_view(['POST'])
 @parser_classes([JSONParser])
 def advance_license_application(request, application_id):
@@ -89,7 +104,6 @@ def advance_license_application(request, application_id):
 
     except ValidationError as ve:
         return Response({"detail": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
-
 
 
 @api_view(['GET', 'POST'])

@@ -12,7 +12,9 @@ from .views import (
     application_group,
     get_location_fees,
     get_objections,
-    resolve_objections
+    resolve_objections,
+    print_license_view,
+    delete_license_application
 )
 
 urlpatterns = [
@@ -47,6 +49,10 @@ urlpatterns = [
     re_path(r'(?P<application_id>.+)/objections/$', get_objections, name='get_objections'),
 
     re_path(r'(?P<application_id>.+)/resolve-objections/$', resolve_objections, name='resolve_objections'),
+
+    re_path(r'(?P<application_id>.+)/print/$', print_license_view, name='print_license'),
+
+    re_path(r'(?P<application_id>.+)/delete/$', delete_license_application, name='delete_application'),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
