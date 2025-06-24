@@ -4,6 +4,7 @@ from .views import (
     UserAPI,
     LoginAPI,
     LogoutAPI,
+    TokenRefreshAPI,
     send_otp_API,
     verify_otp_API,
     get_captcha
@@ -16,6 +17,9 @@ urlpatterns = [
     # captcha
     path('get_captcha/', get_captcha, name='captcha'), 
     path('',include('captcha.urls')), 
+
+    # Token Refresh
+    path('token/refresh/', TokenRefreshAPI.as_view(), name='token-refresh'),
 
     # path('user/', include('djano.contrib.auth.urls')),
     # User CRUD
@@ -32,5 +36,4 @@ urlpatterns = [
     # OTP
     path('otp/' ,send_otp_API , name='send-otp'),
     path('otp/login/' , verify_otp_API , name='otp-login'),
-
 ]
