@@ -13,6 +13,7 @@ from captcha.models import CaptchaStore
 from .serializers import UserRegistrationSerializer, LoginSerializer
 from .otp import get_new_otp, verify_otp
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenRefreshView
 from captcha.helpers import captcha_image_url
 from roles.views import is_role_capable_of
 from roles.models import Role
@@ -29,6 +30,16 @@ def get_captcha(request):
     })
     return send_response
 
+class TokenRefreshAPI(TokenRefreshView):
+    # TokenRefreshAPI class handles the token refresh functionality
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        return response({
+            'success': True,
+            'statusCode': status.HTTP_200_OK,
+            'message': 'Token refreshed successfully',
+            'new_access_token': response.data['access']
+        }, status=status.HTTP_200_OK)
 
 '''
  UserAPI class handles user registration, fetching user data,
