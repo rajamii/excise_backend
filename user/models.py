@@ -6,8 +6,6 @@ from .validators import validate_name, validate_numbers
 from roles.models import Role
 from django.utils import timezone
 import uuid 
-
-
 import random
 
 # from django.core.exceptions import ObjectDoesNotExist
@@ -149,6 +147,9 @@ class OTP(models.Model):
 
     def is_expired(self):
         return (timezone.now() - self.created_at).total_seconds() > 600  # 10 minutes
+    
+    def clean_expired_otps():
+        OTP.objects.filter(used=False, created_at__lt=timezone.now() - timezone.timedelta(minutes=10)).delete()
 
     def __str__(self):
         return f"{self.phone_number} - {self.otp}"   

@@ -4,6 +4,7 @@ from django.contrib.auth.password_validation import validate_password
 from captcha.models import CaptchaStore
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
+import re
 
 # --- User Registration & Login Serializers ---
 
@@ -33,6 +34,11 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         if data['password'] != data['confirm_password']:
             raise serializers.ValidationError({"password": "Passwords do not match."})
         return data
+    
+    def validate_phonenumber(self, value):
+        if not re.match(r'^\d{10}$', value):
+            raise serializers.ValidationError("Phone number must be 10 digits.")
+        return value
 
     def create(self, validated_data):
         validated_data.pop('confirm_password', None)
