@@ -1,8 +1,6 @@
 from rest_framework import serializers
 from masters import models as master_models
 
-
-
 class DistrictSerializer(serializers.ModelSerializer):
     state = serializers.CharField(source='state_code.state', read_only=True)
 
@@ -24,3 +22,19 @@ class PoliceStationSerializer(serializers.ModelSerializer):
     class Meta: 
         model = master_models.PoliceStation
         fields = '__all__'  # Corrected from '_all_'
+
+class LicenseCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = master_models.LicenseCategory
+        fields = [
+            'id',
+            'licenseCategoryDescription',
+        ]
+
+class LicenseTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = master_models.LicenseType
+        fields = [
+            'id',
+            'licenseType',
+        ]

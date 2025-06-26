@@ -59,6 +59,7 @@ class Official(models.Model):
     phone_number = models.CharField(
         max_length=20, 
         validators=[validate_phone_number],
+        default='00000000000'
     )
     email = models.EmailField(
         validators=[validate_email]

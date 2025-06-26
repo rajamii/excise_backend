@@ -3,14 +3,10 @@ from django.urls import path , include
 from .views import (
     LicenseCategoryAPI,
     LicenseTypeAPI,
-    SubDivisonApi,
+    SubDivisionApi,
     DistrictAPI,
     PoliceStationAPI,
 )
-
-from salesman_barman import urls as salesman_barman_urls
-from company_registration import urls as company_registration_urls
-from contact_us import urls as contact_us_urls
 
 
 urlpatterns = [
@@ -37,12 +33,12 @@ urlpatterns = [
     path('districts/delete/<int:id>/'       , DistrictAPI.as_view(), name='district-delete'),
 
     # Subdivision URLs
-    path('subdivisions/list/'                , SubDivisonApi.as_view(), name='subdivision-list'),
-    path('subdivisions/detail/<int:id>/'     , SubDivisonApi.as_view(), name='subdivision-detail'),
-    path('subdivisions/detail/<int:dc>/'     , SubDivisonApi.as_view(), name='subdivision-detail-by-code'),
-    path('subdivisions/create/'              , SubDivisonApi.as_view(), name='subdivision-create'),
-    path('subdivisions/update/<int:id>/'     , SubDivisonApi.as_view(), name='subdivision-update'),
-    path('subdivisions/delete/<int:id>/'     , SubDivisonApi.as_view(), name='subdivision-delete'),
+    path('subdivisions/list/'                , SubDivisionApi.as_view(), name='subdivision-list'),
+    path('subdivisions/detail/<int:id>/'     , SubDivisionApi.as_view(), name='subdivision-detail'),
+    path('subdivisions/detail/<int:dc>/'     , SubDivisionApi.as_view(), name='subdivision-detail-by-code'),
+    path('subdivisions/create/'              , SubDivisionApi.as_view(), name='subdivision-create'),
+    path('subdivisions/update/<int:id>/'     , SubDivisionApi.as_view(), name='subdivision-update'),
+    path('subdivisions/delete/<int:id>/'     , SubDivisionApi.as_view(), name='subdivision-delete'),
 
     # Police Station URLs
     path('policestations/list/'             , PoliceStationAPI.as_view(), name='policestation-list'),

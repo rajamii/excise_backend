@@ -1,7 +1,7 @@
 from django.contrib import admin
-# from .models import SalesmanBarmanDetails, DocumentsDetails
+from .models import CustomUser, CustomUserManager
 
-# # Register the SalesmanBarmanDetails model in the admin site
+# # Register the models in the admin site
 # @admin.register(SalesmanBarmanDetails)
 # class SalesmanBarmanDetailsAdmin(admin.ModelAdmin):
 #     list_display = ('first_name', 'last_name', 'mode_of_operation', 'application_id', 'application_date')
