@@ -26,11 +26,10 @@ class NodalOfficer(models.Model):
         default="IT Cell", 
         validators=[validate_non_empty]  
     )
-    phoneNumber = models.CharField(
+    phone_number = models.CharField(
         max_length=20, 
         default="(035) 9220-3963", 
-        validators=[validate_phone_number], 
-        db_column='phone_number'  
+        validators=[validate_phone_number],  
     )
     email = models.EmailField(
         default="helpdesk-excise@sikkim.gov.in", 
@@ -57,10 +56,9 @@ class Official(models.Model):
         max_length=255, 
         validators=[validate_designation]
     )
-    phoneNumber = models.CharField(
+    phone_number = models.CharField(
         max_length=20, 
         validators=[validate_phone_number],
-        db_column='phone_number'
     )
     email = models.EmailField(
         validators=[validate_email]
@@ -87,10 +85,9 @@ class PublicInformationOfficer(Official):
         (UNSET , 'unset'),
     ]
 
-    locationType = models.CharField(
+    location_type = models.CharField(
         max_length=20,
         choices=LOCATION_TYPE_CHOICES,
-        db_column='location_type',
         default=UNSET,
     )
     location = models.CharField(max_length=100)  # Specific location name
@@ -110,11 +107,10 @@ class PublicInformationOfficer(Official):
 class DirectorateAndDistrictOfficials(models.Model):
     name = models.CharField(max_length=255)
     designation = models.CharField(max_length=255)
-    phoneNumber = models.CharField(
+    phone_number = models.CharField(
         max_length=20, 
         blank=True, 
         null=True, 
-        db_column='phone_number'
     )
     email = models.EmailField(
         validators=[validate_email], 
@@ -137,19 +133,17 @@ class GrievanceRedressalOfficer(Official):
         ('IT Cell', 'IT Cell'),
     ]
 
-    officeLevel = models.CharField(
+    office_level = models.CharField(
         max_length=255, 
         choices=OFFICE_LEVEL_CHOICES, 
         default='Excise Head Office',
         validators=[validate_office_level],
-        db_column='office_level'
     )
-    officeSubLevel = models.CharField(
+    office_sub_level = models.CharField(
         max_length=255, 
         null=True, 
         blank=True,
         validators=[validate_non_empty],
-        db_column='office_sub_level'
     )
 
     def __str__(self):

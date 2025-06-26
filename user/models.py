@@ -17,7 +17,7 @@ class CustomUserManager(BaseUserManager):
         username = self.generate_unique_username(
             extra_fields['first_name'],
             extra_fields['last_name'],
-            extra_fields['phonenumber'],
+            extra_fields['phone_number'],
             extra_fields['district'],
             extra_fields['subdivision']
         )
@@ -43,7 +43,7 @@ class CustomUserManager(BaseUserManager):
         extra_fields.setdefault('is_superuser', True)
         extra_fields.setdefault('first_name', 'Admin')
         extra_fields.setdefault('last_name', 'User')
-        extra_fields.setdefault('phonenumber', '9999999999')
+        extra_fields.setdefault('phone_number', '9999999999')
         extra_fields.setdefault('district', 117)
         extra_fields.setdefault('subdivision', 1001)
         return self.create_user(email, password, role='site_admin', **extra_fields)
@@ -61,7 +61,7 @@ class CustomUser(AbstractUser, PermissionsMixin):
         ('level_4', 'Level 4'),
         ('level_5', 'Level 5'),
     )
-    role = models.CharField(max_length=30, choices=ROLE_CHOICES, default='2')
+    role = models.CharField(max_length=30, choices=ROLE_CHOICES, default='licensee')
 
     class Meta:
         db_table = 'custom_user'
@@ -71,7 +71,7 @@ class CustomUser(AbstractUser, PermissionsMixin):
     first_name = models.CharField(max_length=50, null=False, validators=[validate_name])
     middle_name = models.CharField(max_length=50, null=True, validators=[validate_name])
     last_name = models.CharField(max_length=50, null=False, validators=[validate_name])
-    phonenumber = models.CharField(max_length=10, default='9999999999', validators=[validate_Numbers])
+    phone_number = models.CharField(max_length=10, default='9999999999', validators=[validate_Numbers])
     district = models.IntegerField(default=117)
     subdivision = models.IntegerField(default=1001)
     address = models.CharField(max_length=70, null=True)

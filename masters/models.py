@@ -3,54 +3,73 @@ from .validators import validate_name , validate_Numbers
 
 #License Category
 class LicenseCategory(models.Model):
-    licenseCategoryDescription= models.CharField(max_length=200,default=None,null=False)
+    license_category= models.CharField(max_length=200,default=None,null=False)
 
 #License Type  
 class LicenseType(models.Model):
-    licenseType= models.CharField(max_length=200,default=None,null=False)    
+    license_type= models.CharField(max_length=200,default=None,null=False)    
 
 #State 
 class State(models.Model):
-    State = models.CharField(default='Sikkim')
-    StateNameLL=models.CharField(max_length=30,validators=[validate_name])
-    StateCode= models.IntegerField(unique=True,default=11)
-    IsActive= models.BooleanField(default=True)
+    state = models.CharField(default='Sikkim')
+    state_name_ll = models.CharField(max_length=30,validators=[validate_name])
+    state_code = models.IntegerField(unique=True,default=11,)
+    is_active = models.BooleanField(default=True)
 
     def _str_(self):
-        return self.State
+        return self.state
 
 #District
 class District(models.Model):
-
-    District=models.CharField(max_length=30,validators=[validate_name])
-    DistrictNameLL=models.CharField(max_length=30,validators=[validate_name],null=True)
+    district = models.CharField(max_length=30,validators=[validate_name])
+    district_name_ll = models.CharField(max_length=30,validators=[validate_name],null=True)
     # if Null !=True:every Subdivision would require a valid District to be assigned. 
-    DistrictCode= models.IntegerField(unique=True,default=117)
-    IsActive= models.BooleanField(default=True)
-    StateCode= models.ForeignKey(State, to_field='StateCode', on_delete=models.CASCADE,related_name='districts',null=True)
+    district_code = models.IntegerField(unique=True,default=117)
+    is_active = models.BooleanField(default=True)
+    state_code = models.ForeignKey(
+        State, 
+        to_field='state_code', 
+        on_delete=models.CASCADE,
+        related_name='districts',
+        null=True,
+        db_column='state_code' 
+    )
 
     def _str_(self):
-        return self.District
+        return self.district
 
 #Subdivision
 class Subdivision(models.Model):
-
-    SubDivisionName=models.CharField(max_length=30,validators=[validate_name],null=True)
-    SubDivisionNameLL=models.CharField(max_length=30,validators=[validate_name],null=True)
-    SubDivisionCode= models.IntegerField(unique=True,default=1001)
-    IsActive= models.BooleanField(default=True)
-    DistrictCode = models.ForeignKey(District, to_field='DistrictCode', on_delete=models.CASCADE, related_name='subdivisions', null=True)
+    subdivision = models.CharField(max_length=30,validators=[validate_name],null=True)
+    subdivision_name_ll = models.CharField(max_length=30,validators=[validate_name],null=True)
+    subdivision_code = models.IntegerField(unique=True,default=1001)
+    is_active = models.BooleanField(default=True)
+    district_code = models.ForeignKey(
+        District, 
+        to_field='district_code', 
+        on_delete=models.CASCADE, 
+        related_name='subdivisions', 
+        null=True,
+        db_column='district_code', 
+        )
 
     def _str_(self):
-        return self.SubDivisionName
+        return self.subdivision
 
 #PoliceStation
 class PoliceStation(models.Model):
-    PoliceStationName=models.CharField(max_length=30,validators=[validate_name],null=True)
-    PoliceStationCode= models.IntegerField(unique=True,default=11999)
-    IsActive= models.BooleanField(default=True)
-    SubDivisionCode=models.ForeignKey(Subdivision, to_field='SubDivisionCode', on_delete=models.CASCADE, related_name='policestation', null=True)
+    police_station = models.CharField(max_length=30,validators=[validate_name],null=True)
+    police_station_code= models.IntegerField(unique=True,default=11999)
+    is_active= models.BooleanField(default=True)
+    subdivision_code=models.ForeignKey(
+        Subdivision, 
+        to_field='subdivision_code',
+        on_delete=models.CASCADE, 
+        related_name='policestation', 
+        null=True,
+        db_column='subdivision_code'
+    )
     def _str_(self):
-        return self.PoliceStationName
+        return self.police_station
            
     

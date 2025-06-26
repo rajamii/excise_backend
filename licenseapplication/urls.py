@@ -14,7 +14,8 @@ from .views import (
     get_objections,
     resolve_objections,
     print_license_view,
-    delete_license_application
+    delete_license_application,
+    site_enquiry_detail
 )
 
 urlpatterns = [
@@ -53,6 +54,8 @@ urlpatterns = [
     re_path(r'(?P<application_id>.+)/print/$', print_license_view, name='print_license'),
 
     re_path(r'(?P<application_id>.+)/delete/$', delete_license_application, name='delete_application'),
+
+    re_path(r'(?P<application_id>.+)/site-detail/$', site_enquiry_detail, name='site_enquiry_detail'),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

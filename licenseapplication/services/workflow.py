@@ -54,18 +54,18 @@ def advance_application(application, user, remarks="", action=None, new_license_
         )
 
     elif action == "approve":
-        # Treat rejection stage as the original stage for logic
         logical_stage = expected_stage if not is_rejected else expected_stage
+        constructed_remarks = remarks or ""
 
-        # Stage-specific logic
         if logical_stage == 'level_1':
-            if application.fee_calculated:
+            if application.is_fee_calculated:
                 raise ValidationError("Fee already calculated for this application.")
             if fee_amount is None:
                 raise ValidationError("Fee amount must be provided.")
             try:
-                application.yearlyLicenseFee = str(float(fee_amount))
-                application.fee_calculated = True
+                application.yearly_license_fee = str(float(fee_amount))
+                application.is_fee_calculated = True
+                constructed_remarks += f"\nYearly License Fee set to ₹{fee_amount}"
             except ValueError:
                 raise ValidationError("Invalid fee amount format.")
 
@@ -73,8 +73,12 @@ def advance_application(application, user, remarks="", action=None, new_license_
             if not SiteEnquiryReport.objects.filter(application=application).exists():
                 raise ValidationError("Site Enquiry Report must be filled before advancing.")
             if new_license_category:
-                application.licenseCategory = new_license_category.licenseCategoryDescription
-                application.license_category_updated = True
+                old_category = application.license_category
+                application.license_category = new_license_category.license_category
+                application.is_license_category_updated = True
+                constructed_remarks += (
+                    f"\nLicense category changed from '{old_category}' to '{new_license_category.license_category}'"
+                )
 
         next_stage = stage_transitions.get(logical_stage)
         if not next_stage:
@@ -91,7 +95,7 @@ def advance_application(application, user, remarks="", action=None, new_license_
             license_application=application,
             performed_by=user,
             stage=application.current_stage,
-            remarks=remarks or (f"License category updated to {new_license_category}" if new_license_category else "")
+            remarks=constructed_remarks.strip()
         )
 
     elif action == "raise_objection":

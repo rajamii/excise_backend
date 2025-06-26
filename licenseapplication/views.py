@@ -65,13 +65,12 @@ def delete_license_application(request, application_id):
 
 
 @api_view(['POST'])
-@parser_classes([JSONParser])
 def advance_license_application(request, application_id):
     application = get_object_or_404(LicenseApplication, pk=application_id) 
     user = request.user
 
     remarks = request.data.get("remarks", "")
-    fee_amount = request.data.get("feeAmount")
+    fee_amount = request.data.get("fee_amount")
     new_license_category_id = request.data.get("new_license_category")
     action = request.data.get("action")
     objections = request.data.get("objections", [])  # objection fields with remarks
@@ -107,10 +106,10 @@ def advance_license_application(request, application_id):
 
 
 @api_view(['GET', 'POST'])
-@parser_classes([MultiPartParser, FormParser, JSONParser])
+@parser_classes([MultiPartParser, FormParser])
 def level2_site_enquiry(request, application_id):
     application = get_object_or_404(LicenseApplication, pk=application_id)
-
+    print(request.data)
     try:
         report = application.site_enquiry_report
     except SiteEnquiryReport.DoesNotExist:
@@ -130,6 +129,13 @@ def level2_site_enquiry(request, application_id):
         return Response(serializer.data)
     else:
         return Response({"detail": "No report found."}, status=404)
+    
+    
+@api_view(['GET'])
+def site_enquiry_detail(request, application_id):
+    application = get_object_or_404(SiteEnquiryReport, application_id=application_id)
+    serializer = SiteEnquiryReportSerializer(application)
+    return Response(serializer.data)
 
 
 @api_view(['POST'])
@@ -196,8 +202,8 @@ def resolve_objections(request, application_id):
     application.save()
 
     # Mark related objections as resolved
-    Objection.objects.filter(application=application, resolved=False).update(
-    resolved=True,
+    Objection.objects.filter(application=application, is_resolved=False).update(
+    is_resolved=True,
     resolved_on=timezone.now()
     )
 

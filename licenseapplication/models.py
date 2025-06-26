@@ -2,6 +2,7 @@ from django.db import models, transaction
 from django.core.exceptions import ValidationError
 from django.utils.timezone import now
 from . import helpers
+from masters.models import District
 
 def upload_document_path(instance, filename):
     return f'license_application/{instance.application_id}/{filename}'
@@ -14,55 +15,55 @@ class LicenseApplication(models.Model):
     application_id = models.CharField(max_length=30, primary_key=True, db_index=True)
 
     # Select License
-    exciseDistrict = models.CharField(max_length=100, db_column='excise_district')
-    licenseCategory = models.CharField(max_length=100, db_column='license_category')
-    exciseSubDivision = models.CharField(max_length=100, db_column='excise_sub_division')
+    excise_district = models.CharField(max_length=100)
+    license_category = models.CharField(max_length=100)
+    excise_subdivision = models.CharField(max_length=100)
     license = models.CharField(max_length=100)
 
     # Key Info
-    licenseType = models.CharField(max_length=100, db_column='license_type')
-    establishmentName = models.CharField(max_length=255, db_column='establishment_name')
-    mobileNumber = models.BigIntegerField(db_column='mobile_number')
-    emailId = models.EmailField(db_column='email_id')
-    licenseNo = models.BigIntegerField(null=True, blank=True, db_column='license_no')
-    initialGrantDate = models.DateField(null=True, blank=True, db_column='initial_grant_date')
-    renewedFrom = models.DateField(null=True, blank=True, db_column='renewed_from')
-    validUpTo = models.DateField(null=True, blank=True, db_column='valid_up_to')
-    yearlyLicenseFee = models.CharField(max_length=100, null=True, blank=True, db_column='yearly_license_fee')
-    licenseNature = models.CharField(max_length=100, db_column='license_nature')
-    functioningStatus = models.CharField(max_length=100, db_column='functioning_status')
-    modeofOperation = models.CharField(max_length=100, db_column='mode_of_operation')
+    license_type = models.CharField(max_length=100)
+    establishment_name = models.CharField(max_length=255)
+    mobile_number = models.BigIntegerField()
+    email = models.EmailField(db_column='email')
+    license_no = models.BigIntegerField(null=True, blank=True)
+    initial_grant_date = models.DateField(null=True, blank=True)
+    renewed_from = models.DateField(null=True, blank=True)
+    valid_up_to = models.DateField(null=True, blank=True)
+    yearly_license_fee = models.CharField(max_length=100, null=True, blank=True)
+    license_nature = models.CharField(max_length=100)
+    functioning_status = models.CharField(max_length=100)
+    mode_of_operation = models.CharField(max_length=100)
 
     # Address
-    siteSubDivision = models.CharField(max_length=100, db_column='site_sub_division')
-    policeStation = models.CharField(max_length=100, db_column='police_station')
-    locationCategory = models.CharField(max_length=100, db_column='location_category')
-    locationName = models.CharField(max_length=100, db_column='location_name')
-    wardName = models.CharField(max_length=100, db_column='ward_name')
-    businessAddress = models.TextField(db_column='business_address')
-    roadName = models.CharField(max_length=100, db_column='road_name')
-    pinCode = models.IntegerField(db_column='pin_code')
-    latitude = models.CharField(max_length=50, null=True, blank=True, db_column='latitude')
-    longitude = models.CharField(max_length=50, null=True, blank=True, db_column='longitude')
+    site_subdivision = models.CharField(max_length=100)
+    police_station = models.CharField(max_length=100)
+    location_category = models.CharField(max_length=100)
+    location_name = models.CharField(max_length=100)
+    ward_name = models.CharField(max_length=100)
+    business_address = models.TextField()
+    road_name = models.CharField(max_length=100)
+    pin_code = models.IntegerField()
+    latitude = models.CharField(max_length=50, null=True, blank=True)
+    longitude = models.CharField(max_length=50, null=True, blank=True)
 
     # Unit details
-    companyName = models.CharField(max_length=255, null=True, blank=True, db_column='company_name')
-    companyAddress = models.TextField(null=True, blank=True, db_column='company_address')
-    companyPan = models.CharField(max_length=20, null=True, blank=True, db_column='company_pan')
-    companyCin = models.CharField(max_length=30, null=True, blank=True, db_column='company_cin')
-    incorporationDate = models.DateField(null=True, blank=True, db_column='incorporation_date')
-    companyPhoneNumber = models.BigIntegerField(null=True, blank=True, db_column='company_phone_number')
-    companyEmailId = models.EmailField(null=True, blank=True, db_column='company_email_id')
+    company_name = models.CharField(max_length=255, null=True, blank=True)
+    company_address = models.TextField(null=True, blank=True)
+    company_pan = models.CharField(max_length=20, null=True, blank=True)
+    company_cin = models.CharField(max_length=30, null=True, blank=True)
+    incorporation_date = models.DateField(null=True, blank=True)
+    company_phone_number = models.BigIntegerField(null=True, blank=True)
+    company_email = models.EmailField(null=True, blank=True)
 
     # Member details
     status = models.CharField(max_length=100)
-    memberName = models.CharField(max_length=100, db_column='member_name')
-    fatherHusbandName = models.CharField(max_length=100, db_column='father_husband_name')
+    member_name = models.CharField(max_length=100)
+    father_husband_name = models.CharField(max_length=100)
     nationality = models.CharField(max_length=50)
     gender = models.CharField(max_length=10)
     pan = models.CharField()
-    memberMobileNumber = models.BigIntegerField(db_column='member_mobile_number')
-    memberEmailId = models.EmailField(db_column='member_email_id')
+    member_mobile_number = models.BigIntegerField()
+    member_email = models.EmailField()
 
     # Document
     photo = models.ImageField(upload_to=upload_document_path)
@@ -90,11 +91,11 @@ class LicenseApplication(models.Model):
 
     # New fields for print tracking
     print_count = models.PositiveIntegerField(default=0)
-    print_fee_paid = models.BooleanField(default=False)
+    is_print_fee_paid = models.BooleanField(default=False)
 
     # Officer Actions
-    fee_calculated = models.BooleanField(default=False)  # For Level 1
-    license_category_updated = models.BooleanField(default=False)  # For Level 2
+    is_fee_calculated = models.BooleanField(default=False)  # For Level 1
+    is_license_category_updated = models.BooleanField(default=False)  # For Level 2
 
 
     def can_print_license(self):
@@ -112,26 +113,26 @@ class LicenseApplication(models.Model):
         self.save()
 
     def clean(self):
-        helpers.validate_license_type(self.licenseType)
-        helpers.validate_mobile_number(self.mobileNumber)
+        helpers.validate_license_type(self.license_type)
+        helpers.validate_mobile_number(self.mobile_number)
         if self.companyPhoneNumber is not None:
-            helpers.validate_mobile_number(self.companyPhoneNumber)
-        helpers.validate_mobile_number(self.memberMobileNumber)
+            helpers.validate_mobile_number(self.company_phone_number)
+        helpers.validate_mobile_number(self.member_mobile_number)
 
-        helpers.validate_email_field(self.emailId)
+        helpers.validate_email_field(self.email)
         if self.companyEmailId:
-            helpers.validate_email_field(self.companyEmailId)
-        helpers.validate_email_field(self.memberEmailId)
+            helpers.validate_email_field(self.company_email)
+        helpers.validate_email_field(self.member_email)
 
         if self.companyPan:
-            helpers.validate_pan_number(self.companyPan)
+            helpers.validate_pan_number(self.company_pan)
         helpers.validate_pan_number(self.pan)
         if self.companyCin:
-            helpers.validate_cin_number(self.companyCin)
+            helpers.validate_cin_number(self.company_cin)
 
         helpers.validate_status(self.status)
         helpers.validate_gender(self.gender)
-        helpers.validate_pin_code(self.pinCode)
+        helpers.validate_pin_code(self.pin_code)
 
         if self.latitude:
             helpers.validate_latitude(self.latitude)
@@ -144,7 +145,11 @@ class LicenseApplication(models.Model):
         super().save(*args, **kwargs)
 
     def generate_application_id(self):
-        district_code = self.exciseDistrict.strip()
+        try:
+            district_obj = District.objects.get(district__iexact=self.excise_district.strip())
+            district_code = str(district_obj.district_code).strip()
+        except District.DoesNotExist:
+            raise ValueError(f"District '{self.excise_district}' not found in District table.")
 
         today = now().date()
         year = today.year
@@ -240,91 +245,89 @@ class SiteEnquiryReport(models.Model):
         related_name='site_enquiry_report')
 
     # Worship
-    hasTraditionalPlace = models.BooleanField(db_column='has_traditional_place')
-    traditionalPlaceDistance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, db_column='traditional_place_distance')
-    traditionalPlaceName = models.CharField(max_length=1000, blank=True, db_column='traditional_place_name')
-    traditionalPlaceNature = models.CharField(max_length=1000, blank=True, db_column='traditional_place_nature')
-    traditionalPlaceConstruction = models.CharField(
+    has_traditional_place = models.BooleanField()
+    traditional_place_distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    traditional_place_name = models.CharField(max_length=1000, blank=True)
+    traditional_place_nature = models.CharField(max_length=1000, blank=True)
+    traditional_place_construction = models.CharField(
         max_length=100,
         blank=True,
         null=True,
         choices=[('rcc', 'RCC'), ('wooden_structure', 'Wooden Structure'), ('temporary', 'Temporary')],
-        db_column='traditional_place_construction'
     )
 
     # Education
-    hasEducationalInstitution = models.BooleanField(db_column='has_educational_institution')
-    educationalInstitutionDistance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, db_column='educational_institution_distance')
-    educationalInstitutionName = models.CharField(max_length=1000, blank=True, db_column='educational_institution_name')
-    educationalInstitutionNature = models.CharField(max_length=1000, blank=True, db_column='educational_institution_nature')
+    has_educational_institution = models.BooleanField()
+    educational_institution_distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    educational_institution_name = models.CharField(max_length=1000, blank=True)
+    educational_institution_nature = models.CharField(max_length=1000, blank=True)
 
     # Hospital
-    hasHospital = models.BooleanField(db_column='has_hospital')
-    hospitalDistance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, db_column='hospital_distance')
-    hospitalName = models.CharField(max_length=1000, blank=True, db_column='hospital_name')
+    has_hospital = models.BooleanField()
+    hospital_distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    hospital_name = models.CharField(max_length=1000, blank=True)
 
     # Taxi Stand
-    hasTaxiStand = models.BooleanField(db_column='has_taxi_stand')
-    taxiStandName = models.CharField(max_length=1000, blank=True, db_column='taxi_stand_name')
-    taxiStandDistance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, db_column='taxi_stand_distance')
+    has_taxi_stand = models.BooleanField()
+    taxi_stand_name = models.CharField(max_length=1000, blank=True)
+    taxi_stand_distance = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
 
     # Connectivity
-    isInterconnectedWithShops = models.BooleanField(db_column='is_interconnected_with_shops')
-    interconnectivityRemarks = models.TextField(max_length=1000, blank=True, db_column='interconnectivity_remarks')
+    is_interconnected_with_shops = models.BooleanField()
+    interconnectivity_remarks = models.TextField(max_length=1000, blank=True)
 
     # Comments
-    enquiryOfficerComments = models.TextField(max_length=2000, blank=True, db_column='enquiry_officer_comments')
+    enquiry_officer_comments = models.TextField(max_length=2000, blank=True)
 
     # Other enquiry points
-    shopConstructionType = models.CharField(
+    shop_construction_type = models.CharField(
         max_length=100,
         choices=[('rcc', 'RCC'), ('wooden_structure', 'Wooden Structure'), ('temporary', 'Temporary')],
-        db_column='shop_construction_type'
     )
-    hasExciseShopsNearby = models.BooleanField(db_column='has_excise_shops_nearby')
-    nearbyExciseShopCount = models.IntegerField(default=0, db_column='nearby_excise_shop_count')
-    nearbyExciseShopsRemarks = models.TextField(max_length=2000, blank=True, db_column='nearby_excise_shops_remarks')
+    has_excise_shops_nearby = models.BooleanField()
+    nearby_excise_shop_count = models.IntegerField(default=0)
+    nearby_excise_shops_remarks = models.TextField(max_length=2000, blank=True)
 
-    isOnHighway = models.BooleanField(db_column='is_on_highway')
-    highwayName = models.TextField(max_length=2000, blank=True, db_column='highway_name')
+    is_on_highway = models.BooleanField()
+    highway_name = models.TextField(max_length=2000, blank=True)
 
-    shopImageDocument = models.FileField(upload_to='site_enquiry/', null=True, blank=True, db_column='shop_image_document')
+    shop_image_document = models.FileField(upload_to='site_enquiry/')
 
-    latitude = models.FloatField(blank=True, null=True, db_column='latitude')
-    longitude = models.FloatField(blank=True, null=True, db_column='longitude')
+    latitude = models.FloatField(blank=True, null=True)
+    longitude = models.FloatField(blank=True, null=True)
 
-    isShopSizeCorrect = models.BooleanField(db_column='is_shop_size_correct')
-    shopSizeRemarks = models.TextField(max_length=2000, blank=True, db_column='shop_size_remarks')
+    is_shop_size_correct = models.BooleanField()
+    shop_size_remarks = models.TextField(max_length=2000, blank=True)
 
-    additionalEnquiryOfficerComments = models.TextField(max_length=2000, blank=True, db_column='additional_enquiry_officer_comments')
+    additional_enquiry_officer_comments = models.TextField(max_length=2000, blank=True)
 
     # Document verifications with comments
-    hasIdProof = models.BooleanField(db_column='has_id_proof')
-    idProofComments = models.TextField(max_length=1000, blank=True, db_column='id_proof_comments')
+    has_id_proof = models.BooleanField()
+    id_proof_comments = models.TextField(max_length=1000, blank=True)
 
-    hasAgeProof = models.BooleanField(db_column='has_age_proof')
-    ageProofComments = models.TextField(max_length=1000, blank=True, db_column='age_proof_comments')
+    has_age_proof = models.BooleanField()
+    age_proof_comments = models.TextField(max_length=1000, blank=True)
 
-    hasNocFromLandlord = models.BooleanField(db_column='has_noc_from_landlord')
-    nocComments = models.TextField(max_length=1000, blank=True, db_column='noc_comments')
+    has_noc_from_landlord = models.BooleanField()
+    noc_comments = models.TextField(max_length=1000, blank=True)
 
-    hasOwnershipProof = models.BooleanField(db_column='has_ownership_proof')
-    ownershipProofComments = models.TextField(max_length=1000, blank=True, db_column='ownership_proof_comments')
+    has_ownership_proof = models.BooleanField()
+    ownership_proof_comments = models.TextField(max_length=1000, blank=True)
 
-    hasTradeLicense = models.BooleanField(db_column='has_trade_license')
-    tradeLicenseComments = models.TextField(max_length=1000, blank=True, db_column='trade_license_comments')
+    has_trade_license = models.BooleanField()
+    trade_license_comments = models.TextField(max_length=1000, blank=True)
 
-    proposesBarmanOrSalesman = models.BooleanField(db_column='proposes_barman_or_salesman')
-    workerProposalComments = models.TextField(max_length=1000, blank=True, db_column='worker_proposal_comments')
+    proposes_barman_or_salesman = models.BooleanField()
+    worker_proposal_comments = models.TextField(max_length=1000, blank=True)
 
-    workerDocsValid = models.BooleanField(db_column='worker_docs_valid')
-    workerDocsComments = models.TextField(max_length=1000, blank=True, db_column='worker_docs_comments')
+    worker_docs_valid = models.BooleanField()
+    worker_docs_comments = models.TextField(max_length=1000, blank=True)
 
-    licenseRecommendation = models.BooleanField(db_column='license_recommendation')
-    recommendationComments = models.TextField(max_length=1000, blank=True, db_column='recommendation_comments')
+    license_recommendation = models.BooleanField()
+    recommendation_comments = models.TextField(max_length=1000, blank=True)
 
-    specialRemarks = models.TextField(max_length=2000, blank=True, db_column='special_remarks')
-    reportingPlace = models.CharField(max_length=250, blank=True, db_column='reporting_place')
+    special_remarks = models.TextField(max_length=2000, blank=True)
+    reporting_place = models.CharField(max_length=250, blank=True)
 
     #report_file = models.FileField(upload_to='site_enquiry_reports/')
     #remarks = models.TextField(blank=True, null=True)
@@ -342,7 +345,7 @@ class Objection(models.Model):
     field_name = models.CharField(max_length=255, db_index=True)
     remarks = models.TextField()
     raised_by = models.ForeignKey('user.CustomUser', on_delete=models.SET_NULL, null=True)
-    resolved = models.BooleanField(default=False, db_index=True)
+    is_resolved = models.BooleanField(default=False, db_index=True)
     raised_on = models.DateTimeField(auto_now_add=True)
     resolved_on = models.DateTimeField(null=True, blank=True)
 

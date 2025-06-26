@@ -15,7 +15,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         model = CustomUser
         fields = [
             'email', 'password', 'confirm_password', 'role', 
-            'first_name', 'middle_name', 'last_name', 'phonenumber', 
+            'first_name', 'middle_name', 'last_name', 'phone_number', 
             'district', 'subdivision', 'address', 'created_by', 
         ]
         extra_kwargs = {
