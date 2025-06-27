@@ -1,7 +1,12 @@
 
 from django.urls import path, include
 from .views import (
-    UserAPI,
+    UserRegistrationAPI,
+    UserDetailAPI,
+    CurrentUserAPI,
+    UserListAPI,
+    UserUpdateAPI,
+    UserDeleteAPI,
     LoginAPI,
     LogoutAPI,
     TokenRefreshAPI,
@@ -23,11 +28,12 @@ urlpatterns = [
 
     # path('user/', include('djano.contrib.auth.urls')),
     # User CRUD
-    path('register/'               ,UserAPI.as_view() , name='user-register'),
-    path('detail/<str:username>/'  ,UserAPI.as_view() , name='user-detail'  ),
-    path('list/'                   ,UserAPI.as_view() , name='user-list'    ),
-    path('update/<str:username>/'  ,UserAPI.as_view() , name='user-update'  ),
-    path('delete/<str:username>/'  ,UserAPI.as_view() , name='user-delete'  ),
+    path('register/', UserRegistrationAPI.as_view(), name='user-register'),
+    path('detail/me/', CurrentUserAPI.as_view(), name='user-detail-me'),
+    path('detail/<str:username>/', UserDetailAPI.as_view(), name='user-detail'),
+    path('list/', UserListAPI.as_view(), name='user-list'),
+    path('update/<str:username>/', UserUpdateAPI.as_view(), name='user-update'),
+    path('delete/<str:username>/', UserDeleteAPI.as_view(), name='user-delete'),
 
     #Auth
     path('login/'   ,LoginAPI.as_view()  , name='user-login'  ),

@@ -17,7 +17,12 @@ class District(models.Model):
     # if Null !=True:every Subdivision would require a valid District to be assigned. 
     district_code= models.IntegerField(unique=True)
     is_active= models.BooleanField(default=True)
-    state_code= models.ForeignKey(State, to_field='StateCode', on_delete=models.CASCADE,related_name='districts')
+    state_code= models.ForeignKey(
+        State, to_field='state_code', 
+        on_delete=models.CASCADE,
+        related_name='districts',
+        db_column='state_code'
+        )
 
     def __str__(self):
         return self.district
@@ -27,7 +32,12 @@ class Subdivision(models.Model):
     subdivision=models.CharField(max_length=30,validators=[validate_name])
     subdivision_code= models.IntegerField(unique=True)
     is_active= models.BooleanField(default=True)
-    district_code = models.ForeignKey(District, to_field='DistrictCode', on_delete=models.CASCADE, related_name='subdivisions')
+    district_code = models.ForeignKey(
+        District, to_field='district_code', 
+        on_delete=models.CASCADE, 
+        related_name='subdivisions',
+        db_column='district_code'
+        )
 
     def __str__(self):
         return self.subdivision
@@ -37,7 +47,12 @@ class PoliceStation(models.Model):
     police_station=models.CharField(max_length=30,validators=[validate_name])
     police_station_code= models.IntegerField(unique=True)
     is_active= models.BooleanField(default=True)
-    subdivision_code=models.ForeignKey(Subdivision, to_field='SubDivisionCode', on_delete=models.CASCADE, related_name='policestations')
+    subdivision_code=models.ForeignKey(
+        Subdivision, to_field='subdivision_code', 
+        on_delete=models.CASCADE, 
+        related_name='policestations',
+        db_column='subdivision_code'
+        )
     def __str__(self):
         return self.police_station
            

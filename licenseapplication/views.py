@@ -12,12 +12,19 @@ from .models import LicenseApplication, SiteEnquiryReport, LocationFee, Objectio
 from .serializers import LicenseApplicationSerializer, SiteEnquiryReportSerializer, LocationFeeSerializer, ObjectionSerializer
 from .services.workflow import advance_application
 from .models import LicenseApplicationTransaction
-from masters.models import LicenseCategory 
+from masters.models import LicenseCategory
+from roles.models import Role
 from django.utils import timezone
+from rest_framework import status, response
+from roles.views import is_role_capable_of
 
 @api_view(['POST'])
 @parser_classes([MultiPartParser, FormParser])
 def create_license_application(request):
+
+    if not is_role_capable_of(request, Role.READ_WRITE, 'license_application'):
+        return response.Response(status=status.HTTP_401_UNAUTHORIZED)
+
     serializer = LicenseApplicationSerializer(data=request.data)
     if serializer.is_valid():
         with transaction.atomic():
@@ -37,6 +44,10 @@ def create_license_application(request):
 
 @api_view(['GET'])
 def list_license_applications(request):
+
+    if not is_role_capable_of(request, Role.READ, 'license_application'):
+        return response.Response(status=status.HTTP_401_UNAUTHORIZED)
+    
     applications = LicenseApplication.objects.all()
     serializer = LicenseApplicationSerializer(applications, many=True)
     return Response(serializer.data)
@@ -44,6 +55,10 @@ def list_license_applications(request):
 
 @api_view(['GET'])
 def license_application_detail(request, pk):
+
+    if not is_role_capable_of(request, Role.READ, 'license_application'):
+        return response.Response(status=status.HTTP_401_UNAUTHORIZED)
+
     application = get_object_or_404(LicenseApplication, pk=pk)
     serializer = LicenseApplicationSerializer(application)
     return Response(serializer.data)
@@ -51,6 +66,10 @@ def license_application_detail(request, pk):
 
 @api_view(['DELETE'])
 def delete_license_application(request, application_id):
+
+    if not is_role_capable_of(request, Role.READ_WRITE, 'license_application'):
+        return response.Response(status=status.HTTP_401_UNAUTHORIZED)
+    
     application = get_object_or_404(LicenseApplication, application_id=application_id)
 
     # Only allow deletion if current stage is 'level_1'
@@ -66,6 +85,10 @@ def delete_license_application(request, application_id):
 
 @api_view(['POST'])
 def advance_license_application(request, application_id):
+
+    if not is_role_capable_of(request, Role.READ_WRITE, 'license_application'):
+        return response.Response(status=status.HTTP_401_UNAUTHORIZED)
+    
     application = get_object_or_404(LicenseApplication, pk=application_id) 
     user = request.user
 
@@ -108,6 +131,10 @@ def advance_license_application(request, application_id):
 @api_view(['GET', 'POST'])
 @parser_classes([MultiPartParser, FormParser])
 def level2_site_enquiry(request, application_id):
+
+    if not is_role_capable_of(request, Role.READ_WRITE, 'license_application'):
+        return response.Response(status=status.HTTP_401_UNAUTHORIZED)
+    
     application = get_object_or_404(LicenseApplication, pk=application_id)
     print(request.data)
     try:
@@ -133,6 +160,10 @@ def level2_site_enquiry(request, application_id):
     
 @api_view(['GET'])
 def site_enquiry_detail(request, application_id):
+
+    if not is_role_capable_of(request, Role.READ, 'license_application'):
+        return response.Response(status=status.HTTP_401_UNAUTHORIZED)
+    
     application = get_object_or_404(SiteEnquiryReport, application_id=application_id)
     serializer = SiteEnquiryReportSerializer(application)
     return Response(serializer.data)
@@ -142,6 +173,10 @@ def site_enquiry_detail(request, application_id):
 @csrf_exempt
 @parser_classes([JSONParser])
 def print_license_view(request, application_id):
+
+    if not is_role_capable_of(request, Role.READ_WRITE, 'license_application'):
+        return Response(status=status.HTTP_401_UNAUTHORIZED)
+    
     license = get_object_or_404(LicenseApplication, application_id=application_id)
 
     if not license.is_approved:
@@ -167,12 +202,20 @@ def print_license_view(request, application_id):
 
 @api_view(['GET'])
 def get_location_fees(request):
+
+    if not is_role_capable_of(request, Role.READ, 'license_application'):
+        return response.Response(status=status.HTTP_401_UNAUTHORIZED)
+    
     fees = LocationFee.objects.all()
     serializer = LocationFeeSerializer(fees, many=True)
     return Response(serializer.data)
 
 @api_view(['GET'])
 def get_objections(request, application_id):
+
+    if not is_role_capable_of(request, Role.READ, 'license_application'):
+        return response.Response(status=status.HTTP_401_UNAUTHORIZED)
+    
     objections = Objection.objects.filter(application_id=application_id).order_by('-raised_on')
     serializer = ObjectionSerializer(objections, many=True)
     return Response(serializer.data)
@@ -180,6 +223,10 @@ def get_objections(request, application_id):
 @api_view(['POST'])
 @parser_classes([MultiPartParser, FormParser])
 def resolve_objections(request, application_id):
+
+    if not is_role_capable_of(request, Role.READ_WRITE, 'license_application'):
+        return response.Response(status=status.HTTP_401_UNAUTHORIZED)
+    
     try:
         application = LicenseApplication.objects.get(application_id=application_id)
     except LicenseApplication.DoesNotExist:
@@ -221,7 +268,11 @@ def resolve_objections(request, application_id):
 @api_view(['GET'])
 @parser_classes([JSONParser])
 def dashboard_counts(request):
-    role = request.user.role
+
+    if not is_role_capable_of(request, Role.READ, 'license_application'):
+        return response.Response(status=status.HTTP_401_UNAUTHORIZED)
+
+    role = request.user.role.name if request.user.role else None
 
     level_map = {
         'level_1': {
@@ -296,7 +347,11 @@ def dashboard_counts(request):
 @api_view(['GET'])
 @parser_classes([JSONParser])
 def application_group(request):
-    role = request.user.role
+
+    if not is_role_capable_of(request, Role.READ, 'license_application'):
+        return response.Response(status=status.HTTP_401_UNAUTHORIZED)
+    
+    role = request.user.role.name if request.user.role else None
 
     level_map = {
         'level_1': {

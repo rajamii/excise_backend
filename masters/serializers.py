@@ -17,7 +17,7 @@ class SubDivisonSerializer(serializers.ModelSerializer):
 
 class PoliceStationSerializer(serializers.ModelSerializer):
     subdivision = serializers.CharField(source='subdivision_code.subdivision', read_only=True)
-    district = serializers.CharField(source='subdivisionCode.districtCode.district', read_only=True)
+    district = serializers.CharField(source='subdivision_code.district_code.district', read_only=True)
 
     class Meta: 
         model = master_models.PoliceStation
@@ -28,7 +28,7 @@ class LicenseCategorySerializer(serializers.ModelSerializer):
         model = master_models.LicenseCategory
         fields = [
             'id',
-            'licenseCategoryDescription',
+            'license_category',
         ]
 
 class LicenseTypeSerializer(serializers.ModelSerializer):
@@ -36,5 +36,5 @@ class LicenseTypeSerializer(serializers.ModelSerializer):
         model = master_models.LicenseType
         fields = [
             'id',
-            'licenseType',
+            'license_type',
         ]

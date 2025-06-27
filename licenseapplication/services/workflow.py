@@ -31,7 +31,7 @@ def advance_application(application, user, remarks="", action=None, new_license_
     }
 
     current = application.current_stage
-    role = user.role
+    role = user.role.name
     expected_stage = role_stage_map.get(role)
 
     # Authorize only if user is at the correct stage or rejected_by_<role>
@@ -65,7 +65,7 @@ def advance_application(application, user, remarks="", action=None, new_license_
             try:
                 application.yearly_license_fee = str(float(fee_amount))
                 application.is_fee_calculated = True
-                constructed_remarks += f"\nYearly License Fee set to ₹{fee_amount}"
+                constructed_remarks += f" Yearly License Fee set to ₹{fee_amount}"
             except ValueError:
                 raise ValidationError("Invalid fee amount format.")
 
@@ -77,7 +77,7 @@ def advance_application(application, user, remarks="", action=None, new_license_
                 application.license_category = new_license_category.license_category
                 application.is_license_category_updated = True
                 constructed_remarks += (
-                    f"\nLicense category changed from '{old_category}' to '{new_license_category.license_category}'"
+                    f" License category changed from '{old_category}' to '{new_license_category.license_category}'"
                 )
 
         next_stage = stage_transitions.get(logical_stage)

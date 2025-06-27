@@ -49,7 +49,7 @@ def update_user_details(
         user = CustomUser.objects.get(username=username)
 
         if new_mobile_no:
-            user.phonenumber = new_mobile_no
+            user.phone_number = new_mobile_no
         if new_email:
             user.email = new_email
         if new_first_name:

@@ -99,8 +99,8 @@ class CustomUser(AbstractUser, PermissionsMixin):
                                  null=False,
                                  validators=[validate_name])
 
-    phonenumber = models.CharField(max_length=10,
-                                   default='9999999999',
+    phone_number = models.CharField(max_length=10,
+                                   default='0000000000',
                                    validators=[validate_numbers])
 
     district = models.IntegerField(default=117)
@@ -127,7 +127,7 @@ class CustomUser(AbstractUser, PermissionsMixin):
                           first_name='dev',
                           middle_name='dev',
                           last_name='dev',
-                          phonenumber='0000000000',
+                          phone_number='0000000000',
                           )
 
         print('Please remember this if you are the admin\n\n')
