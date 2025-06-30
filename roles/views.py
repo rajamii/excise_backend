@@ -1,4 +1,5 @@
-from django.shortcuts import render
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
 from django.http import HttpRequest
 from roles.models import Role
 
@@ -35,3 +36,8 @@ def is_role_capable_of(request: HttpRequest, operation, model):
         return access_level == Role.READ_WRITE or access_level == operation
 
     return False  # Handle cases where the model is not in the map
+
+@api_view(['GET'])
+def role_list(request):
+    roles = Role.objects.all().values('id', 'name')
+    return Response(list(roles), status=200)

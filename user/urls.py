@@ -9,7 +9,7 @@ from .views import (
     verify_otp_API,
     get_captcha
 )
-
+from roles.views import role_list
 
 # from django.contrib import admin
 
@@ -36,4 +36,7 @@ urlpatterns = [
     # OTP
     path('otp/' ,send_otp_API , name='send-otp'),
     path('otp/login/' , verify_otp_API , name='otp-login'),
+
+    # Role List
+    path('roles/', role_list, name='role-list'),  # Role list endpoint
 ]

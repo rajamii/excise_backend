@@ -196,10 +196,10 @@ class LicenseTypeAPI(generics.ListCreateAPIView,
         except masters_model.LicenseType.DoesNotExist:
             return response.Response(status=status.HTTP_404_NOT_FOUND)
 
-# SubDivisonAPI: For creating, retrieving, updating, and deleting subdivisions
+# SubDivisionAPI: For creating, retrieving, updating, and deleting subdivisions
 
 
-class SubDivisonApi(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAPIView):
+class SubDivisionApi(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAPIView):
     queryset = masters_model.Subdivision.objects.all()  # Fetch all subdivisions
     # Define the serializer for Subdivision
     serializer_class = ser.SubDivisionSerializer
@@ -215,7 +215,7 @@ class SubDivisonApi(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAP
         ) is False:
             return response.Response(status=status.HTTP_401_UNAUTHORIZED)
 
-        serializer = ser.SubDivisonSerializer(
+        serializer = ser.SubDivisionSerializer(
             data=request.data)
         if serializer.is_valid():
             serializer.save()

@@ -24,7 +24,8 @@ class NodalOfficer(models.Model):
     cell = models.CharField(
         max_length=255, 
         default="IT Cell", 
-        validators=[validate_non_empty]  
+        validators=[validate_non_empty],  
+        null=True,
     )
     phoneNumber = models.CharField(
         max_length=20, 
@@ -133,7 +134,8 @@ class GrievanceRedressalOfficer(Official):
     OFFICE_LEVEL_CHOICES = [
         ('Head Quarter', 'Head Quarter'),
         ('Permit Section', 'Permit Section'),
-        ('Administration Section', 'Administration Section'), 
+        ('Administration Section', 'Administration Section'),
+        ('Field Section', 'Field Section'), 
         ('Accounts Section', 'Accounts Section'),
         ('IT Cell', 'IT Cell'),
     ]

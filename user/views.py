@@ -6,7 +6,6 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import api_view
 from .helpers import (
-    update_user_details,
     delete_user_by_username,
 )
 from captcha.models import CaptchaStore
@@ -114,23 +113,27 @@ class UserAPI(APIView):
 
     # PUT method to update user details
     def put(self, request, username, *args, **kwargs):
-        if is_role_capable_of(request=request,
+        if not is_role_capable_of(request=request,
                               operation=Role.READ_WRITE,
-                              model='user') is False:
+                              model='user'):
 
             return Response(status=status.HTTP_401_UNAUTHORIZED)
 
         try:
-            data = json.loads(request.body)
-            success = update_user_details(
-                username,
-                # new_username=data.get('username'),
-                new_email=data.get('email'),
-                new_first_name=data.get('first_name'),
-                new_last_name=data.get('last_name'),
-                new_password=data.get('password'),
-            )
-            if success:
+            user= CustomUser.objects.get(username=username)
+            serializer = UserRegistrationSerializer(user, data=request.data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+            # data = json.loads(request.body)
+            # success = update_user_details(
+            #     username,
+            #     # new_username=data.get('username'),
+            #     new_email=data.get('email'),
+            #     new_first_name=data.get('first_name'),
+            #     new_last_name=data.get('last_name'),
+            #     new_password=data.get('password'),
+            # )
+            # if success:
                 return Response({'message': 'User updated successfully'}, status=status.HTTP_200_OK)
             else:
                 return Response({'error': 'User not found or update failed'}, status=status.HTTP_400_BAD_REQUEST)
