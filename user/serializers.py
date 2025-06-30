@@ -4,7 +4,7 @@ from django.contrib.auth.password_validation import validate_password
 from captcha.models import CaptchaStore
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
-import re
+from roles.models import Role
 
 # --- User Registration & Login Serializers ---
 
@@ -16,8 +16,8 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
         fields = [
-            'email', 'password', 'confirm_password', 'role', 
-            'first_name', 'middle_name', 'last_name', 'phonenumber', 
+            'email', 'password', 'confirm_password', 'role_id', 
+            'first_name', 'middle_name', 'last_name', 'phone_number', 
             'district', 'subdivision', 'address', 'created_by', 
         ]
         extra_kwargs = {
@@ -34,11 +34,6 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         if data['password'] != data['confirm_password']:
             raise serializers.ValidationError({"password": "Passwords do not match."})
         return data
-    
-    def validate_phonenumber(self, value):
-        if not re.match(r'^\d{10}$', value):
-            raise serializers.ValidationError("Phone number must be 10 digits.")
-        return value
 
     def create(self, validated_data):
         validated_data.pop('confirm_password', None)
@@ -83,6 +78,37 @@ class LoginSerializer(serializers.Serializer):
             'access': access_token,
             'refresh': refresh_token,
         }
+    
+class UserUpdateSerializer(serializers.ModelSerializer):
+    role = serializers.SlugRelatedField(
+        slug_field='name',
+        queryset=Role.objects.all(),
+        required=False
+    )
+
+    class Meta:
+        model = CustomUser
+        fields = [
+            'first_name',
+            'middle_name',
+            'last_name',
+            'email',
+            'phone_number',
+            'district',
+            'subdivision',
+            'address',
+            'role',
+        ]
+        extra_kwargs = {
+            'email': {'required': False},
+            'phone_number': {'required': False},
+        }
+
+    def update(self, instance, validated_data):
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        return instance
 
 # --- Salesman/Barman & Documents Serializers ---
 

@@ -1,25 +1,130 @@
 from django.core.exceptions import ValidationError
-from ..models import LicenseApplication, LicenseApplicationTransaction
+from licenseapplication.models import (
+    LicenseApplication,
+    LicenseApplicationTransaction,
+    LocationFee,
+    SiteEnquiryReport,
+    Objection,
+)
 
-def advance_application(application, user, remarks=""):
-    if user.role == 'permit_section' and application.current_stage == 'draft':
-        application.current_stage = 'permit_section'
+def advance_application(application, user, remarks="", action=None, new_license_category=None, fee_amount=None, objections=None):
+    role_stage_map = {
+        'license': 'draft',
+        'level_1': 'level_1',
+        'level_2': 'level_2',
+        'level_3': 'level_3',
+        'level_4': 'level_4',
+        'level_5': 'level_5',
+        'payment_bot': 'payment_notification',
+    }
 
-    elif user.role == 'joint_commissioner' and application.current_stage == 'permit_section':
-        application.current_stage = 'joint_commissioner'
+    stage_transitions = {
+        'draft': 'applicant_applied',
+        'applicant_applied': 'level_1',
+        'level_1': 'level_2',
+        'level_2': 'level_3',
+        'level_3': 'level_4',
+        'level_4': 'level_5',
+        'level_5': 'approved',
+    #   'level_5': 'payment_notification',
+    #   'payment_notification': 'approved',
+    }
 
-    elif user.role == 'commissioner' and application.current_stage == 'joint_commissioner':
-        application.current_stage = 'approved'
-        application.is_approved = True
+    current = application.current_stage
+    role = user.role.name
+    expected_stage = role_stage_map.get(role)
+
+    # Authorize only if user is at the correct stage or rejected_by_<role>
+    is_rejected = current == f'rejected_by_{role}'
+    if expected_stage != current and not is_rejected:
+        raise ValidationError("User is not authorized to act on this stage.")
+
+    if action == "reject":
+        if role not in role_stage_map:
+            raise ValidationError("Invalid user role for rejection.")
+        
+        application.current_stage = f"rejected_by_{role}"
+        application.save()
+
+        LicenseApplicationTransaction.objects.create(
+            license_application=application,
+            performed_by=user,
+            stage=application.current_stage,
+            remarks=remarks or "Application rejected."
+        )
+
+    elif action == "approve":
+        logical_stage = expected_stage if not is_rejected else expected_stage
+        constructed_remarks = remarks or ""
+
+        if logical_stage == 'level_1':
+            if application.is_fee_calculated:
+                raise ValidationError("Fee already calculated for this application.")
+            if fee_amount is None:
+                raise ValidationError("Fee amount must be provided.")
+            try:
+                application.yearly_license_fee = str(float(fee_amount))
+                application.is_fee_calculated = True
+                constructed_remarks += f" Yearly License Fee set to ₹{fee_amount}"
+            except ValueError:
+                raise ValidationError("Invalid fee amount format.")
+
+        elif logical_stage == 'level_2':
+            if not SiteEnquiryReport.objects.filter(application=application).exists():
+                raise ValidationError("Site Enquiry Report must be filled before advancing.")
+            if new_license_category:
+                old_category = application.license_category
+                application.license_category = new_license_category.license_category
+                application.is_license_category_updated = True
+                constructed_remarks += (
+                    f" License category changed from '{old_category}' to '{new_license_category.license_category}'"
+                )
+
+        next_stage = stage_transitions.get(logical_stage)
+        if not next_stage:
+            raise ValidationError("No next stage defined from current stage.")
+
+        application.current_stage = next_stage
+
+        if next_stage == 'approved':
+            application.is_approved = True
+
+        application.save()
+
+        LicenseApplicationTransaction.objects.create(
+            license_application=application,
+            performed_by=user,
+            stage=application.current_stage,
+            remarks=constructed_remarks.strip()
+        )
+
+    elif action == "raise_objection":
+        if not objections:
+            raise ValidationError("No objection fields provided.")
+
+        for obj in objections:
+            field = obj.get("field")
+            obj_remarks = obj.get("remarks")
+
+            if not field or not obj_remarks:
+                raise ValidationError("Each objection must include both 'field' and 'remarks'.")
+
+            Objection.objects.create(
+                application=application,
+                field_name=field,
+                remarks=obj_remarks,
+                raised_by=user
+            )
+
+        application.current_stage = f"{role}_objection"
+        application.save()
+
+        LicenseApplicationTransaction.objects.create(
+            license_application=application,
+            performed_by=user,
+            stage=application.current_stage,
+            remarks=remarks or "Objection raised for one or more fields."
+        )
 
     else:
-        raise ValidationError("Invalid transition or user not authorized for this stage.")
-
-    application.save()
-
-    LicenseApplicationTransaction.objects.create(
-        license_application=application,
-        performed_by=user,
-        stage=application.current_stage,
-        remarks=remarks
-    )
+        raise ValidationError("Invalid action. Must be one of 'approve', 'reject', or 'raise_objection'.")

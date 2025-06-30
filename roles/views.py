@@ -13,10 +13,10 @@ ACCESS_ATTRIBUTE_MAP = {
     'user': 'user_access',
     'company_registration': 'company_registration_access',
     'contact_us': 'contact_us_access',
-    'licenseapplication': 'licenseapplication_access',
+    'license_application': 'license_application_access',
     'masters': 'masters_access',
     'roles': 'roles_access',
-    'salesman_barman': 'salesman_barman_access',
+    'salesman_barman': 'salesman_barman_registration_access',
 }
 
 
@@ -27,13 +27,16 @@ def is_role_capable_of(request: HttpRequest, operation, model):
         access_attribute = ACCESS_ATTRIBUTE_MAP[model]
 
         # Get the role from the request
-        role = request.user.role
+        role = getattr(request.user, 'role', None)
+
+        if not role:
+            return False
 
         # check to see if the accesss level
         # is above or equal to the  level of role
 
         access_level = getattr(role, access_attribute, None)
-        return access_level == Role.READ_WRITE or access_level == operation
+        return access_level in [Role.READ_WRITE, operation]  # cleaner
 
     return False  # Handle cases where the model is not in the map
 

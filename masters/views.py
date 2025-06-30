@@ -202,7 +202,7 @@ class LicenseTypeAPI(generics.ListCreateAPIView,
 class SubDivisionApi(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAPIView):
     queryset = masters_model.Subdivision.objects.all()  # Fetch all subdivisions
     # Define the serializer for Subdivision
-    serializer_class = ser.SubDivisionSerializer
+    serializer_class = ser.SubDivisonSerializer
     lookup_field = 'id'  # Define the field for lookup (by id)
 
     def post(self, request, format=None):
