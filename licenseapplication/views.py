@@ -404,6 +404,7 @@ def application_group(request):
             ).data,
             "pending": LicenseApplicationSerializer(
                 LicenseApplication.objects.filter(current_stage__in=[
+                    'level_1_objection',
                     'level_2', 'level_2_objection',
                     'level_3', 'level_3_objection',
                     'level_4', 'level_4_objection',

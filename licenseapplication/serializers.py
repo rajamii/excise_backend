@@ -12,9 +12,10 @@ class SiteEnquiryReportSerializer(serializers.ModelSerializer):
 
 
 class UserShortSerializer(serializers.ModelSerializer):
+    role_name = serializers.CharField(source='role.name', read_only=True)
     class Meta:
         model = CustomUser
-        fields = ['id', 'username', 'role']
+        fields = ['id', 'username', 'role', 'role_name']
 
 
 class LicenseApplicationTransactionSerializer(serializers.ModelSerializer):
