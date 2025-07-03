@@ -27,7 +27,7 @@ class Role(models.Model):
         default=NONE,
         verbose_name='Contact Us Access'
     )
-    licenseapplication_access = models.CharField(
+    license_application_access = models.CharField(
         max_length=10,
         choices=PERMISSION_CHOICES,
         default=NONE,
@@ -45,7 +45,7 @@ class Role(models.Model):
         default=NONE,
         verbose_name='Roles Access'
     )
-    salesman_barman_access = models.CharField(
+    salesman_barman_registration_access = models.CharField(
         max_length=10,
         choices=PERMISSION_CHOICES,
         default=NONE,
@@ -69,10 +69,10 @@ class Role(models.Model):
                 name='dev',
                 company_registration_access=Role.READ_WRITE,
                 contact_us_access=Role.READ_WRITE,
-                licenseapplication_access=Role.READ_WRITE,
+                license_application_access=Role.READ_WRITE,
                 masters_access=Role.READ_WRITE,
                 roles_access=Role.READ_WRITE,
-                salesman_barman_access=Role.READ_WRITE,
+                salesman_barman_registration_access=Role.READ_WRITE,
                 user_access=Role.READ_WRITE,
             )
             print("Successfully created 'dev' role.")  # Added helpful output

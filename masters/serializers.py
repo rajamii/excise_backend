@@ -2,22 +2,22 @@ from rest_framework import serializers
 from masters import models as master_models
 
 class DistrictSerializer(serializers.ModelSerializer):
-    stateName = serializers.CharField(source='StateCode.State', read_only=True)
+    state = serializers.CharField(source='state_code.state', read_only=True)
 
     class Meta: 
         model = master_models.District
         fields = '__all__'  # Corrected from '_all_'
 
-class SubDivisionSerializer(serializers.ModelSerializer):
-    District = serializers.CharField(source='DistrictCode.District', read_only=True)
+class SubDivisonSerializer(serializers.ModelSerializer):
+    district = serializers.CharField(source='district_code.district', read_only=True)
 
     class Meta: 
         model = master_models.Subdivision
         fields = '__all__'  # Corrected from '_all_'
 
 class PoliceStationSerializer(serializers.ModelSerializer):
-    SubDivisionName = serializers.CharField(source='SubDivisionCode.SubDivisionName', read_only=True)
-    District = serializers.CharField(source='SubDivisionCode.DistrictCode.District', read_only=True)
+    subdivision = serializers.CharField(source='subdivision_code.subdivision', read_only=True)
+    district = serializers.CharField(source='subdivision_code.district_code.district', read_only=True)
 
     class Meta: 
         model = master_models.PoliceStation
@@ -28,7 +28,7 @@ class LicenseCategorySerializer(serializers.ModelSerializer):
         model = master_models.LicenseCategory
         fields = [
             'id',
-            'licenseCategoryDescription',
+            'license_category',
         ]
 
 class LicenseTypeSerializer(serializers.ModelSerializer):
@@ -36,5 +36,5 @@ class LicenseTypeSerializer(serializers.ModelSerializer):
         model = master_models.LicenseType
         fields = [
             'id',
-            'licenseType',
+            'license_type',
         ]

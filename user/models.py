@@ -26,7 +26,7 @@ class CustomUserManager(BaseUserManager):
         username = self.generate_unique_username(
             extra_fields['first_name'],
             extra_fields['last_name'],
-            extra_fields['phonenumber'],
+            extra_fields['phone_number'],
             extra_fields['district'],
             extra_fields['subdivision']
         )
@@ -61,7 +61,7 @@ class CustomUserManager(BaseUserManager):
         extra_fields.setdefault('is_superuser', True)
         extra_fields.setdefault('first_name', 'Admin')
         extra_fields.setdefault('last_name', 'User')
-        extra_fields.setdefault('phonenumber', '9999999999')
+        extra_fields.setdefault('phone_number', '9999999999')
         extra_fields.setdefault('district', 117)
         extra_fields.setdefault('subdivision', 1001)
 
@@ -100,8 +100,8 @@ class CustomUser(AbstractUser, PermissionsMixin):
                                  null=False,
                                  validators=[validate_name])
 
-    phonenumber = models.CharField(max_length=10,
-                                   default='9999999999',
+    phone_number = models.CharField(max_length=10,
+                                   default='0000000000',
                                    validators=[validate_numbers])
 
     district = models.IntegerField(default=117)
@@ -128,7 +128,7 @@ class CustomUser(AbstractUser, PermissionsMixin):
                           first_name='dev',
                           middle_name='dev',
                           last_name='dev',
-                          phonenumber='0000000000',
+                          phone_number='0000000000',
                           )
 
         print('Please remember this if you are the admin\n\n')
