@@ -1,24 +1,19 @@
-from django.contrib.auth.models import User
 from .models import CustomUser
-import json
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import api_view
-from .helpers import (
-    update_user_details,
-    delete_user_by_username,
-)
 from captcha.models import CaptchaStore
 from .serializers import UserRegistrationSerializer, LoginSerializer, UserUpdateSerializer
 from .otp import get_new_otp, verify_otp
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework_simplejwt.views import TokenRefreshView
 from captcha.helpers import captcha_image_url
 from roles.views import is_role_capable_of
 from roles.models import Role
 from django.shortcuts import get_object_or_404
 from rest_framework.permissions import IsAuthenticated
+
 
 @api_view(['GET'])
 def get_captcha(request):
@@ -187,10 +182,7 @@ class LoginAPI(APIView):
 
 # LogoutAPI handles the user logout by invalidating the refresh token.
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from rest_framework_simplejwt.tokens import RefreshToken, TokenError
+
 
 class LogoutAPI(APIView):
     def post(self, request):
