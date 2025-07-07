@@ -1,7 +1,7 @@
 from .models import CustomUser
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status, response
 from rest_framework.decorators import api_view
 from captcha.models import CaptchaStore
 from .serializers import UserRegistrationSerializer, LoginSerializer, UserUpdateSerializer
@@ -12,7 +12,7 @@ from captcha.helpers import captcha_image_url
 from roles.views import is_role_capable_of
 from roles.models import Role
 from django.shortcuts import get_object_or_404
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 
 
 @api_view(['GET'])
@@ -45,7 +45,7 @@ class TokenRefreshAPI(TokenRefreshView):
 
 class UserRegistrationAPI(APIView):
     def post(self, request, *args, **kwargs):
-        serializer = UserRegistrationSerializer(data=request.data)
+        serializer = UserRegistrationSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             user = serializer.save()
             return Response({
@@ -63,6 +63,7 @@ class CurrentUserAPI(APIView):
         role = user.role
 
         user_data = {
+            'id': user.id,
             'username': user.username,
             'first_name': user.first_name,
             'middle_name': user.middle_name,
@@ -71,7 +72,10 @@ class CurrentUserAPI(APIView):
             'phone_number': user.phone_number,
             'district': user.district,
             'subdivision': user.subdivision,
-            'role': role.name if role else None,
+            'role': {
+                'id': role.id,
+                'name': role.name
+            } if role else None,
             'address': user.address,
             'created_by': user.created_by.username if user.created_by else None,
 #            'permissions': {
@@ -95,6 +99,7 @@ class UserDetailAPI(APIView):
         try:
             user = CustomUser.objects.get(username=username)
             user_data = {
+                'id': user.id, 
                 'username': user.username,
                 'first_name': user.first_name,
                 'middle_name': user.middle_name,
@@ -119,6 +124,7 @@ class UserListAPI(APIView):
 
         users = CustomUser.objects.all()
         data = [{
+            'id': user.id,
             'username': user.username,
             'first_name': user.first_name,
             'middle_name': user.middle_name,

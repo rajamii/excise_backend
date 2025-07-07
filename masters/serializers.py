@@ -8,7 +8,7 @@ class DistrictSerializer(serializers.ModelSerializer):
         model = master_models.District
         fields = '__all__'  # Corrected from '_all_'
 
-class SubDivisonSerializer(serializers.ModelSerializer):
+class SubdivisonSerializer(serializers.ModelSerializer):
     district = serializers.CharField(source='district_code.district', read_only=True)
 
     class Meta: 

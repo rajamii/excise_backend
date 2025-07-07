@@ -12,13 +12,14 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
     confirm_password = serializers.CharField(write_only=True, required=True)
     middle_name = serializers.CharField(required=False, allow_blank=True) # middle name is optional
+    role = serializers.PrimaryKeyRelatedField(queryset=Role.objects.all())
     
     class Meta:
         model = CustomUser
         fields = [
-            'email', 'password', 'confirm_password', 'role_id', 
+            'email', 'password', 'confirm_password', 'role', 
             'first_name', 'middle_name', 'last_name', 'phone_number', 
-            'district', 'subdivision', 'address', 'created_by', 
+            'district', 'subdivision', 'address'
         ]
         extra_kwargs = {
             'password': {'write_only': True},
@@ -37,6 +38,11 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data.pop('confirm_password', None)
+
+        request = self.context.get('request')
+        if request and request.user and request.user.is_authenticated:
+            validated_data['created_by'] = request.user  # assign user object
+
         user = CustomUser.objects.create_user(**validated_data)
         return user
 
@@ -80,8 +86,7 @@ class LoginSerializer(serializers.Serializer):
         }
     
 class UserUpdateSerializer(serializers.ModelSerializer):
-    role = serializers.SlugRelatedField(
-        slug_field='name',
+    role = serializers.PrimaryKeyRelatedField(
         queryset=Role.objects.all(),
         required=False
     )

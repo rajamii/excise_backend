@@ -3,7 +3,7 @@ from django.urls import path , include
 from .views import (
     LicenseCategoryAPI,
     LicenseTypeAPI,
-    SubDivisionApi,
+    SubdivisionApi,
     DistrictAPI,
     PoliceStationAPI,
 )
@@ -33,12 +33,12 @@ urlpatterns = [
     path('districts/delete/<int:id>/'       , DistrictAPI.as_view(), name='district-delete'),
 
     # Subdivision URLs
-    path('subdivisions/list/'                , SubDivisionApi.as_view(), name='subdivision-list'),
-    path('subdivisions/detail/<int:id>/'     , SubDivisionApi.as_view(), name='subdivision-detail'),
-    path('subdivisions/detail/<int:dc>/'     , SubDivisionApi.as_view(), name='subdivision-detail-by-code'),
-    path('subdivisions/create/'              , SubDivisionApi.as_view(), name='subdivision-create'),
-    path('subdivisions/update/<int:id>/'     , SubDivisionApi.as_view(), name='subdivision-update'),
-    path('subdivisions/delete/<int:id>/'     , SubDivisionApi.as_view(), name='subdivision-delete'),
+    path('subdivisions/list/'                , SubdivisionApi.as_view(), name='subdivision-list'),
+    path('subdivisions/detail/<int:id>/'     , SubdivisionApi.as_view(), name='subdivision-detail'),
+    path('subdivisions/detail/<int:dc>/'     , SubdivisionApi.as_view(), name='subdivision-detail-by-code'),
+    path('subdivisions/create/'              , SubdivisionApi.as_view(), name='subdivision-create'),
+    path('subdivisions/update/<int:id>/'     , SubdivisionApi.as_view(), name='subdivision-update'),
+    path('subdivisions/delete/<int:id>/'     , SubdivisionApi.as_view(), name='subdivision-delete'),
 
     # Police Station URLs
     path('policestations/list/'             , PoliceStationAPI.as_view(), name='policestation-list'),
