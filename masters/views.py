@@ -42,7 +42,7 @@ class LicenseCategoryAPI(generics.ListCreateAPIView,
 
     # GET request for retrieving one or more LicenseCategories
     def get(self, request, id=None, format=None):
-
+        
         if is_role_capable_of(
             request=request,
             operation=Role.READ,
@@ -136,7 +136,7 @@ class LicenseTypeAPI(generics.ListCreateAPIView,
 
     def get(self, request, id=None, format=None):
         # GET request for retrieving one or more LicenseTypes
-
+        
         if is_role_capable_of(
             request=request,
             operation=Role.READ,
@@ -199,10 +199,10 @@ class LicenseTypeAPI(generics.ListCreateAPIView,
 # SubDivisionAPI: For creating, retrieving, updating, and deleting subdivisions
 
 
-class SubDivisionApi(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAPIView):
+class SubdivisionApi(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAPIView):
     queryset = masters_model.Subdivision.objects.all()  # Fetch all subdivisions
     # Define the serializer for Subdivision
-    serializer_class = ser.SubDivisonSerializer
+    serializer_class = ser.SubdivisonSerializer
     lookup_field = 'id'  # Define the field for lookup (by id)
 
     def post(self, request, format=None):
@@ -215,7 +215,7 @@ class SubDivisionApi(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyA
         ) is False:
             return response.Response(status=status.HTTP_401_UNAUTHORIZED)
 
-        serializer = ser.SubDivisionSerializer(
+        serializer = ser.SubdivisonSerializer(
             data=request.data)
         if serializer.is_valid():
             serializer.save()
