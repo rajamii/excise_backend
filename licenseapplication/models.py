@@ -1,5 +1,5 @@
 from django.db import models, transaction
-from django.core.exceptions import ValidationError
+from uuid import uuid4
 from django.utils.timezone import now
 from . import helpers
 from masters.models import District
@@ -11,17 +11,16 @@ def upload_level2_document_path(instance, filename):
     return f'license_application/{instance.application_id}/level2_docs/{filename}'
 
 class LicenseApplication(models.Model):
-
     application_id = models.CharField(max_length=30, primary_key=True, db_index=True)
 
     # Select License
-    excise_district = models.CharField(max_length=100)
-    license_category = models.CharField(max_length=100)
-    excise_subdivision = models.CharField(max_length=100)
+    excise_district = models.ForeignKey('masters.District', on_delete=models.PROTECT)
+    license_category = models.ForeignKey('masters.LicenseCategory', on_delete=models.PROTECT)
+    excise_subdivision = models.ForeignKey('masters.Subdivision', on_delete=models.PROTECT)
     license = models.CharField(max_length=100)
 
     # Key Info
-    license_type = models.CharField(max_length=100)
+    license_type = models.ForeignKey('masters.LicenseType', on_delete=models.PROTECT)
     establishment_name = models.CharField(max_length=255)
     mobile_number = models.BigIntegerField()
     email = models.EmailField(db_column='email')
@@ -35,16 +34,16 @@ class LicenseApplication(models.Model):
     mode_of_operation = models.CharField(max_length=100)
 
     # Address
-    site_subdivision = models.CharField(max_length=100)
-    police_station = models.CharField(max_length=100)
+    site_subdivision = models.ForeignKey('masters.Subdivision', on_delete=models.PROTECT, related_name='site_subdivisions')
+    police_station = models.ForeignKey('masters.PoliceStation', on_delete=models.PROTECT)
     location_category = models.CharField(max_length=100)
     location_name = models.CharField(max_length=100)
     ward_name = models.CharField(max_length=100)
     business_address = models.TextField()
     road_name = models.CharField(max_length=100)
     pin_code = models.IntegerField()
-    latitude = models.CharField(max_length=50, null=True, blank=True)
-    longitude = models.CharField(max_length=50, null=True, blank=True)
+    latitude = models.FloatField(null=True, blank=True)
+    longitude = models.FloatField(null=True, blank=True)
 
     # Unit details
     company_name = models.CharField(max_length=255, null=True, blank=True)
@@ -61,7 +60,7 @@ class LicenseApplication(models.Model):
     father_husband_name = models.CharField(max_length=100)
     nationality = models.CharField(max_length=50)
     gender = models.CharField(max_length=10)
-    pan = models.CharField()
+    pan = models.CharField(max_length=20)
     member_mobile_number = models.BigIntegerField()
     member_email = models.EmailField()
 
@@ -97,11 +96,10 @@ class LicenseApplication(models.Model):
     is_fee_calculated = models.BooleanField(default=False)  # For Level 1
     is_license_category_updated = models.BooleanField(default=False)  # For Level 2
 
-
     def can_print_license(self):
         if self.print_count < 5:
             return True, 0  # Allowed to print, no fee required
-        elif self.print_fee_paid:
+        elif self.is_print_fee_paid:
             return True, 500  # Allowed to print, fee has been paid
         else:
             return False, 500  # Not allowed, fee required
@@ -109,25 +107,26 @@ class LicenseApplication(models.Model):
     def record_license_print(self, fee_paid=False):
         self.print_count += 1
         if self.print_count > 5 and fee_paid:
-            self.print_fee_paid = True
+            self.is_print_fee_paid = True
         self.save()
 
     def clean(self):
-        helpers.validate_license_type(self.license_type)
+        if self.license_type:
+            helpers.validate_license_type(self.license_type)
         helpers.validate_mobile_number(self.mobile_number)
-        if self.companyPhoneNumber is not None:
+        if self.company_phone_number is not None:
             helpers.validate_mobile_number(self.company_phone_number)
         helpers.validate_mobile_number(self.member_mobile_number)
 
         helpers.validate_email_field(self.email)
-        if self.companyEmailId:
+        if self.company_email:
             helpers.validate_email_field(self.company_email)
         helpers.validate_email_field(self.member_email)
 
-        if self.companyPan:
+        if self.company_pan:
             helpers.validate_pan_number(self.company_pan)
         helpers.validate_pan_number(self.pan)
-        if self.companyCin:
+        if self.company_cin:
             helpers.validate_cin_number(self.company_cin)
 
         helpers.validate_status(self.status)
@@ -146,43 +145,26 @@ class LicenseApplication(models.Model):
 
     def generate_application_id(self):
         try:
-            district_obj = District.objects.get(district__iexact=self.excise_district.strip())
-            district_code = str(district_obj.district_code).strip()
+            district_code = str(self.excise_district.district_code).strip()
         except District.DoesNotExist:
-            raise ValueError(f"District '{self.excise_district}' not found in District table.")
+            raise ValueError(f"District not found for ID {self.excise_district_id}.")
 
         today = now().date()
         year = today.year
         month = today.month
-        if month >= 4:
-            fin_year = f"{year}-{str(year + 1)[2:]}"
-        else:
-            fin_year = f"{year - 1}-{str(year)[2:]}"
-
+        fin_year = f"{year}-{str(year + 1)[2:]}" if month >= 4 else f"{year - 1}-{str(year)[2:]}"
         prefix = f"{district_code}/{fin_year}"
-
-        with transaction.atomic():
-            last_app = LicenseApplication.objects.filter(
-                application_id__startswith=prefix
-            ).order_by('-application_id').first()
-
-            if last_app and last_app.application_id:
-                last_number_str = last_app.application_id.split('/')[-1]
-                try:
-                    last_number = int(last_number_str)
-                except ValueError:
-                    last_number = 0
-            else:
-                last_number = 0
-
-            new_number = last_number + 1
-            new_number_str = str(new_number).zfill(4)
-
-            return f"{prefix}/{new_number_str}"
-
+        unique_id = str(uuid4())[:8]  # Shortened UUID for uniqueness
+        return f"{prefix}/{unique_id}"
 
     class Meta:
         db_table = 'license_application'
+        indexes = [
+            models.Index(fields=['excise_district']),
+            models.Index(fields=['license_type']),
+            models.Index(fields=['excise_subdivision']),
+            models.Index(fields=['current_stage']),
+        ]
 
 class LocationFee(models.Model):
     location_name = models.CharField(max_length=100, unique=True)
@@ -193,7 +175,6 @@ class LocationFee(models.Model):
 
     def __str__(self):
         return f"{self.location_name} - ₹{self.fee_amount}"
-
 
 class LicenseApplicationTransaction(models.Model):
     STAGES = [
@@ -234,11 +215,9 @@ class LicenseApplicationTransaction(models.Model):
         super().save(*args, **kwargs)
         if self.license_application.current_stage != self.stage:
             self.license_application.current_stage = self.stage
-            self.license_application.save(update_fields=['current_stage']) 
-
+            self.license_application.save(update_fields=['current_stage'])
 
 class SiteEnquiryReport(models.Model):
-
     application = models.OneToOneField(
         LicenseApplication, 
         on_delete=models.CASCADE, 
@@ -329,8 +308,6 @@ class SiteEnquiryReport(models.Model):
     special_remarks = models.TextField(max_length=2000, blank=True)
     reporting_place = models.CharField(max_length=250, blank=True)
 
-    #report_file = models.FileField(upload_to='site_enquiry_reports/')
-    #remarks = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -352,5 +329,3 @@ class Objection(models.Model):
     class Meta:
         db_table = 'license_application_objection'
         ordering = ['raised_on']
- 
-

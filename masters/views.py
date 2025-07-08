@@ -202,7 +202,7 @@ class LicenseTypeAPI(generics.ListCreateAPIView,
 class SubdivisionApi(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyAPIView):
     queryset = masters_model.Subdivision.objects.all()  # Fetch all subdivisions
     # Define the serializer for Subdivision
-    serializer_class = ser.SubdivisonSerializer
+    serializer_class = ser.SubdivisionSerializer
     lookup_field = 'id'  # Define the field for lookup (by id)
 
     def post(self, request, format=None):
@@ -243,7 +243,7 @@ class SubdivisionApi(generics.ListCreateAPIView, generics.RetrieveUpdateDestroyA
 
         if dc is not None:  # Fetch by district code
             subdivisions = masters_model.Subdivision.objects.filter(
-                DistrictCode=dc)
+                district_code=dc)
             if not subdivisions.exists():
                 raise NotFound(
                     detail="No subdivisions found for this district code",

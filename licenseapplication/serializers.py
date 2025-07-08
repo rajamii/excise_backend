@@ -10,13 +10,11 @@ class SiteEnquiryReportSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['application']
 
-
 class UserShortSerializer(serializers.ModelSerializer):
     role_name = serializers.CharField(source='role.name', read_only=True)
     class Meta:
         model = CustomUser
         fields = ['id', 'username', 'role', 'role_name']
-
 
 class LicenseApplicationTransactionSerializer(serializers.ModelSerializer):
     performed_by = UserShortSerializer(read_only=True)
@@ -45,20 +43,22 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
     class Meta:
         model = LicenseApplication
         fields = '__all__'
+        read_only_fields = ['application_id', 'current_stage', 'is_approved']
 
     def get_latest_transaction(self, obj):
-        # Safely get the latest transaction (assuming timestamp or ID ordering)
-        return LicenseApplicationTransactionSerializer(
-            obj.transactions.order_by('-timestamp').first()
-        ).data if obj.transactions.exists() else None
+        transaction = obj.transactions.order_by('-timestamp').first()
+        return LicenseApplicationTransactionSerializer(transaction).data if transaction else None
+
+    def validate_license_type(self, value):
+        return helpers.validate_license_type(value)
 
     def validate_mobile_number(self, value):
         return helpers.validate_mobile_number(value)
 
-    def validate_email_id(self, value):
+    def validate_email(self, value):
         return helpers.validate_email_field(value)
 
-    def validate_company_email_id(self, value):
+    def validate_company_email(self, value):
         return helpers.validate_email_field(value)
 
     def validate_company_phone_number(self, value):
@@ -67,7 +67,7 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
     def validate_member_mobile_number(self, value):
         return helpers.validate_mobile_number(value)
 
-    def validate_member_email_id(self, value):
+    def validate_member_email(self, value):
         return helpers.validate_email_field(value)
 
     def validate_pin_code(self, value):
@@ -93,6 +93,3 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
 
     def validate_status(self, value):
         return helpers.validate_status(value)
-
-    def validate_license_type(self, value):
-        return helpers.validate_license_type(value)

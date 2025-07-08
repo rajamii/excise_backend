@@ -21,7 +21,6 @@ class District(models.Model):
         State, to_field='state_code', 
         on_delete=models.CASCADE,
         related_name='districts',
-        db_column='state_code'
         )
 
     def __str__(self):
@@ -36,7 +35,6 @@ class Subdivision(models.Model):
         District, to_field='district_code', 
         on_delete=models.CASCADE, 
         related_name='subdivisions',
-        db_column='district_code'
         )
 
     def __str__(self):
@@ -51,7 +49,6 @@ class PoliceStation(models.Model):
         Subdivision, to_field='subdivision_code', 
         on_delete=models.CASCADE, 
         related_name='policestations',
-        db_column='subdivision_code'
         )
     def __str__(self):
         return self.police_station

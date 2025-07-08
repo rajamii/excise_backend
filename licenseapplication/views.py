@@ -1,13 +1,10 @@
 from django.shortcuts import get_object_or_404
-from django.http import JsonResponse
 from django.db import transaction
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, parser_classes
 from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework.response import Response
-from rest_framework import status
 from django.core.exceptions import ValidationError
-
 from .models import LicenseApplication, SiteEnquiryReport, LocationFee, Objection
 from .serializers import LicenseApplicationSerializer, SiteEnquiryReportSerializer, LocationFeeSerializer, ObjectionSerializer
 from .services.workflow import advance_application
@@ -190,7 +187,7 @@ def print_license_view(request, application_id):
             "fee_required": fee
         }, status=403)
 
-    if fee > 0 and not license.print_fee_paid:
+    if fee > 0 and not license.is_print_fee_paid:
         return Response({"error": "₹500 fee not paid yet."}, status=403)
 
     license.record_license_print(fee_paid=(fee > 0))
