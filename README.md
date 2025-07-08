@@ -4,7 +4,5 @@
 
 ## For the Documentation on the api services provided by the backend please refer to [Api reference](docs/api.md)
 
-## To reference the class diagram for this project refer to [Class Diagram](docs/classdiagram.svg)
-
 ## For the The official frontend , please flollow this link https://github.com/Ujhal/excise_frontend
 
