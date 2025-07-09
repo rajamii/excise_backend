@@ -123,17 +123,17 @@ REST_FRAMEWORK = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'excise_db',       # Database name
+        'NAME': 'eAbkari',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
 
-        'PASSWORD': 'postgres',  # Your PostgreSQL password
+        'PASSWORD': 'pgre',  # Your PostgreSQL password
 
         'HOST': 'localhost',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
     }
 }
 
-# AUTH_USER_MODEL = 'user.CustomUser'
+AUTH_USER_MODEL = 'user.CustomUser'
 
 
 # Password validation

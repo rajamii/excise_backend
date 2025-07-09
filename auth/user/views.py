@@ -1,9 +1,10 @@
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
+from rest_framework.views import APIView
 from auth.roles.decorators import has_app_permission
 from auth.user.models import CustomUser
-from auth.user.serializer import UserSerializer, UserCreateSerializer
+from auth.user.serializer import UserSerializer, UserCreateSerializer, LoginSerializer
 from typing import cast
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -136,37 +137,75 @@ class UserDeleteView(generics.DestroyAPIView):
             }
         )
         return Response({'message': 'User deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
+    
+@api_view(['POST'])
+def login(request):
+    """
+    Authenticates a user and returns access and refresh tokens.
+    """
+    serializer = LoginSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    validated_data = serializer.validated_data
+
+    return Response({
+        'success': True,
+        'statusCode': status.HTTP_200_OK,
+        'message': 'User logged in successfully',
+        'authenticated_user': {
+            'username': validated_data['username'],
+            'access': validated_data['access'],
+            'refresh': validated_data['refresh'],
+        },
+    }, status=status.HTTP_200_OK)
+
+
+# LogoutAPI handles the user logout by invalidating the refresh token.
+@api_view(['POST'])
+def logout(request):
+    """
+    Logs out the user by blacklisting the refresh token.
+    """
+    refresh_token = request.data.get("refresh")
+    if not refresh_token:
+        return Response({"error": "Refresh token is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        token = RefreshToken(refresh_token)
+        token.blacklist()
+        return Response({"message": "User logged out successfully"}, status=status.HTTP_205_RESET_CONTENT)
+
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['GET'])
 def get_captcha(request):
 
     hashkey = CaptchaStore.generate_key()
-    imageurl = captcha_image_url(hashkey)
+    image_url = captcha_image_url(hashkey)
 
-    send_response = Response({
+    return Response({
         'key': hashkey,
-        'image_url': imageurl
+        'imageUrl': image_url
     })
-    return send_response
 
 class TokenRefreshAPI(TokenRefreshView):
+    """
+    Handles JWT token refresh using refresh token.
+    """
     def post(self, request, *args, **kwargs):
         original_response = super().post(request, *args, **kwargs)
         return Response({
             'success': True,
             'status_code': status.HTTP_200_OK,
             'message': 'Token refreshed successfully',
-            'access': original_response.data.get('access')  # Must be `access`
+            'access': original_response.data.get('access'),
         }, status=status.HTTP_200_OK)
  
-
-
  
 # Send OTP API
-
 @api_view(['POST'])
-def send_otp_API(request):
+def send_otp(request):
     phone_number = request.data.get('phone_number')
     if not phone_number:
         return Response({'error': 'Phone number is required for OTP login'}, status=status.HTTP_400_BAD_REQUEST)
@@ -183,8 +222,9 @@ def send_otp_API(request):
         'otp': otp_obj.otp 
     }, status=status.HTTP_200_OK)
 
+
 @api_view(['POST'])
-def verify_otp_API(request):
+def verify_otp(request):
     phone_number = request.data.get('phone_number')
     otp_input = request.data.get('otp')
     otp_id = request.data.get('otp_id')
