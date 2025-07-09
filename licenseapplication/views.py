@@ -190,7 +190,7 @@ def print_license_view(request, application_id):
             "fee_required": fee
         }, status=403)
 
-    if fee > 0 and not license.print_fee_paid:
+    if fee > 0 and not license.is_print_fee_paid:
         return Response({"error": "₹500 fee not paid yet."}, status=403)
 
     license.record_license_print(fee_paid=(fee > 0))
