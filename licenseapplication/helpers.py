@@ -3,11 +3,12 @@
 import re
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
+from masters.models import LicenseType
 
 def validate_non_empty(value, field_name):
-    if not value or str(value).strip() == '':
+    if value is None or str(value).strip() == '':
         raise ValidationError(f"{field_name} cannot be empty.")
-    return value
+    return str(value).strip()
 
 def validate_email_field(value):
     try:
@@ -57,16 +58,18 @@ def validate_longitude(value):
     return value
 
 def validate_gender(value):
-    if value not in ["Male", "Female"]:
+    if value not in ["Male", "Female", "Other"]:
         raise ValidationError("Gender must be 'Male', 'Female', or 'Other'.")
     return value
 
 def validate_status(value):
     if value not in ["Single", "Married", "Divorced"]:
-        raise ValidationError("Status must be 'Active' or 'Inactive'.")
+        raise ValidationError("Status must be 'Single', 'Married' or 'Divorced'.")
     return value
 
 def validate_license_type(value):
-    if value not in ["Individual", "Company"]:
-        raise ValidationError("License type must be 'Individual' or 'Company'.")
+    try:
+        LicenseType.objects.get(id=value.id if hasattr(value, 'id') else value)
+    except LicenseType.DoesNotExist:
+        raise ValidationError("Invalid license type ID.")
     return value
