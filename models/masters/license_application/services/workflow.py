@@ -1,5 +1,9 @@
+from django.db import transaction
 from django.core.exceptions import ValidationError
-from models.masters.license_application.models import (
+from typing import Optional
+from auth.user.models import CustomUser
+from auth.roles.models import Role
+from ..models import (
     LicenseApplication,
     LicenseApplicationTransaction,
     LocationFee,
@@ -7,6 +11,7 @@ from models.masters.license_application.models import (
     Objection,
 )
 
+@transaction.atomic
 def advance_application(application, user, remarks="", action=None, new_license_category=None, fee_amount=None, objections=None):
     role_stage_map = {
         'license': 'draft',
@@ -15,7 +20,6 @@ def advance_application(application, user, remarks="", action=None, new_license_
         'level_3': 'level_3',
         'level_4': 'level_4',
         'level_5': 'level_5',
-        'payment_bot': 'payment_notification',
     }
 
     stage_transitions = {
@@ -26,35 +30,31 @@ def advance_application(application, user, remarks="", action=None, new_license_
         'level_3': 'level_4',
         'level_4': 'level_5',
         'level_5': 'approved',
-    #   'level_5': 'payment_notification',
-    #   'payment_notification': 'approved',
     }
 
     current = application.current_stage
     role = user.role.name
     expected_stage = role_stage_map.get(role)
 
-    # Authorize only if user is at the correct stage or rejected_by_<role>
     is_rejected = current == f'rejected_by_{role}'
     if expected_stage != current and not is_rejected:
         raise ValidationError("User is not authorized to act on this stage.")
 
     if action == "reject":
-        if role not in role_stage_map:
-            raise ValidationError("Invalid user role for rejection.")
-        
         application.current_stage = f"rejected_by_{role}"
         application.save()
 
         LicenseApplicationTransaction.objects.create(
             license_application=application,
             performed_by=user,
+            forwarded_by=user,
+            forwarded_to=None,
             stage=application.current_stage,
-            remarks=remarks or "Application rejected."
+            remarks=remarks or "Application rejected.",
         )
 
     elif action == "approve":
-        logical_stage = expected_stage if not is_rejected else expected_stage
+        logical_stage = expected_stage
         constructed_remarks = remarks or ""
 
         if logical_stage == 'level_1':
@@ -74,7 +74,7 @@ def advance_application(application, user, remarks="", action=None, new_license_
                 raise ValidationError("Site Enquiry Report must be filled before advancing.")
             if new_license_category:
                 old_category = application.license_category
-                application.license_category = new_license_category.license_category
+                application.license_category = new_license_category
                 application.is_license_category_updated = True
                 constructed_remarks += (
                     f" License category changed from '{old_category}' to '{new_license_category.license_category}'"
@@ -84,16 +84,21 @@ def advance_application(application, user, remarks="", action=None, new_license_
         if not next_stage:
             raise ValidationError("No next stage defined from current stage.")
 
-        application.current_stage = next_stage
+        # ✅ Get Role for forwarded_to
+        forwarded_to_role = Role.objects.filter(name=next_stage).first()
+        if not forwarded_to_role:
+            raise ValidationError(f"No role found for next stage: {next_stage}")
 
+        application.current_stage = next_stage
         if next_stage == 'approved':
             application.is_approved = True
-
         application.save()
 
         LicenseApplicationTransaction.objects.create(
             license_application=application,
             performed_by=user,
+            forwarded_by=user,
+            forwarded_to=forwarded_to_role,
             stage=application.current_stage,
             remarks=constructed_remarks.strip()
         )
@@ -105,7 +110,6 @@ def advance_application(application, user, remarks="", action=None, new_license_
         for obj in objections:
             field = obj.get("field")
             obj_remarks = obj.get("remarks")
-
             if not field or not obj_remarks:
                 raise ValidationError("Each objection must include both 'field' and 'remarks'.")
 
@@ -116,12 +120,24 @@ def advance_application(application, user, remarks="", action=None, new_license_
                 raised_by=user
             )
 
+        # Get the licensee from the first transaction (applicant)
+        first_txn = LicenseApplicationTransaction.objects.filter(
+            license_application=application
+        ).order_by('id').first()
+
+        if not first_txn:
+            raise ValidationError("Cannot determine licensee user to forward objection to.")
+
+        licensee_user = first_txn.performed_by
+
         application.current_stage = f"{role}_objection"
         application.save()
 
         LicenseApplicationTransaction.objects.create(
             license_application=application,
             performed_by=user,
+            forwarded_by=user,
+            forwarded_to=licensee_user.role,
             stage=application.current_stage,
             remarks=remarks or "Objection raised for one or more fields."
         )

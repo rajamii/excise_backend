@@ -4,13 +4,13 @@ from django.utils.timezone import now
 from . import helpers
 from models.masters.core.models import District , LicenseCategory ,LicenseType
 from models.masters.core.models import PoliceStation, Subdivision
+from auth.user.models import CustomUser
+from auth.roles.models import Role
+from .helpers import APPLICATION_STAGES
 
 
 def upload_document_path(instance, filename):
     return f'license_application/{instance.application_id}/{filename}'
-
-def upload_level2_document_path(instance, filename):
-    return f'license_application/{instance.application_id}/level2_docs/{filename}'
 
 class LicenseApplication(models.Model):
     application_id = models.CharField(max_length=30, primary_key=True, db_index=True)
@@ -25,7 +25,7 @@ class LicenseApplication(models.Model):
     license_type = models.ForeignKey(LicenseType, on_delete=models.PROTECT)
     establishment_name = models.CharField(max_length=255)
     mobile_number = models.BigIntegerField()
-    email = models.EmailField(db_column='email')
+    email = models.EmailField()
     license_no = models.BigIntegerField(null=True, blank=True)
     initial_grant_date = models.DateField(null=True, blank=True)
     renewed_from = models.DateField(null=True, blank=True)
@@ -179,33 +179,20 @@ class LocationFee(models.Model):
         return f"{self.location_name} - ₹{self.fee_amount}"
 
 class LicenseApplicationTransaction(models.Model):
-    STAGES = [
-        ('applicant_applied', 'Applicant Applied'),
-        ('level_1', 'Level 1'),
-        ('level_1_objection', 'Level 1 Objection'),
-        ('level_2', 'Level 2'),
-        ('level_3', 'Level 3'),
-        ('level_3_objection', 'Level 3 Objection'),
-        ('level_4', 'Level 4'),
-        ('level_5', 'Level 5'),
-        ('payment_notification', 'Payment Notification'),
-        ('approved', 'Approved'),
-        ('rejected', 'Rejected'),
-    ]
 
     license_application = models.ForeignKey(
         LicenseApplication, on_delete=models.CASCADE, related_name='transactions'
     )
     performed_by = models.ForeignKey(
-        'user.CustomUser', on_delete=models.SET_NULL, null=True, related_name='performed_transactions'
+        CustomUser, on_delete=models.SET_NULL, null=True, related_name='performed_transactions'
     )
     forwarded_by = models.ForeignKey(
-        'user.CustomUser', on_delete=models.SET_NULL, null=True, related_name='forwarded_by_transactions'
+        CustomUser, on_delete=models.SET_NULL, null=True, related_name='forwarded_by_transactions'
     )
     forwarded_to = models.ForeignKey(
-        'user.CustomUser', on_delete=models.SET_NULL, null=True, related_name='forwarded_to_transactions'
+        Role, on_delete=models.SET_NULL, null=True, related_name='forwarded_to_transactions'
     )
-    stage = models.CharField(max_length=30, choices=STAGES)
+    stage = models.CharField(max_length=30, choices=APPLICATION_STAGES)
     remarks = models.TextField(blank=True, null=True)
     timestamp = models.DateTimeField(auto_now_add=True)
 
@@ -272,7 +259,7 @@ class SiteEnquiryReport(models.Model):
     is_on_highway = models.BooleanField()
     highway_name = models.TextField(max_length=2000, blank=True)
 
-    shop_image_document = models.FileField(upload_to='site_enquiry/')
+    shop_image_document = models.FileField(upload_to='upload_document_path/')
 
     latitude = models.FloatField(blank=True, null=True)
     longitude = models.FloatField(blank=True, null=True)

@@ -61,3 +61,9 @@ class HasAppPermission(permissions.BasePermission):
             )
 
         return True  # Explicit return for type checker
+
+def make_permission(app_label: str, action: PermissionAction):
+    class CustomPermission(HasAppPermission):
+        def __init__(self):
+            super().__init__(app_label, action)
+    return CustomPermission

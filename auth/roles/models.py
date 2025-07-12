@@ -3,7 +3,7 @@ from django.contrib.postgres.fields import ArrayField
 from django.core.validators import MinValueValidator, MaxValueValidator
 
 class Role(models.Model): 
-    role_id = models.CharField(max_length=50, null=False, primary_key=True)
+    # id = models.CharField(max_length=50, null=False, primary_key=True)
     name = models.CharField(max_length=100)  # Removed trailing comma
     
     can_add = ArrayField(

@@ -2,11 +2,12 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
 from rest_framework.views import APIView
-from auth.roles.decorators import has_app_permission
+from auth.roles.permissions import make_permission
+from rest_framework.permissions import IsAuthenticated
 from auth.user.models import CustomUser
 from auth.user.serializer import UserSerializer, UserCreateSerializer, LoginSerializer
 from typing import cast
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 
 from auth.user.otp import get_new_otp, verify_otp   
 from captcha.helpers import captcha_image_url
@@ -43,7 +44,7 @@ class UserListView(generics.ListAPIView):
     """
     queryset = CustomUser.objects.all()
     serializer_class = UserSerializer
-    permission_classes = [has_app_permission('user', 'view')]
+    permission_classes = [make_permission('user', 'view')]
 
 class UserDetailView(generics.RetrieveAPIView):
     """
@@ -51,7 +52,14 @@ class UserDetailView(generics.RetrieveAPIView):
     """
     queryset = CustomUser.objects.all()
     serializer_class = UserSerializer
-    permission_classes = [has_app_permission('user', 'view')]
+    permission_classes = [make_permission('user', 'view')]
+
+class CurrentUserAPI(APIView):
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        serializer = UserSerializer(user)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 class UserUpdateView(generics.UpdateAPIView):
     """
@@ -60,7 +68,7 @@ class UserUpdateView(generics.UpdateAPIView):
     """
     queryset = CustomUser.objects.all()
     serializer_class = UserSerializer
-    permission_classes = [has_app_permission('user', 'update')]
+    permission_classes = [make_permission('user', 'update')]
 
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop('partial', False)
@@ -108,7 +116,7 @@ class UserDeleteView(generics.DestroyAPIView):
     """
     queryset = CustomUser.objects.all()
     serializer_class = UserSerializer
-    permission_classes = [has_app_permission('user', 'delete')]
+    permission_classes = [make_permission('user', 'delete')]
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object() # The user being deleted
@@ -138,44 +146,50 @@ class UserDeleteView(generics.DestroyAPIView):
         )
         return Response({'message': 'User deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
     
-@api_view(['POST'])
-def login(request):
-    """
-    Authenticates a user and returns access and refresh tokens.
-    """
-    serializer = LoginSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-    validated_data = serializer.validated_data
+# LoginAPI handles user login functionality via JWT.
+class LoginAPI(APIView):
+    serializer_class = LoginSerializer
 
-    return Response({
-        'success': True,
-        'statusCode': status.HTTP_200_OK,
-        'message': 'User logged in successfully',
-        'authenticated_user': {
-            'username': validated_data['username'],
-            'access': validated_data['access'],
-            'refresh': validated_data['refresh'],
-        },
-    }, status=status.HTTP_200_OK)
+    # POST method for logging in the user
+    def post(self, request):
+        serializer = self.serializer_class(data=request.data)
+        # Automatically raises ValidationError if invalid
+        serializer.is_valid(raise_exception=True)
+        validated_data = serializer.validated_data  # Extract validated data
+
+        response_data = {
+            'success': True,
+            'status_code': status.HTTP_200_OK,
+            'message': 'User logged in successfully',
+            'authenticated_user': {
+                'username': validated_data['username'],
+                'access': validated_data['access'],
+                'refresh': validated_data['refresh'],
+            },
+        }
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 # LogoutAPI handles the user logout by invalidating the refresh token.
-@api_view(['POST'])
-def logout(request):
-    """
-    Logs out the user by blacklisting the refresh token.
-    """
-    refresh_token = request.data.get("refresh")
-    if not refresh_token:
-        return Response({"error": "Refresh token is required"}, status=status.HTTP_400_BAD_REQUEST)
+class LogoutAPI(APIView):
+    permission_classes = [IsAuthenticated]  # Optional
 
-    try:
-        token = RefreshToken(refresh_token)
-        token.blacklist()
-        return Response({"message": "User logged out successfully"}, status=status.HTTP_205_RESET_CONTENT)
+    def post(self, request):
+        try:
+            refresh_token = request.data.get("refresh")
+            if not refresh_token:
+                return Response({"error": "Refresh token is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-    except Exception as e:
-        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+
+            return Response({"message": "User logged out successfully"}, status=status.HTTP_200_OK)
+
+        except TokenError:
+            return Response({"message": "Token already blacklisted or invalid"}, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['GET'])
@@ -186,7 +200,7 @@ def get_captcha(request):
 
     return Response({
         'key': hashkey,
-        'imageUrl': image_url
+        'image_url': image_url
     })
 
 class TokenRefreshAPI(TokenRefreshView):
@@ -205,7 +219,7 @@ class TokenRefreshAPI(TokenRefreshView):
  
 # Send OTP API
 @api_view(['POST'])
-def send_otp(request):
+def send_otp_api(request):
     phone_number = request.data.get('phone_number')
     if not phone_number:
         return Response({'error': 'Phone number is required for OTP login'}, status=status.HTTP_400_BAD_REQUEST)
@@ -222,9 +236,8 @@ def send_otp(request):
         'otp': otp_obj.otp 
     }, status=status.HTTP_200_OK)
 
-
 @api_view(['POST'])
-def verify_otp(request):
+def verify_otp_api(request):
     phone_number = request.data.get('phone_number')
     otp_input = request.data.get('otp')
     otp_id = request.data.get('otp_id')
@@ -248,11 +261,10 @@ def verify_otp(request):
             'statusCode': status.HTTP_200_OK,
             'message': 'User logged in successfully',
             'authenticated_user': {
-                'phone_number': user.phone_number,
                 'access': access_token,
                 'refresh': refresh_token,
             },
         }
         return Response(response_data, status=status.HTTP_200_OK)
     else:
-        return Response({'error': message}, status=status.HTTP_401_UNAUTHORIZED) 
+        return Response({'error': message}, status=status.HTTP_401_UNAUTHORIZED)

@@ -17,7 +17,7 @@ def get_user_role(user):
 #                  Role Views                   #
 #################################################
 
-@has_app_permission('roles', 'view')
+@permission_classes([HasAppPermission('roles', 'view')])
 @api_view(['GET'])
 def role_list(request):
     """List all roles"""
@@ -25,7 +25,7 @@ def role_list(request):
     serializer = RoleSerializer(roles, many=True)
     return Response(serializer.data)
 
-@has_app_permission('roles', 'create')
+@permission_classes([HasAppPermission('roles', 'create')])
 @api_view(['POST'])
 def role_create(request):
     """Create a new role"""

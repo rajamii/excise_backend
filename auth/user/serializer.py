@@ -6,14 +6,29 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
 
 class UserSerializer(serializers.ModelSerializer):
+    role = serializers.SerializerMethodField()
+    created_by = serializers.SerializerMethodField()
     class Meta:
         model = CustomUser
-        fields = ['id', 'email', 'username', 'first_name', 'last_name', 
-                 'phone_number', 'district', 'subdivision', 'address', 'role']
+        fields = ['id', 'email', 'username', 'first_name', 'middle_name', 'last_name', 
+                 'phone_number', 'district', 'subdivision', 'address', 'role',
+                 'created_by'
+        ]
+                 
         extra_kwargs = {
             'password': {'write_only': True},
             'username': {'read_only': True}
         }
+
+    def get_role(self, obj):
+        role = obj.role
+        return {
+            'id': role.id,
+            'name': role.name
+        } if role else None
+    
+    def get_created_by(self, obj):
+        return obj.created_by.role.name if obj.created_by else None
 
 class UserCreateSerializer(serializers.ModelSerializer):
     class Meta:

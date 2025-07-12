@@ -5,6 +5,25 @@ from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
 from models.masters.core.models import LicenseType
 
+APPLICATION_STAGES = [
+    ('applicant_applied', 'Applicant Applied'),
+    ('level_1', 'Level 1'),
+    ('level_1_objection', 'Level 1 Objection'),
+    ('level_2', 'Level 2'),
+    ('level_3', 'Level 3'),
+    ('level_3_objection', 'Level 3 Objection'),
+    ('level_4', 'Level 4'),
+    ('level_5', 'Level 5'),
+    ('payment_notification', 'Payment Notification'),
+    ('approved', 'Approved'),
+    ('rejected', 'Rejected'),
+    ('rejected_by_level_1', 'Rejected by Level 1'),
+    ('rejected_by_level_2', 'Rejected by Level 2'),
+    ('rejected_by_level_3', 'Rejected by Level 3'),
+    ('rejected_by_level_4', 'Rejected by Level 4'),
+    ('rejected_by_level_5', 'Rejected by Level 5'),
+]
+
 def validate_non_empty(value, field_name):
     if value is None or str(value).strip() == '':
         raise ValidationError(f"{field_name} cannot be empty.")

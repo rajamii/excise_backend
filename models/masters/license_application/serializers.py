@@ -1,8 +1,11 @@
 from rest_framework import serializers
 from .models import LicenseApplication, LicenseApplicationTransaction, LocationFee, Objection
 from auth.user.models import CustomUser
+from auth.roles.models import Role
 from . import helpers
 from .models import SiteEnquiryReport
+from ..core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseType
+from .fields import CodeRelatedField
 
 class SiteEnquiryReportSerializer(serializers.ModelSerializer):
     class Meta:
@@ -16,12 +19,19 @@ class UserShortSerializer(serializers.ModelSerializer):
         model = CustomUser
         fields = ['id', 'username', 'role', 'role_name']
 
+class RoleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Role
+        fields = ['id', 'name']
+
 class LicenseApplicationTransactionSerializer(serializers.ModelSerializer):
     performed_by = UserShortSerializer(read_only=True)
+    forwarded_by = UserShortSerializer(read_only=True)
+    forwarded_to = RoleSerializer(read_only=True)
     
     class Meta:
         model = LicenseApplicationTransaction
-        fields = ['license_application', 'stage', 'remarks', 'timestamp', 'performed_by']
+        fields = ['license_application', 'stage', 'remarks', 'timestamp', 'performed_by', 'forwarded_by', 'forwarded_to']
 
 class LocationFeeSerializer(serializers.ModelSerializer):
     class Meta:
@@ -33,7 +43,44 @@ class ObjectionSerializer(serializers.ModelSerializer):
         model = Objection
         fields = '__all__'
 
+class ResolveObjectionSerializer(serializers.ModelSerializer):
+    excise_district = CodeRelatedField(
+        queryset=District.objects.all(), lookup_field='district_code', required=False
+    )
+    excise_subdivision = CodeRelatedField(
+        queryset=Subdivision.objects.all(), lookup_field='subdivision_code', required=False
+    )
+    site_subdivision = CodeRelatedField(
+        queryset=Subdivision.objects.all(), lookup_field='subdivision_code', required=False
+    )
+    police_station = CodeRelatedField(
+        queryset=PoliceStation.objects.all(), lookup_field='police_station_code', required=False
+    )
+    # Add more fields if needed
+
+    class Meta:
+        model = LicenseApplication
+        fields = '__all__'  # or limit to only fields needed in objection resolution
+
 class LicenseApplicationSerializer(serializers.ModelSerializer):
+
+    # Submit (code fields)
+    excise_district = CodeRelatedField(queryset=District.objects.all(), lookup_field='district_code')
+    excise_subdivision = CodeRelatedField(queryset=Subdivision.objects.all(), lookup_field='subdivision_code')
+    site_subdivision = CodeRelatedField(queryset=Subdivision.objects.all(), lookup_field='subdivision_code')
+    police_station = CodeRelatedField(queryset=PoliceStation.objects.all(), lookup_field='police_station_code')
+    license_category = serializers.PrimaryKeyRelatedField(queryset=LicenseCategory.objects.all())
+    license_type = serializers.PrimaryKeyRelatedField(queryset=LicenseType.objects.all())
+
+    # Optional: read-only name fields
+    excise_district_name = serializers.CharField(source='excise_district.district', read_only=True)
+    excise_subdivision_name = serializers.CharField(source='excise_subdivision.subdivision', read_only=True)
+    site_subdivision_name = serializers.CharField(source='site_subdivision.subdivision', read_only=True)
+    police_station_name = serializers.CharField(source='police_station.police_station', read_only=True)
+    license_category_name = serializers.CharField(source='license_category.license_category', read_only=True)
+    license_type_name = serializers.CharField(source='license_type.license_type', read_only=True)
+
+    # Read-only computed fields
     application_id = serializers.CharField(read_only=True)
     current_stage = serializers.CharField(read_only=True)
     is_approved = serializers.BooleanField(read_only=True)

@@ -9,7 +9,7 @@ urlpatterns = [
     path('create/', views.role_create, name='role-create'),
     
     # Role instance endpoints
-    path('<str:role_id>/', views.role_detail, name='role-detail'),
-    path('<str:role_id>/update/', views.role_update, name='role-update'),
-    path('<str:role_id>/delete/', views.role_delete, name='role-delete'),
+    path('<int:pk>/detail/', views.role_detail, name='role-detail'),
+    path('<int:pk>/update/', views.role_update, name='role-update'),
+    path('<int:pk>/delete/', views.role_delete, name='role-delete'),
 ]

@@ -1,8 +1,9 @@
  # models.py
 from django.db import models
 from django.core.exceptions import ValidationError
-from .validators import validate_name, validate_Numbers
+from .validators import validate_name, validate_Numbers, validate_name_extended
 from typing import TYPE_CHECKING
+from .helper import ROAD_TYPE_CHOICES
 
 if TYPE_CHECKING:
     # Type checking only imports to prevent circular imports
@@ -10,48 +11,46 @@ if TYPE_CHECKING:
     from .models import District, PoliceStation, Subdivision
 
 class LicenseCategory(models.Model):
-    licenseCategoryDescription = models.CharField(
+    license_category = models.CharField(
         max_length=200,
         null=False,
         blank=False,
-        help_text="Description of license category"
+        help_text="Name of license category"
     )
 
     class Meta:
+        db_table = 'masters_licensecategory'
         verbose_name_plural = "License Categories"
 
     def __str__(self) -> str:
-        return self.licenseCategoryDescription
+        return self.license_category
 
 class LicenseType(models.Model):
-    licenseType = models.CharField(
+    license_type = models.CharField(
         max_length=200,
         null=False,
         blank=False,
         help_text="Type of license"
     )
 
+    class Meta:
+        db_table = 'masters_licensetype'
+
     def __str__(self) -> str:
-        return self.licenseType
+        return self.license_type
 
 class State(models.Model):
-    State = models.CharField(
+    state = models.CharField(
         max_length=50,
         default='Sikkim',
         null=False,
         blank=False
     )
-    StateNameLL = models.CharField(
-        max_length=30,
-        validators=[validate_name],
-        null=False,
-        blank=False
-    )
-    StateCode = models.IntegerField(
+    state_code = models.IntegerField(
         unique=True,
         default=11
     )
-    IsActive = models.BooleanField(
+    is_active = models.BooleanField(
         default=True
     )
 
@@ -60,46 +59,42 @@ class State(models.Model):
         districts: 'Manager[District]'
 
     class Meta:
+        db_table = 'masters_state'
         constraints = [
             models.UniqueConstraint(
-                fields=['State', 'StateCode'],
+                fields=['state', 'state_code'],
                 name='unique_state_identifier'
             )
         ]
 
     def __str__(self) -> str:
-        return f"{self.State} ({self.StateCode})"
+        return f"{self.state} ({self.state_code})"
 
     def clean(self):
-        if not 10 <= self.StateCode <= 99:
+        if not 10 <= self.state_code <= 99:
             raise ValidationError("State code must be between 10-99")
 
 class District(models.Model):
-    District = models.CharField(
+    district = models.CharField(
         max_length=30,
         validators=[validate_name],
         null=False,
         blank=False
     )
-    DistrictNameLL = models.CharField(
-        max_length=30,
-        validators=[validate_name],
-        null=True,
-        blank=True
-    )
-    DistrictCode = models.IntegerField(
+    district_code = models.IntegerField(
         unique=True,
         default=117
     )
-    IsActive = models.BooleanField(
+    is_active = models.BooleanField(
         default=True
     )
-    StateCode = models.ForeignKey(
+    state_code = models.ForeignKey(
         State,
-        to_field='StateCode',
+        to_field='state_code',
         on_delete=models.CASCADE,
         related_name='districts',
-        null=False
+        null=False,
+        db_column='state_code'
     )
 
     # Type hint for the reverse relationship from the Subdivision model
@@ -107,42 +102,38 @@ class District(models.Model):
         subdivisions: 'Manager[Subdivision]'
 
     class Meta:
+        db_table = 'masters_district'
         constraints = [
             models.UniqueConstraint(
-                fields=['StateCode', 'DistrictCode'],
+                fields=['state_code', 'district_code'],
                 name='unique_district_code_per_state'
             )
         ]
 
     def __str__(self) -> str:
-        return f"{self.District} ({self.DistrictCode})"
+        return f"{self.district} ({self.district_code})"
 
 class Subdivision(models.Model):
-    SubDivisionName = models.CharField(
+    subdivision = models.CharField(
         max_length=30,
         validators=[validate_name],
         null=True,
         blank=True
     )
-    SubDivisionNameLL = models.CharField(
-        max_length=30,
-        validators=[validate_name],
-        null=True,
-        blank=True
-    )
-    SubDivisionCode = models.IntegerField(
+    subdivision_code = models.IntegerField(
         unique=True,
         default=1001
     )
-    IsActive = models.BooleanField(
+    is_active = models.BooleanField(
         default=True
     )
-    DistrictCode = models.ForeignKey(
+    district_code = models.ForeignKey(
         District,
-        to_field='DistrictCode',
+        to_field='district_code',
         on_delete=models.CASCADE,
         related_name='subdivisions',
-        null=True
+        null=True,
+        db_column='district_code'
     )
 
     # Type hint for the reverse relationship from the PoliceStation model
@@ -150,45 +141,92 @@ class Subdivision(models.Model):
         police_stations: 'Manager[PoliceStation]'
 
     class Meta:
+        db_table = 'masters_subdivision'
         constraints = [
             models.UniqueConstraint(
-                fields=['DistrictCode', 'SubDivisionCode'],
+                fields=['district_code', 'subdivision_code'],
                 name='unique_subdivision_code_per_district'
             )
         ]
 
     def __str__(self) -> str:
-        return f"{self.SubDivisionName} ({self.SubDivisionCode})"
+        return f"{self.subdivision} ({self.subdivision_code})"
 
     def clean(self):
-        if self.SubDivisionName and len(self.SubDivisionName.strip()) < 2:
+        if self.subdivision and len(self.subdivision.strip()) < 2:
             raise ValidationError("Subdivision name must be ≥2 characters")
 
     @property
     def active_police_stations(self) -> 'models.QuerySet[PoliceStation]':
-        return self.police_stations.filter(IsActive=True)
+        return self.police_stations.filter(is_active=True)
 
 class PoliceStation(models.Model):
-    PoliceStationName = models.CharField(
+    police_station = models.CharField(
         max_length=30,
         validators=[validate_name],
         null=True,
         blank=True
     )
-    PoliceStationCode = models.IntegerField(
+    police_station_code = models.IntegerField(
         unique=True,
         default=11999
     )
-    IsActive = models.BooleanField(
+    is_active = models.BooleanField(
         default=True
     )
-    SubDivisionCode = models.ForeignKey(
+    subdivision_code = models.ForeignKey(
         Subdivision,
-        to_field='SubDivisionCode',
+        to_field='subdivision_code',
         on_delete=models.CASCADE,
         related_name='police_stations',
-        null=True
+        null=True,
+        db_column='subdivision_code'
     )
 
+    class Meta:
+        db_table = 'masters_policestation'
+
     def __str__(self) -> str:
-        return f"{self.PoliceStationName} ({self.PoliceStationCode})"
+        return f"{self.police_station} ({self.police_station_code})"
+    
+# LicenseTitle
+class LicenseTitle(models.Model):
+    description = models.CharField(max_length=200, default=None, null=False)
+
+    class Meta:
+        db_table = 'masters_licensetitle'
+
+    def __str__(self):
+        return self.description
+
+# LicenseSubcategory
+class LicenseSubcategory(models.Model):
+    description = models.CharField(max_length=200, default=None, null=False, validators=[validate_name_extended])
+    category = models.ForeignKey(
+        LicenseCategory,
+        on_delete=models.CASCADE,
+        related_name='subcategories',
+    )
+
+    class Meta:
+        db_table = 'masters_licensesubcategory'
+
+    def __str__(self):
+        return self.description
+
+# Location Road
+class Road(models.Model):
+    road_name = models.CharField(max_length=100, validators=[validate_name_extended])
+    district_id = models.ForeignKey(
+        District,
+        to_field='district_code',
+        on_delete=models.CASCADE,
+        related_name='roads',
+    )
+    road_type = models.CharField(max_length=10, choices=ROAD_TYPE_CHOICES, default='NH')
+
+    class Meta:
+        db_table = 'masters_road'
+
+    def __str__(self):
+        return f"{self.road_name} ({self.road_type})"

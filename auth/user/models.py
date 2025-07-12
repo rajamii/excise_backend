@@ -76,6 +76,11 @@ class CustomUser(AbstractBaseUser):
             'blank': "First name cannot be blank.",
         }
     )
+    middle_name = models.CharField(
+        max_length=50,
+        validators=[validate_name],
+        blank=True
+    )
     last_name = models.CharField(
         max_length=50,
         validators=[validate_name],
@@ -101,12 +106,20 @@ class CustomUser(AbstractBaseUser):
         blank=True,
         related_name='users'
     )
+    is_superuser = models.BooleanField(default=False)
+    is_staff = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)# pyright: ignore [reportArgumentType, reportGeneralTypeIssues]
     date_joined = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey('self',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='created_users'
+    )
 
     objects = CustomUserManager()
 
-    USERNAME_FIELD = 'email'
+    USERNAME_FIELD = 'username'
     REQUIRED_FIELDS = ['first_name', 'last_name', 'phone_number']
 
     class Meta:

@@ -1,13 +1,17 @@
 from django.shortcuts import get_object_or_404
 from django.db import transaction
-from rest_framework.decorators import api_view, parser_classes
+from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework.response import Response
 from django.core.exceptions import ValidationError
-from auth.roles.decorators import has_app_permission  # Updated import path
+from auth.roles.permissions import HasAppPermission
+
+from django.utils.dateparse import parse_date
+from django.db.models.fields.related import ForeignKey
+from django.db.models import DateField, DateTimeField, IntegerField
 
 from .models import LicenseApplication, SiteEnquiryReport, LocationFee, Objection
-from .serializers import LicenseApplicationSerializer, SiteEnquiryReportSerializer, LocationFeeSerializer, ObjectionSerializer
+from .serializers import LicenseApplicationSerializer, SiteEnquiryReportSerializer, LocationFeeSerializer, ObjectionSerializer, ResolveObjectionSerializer
 from .services.workflow import advance_application
 from .models import LicenseApplicationTransaction
 from models.masters.core.models import LicenseCategory
@@ -18,7 +22,7 @@ from rest_framework import status
 #           License Application                 #
 #################################################
 
-@has_app_permission('license_application', 'create')
+@permission_classes([HasAppPermission('license_application', 'create')])
 @api_view(['POST'])
 @parser_classes([MultiPartParser, FormParser])
 def create_license_application(request):
@@ -36,7 +40,7 @@ def create_license_application(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@has_app_permission('license_application', 'view')
+@permission_classes([HasAppPermission('license_application', 'view')])
 @api_view(['GET'])
 def list_license_applications(request):
     applications = LicenseApplication.objects.all()
@@ -44,7 +48,7 @@ def list_license_applications(request):
     return Response(serializer.data)
 
 
-@has_app_permission('license_application', 'view')
+@permission_classes([HasAppPermission('license_application', 'view')])
 @api_view(['GET'])
 def license_application_detail(request, pk):
     application = get_object_or_404(LicenseApplication, pk=pk)
@@ -52,7 +56,7 @@ def license_application_detail(request, pk):
     return Response(serializer.data)
 
 
-@has_app_permission('license_application', 'delete')
+@permission_classes([HasAppPermission('license_application', 'delete')])
 @api_view(['DELETE'])
 def delete_license_application(request, application_id):
     application = get_object_or_404(LicenseApplication, application_id=application_id)
@@ -67,7 +71,7 @@ def delete_license_application(request, application_id):
     return Response({'detail': 'Application deleted successfully.'}, status=status.HTTP_204_NO_CONTENT)
 
 
-@has_app_permission('license_application', 'update')
+@permission_classes([HasAppPermission('license_application', 'update')])
 @api_view(['POST'])
 def advance_license_application(request, application_id):
     application = get_object_or_404(LicenseApplication, pk=application_id) 
@@ -107,7 +111,7 @@ def advance_license_application(request, application_id):
         return Response({"detail": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
 
 
-@has_app_permission('license_application', 'update')
+@permission_classes([HasAppPermission('license_application', 'update')])
 @api_view(['GET', 'POST'])
 @parser_classes([MultiPartParser, FormParser])
 def level2_site_enquiry(request, application_id):
@@ -132,7 +136,7 @@ def level2_site_enquiry(request, application_id):
         return Response({"detail": "No report found."}, status=404)
     
     
-@has_app_permission('license_application', 'view')
+@permission_classes([HasAppPermission('license_application', 'view')])
 @api_view(['GET'])
 def site_enquiry_detail(request, application_id):
     application = get_object_or_404(SiteEnquiryReport, application_id=application_id)
@@ -140,7 +144,7 @@ def site_enquiry_detail(request, application_id):
     return Response(serializer.data)
 
 
-@has_app_permission('license_application', 'update')
+@permission_classes([HasAppPermission('license_application', 'update')])
 @api_view(['POST'])
 @parser_classes([JSONParser])
 def print_license_view(request, application_id):
@@ -167,57 +171,65 @@ def print_license_view(request, application_id):
         "print_count": license.print_count
     })
 
-@has_app_permission('license_application', 'view')
+@permission_classes([HasAppPermission('license_application', 'view')])
 @api_view(['GET'])
 def get_location_fees(request):
     fees = LocationFee.objects.all()
     serializer = LocationFeeSerializer(fees, many=True)
     return Response(serializer.data)
 
-@has_app_permission('license_application', 'view')
+@permission_classes([HasAppPermission('license_application', 'view')])
 @api_view(['GET'])
 def get_objections(request, application_id):
     objections = Objection.objects.filter(application_id=application_id).order_by('-raised_on')
     serializer = ObjectionSerializer(objections, many=True)
     return Response(serializer.data)
 
-@has_app_permission('license_application', 'update')
+@permission_classes([HasAppPermission('license_application', 'update')])
 @api_view(['POST'])
 @parser_classes([MultiPartParser, FormParser])
+@transaction.atomic
 def resolve_objections(request, application_id):
-    try:
-        application = LicenseApplication.objects.get(application_id=application_id)
-    except LicenseApplication.DoesNotExist:
-        return Response({"error": "Application not found."}, status=status.HTTP_404_NOT_FOUND)
+    application = get_object_or_404(LicenseApplication, application_id=application_id)
 
-    for key, value in request.data.items():
-        if hasattr(application, key):
-            setattr(application, key, value)
+    serializer = ResolveObjectionSerializer(application, data=request.data, partial=True)
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
 
-    if 'photo' in request.FILES:
-        application.photo = request.FILES['photo']
+    # Validate objection stage
+    if not application.current_stage.endswith('_objection'):
+        return Response(
+            {"error": "Current stage is not objection-related."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
-    if application.current_stage.endswith('_objection'):
-        original_stage = application.current_stage.replace('_objection', '')
-        application.current_stage = original_stage
-
+    # Restore original stage
+    original_stage = application.current_stage.replace('_objection', '')
+    application.current_stage = original_stage
     application.save()
 
+    # Resolve objections
     Objection.objects.filter(application=application, is_resolved=False).update(
-        is_resolved=True,
-        resolved_on=timezone.now()
+        is_resolved=True, resolved_on=timezone.now()
     )
+
+    # Log transaction
+    last_objection = Objection.objects.filter(application=application).order_by('-id').first()
+    raised_by = last_objection.raised_by if last_objection else None
 
     LicenseApplicationTransaction.objects.create(
         license_application=application,
         performed_by=request.user,
-        stage=application.current_stage,
+        forwarded_by=request.user,
+        forwarded_to=raised_by.role if raised_by else None,
+        stage=original_stage,
         remarks="Objection resolved and application moved back to review stage."
     )
 
     return Response({"message": "Objections resolved and application reverted to previous stage."})
 
-@has_app_permission('license_application', 'view')
+
+@permission_classes([HasAppPermission('license_application', 'view')])
 @api_view(['GET'])
 @parser_classes([JSONParser])
 def dashboard_counts(request):
@@ -293,7 +305,7 @@ def dashboard_counts(request):
     return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
 
 
-@has_app_permission('license_application', 'view')
+@permission_classes([HasAppPermission('license_application', 'view')])
 @api_view(['GET'])
 @parser_classes([JSONParser])
 def application_group(request):

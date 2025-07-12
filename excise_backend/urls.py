@@ -6,7 +6,7 @@ from django.urls import include
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('auth/', include('auth.user.urls')),
+    path('auth/', include('auth.urls')),
     path('masters/', include('models.masters.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
