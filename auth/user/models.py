@@ -4,6 +4,7 @@ from django.core.validators import validate_email
 from django.db.models.functions import Abs
 from auth.user.validators import validate_name, validate_phone_number
 from auth.roles.models import Role
+from models.masters.core.models import District, Subdivision
 from django.utils import timezone
 import uuid
 import random
@@ -96,14 +97,25 @@ class CustomUser(AbstractBaseUser):
             'unique': "A user with that phone number already exists.",
         }
     )
-    district = models.PositiveIntegerField(default=117)# pyright: ignore [reportArgumentType, reportGeneralTypeIssues] 
-    subdivision = models.PositiveIntegerField(default=1001)# pyright: ignore [reportArgumentType, reportGeneralTypeIssues]
+    district = models.ForeignKey(
+        District,
+        to_field='district_code',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='users'
+    )
+    subdivision = models.ForeignKey(
+        Subdivision,
+        to_field='subdivision_code',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='users'
+    )
     address = models.CharField(max_length=70, blank=True, null=True)
     role = models.ForeignKey(
         Role,
         on_delete=models.SET_NULL,
         null=True,
-        blank=True,
         related_name='users'
     )
     is_superuser = models.BooleanField(default=False)
