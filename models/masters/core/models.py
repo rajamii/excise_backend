@@ -217,7 +217,7 @@ class LicenseSubcategory(models.Model):
 # Location Road
 class Road(models.Model):
     road_name = models.CharField(max_length=100, validators=[validate_name_extended])
-    district_id = models.ForeignKey(
+    district = models.ForeignKey(
         District,
         to_field='district_code',
         on_delete=models.CASCADE,

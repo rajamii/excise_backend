@@ -188,6 +188,10 @@ def district_list(request):
 @api_view(['POST'])
 def district_create(request):
     """Create a new district."""
+
+    data = request.data.copy()
+    data['state_code'] = 11  # Set default state code for Sikkim
+
     serializer = DistrictSerializer(data=request.data, context={'request': request})
     serializer.is_valid(raise_exception=True)
     serializer.save()
@@ -498,6 +502,9 @@ def road_create(request):
     Create a new road entry.
     """
     serializer = RoadSerializer(data=request.data, context={'request': request})
+    if not serializer.is_valid():
+        print(serializer.errors)
+        return Response(serializer.errors, status=400)
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data, status=status.HTTP_201_CREATED)

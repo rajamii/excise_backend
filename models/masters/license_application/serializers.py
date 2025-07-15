@@ -5,7 +5,7 @@ from auth.roles.models import Role
 from . import helpers
 from .models import SiteEnquiryReport
 from ..core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseType
-from .fields import CodeRelatedField
+from utils.fields import CodeRelatedField
 
 class SiteEnquiryReportSerializer(serializers.ModelSerializer):
     class Meta:

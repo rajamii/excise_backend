@@ -10,5 +10,8 @@ class LicenseSubcategorySerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
-        representation['category'] = instance.category.license_category if instance.category else None
+        representation['category'] = {
+            'id': instance.category.id,
+            'licenseCategory': instance.category.license_category
+        }
         return representation
