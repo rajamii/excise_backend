@@ -81,7 +81,7 @@ class LicenseApplication(models.Model):
             ('level_3_objection', 'Level 3 Objection'),
             ('level_4', 'Level 4'),
             ('level_5', 'Level 5'),
-            ('payment_notification', 'Payment Notification'),
+            ('awaiting_payment', 'Awaiting payment'),
             ('approved', 'Approved'),
             ('rejected', 'Rejected'),
         ],
@@ -96,6 +96,9 @@ class LicenseApplication(models.Model):
 
     # Officer Actions
     is_fee_calculated = models.BooleanField(default=False)  # For Level 1
+
+    is_license_fee_paid = models.BooleanField(default=False)
+
     is_license_category_updated = models.BooleanField(default=False)  # For Level 2
 
     def can_print_license(self):
@@ -259,7 +262,7 @@ class SiteEnquiryReport(models.Model):
     is_on_highway = models.BooleanField()
     highway_name = models.TextField(max_length=2000, blank=True)
 
-    shop_image_document = models.FileField(upload_to='upload_document_path/')
+    shop_image_document = models.FileField(upload_to=upload_document_path)
 
     latitude = models.FloatField(blank=True, null=True)
     longitude = models.FloatField(blank=True, null=True)

@@ -26,7 +26,8 @@ def advance_application(application, user, remarks="", action=None, new_license_
         'draft': 'applicant_applied',
         'applicant_applied': 'level_1',
         'level_1': 'level_2',
-        'level_2': 'level_3',
+        'level_2': 'awaiting_payment',
+        'awaiting_payment': 'level_3', 
         'level_3': 'level_4',
         'level_4': 'level_5',
         'level_5': 'approved',
@@ -84,16 +85,33 @@ def advance_application(application, user, remarks="", action=None, new_license_
         if not next_stage:
             raise ValidationError("No next stage defined from current stage.")
 
-        # ✅ Get Role for forwarded_to
-        forwarded_to_role = Role.objects.filter(name=next_stage).first()
-        if not forwarded_to_role:
-            raise ValidationError(f"No role found for next stage: {next_stage}")
-
         application.current_stage = next_stage
+
         if next_stage == 'approved':
             application.is_approved = True
-        application.save()
+            # Get the licensee from first transaction
+            first_txn = LicenseApplicationTransaction.objects.filter(
+                license_application=application
+            ).order_by('id').first()
+            if not first_txn:
+                raise ValidationError("Licensee (applicant) not found.")
+            forwarded_to_role = first_txn.performed_by.role
 
+        elif next_stage == 'awaiting_payment':
+            # send back to licensee for fee payment
+            first_txn = LicenseApplicationTransaction.objects.filter(
+                license_application=application
+            ).order_by('id').first()
+            if not first_txn:
+                raise ValidationError("Licensee not found.")
+            forwarded_to_role = first_txn.performed_by.role
+
+        else:
+            forwarded_to_role = Role.objects.filter(name=next_stage).first()
+            if not forwarded_to_role:
+                raise ValidationError(f"No role found for next stage: {next_stage}")
+
+        application.save()
         LicenseApplicationTransaction.objects.create(
             license_application=application,
             performed_by=user,
@@ -120,7 +138,7 @@ def advance_application(application, user, remarks="", action=None, new_license_
                 raised_by=user
             )
 
-        # Get the licensee from the first transaction (applicant)
+        # Get the licensee from the first transaction
         first_txn = LicenseApplicationTransaction.objects.filter(
             license_application=application
         ).order_by('id').first()

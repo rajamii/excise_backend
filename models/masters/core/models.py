@@ -83,7 +83,7 @@ class District(models.Model):
     )
     district_code = models.IntegerField(
         unique=True,
-        default=117
+        default=225
     )
     is_active = models.BooleanField(
         default=True
@@ -122,7 +122,7 @@ class Subdivision(models.Model):
     )
     subdivision_code = models.IntegerField(
         unique=True,
-        default=1001
+        default=1553
     )
     is_active = models.BooleanField(
         default=True

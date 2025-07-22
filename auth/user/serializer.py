@@ -8,6 +8,8 @@ from django.contrib.auth import authenticate
 class UserSerializer(serializers.ModelSerializer):
     role = serializers.SerializerMethodField()
     created_by = serializers.SerializerMethodField()
+    district = serializers.SerializerMethodField()
+    subdivision = serializers.SerializerMethodField()
     class Meta:
         model = CustomUser
         fields = ['id', 'email', 'username', 'first_name', 'middle_name', 'last_name', 
@@ -29,6 +31,20 @@ class UserSerializer(serializers.ModelSerializer):
     
     def get_created_by(self, obj):
         return obj.created_by.role.name if obj.created_by else None
+    
+    def get_district(self, obj):
+        district = obj.district
+        return {
+            'name': district.district,
+            'code': district.district_code
+        } if district else None
+
+    def get_subdivision(self, obj):
+        subdivision = obj.subdivision
+        return {
+            'name': subdivision.subdivision,
+            'code': subdivision.subdivision_code
+        } if subdivision else None
 
 class UserCreateSerializer(serializers.ModelSerializer):
     class Meta:

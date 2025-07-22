@@ -15,7 +15,8 @@ from .views import (
     resolve_objections,
     print_license_view,
     delete_license_application,
-    site_enquiry_detail
+    site_enquiry_detail,
+    pay_license_fee
 )
 
 urlpatterns = [
@@ -45,17 +46,19 @@ urlpatterns = [
     # Endpoint for Level 2 site enquiry, allowing both GET and POST requests
     re_path(r'(?P<application_id>.+)/site-enquiry/$', level2_site_enquiry, name='level2-site-enquiry'),
 
-    path('location-fee/', get_location_fees, name='get_location_fees'),
+    path('location-fee/', get_location_fees, name='get-location-fees'),
 
-    re_path(r'(?P<application_id>.+)/objections/$', get_objections, name='get_objections'),
+    re_path(r'(?P<application_id>.+)/objections/$', get_objections, name='get-objections'),
 
-    re_path(r'(?P<application_id>.+)/resolve-objections/$', resolve_objections, name='resolve_objections'),
+    re_path(r'(?P<application_id>.+)/resolve-objections/$', resolve_objections, name='resolve-objections'),
 
-    re_path(r'(?P<application_id>.+)/print/$', print_license_view, name='print_license'),
+    re_path(r'(?P<application_id>.+)/print/$', print_license_view, name='print-license'),
 
-    re_path(r'(?P<application_id>.+)/delete/$', delete_license_application, name='delete_application'),
+    re_path(r'(?P<application_id>.+)/delete/$', delete_license_application, name='delete-application'),
 
-    re_path(r'(?P<application_id>.+)/site-detail/$', site_enquiry_detail, name='site_enquiry_detail'),
+    re_path(r'(?P<application_id>.+)/site-detail/$', site_enquiry_detail, name='site-enquiry-detail'),
+
+    re_path(r'(?P<application_id>.+)/pay-license-fee/$', pay_license_fee, name="pay-licensee-fee"),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
