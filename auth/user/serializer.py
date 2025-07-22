@@ -61,13 +61,19 @@ class UserCreateSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = CustomUser
-        fields = ['email', 'first_name', 'last_name', 'phone_number',
-                 'district', 'subdivision', 'address', 'password']
+        fields = [
+            'email', 'first_name', 'middle_name', 'last_name', 'phone_number',
+            'district', 'subdivision', 'address', 'role', 'password'
+        ]
         extra_kwargs = {
             'password': {'write_only': True}
         }
 
     def create(self, validated_data):
+        request = self.context.get('request')
+        if request and request.user and request.user.is_authenticated:
+            validated_data['created_by'] = request.user
+
         return CustomUser.objects.create_user(**validated_data)
     
 class LoginSerializer(serializers.Serializer):

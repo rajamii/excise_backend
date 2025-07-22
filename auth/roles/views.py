@@ -35,12 +35,12 @@ def role_create(request):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-@has_app_permission('roles', 'view')
+@permission_classes([HasAppPermission('roles', 'view')])
 @api_view(['GET'])
-def role_detail(request, role_id):
+def role_detail(request, pk):
     """Retrieve a specific role"""
     try:
-        role = Role.objects.get(role_id=role_id)
+        role = Role.objects.get(pk=pk)
     except Role.DoesNotExist:
         return Response(
             {"detail": "Role not found"},
@@ -50,12 +50,12 @@ def role_detail(request, role_id):
     serializer = RoleSerializer(role)
     return Response(serializer.data)
 
-@has_app_permission('roles', 'update')
+@permission_classes([HasAppPermission('roles', 'update')])
 @api_view(['PUT', 'PATCH'])
-def role_update(request, role_id):
+def role_update(request, pk):
     """Update a role"""
     try:
-        role = Role.objects.get(role_id=role_id)
+        role = Role.objects.get(pk=pk)
     except Role.DoesNotExist:
         return Response(
             {"detail": "Role not found"},
@@ -68,12 +68,12 @@ def role_update(request, role_id):
         return Response(serializer.data)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-@has_app_permission('roles', 'delete')
+@permission_classes([HasAppPermission('roles', 'delete')])
 @api_view(['DELETE'])
-def role_delete(request, role_id):
+def role_delete(request, pk):
     """Delete a role"""
     try:
-        role = Role.objects.get(role_id=role_id)
+        role = Role.objects.get(pk=pk)
     except Role.DoesNotExist:
         return Response(
             {"detail": "Role not found"},

@@ -154,10 +154,20 @@ class LicenseApplication(models.Model):
         today = now().date()
         year = today.year
         month = today.month
-        fin_year = f"{year}-{str(year + 1)[2:]}" if month >= 4 else f"{year - 1}-{str(year)[2:]}"
+        # Determine the financial year
+        if month >= 4:
+            fin_year = f"{year}-{str(year + 1)[2:]}"
+        else:
+            fin_year = f"{year - 1}-{str(year)[2:]}"
         prefix = f"{district_code}/{fin_year}"
-        unique_id = str(uuid4())[:8]  # Shortened UUID for uniqueness
-        return f"{prefix}/{unique_id}"
+        # Generate or increment the 4-digit counter
+        key = f"{district_code}-{fin_year}"
+        if key not in financial_year_counters:
+            financial_year_counters[key] = 1
+        else:
+            financial_year_counters[key] += 1
+        counter = str(financial_year_counters[key]).zfill(4)  # Pads to 4 digits
+        return f"{prefix}/{counter}"
 
     class Meta:
         db_table = 'license_application'

@@ -17,13 +17,11 @@ class DistrictSerializer(serializers.ModelSerializer):
             'state',
             'is_active',
             'status',
-            # 'subdivisions'  # Uncomment if using nested
         ]
         extra_kwargs = {
             'district_code': {
-                'validators': []  # We'll handle this in validate
-            },
-            'state_code': {'read_only': True}  # Allow setting via ID
+                'validators': []
+            }
         }
 
     def validate_district_code(self, value):

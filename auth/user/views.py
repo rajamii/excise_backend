@@ -1,6 +1,6 @@
 from rest_framework import generics, status
 from rest_framework.response import Response
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.views import APIView
 from auth.roles.permissions import make_permission
 from rest_framework.permissions import IsAuthenticated
@@ -13,20 +13,22 @@ from auth.user.otp import get_new_otp, verify_otp
 from captcha.helpers import captcha_image_url
 from captcha.models import CaptchaStore
 from rest_framework_simplejwt.views import TokenRefreshView
+from ..roles.permissions import HasAppPermission
 
 # Import your UserActivity model and get_client_ip function
 from models.transactional.logs.models import UserActivity
 
 from models.transactional.logs.signals import get_client_ip
 
-# Open registration endpoint (no permission required)
+# User registration by staff 
+@permission_classes([HasAppPermission('user', 'create')])
 @api_view(['POST'])
 def register_user(request):
     """
     Handles user registration.
     User registration activity is tracked via a post_save signal on the User model.
     """
-    serializer = UserCreateSerializer(data=request.data)
+    serializer = UserCreateSerializer(data=request.data, context={'request': request})
     if serializer.is_valid():
         user = cast(CustomUser, serializer.save())
         # The post_save signal for the User model (defined in transactional.logs.signals)
@@ -37,7 +39,6 @@ def register_user(request):
         }, status=status.HTTP_201_CREATED)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-# Protected views
 class UserListView(generics.ListAPIView):
     """
     Lists all users. Requires 'user.view' permission.
@@ -120,7 +121,6 @@ class UserDeleteView(generics.DestroyAPIView):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object() # The user being deleted
-        self.perform_destroy(instance)
 
         '''
         LOGGING USER ACTIVITY: User Account Deletion
@@ -144,6 +144,8 @@ class UserDeleteView(generics.DestroyAPIView):
                 'deleted_user_id': str(instance.id) # Convert UUID/PK to string for metadata
             }
         )
+
+        self.perform_destroy(instance)
         return Response({'message': 'User deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
     
 # LoginAPI handles user login functionality via JWT.
