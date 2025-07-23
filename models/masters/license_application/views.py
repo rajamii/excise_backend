@@ -32,11 +32,12 @@ def create_license_application(request):
         with transaction.atomic():
             application = serializer.save(current_stage='level_1')
 
-            # Determine role to forward to
+            # Assign role for the first stage of the workflow
             forwarded_to_role = Role.objects.filter(name='level_1').first()
             if not forwarded_to_role:
                 raise ValidationError("No role found for next stage: level_1")
 
+            # Log the creation of the application in transaction table
             LicenseApplicationTransaction.objects.create(
                 license_application=application,
                 performed_by=request.user,
@@ -87,12 +88,14 @@ def advance_license_application(request, application_id):
     application = get_object_or_404(LicenseApplication, pk=application_id) 
     user = request.user
 
+    # Extract required fields from request
     remarks = request.data.get("remarks", "")
     fee_amount = request.data.get("fee_amount")
     new_license_category_id = request.data.get("new_license_category")
     action = request.data.get("action")
     objections = request.data.get("objections", [])
 
+    # Validate license category change if requested
     new_license_category = None
     if new_license_category_id:
         try:
@@ -102,9 +105,11 @@ def advance_license_application(request, application_id):
 
     try:
         if action == 'raise_objection':
+            # Objection format must include field and remarks keys
             if not isinstance(objections, list) or not all('field' in obj and 'remarks' in obj for obj in objections):
                 return Response({"detail": "Invalid objections format."}, status=status.HTTP_400_BAD_REQUEST)
             
+        # Perform workflow action
         advance_application(
             application,
             user,
@@ -196,24 +201,25 @@ def pay_license_fee(request, application_id):
     except LicenseApplication.DoesNotExist:
         raise ValidationError("Invalid application ID.")
 
+    # Enforce payment flow strictly at correct stage
     if application.current_stage != 'awaiting_payment':
         raise ValidationError("Payment not allowed at current stage.")
 
     if application.is_license_fee_paid:
         raise ValidationError("Payment already completed.")
 
-    # Update payment status
+    # Mark fee as paid and move to next stage
     application.is_license_fee_paid = True
     application.current_stage = 'level_3'
     application.save()
 
-    # Determine forwarded_to role
+    # Get next role responsible
     try:
         forwarded_to_role = Role.objects.get(name='level_3')
     except Role.DoesNotExist:
         raise ValidationError("Next stage role (level_3) not found.")
 
-    # Log transaction
+    # Log the fee payment in the transaction table
     LicenseApplicationTransaction.objects.create(
         license_application=application,
         stage=application.current_stage,

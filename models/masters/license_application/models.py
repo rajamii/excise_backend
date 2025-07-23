@@ -151,26 +151,37 @@ class LicenseApplication(models.Model):
     def generate_application_id(self):
         try:
             district_code = str(self.excise_district.district_code).strip()
-        except District.DoesNotExist:
-            raise ValueError(f"District not found for ID {self.excise_district_id}.")
+        except AttributeError:
+            raise ValueError(f"Invalid District object assigned to excise_district.")
 
         today = now().date()
         year = today.year
         month = today.month
-        # Determine the financial year
         if month >= 4:
             fin_year = f"{year}-{str(year + 1)[2:]}"
         else:
             fin_year = f"{year - 1}-{str(year)[2:]}"
+
         prefix = f"{district_code}/{fin_year}"
-        # Generate or increment the 4-digit counter
-        key = f"{district_code}-{fin_year}"
-        if key not in financial_year_counters:
-            financial_year_counters[key] = 1
-        else:
-            financial_year_counters[key] += 1
-        counter = str(financial_year_counters[key]).zfill(4)  # Pads to 4 digits
-        return f"{prefix}/{counter}"
+
+        with transaction.atomic():
+            last_app = LicenseApplication.objects.filter(
+                application_id__startswith=prefix
+            ).order_by('-application_id').first()
+
+            if last_app and last_app.application_id:
+                last_number_str = last_app.application_id.split('/')[-1]
+                try:
+                    last_number = int(last_number_str)
+                except ValueError:
+                    last_number = 0
+            else:
+                last_number = 0
+
+            new_number = last_number + 1
+            new_number_str = str(new_number).zfill(4)
+
+            return f"{prefix}/{new_number_str}"
 
     class Meta:
         db_table = 'license_application'

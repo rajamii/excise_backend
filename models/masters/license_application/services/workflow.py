@@ -13,6 +13,7 @@ from ..models import (
 
 @transaction.atomic
 def advance_application(application, user, remarks="", action=None, new_license_category=None, fee_amount=None, objections=None):
+    # Map roles to the application stage they are authorized to act on
     role_stage_map = {
         'license': 'draft',
         'level_1': 'level_1',
@@ -22,6 +23,7 @@ def advance_application(application, user, remarks="", action=None, new_license_
         'level_5': 'level_5',
     }
 
+    # Defines how each stage progresses to the next
     stage_transitions = {
         'draft': 'applicant_applied',
         'applicant_applied': 'level_1',
@@ -37,14 +39,17 @@ def advance_application(application, user, remarks="", action=None, new_license_
     role = user.role.name
     expected_stage = role_stage_map.get(role)
 
+    # Prevent unauthorized access unless it's a rejected stage for the user's role
     is_rejected = current == f'rejected_by_{role}'
     if expected_stage != current and not is_rejected:
         raise ValidationError("User is not authorized to act on this stage.")
 
     if action == "reject":
+        # Mark application as rejected at current role level
         application.current_stage = f"rejected_by_{role}"
         application.save()
 
+        # Log the rejection in transaction history
         LicenseApplicationTransaction.objects.create(
             license_application=application,
             performed_by=user,
@@ -58,6 +63,7 @@ def advance_application(application, user, remarks="", action=None, new_license_
         logical_stage = expected_stage
         constructed_remarks = remarks or ""
 
+        # Level 1: Validate and set yearly fee
         if logical_stage == 'level_1':
             if application.is_fee_calculated:
                 raise ValidationError("Fee already calculated for this application.")
@@ -70,6 +76,7 @@ def advance_application(application, user, remarks="", action=None, new_license_
             except ValueError:
                 raise ValidationError("Invalid fee amount format.")
 
+        # Level 2: Check if site enquiry is done and optionally update category
         elif logical_stage == 'level_2':
             if not SiteEnquiryReport.objects.filter(application=application).exists():
                 raise ValidationError("Site Enquiry Report must be filled before advancing.")
@@ -81,15 +88,16 @@ def advance_application(application, user, remarks="", action=None, new_license_
                     f" License category changed from '{old_category}' to '{new_license_category.license_category}'"
                 )
 
+        # Move to the next defined stage
         next_stage = stage_transitions.get(logical_stage)
         if not next_stage:
             raise ValidationError("No next stage defined from current stage.")
 
         application.current_stage = next_stage
 
+        # Final approval: Mark application as approved and find licensee
         if next_stage == 'approved':
             application.is_approved = True
-            # Get the licensee from first transaction
             first_txn = LicenseApplicationTransaction.objects.filter(
                 license_application=application
             ).order_by('id').first()
@@ -97,8 +105,8 @@ def advance_application(application, user, remarks="", action=None, new_license_
                 raise ValidationError("Licensee (applicant) not found.")
             forwarded_to_role = first_txn.performed_by.role
 
+        # Payment stage: forward back to licensee
         elif next_stage == 'awaiting_payment':
-            # send back to licensee for fee payment
             first_txn = LicenseApplicationTransaction.objects.filter(
                 license_application=application
             ).order_by('id').first()
@@ -107,11 +115,13 @@ def advance_application(application, user, remarks="", action=None, new_license_
             forwarded_to_role = first_txn.performed_by.role
 
         else:
+            # Forward to next designated role as per stage
             forwarded_to_role = Role.objects.filter(name=next_stage).first()
             if not forwarded_to_role:
                 raise ValidationError(f"No role found for next stage: {next_stage}")
 
         application.save()
+        # Log the stage advancement
         LicenseApplicationTransaction.objects.create(
             license_application=application,
             performed_by=user,
@@ -122,6 +132,7 @@ def advance_application(application, user, remarks="", action=None, new_license_
         )
 
     elif action == "raise_objection":
+        # Ensure at least one objection is passed
         if not objections:
             raise ValidationError("No objection fields provided.")
 
@@ -131,6 +142,7 @@ def advance_application(application, user, remarks="", action=None, new_license_
             if not field or not obj_remarks:
                 raise ValidationError("Each objection must include both 'field' and 'remarks'.")
 
+            # Create objection record
             Objection.objects.create(
                 application=application,
                 field_name=field,
@@ -138,7 +150,7 @@ def advance_application(application, user, remarks="", action=None, new_license_
                 raised_by=user
             )
 
-        # Get the licensee from the first transaction
+        # Forward objection back to licensee
         first_txn = LicenseApplicationTransaction.objects.filter(
             license_application=application
         ).order_by('id').first()
@@ -151,6 +163,7 @@ def advance_application(application, user, remarks="", action=None, new_license_
         application.current_stage = f"{role}_objection"
         application.save()
 
+        # Log objection transaction
         LicenseApplicationTransaction.objects.create(
             license_application=application,
             performed_by=user,
