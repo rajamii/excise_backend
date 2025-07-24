@@ -5,11 +5,6 @@ from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework.response import Response
 from django.core.exceptions import ValidationError
 from auth.roles.permissions import HasAppPermission
-
-from django.utils.dateparse import parse_date
-from django.db.models.fields.related import ForeignKey
-from django.db.models import DateField, DateTimeField, IntegerField
-
 from .models import LicenseApplication, SiteEnquiryReport, LocationFee, Objection
 from .serializers import LicenseApplicationSerializer, SiteEnquiryReportSerializer, LocationFeeSerializer, ObjectionSerializer, ResolveObjectionSerializer
 from .services.workflow import advance_application

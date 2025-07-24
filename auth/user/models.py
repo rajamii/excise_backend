@@ -51,7 +51,9 @@ class CustomUserManager(BaseUserManager):
 
     def generate_unique_username(self, first_name, last_name, phone_number, district, subdivision):
         initials = f"{first_name[0].upper()}{last_name[0].upper()}"
-        base = f"{initials}{phone_number[-4:]}{district}{subdivision}"
+        district_code = district.district_code
+        subdivision_code = subdivision.subdivision_code
+        base = f"{initials}{phone_number[-4:]}{district_code}{subdivision_code}"
         username = base[:10]
         
         while self.model.objects.filter(username=username).exists():
