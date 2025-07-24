@@ -73,6 +73,7 @@ INSTALLED_APPS = [
     # transcational models
     'models.transactional',
     'models.transactional.logs',
+    'models.transactional.transactiondata',
 
     # auth models 
 
