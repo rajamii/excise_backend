@@ -1,28 +1,15 @@
 from rest_framework import serializers
 from auth.user.models import CustomUser
-from models.masters.core.models import District, Subdivision
+
 from captcha.models import CaptchaStore
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
 
-
-
-class DistrictSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = District
-        fields = ['district_code', 'district']
-
-class SubdivisionSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Subdivision
-        fields = ['subdivision_code', 'subdivision']
-
-
 class UserSerializer(serializers.ModelSerializer):
     role = serializers.SerializerMethodField()
     created_by = serializers.SerializerMethodField()
-    district = DistrictSerializer(read_only=True)
-    subdivision = SubdivisionSerializer(read_only=True)
+    district = serializers.SerializerMethodField()
+    subdivision = serializers.SerializerMethodField()
     class Meta:
         model = CustomUser
         fields = ['id', 'email', 'username', 'first_name', 'middle_name', 'last_name', 
@@ -44,21 +31,22 @@ class UserSerializer(serializers.ModelSerializer):
     
     def get_created_by(self, obj):
         return obj.created_by.role.name if obj.created_by else None
+    
+    def get_district(self, obj):
+        district = obj.district
+        return {
+            'name': district.district,
+            'code': district.district_code
+        } if district else None
 
+    def get_subdivision(self, obj):
+        subdivision = obj.subdivision
+        return {
+            'name': subdivision.subdivision,
+            'code': subdivision.subdivision_code
+        } if subdivision else None
 
 class UserCreateSerializer(serializers.ModelSerializer):
-    district = serializers.PrimaryKeyRelatedField(
-        queryset=District.objects.all(),
-
-        required=True,
-        allow_null=True
-    )
-    subdivision = serializers.PrimaryKeyRelatedField(
-        queryset=Subdivision.objects.all(),
-        required=True,
-        allow_null=True
-    )
-    
     class Meta:
         model = CustomUser
         fields = [

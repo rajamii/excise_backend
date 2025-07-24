@@ -9,6 +9,7 @@ from django.utils import timezone
 import uuid
 import random
 
+
 class CustomUserManager(BaseUserManager):
     def create_user(self, email, first_name, last_name, phone_number,
                    district, subdivision, address, password=None, **extra_fields):
@@ -100,22 +101,24 @@ class CustomUser(AbstractBaseUser):
     district = models.ForeignKey(
         District,
         to_field='district_code',
-        on_delete=models.SET_NULL,
-        null=True,
-        related_name='users'
+        on_delete=models.CASCADE,
+      #  related_name='yourmodel_set',  # replace `yourmodel` with actual model name
+        db_column='district'
     )
+
     subdivision = models.ForeignKey(
         Subdivision,
         to_field='subdivision_code',
-        on_delete=models.SET_NULL,
-        null=True,
-        related_name='users'
+        on_delete=models.CASCADE,
+       # related_name='yourmodel_set',  # replace `yourmodel` with actual model name
+        db_column='subdivision'
     )
     address = models.CharField(max_length=70, blank=True, null=True)
     role = models.ForeignKey(
         Role,
         on_delete=models.SET_NULL,
         null=True,
+        blank=True,
         related_name='users'
     )
     is_superuser = models.BooleanField(default=False)

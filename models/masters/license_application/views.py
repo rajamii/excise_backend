@@ -17,6 +17,7 @@ from .models import LicenseApplicationTransaction
 from models.masters.core.models import LicenseCategory
 from django.utils import timezone
 from rest_framework import status
+from auth.roles.models import Role
 
 #################################################
 #           License Application                 #
@@ -30,9 +31,18 @@ def create_license_application(request):
     if serializer.is_valid():
         with transaction.atomic():
             application = serializer.save(current_stage='level_1')
+
+            # Assign role for the first stage of the workflow
+            forwarded_to_role = Role.objects.filter(name='level_1').first()
+            if not forwarded_to_role:
+                raise ValidationError("No role found for next stage: level_1")
+
+            # Log the creation of the application in transaction table
             LicenseApplicationTransaction.objects.create(
                 license_application=application,
                 performed_by=request.user,
+                forwarded_by=request.user,
+                forwarded_to=forwarded_to_role,
                 stage='level_1',
                 remarks='License Applied'
             )
@@ -74,15 +84,18 @@ def delete_license_application(request, application_id):
 @permission_classes([HasAppPermission('license_application', 'update')])
 @api_view(['POST'])
 def advance_license_application(request, application_id):
+    print(request.data)
     application = get_object_or_404(LicenseApplication, pk=application_id) 
     user = request.user
 
+    # Extract required fields from request
     remarks = request.data.get("remarks", "")
     fee_amount = request.data.get("fee_amount")
     new_license_category_id = request.data.get("new_license_category")
     action = request.data.get("action")
     objections = request.data.get("objections", [])
 
+    # Validate license category change if requested
     new_license_category = None
     if new_license_category_id:
         try:
@@ -92,9 +105,11 @@ def advance_license_application(request, application_id):
 
     try:
         if action == 'raise_objection':
+            # Objection format must include field and remarks keys
             if not isinstance(objections, list) or not all('field' in obj and 'remarks' in obj for obj in objections):
                 return Response({"detail": "Invalid objections format."}, status=status.HTTP_400_BAD_REQUEST)
             
+        # Perform workflow action
         advance_application(
             application,
             user,
@@ -179,6 +194,47 @@ def get_location_fees(request):
     return Response(serializer.data)
 
 @permission_classes([HasAppPermission('license_application', 'view')])
+@api_view(['POST'])
+def pay_license_fee(request, application_id):
+    try:
+        application = LicenseApplication.objects.get(application_id=application_id)
+    except LicenseApplication.DoesNotExist:
+        raise ValidationError("Invalid application ID.")
+
+    # Enforce payment flow strictly at correct stage
+    if application.current_stage != 'awaiting_payment':
+        raise ValidationError("Payment not allowed at current stage.")
+
+    if application.is_license_fee_paid:
+        raise ValidationError("Payment already completed.")
+
+    # Mark fee as paid and move to next stage
+    application.is_license_fee_paid = True
+    application.current_stage = 'level_3'
+    application.save()
+
+    # Get next role responsible
+    try:
+        forwarded_to_role = Role.objects.get(name='level_3')
+    except Role.DoesNotExist:
+        raise ValidationError("Next stage role (level_3) not found.")
+
+    # Log the fee payment in the transaction table
+    LicenseApplicationTransaction.objects.create(
+        license_application=application,
+        stage=application.current_stage,
+        performed_by=request.user,
+        forwarded_by=request.user,
+        forwarded_to=forwarded_to_role,
+        remarks='License fee paid by applicant.',
+    )
+
+    return Response({
+        'message': 'License fee payment recorded successfully.',
+        'application': LicenseApplicationSerializer(application).data
+    })
+
+@permission_classes([HasAppPermission('license_application', 'view')])
 @api_view(['GET'])
 def get_objections(request, application_id):
     objections = Objection.objects.filter(application_id=application_id).order_by('-raised_on')
@@ -243,7 +299,7 @@ def dashboard_counts(request):
         },
         'level_2': {
             "pending": ['level_2', 'level_2_objection'],
-            "approved": 'level_3',
+            "approved": 'awaiting_payment',
             "rejected": 'rejected_by_level_2',
         },
         'level_3': {
@@ -284,6 +340,7 @@ def dashboard_counts(request):
                 'level_3', 'level_3_objection',
                 'level_4', 'level_4_objection',
                 'level_5', 'level_5_objection',
+                'awaiting_payment'
             ]).count(),
             "approved": LicenseApplication.objects.filter(
                 current_stage='approved', is_approved=True
@@ -291,6 +348,32 @@ def dashboard_counts(request):
             "rejected": LicenseApplication.objects.filter(
                 current_stage__in=
                 [
+                    'rejected_by_level_1', 
+                    'rejected_by_level_2',
+                    'rejected_by_level_3',
+                    'rejected_by_level_4',
+                    'rejected_by_level_5',
+                    'rejected',
+                ]
+            ).count()
+        }
+        return Response(counts)
+
+    elif role == 'site_admin':
+        counts = {
+            "applied": LicenseApplication.objects.filter(current_stage='level_1').count(),
+            "pending": LicenseApplication.objects.filter(current_stage__in=[
+                'level_1_objection',
+                'level_2', 'level_2_objection',
+                'level_3', 'level_3_objection',
+                'level_4', 'level_4_objection',
+                'level_5', 'level_5_objection',
+            ]).count(),
+            "approved": LicenseApplication.objects.filter(
+                current_stage='approved', is_approved=True
+            ).count(),
+            "rejected": LicenseApplication.objects.filter(
+                current_stage__in=[
                     'rejected_by_level_1', 
                     'rejected_by_level_2',
                     'rejected_by_level_3',
@@ -319,7 +402,7 @@ def application_group(request):
         },
         'level_2': {
             "pending": ['level_2', 'level_2_objection'],
-            "approved": ['level_3'],
+            "approved": ['awaiting_payment'],
             "rejected": ['rejected_by_level_2'],
         },
         'level_3': {
@@ -365,7 +448,8 @@ def application_group(request):
                     'level_2', 'level_2_objection',
                     'level_3', 'level_3_objection',
                     'level_4', 'level_4_objection',
-                    'level_5', 'level_5_objection'
+                    'level_5', 'level_5_objection',
+                    'awaiting_payment'
                 ]),
                 many=True
             ).data,
