@@ -29,7 +29,7 @@ SECRET_KEY = 'django-insecure-&9z_bt2h_b0gz8dho0u$j-g@569rl^@i071z4&j&p!qz7ez*(m
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 # Application definition
 
@@ -72,11 +72,11 @@ INSTALLED_APPS = [
 
     # transcational models
     'models.transactional',
+    'models.transactional.license',
     'models.transactional.logs',
     'models.transactional.transactiondata',
 
     # auth models 
-
     'auth.roles',
     'auth.user',
 ]

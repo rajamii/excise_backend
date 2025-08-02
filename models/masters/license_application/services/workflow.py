@@ -1,15 +1,13 @@
 from django.db import transaction
 from django.core.exceptions import ValidationError
-from typing import Optional
-from auth.user.models import CustomUser
+from django.utils import timezone
 from auth.roles.models import Role
 from ..models import (
-    LicenseApplication,
     LicenseApplicationTransaction,
-    LocationFee,
     SiteEnquiryReport,
     Objection,
 )
+from models.transactional.license.models import License
 
 @transaction.atomic
 def advance_application(application, user, remarks="", action=None, new_license_category=None, fee_amount=None, objections=None):
@@ -95,15 +93,23 @@ def advance_application(application, user, remarks="", action=None, new_license_
 
         application.current_stage = next_stage
 
-        # Final approval: Mark application as approved and find licensee
+        # Final approval: Mark application as approved, create License record, and update license_no
         if next_stage == 'approved':
             application.is_approved = True
-            first_txn = LicenseApplicationTransaction.objects.filter(
-                license_application=application
-            ).order_by('id').first()
-            if not first_txn:
-                raise ValidationError("Licensee (applicant) not found.")
-            forwarded_to_role = first_txn.performed_by.role
+            # Create License record in the license app
+            license = License.objects.create(
+                application=application,
+                license_type=application.license_type,
+                establishment_name=application.establishment_name,
+                licensee_name=application.member_name,
+                excise_district=application.excise_district,
+                issue_date=timezone.now().date(),
+                valid_up_to=application.valid_up_to or (timezone.now().date() + timezone.timedelta(days=365)),
+            )
+            # Update LicenseApplication's license_no with generated license_id
+            application.license_no = license.license_id
+            constructed_remarks += f" License ID {license.license_id} generated."
+            forwarded_to_role = None  # No further forwarding after approval
 
         # Payment stage: forward back to licensee
         elif next_stage == 'awaiting_payment':

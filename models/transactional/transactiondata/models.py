@@ -28,8 +28,9 @@ class TransactionData(models.Model):
         related_name='transactions',
         to_field='id'
     )
-    longitude = models.DecimalField(max_digits=10, decimal_places=8)
-    latitude = models.DecimalField(max_digits=10, decimal_places=8)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6)
+    latitude = models.DecimalField(max_digits=9, decimal_places=6)
+    file = models.FileField(upload_to='transaction_files/', null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_by = models.ForeignKey(
         CustomUser,

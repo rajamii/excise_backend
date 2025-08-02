@@ -26,7 +26,7 @@ class LicenseApplication(models.Model):
     establishment_name = models.CharField(max_length=255)
     mobile_number = models.BigIntegerField()
     email = models.EmailField()
-    license_no = models.BigIntegerField(null=True, blank=True)
+    license_no = models.CharField(max_length=60, null=True, blank=True)
     initial_grant_date = models.DateField(null=True, blank=True)
     renewed_from = models.DateField(null=True, blank=True)
     valid_up_to = models.DateField(null=True, blank=True)
