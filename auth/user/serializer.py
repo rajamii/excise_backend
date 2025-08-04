@@ -4,6 +4,8 @@ from auth.user.models import CustomUser
 from captcha.models import CaptchaStore
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
+from models.masters.core.models import District, Subdivision
+from ..roles.models import Role
 
 class UserSerializer(serializers.ModelSerializer):
     role = serializers.SerializerMethodField()
@@ -35,16 +37,49 @@ class UserSerializer(serializers.ModelSerializer):
     def get_district(self, obj):
         district = obj.district
         return {
-            'name': district.district,
-            'code': district.district_code
+            'district': district.district,
+            'district_code': district.district_code
         } if district else None
 
     def get_subdivision(self, obj):
         subdivision = obj.subdivision
         return {
-            'name': subdivision.subdivision,
-            'code': subdivision.subdivision_code
+            'subdivision': subdivision.subdivision,
+            'subdivision_code': subdivision.subdivision_code
         } if subdivision else None
+    
+    def update(self, instance, validated_data):
+        # The request object is available in the context passed by the view
+        request_data = self.context['request'].data
+
+        # Manually handle nested foreign key updates
+        # We look in request_data because SerializerMethodFields are read-only
+        # and won't appear in validated_data.
+
+        # Handle District
+        district_data = request_data.get('district')
+        if district_data and isinstance(district_data, dict):
+            district_code = district_data.get('district_code')
+            if district_code:
+                instance.district = District.objects.get(district_code=district_code)
+
+        # Handle Subdivision
+        subdivision_data = request_data.get('subdivision')
+        if subdivision_data and isinstance(subdivision_data, dict):
+            subdivision_code = subdivision_data.get('subdivision_code')
+            if subdivision_code:
+                instance.subdivision = Subdivision.objects.get(subdivision_code=subdivision_code)
+
+        # Handle Role
+        role_data = request_data.get('role')
+        if role_data and isinstance(role_data, dict):
+            role_id = role_data.get('id')
+            if role_id:
+                instance.role = Role.objects.get(id=role_id)
+
+        # Update all other fields from validated_data and save the instance
+        # The super().update() method handles regular fields like first_name, etc.
+        return super().update(instance, validated_data)
 
 class UserCreateSerializer(serializers.ModelSerializer):
     class Meta:
