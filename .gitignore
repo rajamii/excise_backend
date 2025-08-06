@@ -139,10 +139,10 @@ dmypy.json
 .pyre/
 
 
-#unix/bash scripts and some personal stuff
+#unix/bash scripts and media folder
 .sh
 virt/
 
-PERSONAL_DOCUMENTS/
+media/
 
 

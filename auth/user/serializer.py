@@ -53,7 +53,8 @@ class UserSerializer(serializers.ModelSerializer):
         request_data = self.context['request'].data
 
         # Manually handle nested foreign key updates
-        # We look in request_data because SerializerMethodFields are read-only
+        
+        # Look in request_data because SerializerMethodFields are read-only
         # and won't appear in validated_data.
 
         # Handle District
