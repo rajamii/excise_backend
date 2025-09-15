@@ -1,11 +1,8 @@
  # views.py
-
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-
-from auth.roles.decorators import has_app_permission
 from auth.roles.permissions import HasAppPermission
 
 # Local app imports

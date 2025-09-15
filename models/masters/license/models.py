@@ -1,7 +1,7 @@
 from django.db import models
 from django.utils.timezone import now
 from django.db import transaction
-from models.masters.license_application.models import LicenseApplication
+from models.transactional.license_application.models import LicenseApplication
 from models.masters.core.models import LicenseType, District
 
 class License(models.Model):

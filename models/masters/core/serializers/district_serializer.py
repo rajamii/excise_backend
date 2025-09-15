@@ -1,6 +1,5 @@
 from rest_framework import serializers
 from models.masters.core.models import District
-from .state_serializer import StateSerializer  # Optional, if nesting
 
 class DistrictSerializer(serializers.ModelSerializer):
     # Computed fields

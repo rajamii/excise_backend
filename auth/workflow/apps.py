@@ -1,6 +1,7 @@
 from django.apps import AppConfig
 
 
-class LicenseConfig(AppConfig):
+class WorkflowConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
-    name = 'models.transactional.license'
+    name = 'auth.workflow'
+    verbose_name='workflow'

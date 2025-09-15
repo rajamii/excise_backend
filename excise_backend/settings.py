@@ -65,20 +65,22 @@ INSTALLED_APPS = [
 
     'models.masters',
     'models.masters.core',
-    'models.masters.company_registration',
+    'models.masters.license',
     'models.masters.contact_us',
-    'models.masters.license_application',
-    'models.masters.salesman_barman',
+    
 
     # transcational models
     'models.transactional',
-    'models.transactional.license',
+    'models.transactional.company_registration',
+    'models.transactional.license_application',
+    'models.transactional.salesman_barman',
     'models.transactional.logs',
     'models.transactional.transactiondata',
 
     # auth models 
     'auth.roles',
     'auth.user',
+    'auth.workflow'
 ]
 
 MIDDLEWARE = [
@@ -134,7 +136,7 @@ REST_FRAMEWORK = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'eAbkari',       # Database name
+        'NAME': 'eAbkari_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
         'PASSWORD': 'admin',  # Your PostgreSQL password
         'HOST': 'localhost',        # Default host

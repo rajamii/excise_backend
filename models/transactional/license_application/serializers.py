@@ -4,8 +4,9 @@ from auth.user.models import CustomUser
 from auth.roles.models import Role
 from . import helpers
 from .models import SiteEnquiryReport
-from ..core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseType
+from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseType
 from utils.fields import CodeRelatedField
+from auth.workflow.models import WorkflowStage
 
 class SiteEnquiryReportSerializer(serializers.ModelSerializer):
     class Meta:
@@ -82,7 +83,9 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
 
     # Read-only computed fields
     application_id = serializers.CharField(read_only=True)
-    current_stage = serializers.CharField(read_only=True)
+    current_stage = serializers.PrimaryKeyRelatedField(read_only = True)
+    workflow = serializers.PrimaryKeyRelatedField(read_only=True)
+    current_stage_name = serializers.CharField(source = 'current_stage.name', read_only=True)
     is_approved = serializers.BooleanField(read_only=True)
     transactions = LicenseApplicationTransactionSerializer(many=True, read_only=True)
     latest_transaction = serializers.SerializerMethodField()
@@ -90,7 +93,7 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
     class Meta:
         model = LicenseApplication
         fields = '__all__'
-        read_only_fields = ['application_id', 'current_stage', 'is_approved']
+        read_only_fields = ['application_id', 'current_stage_name', 'is_approved']
 
     def get_latest_transaction(self, obj):
         transaction = obj.transactions.order_by('-timestamp').first()

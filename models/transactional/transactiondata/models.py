@@ -1,13 +1,15 @@
 from django.db import models
 from auth.user.models import CustomUser
+from models.masters.license.models import License
 from models.masters.core.models import District, Subdivision, LicenseCategory
+from django.core.validators import FileExtensionValidator
 
 class TransactionData(models.Model):
     licensee_id = models.ForeignKey(
-        CustomUser,
+        License,
         on_delete=models.CASCADE,
         related_name='transactions',
-        to_field='id'
+        to_field='license_id'
     )
     district = models.ForeignKey(
         District,
@@ -30,7 +32,12 @@ class TransactionData(models.Model):
     )
     longitude = models.DecimalField(max_digits=9, decimal_places=6)
     latitude = models.DecimalField(max_digits=9, decimal_places=6)
-    file = models.FileField(upload_to='transaction_files/', null=True, blank=True)
+    file = models.FileField(
+        upload_to='transaction_files/', 
+        null=True, 
+        blank=True,
+        validators=[FileExtensionValidator(allowed_extensions=['pdf', 'jpg', 'jpeg', 'png'])]
+        )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_by = models.ForeignKey(
         CustomUser,
