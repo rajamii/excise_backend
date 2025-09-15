@@ -4,5 +4,5 @@
 
 ## For the Documentation on the api services provided by the backend please refer to [Api reference](docs/api.md)
 
-## For the The official frontend , please flollow this link https://github.com/Ujhal/excise_frontend
+## For the The official frontend , please flollow this link https://github.com/rajamii/excise_frontend
 
