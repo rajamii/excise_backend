@@ -29,7 +29,7 @@ SECRET_KEY = 'django-insecure-&9z_bt2h_b0gz8dho0u$j-g@569rl^@i071z4&j&p!qz7ez*(m
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 # Application definition
 
@@ -65,19 +65,22 @@ INSTALLED_APPS = [
 
     'models.masters',
     'models.masters.core',
-    'models.masters.company_registration',
+    'models.masters.license',
     'models.masters.contact_us',
-    'models.masters.license_application',
-    'models.masters.salesman_barman',
+    
 
     # transcational models
     'models.transactional',
+    'models.transactional.company_registration',
+    'models.transactional.license_application',
+    'models.transactional.salesman_barman',
     'models.transactional.logs',
+    'models.transactional.transactiondata',
 
     # auth models 
-
     'auth.roles',
     'auth.user',
+    'auth.workflow'
 ]
 
 MIDDLEWARE = [
@@ -133,9 +136,9 @@ REST_FRAMEWORK = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'eAbkari',       # Database name
+        'NAME': 'eAbkari_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'pgre',  # Your PostgreSQL password
+        'PASSWORD': 'admin',  # Your PostgreSQL password
         'HOST': 'localhost',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
     }

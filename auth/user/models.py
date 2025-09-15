@@ -51,7 +51,9 @@ class CustomUserManager(BaseUserManager):
 
     def generate_unique_username(self, first_name, last_name, phone_number, district, subdivision):
         initials = f"{first_name[0].upper()}{last_name[0].upper()}"
-        base = f"{initials}{phone_number[-4:]}{district}{subdivision}"
+        district_code = district.district_code
+        subdivision_code = subdivision.subdivision_code
+        base = f"{initials}{phone_number[-4:]}{district_code}{subdivision_code}"
         username = base[:10]
         
         while self.model.objects.filter(username=username).exists():
@@ -67,10 +69,10 @@ class CustomUser(AbstractBaseUser):
         }
     )
     username = models.CharField(
-        max_length=30,
+        max_length=30, # Adjust max_length
         unique=True,
-        blank=True  # Will be auto-generated
-    )
+        blank=True  
+    ) # Will be auto-generated
     first_name = models.CharField(
         max_length=50,
         validators=[validate_name],
@@ -102,7 +104,6 @@ class CustomUser(AbstractBaseUser):
         District,
         to_field='district_code',
         on_delete=models.CASCADE,
-      #  related_name='yourmodel_set',  # replace `yourmodel` with actual model name
         db_column='district'
     )
 
@@ -110,7 +111,6 @@ class CustomUser(AbstractBaseUser):
         Subdivision,
         to_field='subdivision_code',
         on_delete=models.CASCADE,
-       # related_name='yourmodel_set',  # replace `yourmodel` with actual model name
         db_column='subdivision'
     )
     address = models.CharField(max_length=70, blank=True, null=True)
@@ -123,7 +123,7 @@ class CustomUser(AbstractBaseUser):
     )
     is_superuser = models.BooleanField(default=False)
     is_staff = models.BooleanField(default=False)
-    is_active = models.BooleanField(default=True)# pyright: ignore [reportArgumentType, reportGeneralTypeIssues]
+    is_active = models.BooleanField(default=True)
     date_joined = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey('self',
         null=True,
