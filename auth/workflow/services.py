@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError, PermissionDenied
 from django.db import transaction
+from .permissions import StagePermission
 from .models import WorkflowTransition, StagePermission
 from models.transactional.license_application.models import LicenseApplicationTransaction, SiteEnquiryReport, Objection
 from models.masters.core.models import LicenseCategory
@@ -17,23 +18,16 @@ class WorkflowService:
     @staticmethod
     def validate_transition(workflow, from_stage, to_stage, context=None):
 
-        # print("workflow:", workflow)
-        # print("from_stage:", from_stage, from_stage.id if from_stage else None)
-        # print("to_stage:", to_stage, to_stage.id if to_stage else None)
-
         transition = WorkflowTransition.objects.filter(
             workflow=workflow,
             from_stage=from_stage,
             to_stage=to_stage
         ).first()
 
-        # print("transition found:", transition)
-
         if not transition:
             raise ValidationError(f"Invalid transition: {from_stage.name} → {to_stage.name}")
         
         condition = transition.condition or {}
-
         for key, expected_value in condition.items():
             if (context or {}).get(key) != expected_value:
                 raise ValidationError(f"Condition not met: {key}={expected_value}")
@@ -41,13 +35,13 @@ class WorkflowService:
     @staticmethod
     @transaction.atomic
     def advance_stage(application, user, target_stage, context_data=None, skip_permission_check=False):
-        from .permissions import StagePermission
+
         context_data = context_data or {}
 
         # Check permissions
         if not skip_permission_check and not user.is_superuser:
             if not StagePermission.objects.filter(
-                stage=target_stage,
+                stage=application.current_stage,
                 role=user.role,
                 can_process=True
             ).exists():
@@ -106,7 +100,8 @@ class WorkflowService:
         # Update stage
         application.current_stage = target_stage
         application.save()
-
+        
+        
         # Determine forwarded_to_role
         forwarded_to_role = None
         stage_perms = StagePermission.objects.filter(stage=target_stage, can_process=True)
@@ -127,12 +122,13 @@ class WorkflowService:
             forwarded_by=user,
             forwarded_to=forwarded_to_role,
             stage=target_stage,
-            remarks=context_data.get("remarks", "")
+            remarks=context_data.get("remarks")
         )
+        
 
     @staticmethod
     @transaction.atomic
-    def raise_objection(application, user, target_stage, objections, remarks=""):
+    def raise_objection(application, user, target_stage, objections, remarks=None):
         # Validate objections
         if not objections:
             raise ValidationError("No objection fields provided.")
@@ -182,7 +178,7 @@ class WorkflowService:
             performed_by=user,
             forwarded_by=user,
             forwarded_to=first_txn.performed_by.role,
-            stage=target_stage.name,
+            stage=target_stage,
             remarks=remarks or "Objection raised."
         )
 
@@ -218,6 +214,6 @@ class WorkflowService:
             performed_by=user,
             forwarded_by=user,
             forwarded_to=forwarded_to_role,
-            stage=target_stage.name,
+            stage=target_stage,
             remarks=context_data.get("remarks", "Objections resolved.")
         )

@@ -10,6 +10,7 @@ from .views import (
     dashboard_counts,
     application_group,
     get_location_fees,
+    raise_objection,
     get_objections,
     resolve_objections,
     print_license_view,
@@ -55,6 +56,8 @@ urlpatterns = [
     path('<everything:application_id>)/site-enquiry/', level2_site_enquiry, name='level2-site-enquiry'),
 
     path('location-fee/', get_location_fees, name='get-location-fees'),
+
+    path('<everything:application_id>/raise-objection/', raise_objection, name='raise-objection'),
 
     path('<everything:application_id>/objections/', get_objections, name='get-objections'),
 

@@ -3,12 +3,11 @@ from django.db import transaction
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework.response import Response
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError, PermissionDenied
 from auth.roles.permissions import HasAppPermission
 from .models import LicenseApplication, SiteEnquiryReport, LocationFee, Objection
 from .serializers import LicenseApplicationSerializer, SiteEnquiryReportSerializer, LocationFeeSerializer, ObjectionSerializer, ResolveObjectionSerializer
 from .models import LicenseApplicationTransaction
-from models.masters.core.models import LicenseCategory
 from django.utils import timezone
 from rest_framework import status
 from auth.workflow.models import Workflow, StagePermission, WorkflowStage, WorkflowTransition
@@ -110,12 +109,58 @@ def delete_license_application(request, application_id):
 @api_view(['POST'])
 def advance_license_application(request, application_id, stage_id):
     print(request.data)
-    application = get_object_or_404(LicenseApplication, pk=application_id)
-    target_stage = get_object_or_404(WorkflowStage, id=stage_id)
+    """
+    Advance a license application to the specified stage.
+    Expects application_id and stage_id in the URL, and optional context_data in the request body.
+    """
+    # Fetch the application and target stage
+    application = get_object_or_404(LicenseApplication, application_id=application_id)
+    try:
+        target_stage = WorkflowStage.objects.get(id=stage_id, workflow=application.workflow)
+    except WorkflowStage.DoesNotExist:
+        return Response({"detail": f"Stage ID {stage_id} not found in workflow {application.workflow.name}."}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Extract context_data from request body (e.g., for fee setting, objections, or revert)
     context_data = request.data.get("context",{})
+    remarks = request.data.get('remarks', '')
 
+    try:
+        with transaction.atomic():
+            #Advance the stage using WorkflowService
+            WorkflowService.advance_stage(
+                application=application,
+                user=request.user,
+                target_stage=target_stage,
+                context_data=context_data
+                )
 
+            # forwarded_to_role = None
+            # sp_qs = StagePermission.objects.filter(stage=target_stage, can_process=True)
+            # if sp_qs.exists():
+            #     forwarded_to_role = sp_qs.first().role
 
+            # LicenseApplicationTransaction.objects.create(
+            #     license_application=application,
+            #     performed_by=request.user,
+            #     forwarded_by=request.user,
+            #     forwarded_to=forwarded_to_role,
+            #     stage=target_stage,
+            #     remarks=remarks or f"Advanced to {target_stage.name}"
+            #     )
+            
+            #Return the updated application details
+            updated_application = LicenseApplication.objects.get(pk=application.pk)
+            serializer = LicenseApplicationSerializer(updated_application)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        
+    except ValidationError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except PermissionDenied as e:
+            return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN            )
+    except Exception as e:
+            return Response({"detail": f"Error advancing stage: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+'''
     if context_data.get("new_license_category_id"):
         try:
             new_license_category = LicenseCategory.objects.get(pk=context_data.get("new_license_category_id"))
@@ -152,6 +197,148 @@ def advance_license_application(request, application_id, stage_id):
 
     except ValidationError as e:
         return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+'''
+
+@permission_classes([HasAppPermission('license_application', 'update'), HasStagePermission])
+@api_view(['POST'])
+def raise_objection(request, application_id):
+    application = get_object_or_404(LicenseApplication, application_id=application_id)
+    objections = request.data.get('objections', [])
+    remarks = request.data.get('remarks', '')
+
+    #Determine objection stage
+    current_stage_name=application.current_stage.name
+    if not current_stage_name.startswith('level_'):
+        return Response({'detail': 'Objections can only be raised from level_X stages'},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    objection_stage_name = f"{current_stage_name}_objection"
+    target_stage = get_object_or_404(WorkflowStage, workflow=application.workflow, name=objection_stage_name)
+
+    try:
+        with transaction.atomic():
+            WorkflowService.raise_objection(
+                application=application,
+                user=request.user,
+                target_stage=target_stage,
+                objections=objections,
+                remarks=remarks
+            )
+
+            #Return the updated application details
+            updated_application = LicenseApplication.objects.get(pk=application.pk)
+            serializer = LicenseApplicationSerializer(updated_application)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        
+    except ValidationError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except PermissionDenied as e:
+            return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
+    except Exception as e:
+            return Response({"detail": f"Error raising objection: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
+@api_view(['GET'])
+def get_objections(request, application_id):
+    application = get_object_or_404(LicenseApplication, pk=application_id)
+    objections = Objection.objects.filter(application=application).order_by('-raised_on')
+    serializer = ObjectionSerializer(objections, many=True)
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('license_application', 'update'), HasStagePermission])
+@api_view(['POST'])
+@parser_classes([JSONParser])
+# @transaction.atomic
+def resolve_objections(request, application_id):
+    application = get_object_or_404(LicenseApplication, application_id=application_id)
+    if request.user.role.name != "licensee":
+        return Response ({"detail": "Only licensee can resolve objections."}, status= status.HTTP_403_FORBIDDEN)
+    
+    # Validate current stage is an objection stage
+    current_stage_name = application.current_stage.name
+    if not current_stage_name.endswith('_objection'):
+        return Response({"detail": "Application is not in an objection stage."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Determine target stage
+    target_stage_name = current_stage_name.replace('_objection', '')
+    target_stage = get_object_or_404(WorkflowStage, workflow=application.workflow, name=target_stage_name)
+
+    # Validate and update application fields
+    serializer = ResolveObjectionSerializer(application, data=request.data, partial=True)
+    if not serializer.is_valid():
+        return Response({'detail': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        with transaction.atomic():
+            serializer.save()
+
+            # Create Objection record
+            Objection.objects.filter(application=application, is_resolved=False).update(
+                is_resolved=True,
+                resolved_on=timezone.now(),
+            )
+
+            #Advance to original stage
+            WorkflowService.resolve_objection(
+                application=application,
+                user=request.user,
+                target_stage=target_stage,
+                context_data={"objections_resolved": True, "remarks": request.data.get("remarks", "Objections resolved.")}
+            )
+
+            #Return updated application
+            updated_application = LicenseApplication.objects.get(pk=application.pk)
+            serializer = LicenseApplicationSerializer(updated_application)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        
+    except ValidationError as e:
+        return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except PermissionDenied as e:
+        return Response({'detail': str(e)}, status=status.HTTP_403_FORBIDDEN)
+    except Exception as e:
+        return Response({'detail': f"Error resolving objection: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+'''
+            # Log transaction
+            LicenseApplicationTransaction.objects.create(
+                license_application=application,
+                performed_by=request.user,
+                forwarded_by=request.user,
+                forwarded_to=StagePermission.objects.filter(
+                    stage=target_stage,
+                    can_process=True
+                ).first().role,
+                stage=target_stage,
+                remarks=request.data.get('remarks', f"Objection resolved, advanced to {target_stage.name}")
+            )
+
+    if serializer.is_valid():
+        serializer.save()
+        objections = Objection.objects.filter(application=application, is_resolved=False)
+        for obj in objections:
+            obj.is_resolved = True
+            obj.resolved_on = timezone.now()
+            obj.save()
+
+        target_stage_name = application.current_stage.name.replace("_objection", "")
+        target_stage = WorkflowStage.objects.filter(name=target_stage_name, workflow = application.workflow).first()
+        if not target_stage:
+            return Response({"detail":f"Target stage {target_stage_name} not found."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            WorkflowService.resolve_objection(
+                application=application,
+                user=request.user,
+                target_stage=target_stage,
+                context_data={"remarks": request.data.get("remarks", "")}
+            )
+            return Response({"remarks": "Objections reaolved successfully."}, status=status.HTTP_200_OK)
+        except ValidationError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+'''
 
 
 @permission_classes([HasAppPermission('license_application', 'update'), HasStagePermission])
@@ -265,49 +452,6 @@ def pay_license_fee(request, application_id):
         'application': LicenseApplicationSerializer(application).data
     })
 
-@permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
-@api_view(['GET'])
-def get_objections(request, application_id):
-    application = get_object_or_404(LicenseApplication, pk=application_id)
-    objections = Objection.objects.filter(application=application).order_by('-raised_on')
-    serializer = ObjectionSerializer(objections, many=True)
-    return Response(serializer.data)
-
-@permission_classes([HasAppPermission('license_application', 'update'), HasStagePermission])
-@api_view(['POST'])
-@parser_classes([MultiPartParser, FormParser])
-@transaction.atomic
-def resolve_objections(request, application_id):
-    application = get_object_or_404(LicenseApplication, application_id=application_id)
-    if request.user.role.name != "licensee":
-        return Response ({"detail": "Only licensee can resolve objections."}, status= status.HTTP_403_FORBIDDEN)
-
-    serializer = ResolveObjectionSerializer(application, data=request.data, partial=True)
-    if serializer.is_valid():
-        serializer.save()
-        objections = Objection.objects.filter(application=application, is_resolved=False)
-        for obj in objections:
-            obj.is_resolved = True
-            obj.resolved_on = timezone.now()
-            obj.save()
-
-        target_stage_name = application.current_stage.name.replace("_objection", "")
-        target_stage = WorkflowStage.objects.filter(name=target_stage_name, workflow = application.workflow).first()
-        if not target_stage:
-            return Response({"detail":f"Target stage {target_stage_name} not found."}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            WorkflowService.resolve_objection(
-                application=application,
-                user=request.user,
-                target_stage=target_stage,
-                context_data={"remarks": request.data.get("remarks", "")}
-            )
-            return Response({"remarks": "Objections reaolved successfully."}, status=status.HTTP_200_OK)
-        except ValidationError as e:
-            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
 
 @permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
@@ -331,14 +475,15 @@ def dashboard_counts(request):
 
     elif role == 'licensee':
         counts = {
-            "applied": LicenseApplication.objects.filter(current_stage__name='level_1').count(),
+            "applied": LicenseApplication.objects.filter(
+                current_stage__name__in=['level_1', 'level_2', 'level_3', 'level_4', 'level_5']).count(),
             "pending": LicenseApplication.objects.filter(
                 current_stage__name__in=[
                     'level_1_objection',
-                    'level_2', 'level_2_objection',
-                    'level_3', 'level_3_objection',
-                    'level_4', 'level_4_objection',
-                    'level_5', 'level_5_objection',
+                    'level_2_objection',
+                    'level_3_objection',
+                    'level_4_objection',
+                    'level_5_objection',
                     'awaiting_payment'
                 ]
             ).count(),
@@ -359,14 +504,15 @@ def dashboard_counts(request):
 
     elif role in ['site_admin', 'single_window']:
         counts = {
-            "applied": LicenseApplication.objects.filter(current_stage__name__in=['applicant_applied', 'level_1']).count(),
+            "applied": LicenseApplication.objects.filter(current_stage__name__in=[
+                'applicant_applied', 'level_1_objection',
+                'level_2_objection', 'level_3_objection',
+                'level_4_objection', 'level_5_objection',
+                'awaiting_payment'
+                ]).count(),
             "pending": LicenseApplication.objects.filter(current_stage__name__in=[
-                'level_1', 'level_1_objection',
-                'level_2', 'level_2_objection',
-                'level_3', 'level_3_objection',
-                'level_4', 'level_4_objection',
-                'level_5', 'level_5_objection',
-            ]).count(),
+                'level_1','level_2','level_3','level_4','level_5',
+                ]).count(),
             "approved": LicenseApplication.objects.filter(
                 current_stage__name='approved', is_approved=True
             ).count(),
@@ -403,7 +549,7 @@ def application_group(request):
         },
         'level_2': {
             "pending": ['level_2', 'level_2_objection'],
-            "approved": ['awaiting_payment'],
+            "approved": ['awaiting_payment', 'level_3'],
             "rejected": ['rejected_by_level_2'],
         },
         'level_3': {
@@ -436,16 +582,18 @@ def application_group(request):
     elif role == 'licensee':
         result = {
             "applied": LicenseApplicationSerializer(
-                LicenseApplication.objects.filter(current_stage__name='level_1'),
+                LicenseApplication.objects.filter(current_stage__name__in=[
+                    'level_1', 'level_2', 'level_3', 'level_4', 'level_5'
+                    ]),
                 many=True
             ).data,
             "pending": LicenseApplicationSerializer(
                 LicenseApplication.objects.filter(current_stage__name__in=[
                     'level_1_objection',
-                    'level_2', 'level_2_objection',
-                    'level_3', 'level_3_objection',
-                    'level_4', 'level_4_objection',
-                    'level_5', 'level_5_objection',
+                    'level_2_objection',
+                    'level_3_objection',
+                    'level_4_objection',
+                    'level_5_objection',
                     'awaiting_payment'
                 ]),
                 many=True

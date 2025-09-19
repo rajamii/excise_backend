@@ -31,7 +31,8 @@ class WorkflowTransition(models.Model):
     condition = models.JSONField(default=dict, blank=True)  # e.g., {"fee_paid": True}
 
     class Meta:
-        unique_together = [("workflow", "from_stage", "to_stage")]
+        # unique_together = [("workflow", "from_stage", "to_stage")]
+        pass
 
 class StagePermission(models.Model):
     """Grants roles access to specific stages (optional)."""
