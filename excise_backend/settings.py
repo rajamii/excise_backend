@@ -76,6 +76,7 @@ INSTALLED_APPS = [
     'models.transactional.salesman_barman',
     'models.transactional.logs',
     'models.transactional.transactiondata',
+    'models.transactional.ena_requisition_details',
 
     # auth models 
     'auth.roles',
@@ -138,9 +139,9 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'eAbkari_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'admin',  # Your PostgreSQL password
+        'PASSWORD': 'ishwar@313',  # Your PostgreSQL password
         'HOST': 'localhost',        # Default host
-        'PORT': '5432',             # Default PostgreSQL port
+        'PORT': '5433',             # Default PostgreSQL port
     }
 }
 
