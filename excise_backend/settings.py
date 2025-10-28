@@ -76,7 +76,10 @@ INSTALLED_APPS = [
     'models.transactional.salesman_barman',
     'models.transactional.logs',
     'models.transactional.transactiondata',
-    'models.transactional.ena_requisition_details',
+    'models.transactional.supply_chain',
+    'models.transactional.supply_chain.ena_transit_permit_details',
+    'models.transactional.supply_chain.ena_revalidation_details',
+    'models.transactional.supply_chain.ena_cancellation_details',
 
     # auth models 
     'auth.roles',
