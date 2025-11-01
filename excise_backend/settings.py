@@ -80,7 +80,6 @@ INSTALLED_APPS = [
     'models.transactional.supply_chain.ena_transit_permit_details',
     'models.transactional.supply_chain.ena_revalidation_details',
     'models.transactional.supply_chain.ena_cancellation_details',
-    'models.transactional.supply_chain.ena_requisition_details',
 
     # auth models 
     'auth.roles',
@@ -143,7 +142,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'eAbkari_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'ishwar@313',  # Your PostgreSQL password
+        'PASSWORD': 'ishwar@313',  # Your PostgreSQL password 
         'HOST': 'localhost',        # Default host
         'PORT': '5433',             # Default PostgreSQL port
     }

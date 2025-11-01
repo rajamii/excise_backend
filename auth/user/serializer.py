@@ -10,10 +10,15 @@ class UserSerializer(serializers.ModelSerializer):
     created_by = serializers.SerializerMethodField()
     district = serializers.SerializerMethodField()
     subdivision = serializers.SerializerMethodField()
+    firstName = serializers.CharField(source='first_name', read_only=True)
+    middleName = serializers.CharField(source='middle_name', read_only=True)
+    lastName = serializers.CharField(source='last_name', read_only=True)
+    phoneNumber = serializers.CharField(source='phone_number', read_only=True)
+    
     class Meta:
         model = CustomUser
-        fields = ['id', 'email', 'username', 'first_name', 'middle_name', 'last_name', 
-                 'phone_number', 'district', 'subdivision', 'address', 'role',
+        fields = ['id', 'email', 'username', 'firstName', 'middleName', 'lastName', 
+                 'phoneNumber', 'district', 'subdivision', 'address', 'role',
                  'created_by'
         ]
                  
