@@ -1,5 +1,4 @@
 from django.db import models, transaction
-from uuid import uuid4
 from django.utils.timezone import now
 from . import helpers
 from models.masters.core.models import District , LicenseCategory ,LicenseType
@@ -7,7 +6,6 @@ from models.masters.core.models import PoliceStation, Subdivision
 from auth.user.models import CustomUser
 from auth.roles.models import Role
 from auth.workflow.models import Workflow, WorkflowStage
-from .helpers import APPLICATION_STAGES
 
 
 def upload_document_path(instance, filename):
@@ -17,6 +15,10 @@ class LicenseApplication(models.Model):
     application_id = models.CharField(max_length=30, primary_key=True, db_index=True)
     workflow= models.ForeignKey(Workflow, on_delete=models.PROTECT, related_name='applications')
     current_stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name='applications')
+
+    is_approved = models.BooleanField(default=False)
+    print_count = models.PositiveIntegerField(default=0)
+    is_print_fee_paid = models.BooleanField(default=False)
 
     # Select License
     excise_district = models.ForeignKey(District, on_delete=models.PROTECT)
@@ -71,12 +73,6 @@ class LicenseApplication(models.Model):
 
     # Document
     photo = models.ImageField(upload_to=upload_document_path)
-
-    is_approved = models.BooleanField(default=False)
-
-    # New fields for print tracking
-    print_count = models.PositiveIntegerField(default=0)
-    is_print_fee_paid = models.BooleanField(default=False)
 
     # Officer Actions
     is_fee_calculated = models.BooleanField(default=False)  # For Level 1
@@ -176,30 +172,11 @@ class LicenseApplication(models.Model):
             models.Index(fields=['current_stage']),
         ]
 
-class LocationFee(models.Model):
-    location_name = models.CharField(max_length=100, unique=True)
-    fee_amount = models.DecimalField(max_digits=10, decimal_places=2)
-
-    class Meta:
-        db_table = 'location_fee'
-
-    def __str__(self):
-        return f"{self.location_name} - ₹{self.fee_amount}"
-
 class LicenseApplicationTransaction(models.Model):
-
-    license_application = models.ForeignKey(
-        LicenseApplication, on_delete=models.CASCADE, related_name='transactions'
-    )
-    performed_by = models.ForeignKey(
-        CustomUser, on_delete=models.SET_NULL, null=True, related_name='performed_transactions'
-    )
-    forwarded_by = models.ForeignKey(
-        CustomUser, on_delete=models.SET_NULL, null=True, related_name='forwarded_by_transactions'
-    )
-    forwarded_to = models.ForeignKey(
-        Role, on_delete=models.SET_NULL, null=True, related_name='forwarded_to_transactions'
-    )
+    license_application = models.ForeignKey(LicenseApplication, on_delete=models.CASCADE, related_name='transactions')
+    performed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='performed_transactions')
+    forwarded_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='forwarded_by_transactions')
+    forwarded_to = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, related_name='forwarded_to_transactions')
     stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name='transactions')
     remarks = models.TextField(blank=True, null=True)
     timestamp = models.DateTimeField(auto_now_add=True)
@@ -210,9 +187,35 @@ class LicenseApplicationTransaction(models.Model):
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
-        if self.license_application.current_stage_id != self.stage_id:
+        if self.license_application.current_stage != self.stage:
             self.license_application.current_stage = self.stage
             self.license_application.save(update_fields=['current_stage'])
+
+class Objection(models.Model):
+    application = models.ForeignKey(LicenseApplication, on_delete=models.CASCADE, related_name='objections')
+    field_name = models.CharField(max_length=255, db_index=True)
+    remarks = models.TextField()
+    raised_by = models.ForeignKey('user.CustomUser', on_delete=models.SET_NULL, null=True)
+    stage = models.ForeignKey('workflow.WorkflowStage', on_delete=models.SET_NULL, null=True)
+    is_resolved = models.BooleanField(default=False, db_index=True)
+    raised_on = models.DateTimeField(auto_now_add=True)
+    resolved_on = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'license_application_objection'
+        ordering = ['raised_on']
+
+
+class LocationFee(models.Model):
+    location_name = models.CharField(max_length=100, unique=True)
+    fee_amount = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        db_table = 'location_fee'
+
+    def __str__(self):
+        return f"{self.location_name} - ₹{self.fee_amount}"
+
 
 class SiteEnquiryReport(models.Model):
     application = models.OneToOneField(
@@ -313,17 +316,3 @@ class SiteEnquiryReport(models.Model):
 
     def __str__(self):
         return f"Site Enquiry Report for Application {self.application.application_id}"
-    
-class Objection(models.Model):
-    application = models.ForeignKey(LicenseApplication, on_delete=models.CASCADE)
-    field_name = models.CharField(max_length=255, db_index=True)
-    remarks = models.TextField()
-    raised_by = models.ForeignKey('user.CustomUser', on_delete=models.SET_NULL, null=True)
-    stage = models.ForeignKey('workflow.WorkflowStage', on_delete=models.SET_NULL, null=True)
-    is_resolved = models.BooleanField(default=False, db_index=True)
-    raised_on = models.DateTimeField(auto_now_add=True)
-    resolved_on = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        db_table = 'license_application_objection'
-        ordering = ['raised_on']

@@ -6,13 +6,6 @@ from . import helpers
 from .models import SiteEnquiryReport
 from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseType
 from utils.fields import CodeRelatedField
-from auth.workflow.models import WorkflowStage
-
-class SiteEnquiryReportSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = SiteEnquiryReport
-        fields = '__all__'
-        read_only_fields = ['application']
 
 class UserShortSerializer(serializers.ModelSerializer):
     role_name = serializers.CharField(source='role.name', read_only=True)
@@ -28,16 +21,11 @@ class RoleSerializer(serializers.ModelSerializer):
 class LicenseApplicationTransactionSerializer(serializers.ModelSerializer):
     performed_by = UserShortSerializer(read_only=True)
     forwarded_by = UserShortSerializer(read_only=True)
-    forwarded_to = RoleSerializer(read_only=True)
+    forwarded_to = RoleSerializer(source='forwarded_to.name', read_only=True)
     
     class Meta:
         model = LicenseApplicationTransaction
         fields = ['license_application', 'stage', 'remarks', 'timestamp', 'performed_by', 'forwarded_by', 'forwarded_to']
-
-class LocationFeeSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = LocationFee
-        fields = ['location_name', 'fee_amount']
 
 class ObjectionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -57,7 +45,6 @@ class ResolveObjectionSerializer(serializers.ModelSerializer):
     police_station = CodeRelatedField(
         queryset=PoliceStation.objects.all(), lookup_field='police_station_code', required=False
     )
-    # Add more fields if needed
 
     class Meta:
         model = LicenseApplication
@@ -143,3 +130,15 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
 
     def validate_status(self, value):
         return helpers.validate_status(value)
+
+
+class LocationFeeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LocationFee
+        fields = ['location_name', 'fee_amount']
+
+class SiteEnquiryReportSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SiteEnquiryReport
+        fields = '__all__'
+        read_only_fields = ['application']

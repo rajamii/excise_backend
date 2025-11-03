@@ -1,6 +1,6 @@
 from django.conf import settings
 from django.conf.urls.static import static
-from django.urls import path, re_path, register_converter
+from django.urls import path, register_converter
 from .views import (
     create_license_application,
     list_license_applications,
@@ -53,7 +53,7 @@ urlpatterns = [
     path('<everything:application_id>/advance/<int:stage_id>/', advance_license_application, name='advance-license-application'),
     
     # Level 2 site enquiry, allowing both GET and POST requests
-    path('<everything:application_id>)/site-enquiry/', level2_site_enquiry, name='level2-site-enquiry'),
+    path('<everything:application_id>/site-enquiry/', level2_site_enquiry, name='level2-site-enquiry'),
 
     path('location-fee/', get_location_fees, name='get-location-fees'),
 

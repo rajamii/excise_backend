@@ -50,7 +50,7 @@ def create_license_application(request):
                 forwarded_by=request.user,
                 forwarded_to=forwarded_to_role,
                 stage=initial_stage,
-                remarks='License Applied'
+                remarks='Application Submitted'
             )
                 
             #Return the updated application details
@@ -131,7 +131,8 @@ def advance_license_application(request, application_id, stage_id):
                 application=application,
                 user=request.user,
                 target_stage=target_stage,
-                context_data=context_data
+                context_data=context_data,
+                remarks = remarks
                 )
 
             # forwarded_to_role = None
@@ -202,6 +203,7 @@ def advance_license_application(request, application_id, stage_id):
 
 @permission_classes([HasAppPermission('license_application', 'update'), HasStagePermission])
 @api_view(['POST'])
+@parser_classes([JSONParser])
 def raise_objection(request, application_id):
     application = get_object_or_404(LicenseApplication, application_id=application_id)
     objections = request.data.get('objections', [])

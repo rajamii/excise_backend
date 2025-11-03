@@ -1,37 +1,60 @@
 from rest_framework import serializers
-from .models import SalesmanBarmanModel
-from .helpers import (
-    validate_pan_number,
-    validate_aadhaar_number,
-    validate_phone_number,
-    validate_address,
-    validate_email,
-)
+from auth.roles.models import Role
+from .models import SalesmanBarmanModel, SalesmanBarmanTransaction, SalesmanBarmanObjection
+from auth.user.models import CustomUser
+from .helpers import validate_email, validate_pan_number, validate_aadhaar_number, validate_phone_number
+
+class UserShortSerializer(serializers.ModelSerializer):
+    role_name = serializers.CharField(source='role.name', read_only=True)
+    class Meta:
+        model = CustomUser
+        fields = ['id', 'username', 'role', 'role_name']
+
+class RoleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Role
+        fields = ['id', 'name']
+
+class TransactionSerializer(serializers.ModelSerializer):
+    performed_by = UserShortSerializer(read_only=True)
+    forwarded_by = UserShortSerializer(read_only=True)
+    forwarded_to = serializers.CharField(source='forwarded_to.name', read_only=True)
+    class Meta:
+        model = SalesmanBarmanTransaction
+        fields = ['application', 'stage', 'remarks', 'timestamp', 'performed_by', 'forwarded_by', 'forwarded_to']
+
+class ObjectionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SalesmanBarmanObjection
+        fields = '__all__'
 
 class SalesmanBarmanSerializer(serializers.ModelSerializer):
+    current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
+    transactions = TransactionSerializer(many=True, read_only=True)
+    latest_transaction = serializers.SerializerMethodField()
+
     class Meta:
         model = SalesmanBarmanModel
         fields = '__all__'
-        read_only_fields = (
-            'id', 
-            'applicationId', 
-            'IsActive'  # New read-only field
-        )
-        extra_kwargs = {
-            # Maintain existing behavior for file fields
-            'passPhoto': {'write_only': False},
-            'aadhaarCard': {'write_only': False},
-            'residentialCertificate': {'write_only': False},
-            'dateofBirthProof': {'write_only': False},
-        }
+        read_only_fields = [
+            'application_id',
+            'workflow',
+            'current_stage',
+            'current_stage_name', 
+            'is_approved', 
+            'IsActive']
 
-    # Preserve all existing validation methods
+    def get_latest_transaction(self, obj):
+        tx = obj.transactions.order_by('-timestamp').first()
+        return TransactionSerializer(tx).data if tx else None
+
+    # Validation
     def validate_emailId(self, value):
         if value:
             validate_email(value)
         return value
 
-    def validate_pan(self, value):  # Fixed method name to match field
+    def validate_pan(self, value):
         validate_pan_number(value)
         return value
 
@@ -42,34 +65,3 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
     def validate_mobileNumber(self, value):
         validate_phone_number(value)
         return value
-
-    def validate_address(self, value):
-        validate_address(value)
-        return value
-    
-    # Add new validations for business logic
-    def validate(self, attrs):
-        # Add any additional cross-field validations here
-        return attrs
-    
-    def validate_applicationId(self, value):
-        """Ensure application ID is unique"""
-        instance = getattr(self, 'instance', None)
-        if instance:
-            # For updates: ensure new ID doesn't conflict with others
-            if SalesmanBarmanModel.objects.exclude(pk=instance.pk).filter(applicationId=value).exists():
-                raise serializers.ValidationError("Application ID must be unique")
-        else:
-            # For creates: ensure ID doesn't already exist
-            if SalesmanBarmanModel.objects.filter(applicationId=value).exists():
-                raise serializers.ValidationError("Application ID must be unique")
-        return value
-    
-    def create(self, validated_data):
-        """Handle application ID generation if not provided"""
-        if not validated_data.get('applicationId'):
-            # Implement your custom ID generation logic here
-            # Example: 
-            # validated_data['applicationId'] = generate_salesman_id()
-            pass
-        return super().create(validated_data)

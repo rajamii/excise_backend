@@ -1,125 +1,148 @@
-from django.db import models
+from django.db import models, transaction
 from django.core.exceptions import ValidationError
+from django.utils.timezone import now
+from auth.roles.models import Role
+from auth.user.models import CustomUser
+from models.masters.license.models import License
+from models.masters.core.models import District, LicenseCategory
+from auth.workflow.models import Workflow, WorkflowStage
 from .helpers import (
-    validate_pan_number,
-    validate_aadhaar_number,
-    validate_phone_number,
-    validate_address,
-    validate_email,
+    validate_pan_number, validate_aadhaar_number, validate_phone_number,
+    validate_address, validate_email, ROLE_CHOICES, GENDER_CHOICES
 )
 
 def upload_document_path(instance, filename):
-    return f'salesman_barman_registration/{instance.role} {instance.firstName} {instance.lastName}/{filename}'
+    return f'salesman_barman/{instance.application_id}/{filename}'
 
 class SalesmanBarmanModel(models.Model):
-    ROLE_CHOICES = [
-        ('Salesman', 'Salesman'),
-        ('Barman', 'Barman'),
-    ]
+    application_id = models.CharField(max_length=30, primary_key=True, db_index=True)
+    workflow = models.ForeignKey(Workflow, on_delete=models.PROTECT, related_name='sb_apps')
+    current_stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name='sb_apps')
     
-    GENDER_CHOICES = [
-        ('Male', 'Male'),
-        ('Female', 'Female'),
-        ('Other', 'Other'),
-    ]
+    is_approved = models.BooleanField(default=False)
+    print_count = models.PositiveIntegerField(default=0)
+    is_print_fee_paid = models.BooleanField(default=False)
 
-    # Basic identity info
-    role = models.CharField(
-        max_length=10,
-        choices=ROLE_CHOICES
-    )
+    # --- License Details ---
+    excise_district = models.ForeignKey(District, on_delete=models.PROTECT)
+    license_category = models.ForeignKey(LicenseCategory, on_delete=models.PROTECT)
+    license = models.ForeignKey(License, on_delete=models.PROTECT)
 
-    # Personal details
+    # --- Personal ---
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES)
     firstName = models.CharField(max_length=100, db_column='first_name')
-    middleName = models.CharField(
-        max_length=100,
-        blank=True,
-        db_column='middle_name'
-    )
+    middleName = models.CharField(max_length=100, blank=True, null=True, db_column='middle_name')
     lastName = models.CharField(max_length=100, db_column='last_name')
-    fatherHusbandName = models.CharField(
-        max_length=100,
-        db_column='father_husband_name'
-    )
-    gender = models.CharField(
-        max_length=6,
-        choices=GENDER_CHOICES
-    )
+    fatherHusbandName = models.CharField(max_length=100, db_column='father_husband_name')
+    gender = models.CharField(max_length=6, choices=GENDER_CHOICES)
     dob = models.DateField()
     nationality = models.CharField(max_length=50, default='Indian')
     address = models.TextField(validators=[validate_address])
 
-    # Identity verification
-    pan = models.CharField(
-        max_length=10,
-        validators=[validate_pan_number]
-    )
-    aadhaar = models.CharField(
-        max_length=12,
-        validators=[validate_aadhaar_number]
-    )
-    mobileNumber = models.CharField(
-        max_length=10,
-        validators=[validate_phone_number],
-        db_column='mobile_number'
-    )
-    emailId = models.EmailField(
-        blank=True,
-        validators=[validate_email],
-        db_column='email_id'
-    )
-    sikkimSubject = models.BooleanField(
-        default=False,
-        db_column='sikkim_subject'
-    )
+    # --- Identity ---
+    pan = models.CharField(max_length=10, validators=[validate_pan_number])
+    aadhaar = models.CharField(max_length=12, validators=[validate_aadhaar_number])
+    mobileNumber = models.CharField(max_length=10, validators=[validate_phone_number], db_column='mobile_number')
+    emailId = models.EmailField(blank=True, validators=[validate_email], db_column='email_id')
+    sikkimSubject = models.BooleanField(default=False, db_column='sikkim_subject')
 
-    # License and application-related fields
-    applicationYear = models.CharField(
-        max_length=9,
-        default='2025-2026',
-        db_column='application_year'
-    )
-    applicationId = models.CharField(
-        max_length=100,
-        unique=True,
-        db_column='application_id'
-    )
-    applicationDate = models.DateField(db_column='application_date')
-    district = models.CharField(max_length=100)
-    licenseCategory = models.CharField(
-        max_length=100,
-        db_column='license_category'
-    )
-    license = models.CharField(max_length=100, db_column='license')
+    # --- Documents ---
+    passPhoto = models.ImageField(upload_to=upload_document_path, db_column='pass_photo')
+    aadhaarCard = models.FileField(upload_to=upload_document_path, db_column='aadhaar_card')
+    residentialCertificate = models.FileField(upload_to=upload_document_path, db_column='residential_certificate')
+    dateofBirthProof = models.FileField(upload_to=upload_document_path, db_column='dateof_birth_proof')
 
-    # Uploaded documents
-    passPhoto = models.ImageField(
-        upload_to=upload_document_path,
-        db_column='pass_photo'
-    )
-    aadhaarCard = models.FileField(
-        upload_to=upload_document_path,
-        db_column='aadhaar_card'
-    )
-    residentialCertificate = models.FileField(
-        upload_to=upload_document_path,
-        db_column='residential_certificate'
-    )
-    dateofBirthProof = models.FileField(
-        upload_to=upload_document_path,
-        db_column='dateof_birth_proof'
-    )
-    
-    # Soft delete field
-    IsActive = models.BooleanField(
-        default=True,
-        db_column='is_active'
-    )
+    # --- Soft Delete ---
+    IsActive = models.BooleanField(default=True, db_column='is_active')
 
-    class Meta:
-        db_table = 'salesman_barman_details'
-        verbose_name = 'Salesman/Barman Registration'
-        verbose_name_plural = 'Salesmen/Barmen Registrations'
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"{self.role}: {self.firstName} {self.lastName} ({self.applicationId})"
+        return f"{self.role}: {self.firstName} {self.lastName} ({self.application_id})"
+
+    def clean(self):
+        if self.dob >= now().date():
+            raise ValidationError("Date of birth cannot be in the future.")
+        
+    def save(self, *args, **kwargs):
+        if not self.application_id:
+            self.application_id = self.generate_application_id()
+        super().save(*args, **kwargs)
+
+    def generate_application_id(self):
+        try:
+            district_code = str(self.excise_district.district_code).strip()
+        except AttributeError:
+            raise ValueError(f"Invalid District object assigned to excise_district.")
+
+        today = now().date()
+        year = today.year
+        month = today.month
+        if month >= 4:
+            fin_year = f"{year}-{str(year + 1)[2:]}"
+        else:
+            fin_year = f"{year - 1}-{str(year)[2:]}"
+
+        prefix = f"SB/{district_code}/{fin_year}"
+
+        with transaction.atomic():
+            last_app = SalesmanBarmanModel.objects.filter(
+                application_id__startswith=prefix
+            ).order_by('-application_id').first()
+
+            if last_app and last_app.application_id:
+                last_number_str = last_app.application_id.split('/')[-1]
+                try:
+                    last_number = int(last_number_str)
+                except ValueError:
+                    last_number = 0
+            else:
+                last_number = 0
+
+            new_number = last_number + 1
+            new_number_str = str(new_number).zfill(4)
+
+            return f"{prefix}/{new_number_str}"
+        
+    class Meta:
+        db_table = 'salesman_barman_application'
+        indexes = [
+            models.Index(fields=['excise_district']),
+            models.Index(fields=['license_category']),
+            models.Index(fields=['current_stage']),
+        ]
+        
+class SalesmanBarmanTransaction(models.Model):
+    application = models.ForeignKey(SalesmanBarmanModel, on_delete=models.CASCADE, related_name='transactions')
+    performed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='+')
+    forwarded_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='+')
+    forwarded_to = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True)
+    stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT)
+    remarks = models.TextField(blank=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'salesman_barman_transaction'
+        ordering = ['-timestamp']
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if self.application.current_stage != self.stage:
+            self.application.current_stage = self.stage
+            self.application.save(update_fields=['current_stage'])
+
+
+class SalesmanBarmanObjection(models.Model):
+    application = models.ForeignKey(SalesmanBarmanModel, on_delete=models.CASCADE, related_name='objections')
+    field_name = models.CharField(max_length=255, db_index=True)
+    remarks = models.TextField()
+    raised_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True)
+    stage = models.ForeignKey(WorkflowStage, on_delete=models.SET_NULL, null=True)
+    is_resolved = models.BooleanField(default=False)
+    raised_on = models.DateTimeField(auto_now_add=True)
+    resolved_on = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'salesman_barman_objection'
+        ordering = ['raised_on']
