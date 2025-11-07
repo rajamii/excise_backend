@@ -57,8 +57,8 @@ class NewLicenseApplication(models.Model):
     criminal_conviction = models.CharField(max_length=3, choices=[('Yes', 'Yes'), ('No', 'No')])
 
     # === Site Details ===
-    site_district = models.ForeignKey(District, on_delete=models.PROTECT, related_name='new_site_districts')
-    site_subdivision = models.ForeignKey(Subdivision, on_delete=models.PROTECT, related_name='new_site_subdivisions')
+    site_district = models.ForeignKey(District, on_delete=models.PROTECT, related_name='new_license_site_districts')
+    site_subdivision = models.ForeignKey(Subdivision, on_delete=models.PROTECT, related_name='new_license_site_subdivisions')
     police_station = models.ForeignKey(PoliceStation, on_delete=models.PROTECT)
     location_category = models.CharField(max_length=100)
     location_name = models.CharField(max_length=100)
@@ -164,19 +164,19 @@ class NewLicenseApplication(models.Model):
         db_table = 'new_license_application'
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['excise_district']),
+            models.Index(fields=['site_district']),
             models.Index(fields=['license_type']),
-            models.Index(fields=['excise_subdivision']),
+            models.Index(fields=['site_subdivision']),
             models.Index(fields=['current_stage']),
         ]
     
 
 class Transaction(models.Model):
-    license_application = models.ForeignKey(NewLicenseApplication, on_delete=models.CASCADE, related_name='transactions')
-    performed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='performed_transactions')
-    forwarded_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='forwarded_by_transactions')
-    forwarded_to = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, related_name='forwarded_to_transactions')
-    stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name='transactions')
+    license_application = models.ForeignKey(NewLicenseApplication, on_delete=models.CASCADE, related_name='new_license_transactions')
+    performed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='new_license_performed_transactions')
+    forwarded_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='new_license_forwarded_by_transactions')
+    forwarded_to = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, related_name='new_license_forwarded_to_transactions')
+    stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name='new_license_transactions')
     remarks = models.TextField(blank=True, null=True)
     timestamp = models.DateTimeField(auto_now_add=True)
 
@@ -191,11 +191,11 @@ class Transaction(models.Model):
             self.license_application.save(update_fields=['current_stage'])
 
 class Objection(models.Model):
-    application = models.ForeignKey(NewLicenseApplication, on_delete=models.CASCADE, related_name='objections')
+    application = models.ForeignKey(NewLicenseApplication, on_delete=models.CASCADE, related_name='new_license_objections')
     field_name = models.CharField(max_length=255, db_index=True)
     remarks = models.TextField()
-    raised_by = models.ForeignKey('user.CustomUser', on_delete=models.SET_NULL, null=True)
-    stage = models.ForeignKey('workflow.WorkflowStage', on_delete=models.SET_NULL, null=True)
+    raised_by = models.ForeignKey('user.CustomUser', on_delete=models.SET_NULL, null=True, related_name='new_license_objections')
+    stage = models.ForeignKey('workflow.WorkflowStage', on_delete=models.SET_NULL, null=True, related_name='new_license_objections_stage')
     is_resolved = models.BooleanField(default=False, db_index=True)
     raised_on = models.DateTimeField(auto_now_add=True)
     resolved_on = models.DateTimeField(null=True, blank=True)

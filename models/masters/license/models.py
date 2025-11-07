@@ -19,7 +19,8 @@ class License(models.Model):
     licensee_name = models.CharField(max_length=100)
     excise_district = models.ForeignKey(
         District,
-        on_delete=models.PROTECT
+        on_delete=models.PROTECT,
+        related_name='licenses_issued_in_districts'
     )
     issue_date = models.DateField(default=now)
     valid_up_to = models.DateField()

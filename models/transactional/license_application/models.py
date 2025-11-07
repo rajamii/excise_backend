@@ -21,9 +21,9 @@ class LicenseApplication(models.Model):
     is_print_fee_paid = models.BooleanField(default=False)
 
     # Select License
-    excise_district = models.ForeignKey(District, on_delete=models.PROTECT)
+    excise_district = models.ForeignKey(District, on_delete=models.PROTECT, related_name='license_excise_districts')
     license_category = models.ForeignKey(LicenseCategory, on_delete=models.PROTECT)
-    excise_subdivision = models.ForeignKey(Subdivision, on_delete=models.PROTECT)
+    excise_subdivision = models.ForeignKey(Subdivision, on_delete=models.PROTECT, related_name='license_excise_subdivisions')
     license = models.CharField(max_length=100)
 
     # Key Info
@@ -41,7 +41,7 @@ class LicenseApplication(models.Model):
     mode_of_operation = models.CharField(max_length=100)
 
     # Address
-    site_subdivision = models.ForeignKey(Subdivision, on_delete=models.PROTECT, related_name='site_subdivisions')
+    site_subdivision = models.ForeignKey(Subdivision, on_delete=models.PROTECT, related_name='license_site_subdivisions')
     police_station = models.ForeignKey(PoliceStation, on_delete=models.PROTECT)
     location_category = models.CharField(max_length=100)
     location_name = models.CharField(max_length=100)
@@ -195,8 +195,8 @@ class Objection(models.Model):
     application = models.ForeignKey(LicenseApplication, on_delete=models.CASCADE, related_name='objections')
     field_name = models.CharField(max_length=255, db_index=True)
     remarks = models.TextField()
-    raised_by = models.ForeignKey('user.CustomUser', on_delete=models.SET_NULL, null=True)
-    stage = models.ForeignKey('workflow.WorkflowStage', on_delete=models.SET_NULL, null=True)
+    raised_by = models.ForeignKey('user.CustomUser', on_delete=models.SET_NULL, null=True, related_name='license_objections')
+    stage = models.ForeignKey('workflow.WorkflowStage', on_delete=models.SET_NULL, null=True, related_name='license_objection_stage')
     is_resolved = models.BooleanField(default=False, db_index=True)
     raised_on = models.DateTimeField(auto_now_add=True)
     resolved_on = models.DateTimeField(null=True, blank=True)
