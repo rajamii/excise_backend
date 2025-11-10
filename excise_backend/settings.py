@@ -80,6 +80,7 @@ INSTALLED_APPS = [
     'models.transactional.supply_chain.ena_transit_permit_details',
     'models.transactional.supply_chain.ena_revalidation_details',
     'models.transactional.supply_chain.ena_cancellation_details',
+    'models.transactional.supply_chain.bulk_spirit',
 
     # auth models 
     'auth.roles',

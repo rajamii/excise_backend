@@ -1,4 +1,4 @@
- # models/transactional/urls.py
+# models/transactional/urls.py
 from django.urls import path, include
 
 urlpatterns = [
@@ -7,4 +7,5 @@ urlpatterns = [
     path('salesman_barman/', include(('models.transactional.salesman_barman.urls', 'salesman_barman'), namespace='salesman_barman')),
     path('transactiondata/', include(('models.transactional.transactiondata.urls', 'transactiondata'), namespace='transactiondata')),
     path('supply_chain/ena_requisition_details/', include(('models.transactional.supply_chain.ena_requisition_details.urls', 'ena_requisition_details'), namespace='ena_requisition_details')),
+    path('supply_chain/', include(('models.transactional.supply_chain.urls', 'supply_chain'), namespace='supply_chain')),
 ]
