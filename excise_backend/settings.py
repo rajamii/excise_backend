@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     # External Packages #
     #####################
 
+    'models.transactional.supply_chain.ena_requisition_details',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -76,10 +77,10 @@ INSTALLED_APPS = [
     'models.transactional.salesman_barman',
     'models.transactional.logs',
     'models.transactional.transactiondata',
-    'models.transactional.supply_chain',
     'models.transactional.supply_chain.ena_transit_permit_details',
     'models.transactional.supply_chain.ena_revalidation_details',
     'models.transactional.supply_chain.ena_cancellation_details',
+    'models.transactional.supply_chain.ena_distillery_details',
     'models.transactional.supply_chain.bulk_spirit',
 
     # auth models 

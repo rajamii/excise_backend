@@ -2,7 +2,7 @@ from rest_framework import serializers
 from .models import BulkSpiritType
 
 class BulkSpiritTypeSerializer(serializers.ModelSerializer):
-    """Serializer for the BulkSpiritType model."""
+    
     class Meta:
         model = BulkSpiritType
         fields = ['sprit_id', 'strength_from', 'strength_to', 'price_bl', 'created_at', 'updated_at']

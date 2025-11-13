@@ -5,14 +5,13 @@ from .models import EnaRequisitionDetail
 @admin.register(EnaRequisitionDetail)
 class EnaRequisitionDetailAdmin(admin.ModelAdmin):
     list_display = (
-        'requisition_number',
-        'application_id',
-        'requested_on',
-        'quantity_liters',
+        'requisiton_number_of_permits',
+        'our_ref_no',
+        'requisition_date',
         'status',
         'created_at',
     )
-    search_fields = ('requisition_number', 'application_id', 'status')
-    list_filter = ('status', 'requested_on')
+    search_fields = ('our_ref_no', 'status', 'lifted_from_distillery_name')
+    list_filter = ('status', 'requisition_date', 'created_at')
 
 
