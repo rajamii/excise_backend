@@ -1,11 +1,10 @@
 from django.db import models, transaction
+from django.contrib.contenttypes.fields import GenericRelation
 from django.utils.timezone import now
 from . import helpers
 from models.masters.core.models import District , LicenseCategory ,LicenseType
 from models.masters.core.models import PoliceStation, Subdivision
-from auth.user.models import CustomUser
-from auth.roles.models import Role
-from auth.workflow.models import Workflow, WorkflowStage
+from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
 
 
 def upload_document_path(instance, filename):
@@ -80,6 +79,20 @@ class LicenseApplication(models.Model):
     is_license_fee_paid = models.BooleanField(default=False)
 
     is_license_category_updated = models.BooleanField(default=False)  # For Level 2
+
+    # Polymorphic links
+    transactions = GenericRelation(
+        Transaction,
+        content_type_field='content_type',
+        object_id_field='object_id',
+        related_query_name='license_application'
+    )
+    objections = GenericRelation(
+        Objection,
+        content_type_field='content_type',
+        object_id_field='object_id',
+        related_query_name='license_application'
+    )
 
     def can_print_license(self):
         if self.print_count < 5:
@@ -161,7 +174,7 @@ class LicenseApplication(models.Model):
             new_number = last_number + 1
             new_number_str = str(new_number).zfill(4)
 
-            return f"{prefix}/{new_number_str}"
+            return f"LIC/{prefix}/{new_number_str}"
 
     class Meta:
         db_table = 'license_application'
@@ -172,7 +185,8 @@ class LicenseApplication(models.Model):
             models.Index(fields=['current_stage']),
         ]
 
-class LicenseApplicationTransaction(models.Model):
+'''
+class Transaction(models.Model):
     license_application = models.ForeignKey(LicenseApplication, on_delete=models.CASCADE, related_name='transactions')
     performed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='performed_transactions')
     forwarded_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='forwarded_by_transactions')
@@ -204,6 +218,7 @@ class Objection(models.Model):
     class Meta:
         db_table = 'license_application_objection'
         ordering = ['raised_on']
+'''
 
 
 class LocationFee(models.Model):

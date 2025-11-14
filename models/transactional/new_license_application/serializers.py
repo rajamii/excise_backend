@@ -2,6 +2,7 @@ from rest_framework import serializers
 from .models import NewLicenseApplication, Transaction, Objection
 from auth.user.models import CustomUser
 from auth.roles.models import Role
+from auth.workflow.serializers import WorkflowTransactionSerializer, WorkflowObjectionSerializer
 from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseSubcategory, LicenseType, Road
 from utils.fields import CodeRelatedField
 from . import helpers
@@ -69,6 +70,9 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     site_district_name = serializers.CharField(source='site_district.district', read_only=True)
     site_subdivision_name = serializers.CharField(source='site_subdivision.subdivision', read_only=True)
     police_station_name = serializers.CharField(source='police_station.police_station', read_only=True)
+
+    transactions = WorkflowTransactionSerializer(many=True, read_only=True)
+    objections = WorkflowObjectionSerializer(many=True, read_only=True)
 
     class Meta:
         model = NewLicenseApplication

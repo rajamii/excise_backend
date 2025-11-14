@@ -1,11 +1,12 @@
 from django.db import models, transaction
+from django.contrib.contenttypes.fields import GenericRelation
 from django.core.exceptions import ValidationError
 from django.utils.timezone import now
 from auth.roles.models import Role
 from auth.user.models import CustomUser
 from models.masters.license.models import License
 from models.masters.core.models import District, LicenseCategory
-from auth.workflow.models import Workflow, WorkflowStage
+from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
 from .helpers import (
     validate_pan_number, validate_aadhaar_number, validate_phone_number,
     validate_address, validate_email, ROLE_CHOICES, GENDER_CHOICES
@@ -16,8 +17,8 @@ def upload_document_path(instance, filename):
 
 class SalesmanBarmanModel(models.Model):
     application_id = models.CharField(max_length=30, primary_key=True, db_index=True)
-    workflow = models.ForeignKey(Workflow, on_delete=models.PROTECT, related_name='sb_apps')
-    current_stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name='sb_apps')
+    workflow = models.ForeignKey(Workflow, on_delete=models.PROTECT, related_name='salesman_barman_applications')
+    current_stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name='salesman_barman_applications')
     
     is_approved = models.BooleanField(default=False)
     print_count = models.PositiveIntegerField(default=0)
@@ -58,6 +59,20 @@ class SalesmanBarmanModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+     # Polymorphic links
+    transactions = GenericRelation(
+        Transaction,
+        content_type_field='content_type',
+        object_id_field='object_id',
+        related_query_name='salesman_barman'
+    )
+    objections = GenericRelation(
+        Objection,
+        content_type_field='content_type',
+        object_id_field='object_id',
+        related_query_name='salesman_barman'
+    )
+
     def __str__(self):
         return f"{self.role}: {self.firstName} {self.lastName} ({self.application_id})"
 
@@ -84,7 +99,7 @@ class SalesmanBarmanModel(models.Model):
         else:
             fin_year = f"{year - 1}-{str(year)[2:]}"
 
-        prefix = f"SB/{district_code}/{fin_year}"
+        prefix = f"{district_code}/{fin_year}"
 
         with transaction.atomic():
             last_app = SalesmanBarmanModel.objects.filter(
@@ -103,7 +118,7 @@ class SalesmanBarmanModel(models.Model):
             new_number = last_number + 1
             new_number_str = str(new_number).zfill(4)
 
-            return f"{prefix}/{new_number_str}"
+            return f"SB/{prefix}/{new_number_str}"
         
     class Meta:
         db_table = 'salesman_barman_application'
@@ -112,8 +127,9 @@ class SalesmanBarmanModel(models.Model):
             models.Index(fields=['license_category']),
             models.Index(fields=['current_stage']),
         ]
-        
-class SalesmanBarmanTransaction(models.Model):
+
+'''  
+class Transaction(models.Model):
     application = models.ForeignKey(SalesmanBarmanModel, on_delete=models.CASCADE, related_name='transactions')
     performed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='+')
     forwarded_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='+')
@@ -133,7 +149,7 @@ class SalesmanBarmanTransaction(models.Model):
             self.application.save(update_fields=['current_stage'])
 
 
-class SalesmanBarmanObjection(models.Model):
+class Objection(models.Model):
     application = models.ForeignKey(SalesmanBarmanModel, on_delete=models.CASCADE, related_name='objections')
     field_name = models.CharField(max_length=255, db_index=True)
     remarks = models.TextField()
@@ -146,3 +162,5 @@ class SalesmanBarmanObjection(models.Model):
     class Meta:
         db_table = 'salesman_barman_objection'
         ordering = ['raised_on']
+
+'''    

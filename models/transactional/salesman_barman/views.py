@@ -2,62 +2,88 @@ from django.db import transaction
 from django.forms import ValidationError
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, parser_classes, permission_classes
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.core.exceptions import ValidationError, PermissionDenied
 from rest_framework.response import Response
 from rest_framework import status
 from auth.roles.decorators import has_app_permission
 from auth.roles.permissions import HasAppPermission
 from auth.workflow.permissions import HasStagePermission
-from auth.workflow.models import Workflow, WorkflowStage, StagePermission, WorkflowTransition
+from auth.workflow.models import Workflow, StagePermission, WorkflowTransition, WorkflowStage
 from auth.workflow.services import WorkflowService
-from .models import SalesmanBarmanModel, SalesmanBarmanTransaction
+from .models import SalesmanBarmanModel
 from .serializers import SalesmanBarmanSerializer
 
+def _create_application(request, workflow_name: str, serializer_cls):
+    """
+    1. Load workflow + **initial** stage (the one with is_initial=True)
+    2. Save the application (serializer must accept workflow & current_stage)
+    3. Determine the role that must receive the first task
+    4. Log the **generic** WorkflowTransaction
+    5. Return the freshly-created object (fully populated)
+    
+    """
+    serializer = serializer_cls(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    with transaction.atomic():
+        
+        # 1. Workflow & initial stage
+        workflow = get_object_or_404(Workflow, name=workflow_name)
+        try:
+            initial_stage = workflow.stages.get(is_initial=True)
+        except WorkflowStage.DoesNotExist:
+            return Response(
+                {"detail": "Workflow has no initial stage (is_initial=True)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 2. Persist the application
+        application = serializer.save(
+            workflow=workflow,
+            current_stage=initial_stage,
+        )
+
+        
+        # 3. Who receives the first task?
+        sp = StagePermission.objects.filter(stage=initial_stage, can_process=True).first()
+
+        if not sp or not sp.role:
+            return Response(
+                {"detail": "No role assigned to process the initial stage."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        forwarded_to_role = sp.role
+        if not forwarded_to_role:
+            raise ValidationError("No role configured for the initial stage.")
+
+        # 4. Generic transaction log (uses WorkflowTransaction, NOT a local model)
+        WorkflowService.advance_stage(
+            application=application,
+            user=request.user,
+            target_stage=initial_stage,
+            context={"action": "submit"},
+            remarks="Application submitted",
+        )
+
+        
+        # 5. Return the *fresh* object (includes generic relations)
+        fresh = SalesmanBarmanModel.objects.get(pk=application.pk)
+        fresh_serializer = serializer_cls(fresh)
+        return Response(fresh_serializer.data, status=status.HTTP_201_CREATED)
+
+
 @api_view(['POST'])
-@parser_classes([MultiPartParser, FormParser])
-@has_app_permission('salesman_barman', 'create')
+@parser_classes([MultiPartParser, FormParser, JSONParser])
+@permission_classes([HasStagePermission])
 def create_salesman_barman(request):
-    serializer = SalesmanBarmanSerializer(data=request.data)
-    if serializer.is_valid():
-        with transaction.atomic():
-            workflow = get_object_or_404(Workflow, name="Salesman Barman")
-            initial_stage = workflow.stages.filter(name="level_1").first()
-            if not initial_stage:
-                return Response({"detail": "No initial stage defined"}, status=status.HTTP_400_BAD_REQUEST)
-
-            application = serializer.save(
-                workflow=workflow,
-                current_stage=initial_stage
-            )
-
-            #Assign role for the first stage of the workflow
-            forwarded_to_role=None
-            sp = StagePermission.objects.filter(stage=initial_stage, can_process=True)
-            if sp.exists():
-                forwarded_to_role=sp.first().role
-            if not forwarded_to_role:
-                raise ValidationError("No role found for next stage")
-
-            SalesmanBarmanTransaction.objects.create(
-                application=application,
-                performed_by=request.user,
-                forwarded_by=request.user,
-                forwarded_to=forwarded_to_role,
-                stage=initial_stage,
-                remarks="Application submitted"
-            )
-
-            #Return the updated application details
-            updated_application= SalesmanBarmanModel.objects.get(application_id=application.application_id)
-            updated_serializer=SalesmanBarmanSerializer(updated_application)
-            return Response(updated_serializer.data, status=status.HTTP_201_CREATED)
-
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    return _create_application(request, "Salesman/Barman Workflow", SalesmanBarmanSerializer)
 
 
-@api_view(['GET'])
+
 @permission_classes([HasAppPermission('salesman_barman', 'view'), HasStagePermission])
+@api_view(['GET'])
 def list_salesman_barman(request):
     role = request.user.role.name if request.user.role else None
 
@@ -88,17 +114,17 @@ def detail_salesman_barman(request, application_id):
     return Response(serializer.data)
 
 
-@api_view(['POST'])
 @permission_classes([HasAppPermission('salesman_barman', 'update'), HasStagePermission])
+@api_view(['POST'])
 def advance_application(request, application_id, stage_id):
     application = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
     try:
-        target_stage = get_object_or_404(WorkflowStage, id=stage_id, workflow=application.workflow)
+        target_stage = get_object_or_404(WorkflowStage, id=stage_id)
     except WorkflowStage.DoesNotExist:
         return Response({"detail": f"Stage ID {stage_id} not found in workflow {application.workflow.name}."}, status=status.HTTP_404_NOT_FOUND)
     
     context = request.data.get("context", {})
-    remarks = request.data.get("remarks", "")
+    # remarks = request.data.get("remarks", "")
 
     try:
         with transaction.atomic():
@@ -106,25 +132,25 @@ def advance_application(request, application_id, stage_id):
                 application=application,
                 user=request.user,
                 target_stage=target_stage,
-                remarks=remarks,
-                context_data=context,
+                # remarks=remarks,
+                context=context,
             )
 
             #Return the updated application details
-            application = SalesmanBarmanModel.objects.get(id=application.id)
-            serializer = SalesmanBarmanSerializer(application)
+            updated_application = SalesmanBarmanModel.objects.get(id=application.id)
+            serializer = SalesmanBarmanSerializer(updated_application)
             return Response(serializer.data, status=status.HTTP_200_OK)
 
     except ValidationError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
     except PermissionDenied as e:
-            return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN            )
+            return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
     except Exception as e:
             return Response({"detail": f"Error advancing stage: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@api_view(['GET'])
 @permission_classes([HasAppPermission('salesman_barman', 'view'), HasStagePermission])
+@api_view(['GET'])
 def get_next_stages(request, application_id):
     application = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
     current_stage = application.current_stage

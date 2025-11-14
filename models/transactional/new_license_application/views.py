@@ -5,58 +5,88 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
 from rest_framework import status
 from auth.roles.permissions import HasAppPermission
+from auth.roles.decorators import has_app_permission
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
-from .models import NewLicenseApplication, Transaction, Objection
+from auth.workflow.models import Workflow, StagePermission
+from .models import NewLicenseApplication
 from .serializers import NewLicenseApplicationSerializer, ObjectionSerializer, ResolveObjectionSerializer
-from auth.workflow.models import Workflow, WorkflowStage, StagePermission, WorkflowTransition
+from auth.workflow.models import WorkflowStage, WorkflowTransition, Objection
 from django.core.exceptions import ValidationError, PermissionDenied
 from django.utils import timezone
 
+#################################################
+#           New License Application             #
+#################################################
+
+def _create_application(request, workflow_name: str, serializer_cls):
+    """
+    1. Load workflow + **initial** stage (the one with is_initial=True)
+    2. Save the application (serializer must accept workflow & current_stage)
+    3. Determine the role that must receive the first task
+    4. Log the **generic** WorkflowTransaction
+    5. Return the freshly-created object (fully populated)
+    
+    """
+    serializer = serializer_cls(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    with transaction.atomic():
+        
+        # 1. Workflow & initial stage
+        workflow = get_object_or_404(Workflow, name=workflow_name)
+        try:
+            initial_stage = workflow.stages.get(is_initial=True)
+        except WorkflowStage.DoesNotExist:
+            return Response(
+                {"detail": "Workflow has no initial stage (is_initial=True)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 2. Persist the application
+        application = serializer.save(
+            workflow=workflow,
+            current_stage=initial_stage,
+        )
+
+        
+        # 3. Who receives the first task?
+        sp = StagePermission.objects.filter(stage=initial_stage, can_process=True).first()
+
+        if not sp or not sp.role:
+            return Response(
+                {"detail": "No role assigned to process the initial stage."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        forwarded_to_role = sp.role
+        if not forwarded_to_role:
+            raise ValidationError("No role configured for the initial stage.")
+
+        # 4. Generic transaction log (uses WorkflowTransaction, NOT a local model)
+        WorkflowService.advance_stage(
+            application=application,
+            user=request.user,
+            target_stage=initial_stage,
+            context={"action": "submit"},
+            remarks="Application submitted",
+        )
+
+        
+        # 5. Return the *fresh* object (includes generic relations)
+        fresh = NewLicenseApplication.objects.get(pk=application.pk)
+        fresh_serializer = serializer_cls(fresh)
+        return Response(fresh_serializer.data, status=status.HTTP_201_CREATED)
+
 
 @api_view(['POST'])
-@permission_classes([HasAppPermission('new_license_application', 'create')])
-@parser_classes([MultiPartParser, FormParser])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
+@permission_classes([HasStagePermission])
 def create_new_license_application(request):
-    serializer = NewLicenseApplicationSerializer(data=request.data)
-    if serializer.is_valid():
-        with transaction.atomic():
-            workflow = get_object_or_404(Workflow, name="License Approval")
-            initial_stage = workflow.stages.filter(name="level_1").first()
-            if not initial_stage:
-                return Response({"detail": "Initial stage not found."}, status=status.HTTP_400_BAD_REQUEST)
-
-            application = serializer.save(
-                workflow=workflow,
-                current_stage=initial_stage
-            )
-
-            # Assign role for the first stage of the workflow
-            forwarded_to_role = None
-            sp_qs = StagePermission.objects.filter(stage=initial_stage, can_process=True)
-            if sp_qs.exists():
-                forwarded_to_role = sp_qs.first().role
-            if not forwarded_to_role:
-                raise ValidationError("No role found for next stage.")
-
-            # Log transaction
-            Transaction.objects.create(
-                license_application=application,
-                performed_by=request.user,
-                forwarded_by=request.user,
-                forwarded_to=forwarded_to_role,
-                stage=initial_stage,
-                remarks="Application Submitted"
-            )
-
-            #Return the updated application details
-            updated_application = NewLicenseApplication.objects.get(pk=application.pk)
-            updated_serializer = NewLicenseApplicationSerializer(updated_application)
-            return Response(updated_serializer, status=status.HTTP_201_CREATED)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    return _create_application(request, "License Approval", NewLicenseApplicationSerializer)
 
 
-@permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
 def list_license_applications(request):
     role = request.user.role.name if request.user.role else None
@@ -76,16 +106,18 @@ def list_license_applications(request):
     serializer = NewLicenseApplicationSerializer(applications, many=True)
     return Response(serializer.data)
 
+
 # License Application Detail
-@permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
 def license_application_detail(request, pk):
     application = get_object_or_404(NewLicenseApplication, pk=pk)
     serializer = NewLicenseApplicationSerializer(application)
     return Response(serializer.data)
 
+
 # Advnace Application
-@permission_classes([HasAppPermission('license_application', 'update'), HasStagePermission])
+@permission_classes([HasAppPermission('new_license_application', 'update'), HasStagePermission])
 @api_view(['POST'])
 def advance_license_application(request, application_id, stage_id):
     print(request.data)
@@ -93,13 +125,13 @@ def advance_license_application(request, application_id, stage_id):
     # Fetch the application and target stage
     application = get_object_or_404(NewLicenseApplication, application_id=application_id)
     try:
-        target_stage = WorkflowStage.objects.get(id=stage_id, workflow=application.workflow)
+        target_stage = get_object_or_404(WorkflowStage, id=stage_id)
     except WorkflowStage.DoesNotExist:
         return Response({"detail": f"Stage ID {stage_id} not found in workflow {application.workflow.name}."}, status=status.HTTP_404_NOT_FOUND)
     
     # Extract context_data from request body (e.g., for fee setting, objections, or revert)
-    context_data = request.data.get("context",{})
-    remarks = request.data.get('remarks', '')
+    context = request.data.get("context",{})
+    # remarks = request.data.get('remarks', '')
 
     try:
         with transaction.atomic():
@@ -108,8 +140,8 @@ def advance_license_application(request, application_id, stage_id):
                 application=application,
                 user=request.user,
                 target_stage=target_stage,
-                context_data=context_data,
-                remarks = remarks
+                context=context,
+                # remarks = remarks
                 )
             
             #Return the updated application details
@@ -123,9 +155,10 @@ def advance_license_application(request, application_id, stage_id):
             return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN            )
     except Exception as e:
             return Response({"detail": f"Error advancing stage: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
     
 # Raise Objection
-@permission_classes([HasAppPermission('license_application', 'update'), HasStagePermission])
+@permission_classes([HasAppPermission('new_license_application', 'update'), HasStagePermission])
 @api_view(['POST'])
 @parser_classes([JSONParser])
 def raise_objection(request, application_id):
@@ -165,7 +198,7 @@ def raise_objection(request, application_id):
             return Response({"detail": f"Error raising objection: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 # Get Objections
-@permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
 def get_objections(request, application_id):
     application = get_object_or_404(NewLicenseApplication, pk=application_id)
@@ -174,7 +207,7 @@ def get_objections(request, application_id):
     return Response(serializer.data)
 
 # Resolve Objections
-@permission_classes([HasAppPermission('license_application', 'update'), HasStagePermission])
+@permission_classes([HasAppPermission('new_license_application', 'update'), HasStagePermission])
 @api_view(['POST'])
 @parser_classes([JSONParser])
 # @transaction.atomic
@@ -228,7 +261,7 @@ def resolve_objections(request, application_id):
         return Response({'detail': f"Error resolving objection: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 # Pay License Fee  
-@permission_classes([HasAppPermission('license_application', 'view')])
+@permission_classes([HasAppPermission('new_license_application', 'view')])
 @api_view(['POST'])
 def pay_license_fee(request, application_id):
     application = get_object_or_404(NewLicenseApplication, application_id=application_id)
@@ -265,7 +298,7 @@ def pay_license_fee(request, application_id):
     })
 
 # Print License View
-@permission_classes([HasAppPermission('license_application', 'update')])
+@permission_classes([HasAppPermission('new_license_application', 'update')])
 @api_view(['POST'])
 @parser_classes([JSONParser])
 def print_license_view(request, application_id):
@@ -293,7 +326,7 @@ def print_license_view(request, application_id):
     })
 
 # Dashboard Counts
-@permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
 def dashboard_counts(request):
     role = request.user.role.name if request.user.role else None
@@ -374,7 +407,7 @@ def dashboard_counts(request):
     return Response(counts)
 
 # Application Grouping
-@permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
 @parser_classes([JSONParser])
 def application_group(request):
@@ -455,7 +488,7 @@ def application_group(request):
     return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
 
 # Get Next Stages
-@permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
 def get_next_stages(request, application_id):
     application = get_object_or_404(NewLicenseApplication, application_id=application_id)

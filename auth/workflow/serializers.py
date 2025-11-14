@@ -1,6 +1,8 @@
 from rest_framework import serializers
-from .models import Workflow, WorkflowStage, WorkflowTransition, StagePermission
+from .models import Workflow, WorkflowStage, WorkflowTransition, StagePermission, Transaction, Objection
 from auth.roles.models import Role
+from auth.user.serializer import UserSerializer
+from auth.roles.serializers import RoleSerializer
 
 class WorkflowSerializer(serializers.ModelSerializer):
     class Meta:
@@ -27,3 +29,17 @@ class StagePermissionSerializer(serializers.ModelSerializer):
     class Meta:
         model = StagePermission
         fields = ['id', 'stage', 'role', 'can_process']
+
+# shared in workflow/serializers.py
+class WorkflowTransactionSerializer(serializers.ModelSerializer):
+    performed_by = UserSerializer(read_only=True)
+    forwarded_by = UserSerializer(read_only=True)
+    forwarded_to = RoleSerializer(read_only=True)
+    class Meta:
+        model = Transaction
+        fields = '__all__'
+
+class WorkflowObjectionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Objection
+        fields = '__all__'

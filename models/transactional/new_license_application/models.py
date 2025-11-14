@@ -1,11 +1,9 @@
 from django.db import models, transaction
+from django.contrib.contenttypes.fields import GenericRelation
 from django.utils.timezone import now
 from . import helpers
 from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseSubcategory, LicenseType
-from auth.user.models import CustomUser
-from auth.roles.models import Role
-from auth.workflow.models import Workflow, WorkflowStage
-
+from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
 
 def upload_document_path(instance, filename):
     return f'new_license_application/{instance.application_id}/{filename}'
@@ -88,6 +86,20 @@ class NewLicenseApplication(models.Model):
     dob_proof = models.FileField(upload_to=upload_document_path)
     noc_landlord = models.FileField(upload_to=upload_document_path, blank=True, null=True)
 
+    # Polymorphic links
+    transactions = GenericRelation(
+        Transaction,
+        content_type_field='content_type',
+        object_id_field='object_id',
+        related_query_name='new_license_application'
+    )
+    objections = GenericRelation(
+        Objection,
+        content_type_field='content_type',
+        object_id_field='object_id',
+        related_query_name='new_license_application'
+    )
+
     def record_license_print(self, fee_paid=False):
         self.print_count += 1
         if self.print_count > 5 and fee_paid:
@@ -125,6 +137,11 @@ class NewLicenseApplication(models.Model):
         helpers.validate_gender(self.gender)
         helpers.validate_pin_code(self.pin_code)
 
+    def save(self, *args, **kwargs):
+        if not self.application_id:
+            self.application_id = self.generate_application_id()
+        super().save(*args, **kwargs)
+
     def generate_application_id(self):
         try:
             district_code = str(self.site_district.district_code).strip()
@@ -158,7 +175,7 @@ class NewLicenseApplication(models.Model):
             new_number = last_number + 1
             new_number_str = str(new_number).zfill(4)
 
-            return f"LIC/{prefix}/{new_number_str}"
+            return f"NLI/{prefix}/{new_number_str}"
 
     class Meta:
         db_table = 'new_license_application'
@@ -169,8 +186,8 @@ class NewLicenseApplication(models.Model):
             models.Index(fields=['site_subdivision']),
             models.Index(fields=['current_stage']),
         ]
-    
 
+'''
 class Transaction(models.Model):
     license_application = models.ForeignKey(NewLicenseApplication, on_delete=models.CASCADE, related_name='new_license_transactions')
     performed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='new_license_performed_transactions')
@@ -203,3 +220,5 @@ class Objection(models.Model):
     class Meta:
         db_table = 'new_license_application_objection'
         ordering = ['raised_on']
+
+'''

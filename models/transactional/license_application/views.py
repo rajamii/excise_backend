@@ -5,9 +5,10 @@ from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework.response import Response
 from django.core.exceptions import ValidationError, PermissionDenied
 from auth.roles.permissions import HasAppPermission
-from .models import LicenseApplication, SiteEnquiryReport, LocationFee, Objection
+from auth.roles.decorators import has_app_permission
+from .models import LicenseApplication, SiteEnquiryReport, LocationFee
 from .serializers import LicenseApplicationSerializer, SiteEnquiryReportSerializer, LocationFeeSerializer, ObjectionSerializer, ResolveObjectionSerializer
-from .models import LicenseApplicationTransaction
+from auth.workflow.models import Objection
 from django.utils import timezone
 from rest_framework import status
 from auth.workflow.models import Workflow, StagePermission, WorkflowStage, WorkflowTransition
@@ -18,46 +19,71 @@ from auth.workflow.services import WorkflowService
 #           License Application                 #
 #################################################
 
-@permission_classes([HasAppPermission('license_application', 'create')])
-@api_view(['POST'])
-@parser_classes([MultiPartParser, FormParser])
-def create_license_application(request):
-    serializer = LicenseApplicationSerializer(data=request.data)
-    if serializer.is_valid():
-        with transaction.atomic():
-            workflow= get_object_or_404(Workflow, name= "License Approval")
-            initial_stage = workflow.stages.filter(name="level_1").first()
-            if not initial_stage:
-                return Response({"detail": "No initial stage defined."}, status=status.HTTP_400_BAD_REQUEST)
-            
-            application = serializer.save(
-                workflow = workflow,
-                current_stage=initial_stage
-                )
+def _create_application(request, workflow_name: str, serializer_cls):
+    """
+    1. Load workflow + **initial** stage (the one with is_initial=True)
+    2. Save the application (serializer must accept workflow & current_stage)
+    3. Determine the role that must receive the first task
+    4. Log the **generic** WorkflowTransaction
+    5. Return the freshly-created object (fully populated)
+    
+    """
+    serializer = serializer_cls(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-            # Assign role for the first stage of the workflow
-            forwarded_to_role = None
-            sp_qs = StagePermission.objects.filter(stage=initial_stage, can_process=True)
-            if sp_qs.exists():
-                forwarded_to_role = sp_qs.first().role
-            if not forwarded_to_role:
-                raise ValidationError("No role found for next stage.")
-
-            # Log the creation of the application in transaction table
-            LicenseApplicationTransaction.objects.create(
-                license_application=application,
-                performed_by=request.user,
-                forwarded_by=request.user,
-                forwarded_to=forwarded_to_role,
-                stage=initial_stage,
-                remarks='Application Submitted'
+    with transaction.atomic():
+        
+        # 1. Workflow & initial stage
+        workflow = get_object_or_404(Workflow, name=workflow_name)
+        try:
+            initial_stage = workflow.stages.get(is_initial=True)
+        except WorkflowStage.DoesNotExist:
+            return Response(
+                {"detail": "Workflow has no initial stage (is_initial=True)."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-                
-            #Return the updated application details
-            updated_application = LicenseApplication.objects.get(pk=application.pk)
-            updated_serializer = LicenseApplicationSerializer(updated_application)
-            return Response(updated_serializer.data, status=status.HTTP_201_CREATED)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # 2. Persist the application
+        application = serializer.save(
+            workflow=workflow,
+            current_stage=initial_stage,
+        )
+
+        
+        # 3. Who receives the first task?
+        sp = StagePermission.objects.filter(stage=initial_stage, can_process=True).first()
+
+        if not sp or not sp.role:
+            return Response(
+                {"detail": "No role assigned to process the initial stage."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        forwarded_to_role = sp.role
+        if not forwarded_to_role:
+            raise ValidationError("No role configured for the initial stage.")
+
+        # 4. Generic transaction log (uses WorkflowTransaction, NOT a local model)
+        WorkflowService.advance_stage(
+            application=application,
+            user=request.user,
+            target_stage=initial_stage,
+            context={"action": "submit"},
+            remarks="Application submitted",
+        )
+
+        
+        # 5. Return the *fresh* object (includes generic relations)
+        fresh = LicenseApplication.objects.get(pk=application.pk)
+        fresh_serializer = serializer_cls(fresh)
+        return Response(fresh_serializer.data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
+@permission_classes([HasStagePermission])
+def create_license_application(request):
+    return _create_application(request, "License Approval", LicenseApplicationSerializer)
 
 
 @permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
@@ -115,13 +141,13 @@ def advance_license_application(request, application_id, stage_id):
     # Fetch the application and target stage
     application = get_object_or_404(LicenseApplication, application_id=application_id)
     try:
-        target_stage = WorkflowStage.objects.get(id=stage_id, workflow=application.workflow)
+       target_stage = get_object_or_404(WorkflowStage, id=stage_id)
     except WorkflowStage.DoesNotExist:
         return Response({"detail": f"Stage ID {stage_id} not found in workflow {application.workflow.name}."}, status=status.HTTP_404_NOT_FOUND)
     
     # Extract context_data from request body (e.g., for fee setting, objections, or revert)
-    context_data = request.data.get("context",{})
-    remarks = request.data.get('remarks', '')
+    context = request.data.get("context",{})
+    # remarks = request.data.get('remarks', '')
 
     try:
         with transaction.atomic():
@@ -130,8 +156,8 @@ def advance_license_application(request, application_id, stage_id):
                 application=application,
                 user=request.user,
                 target_stage=target_stage,
-                context_data=context_data,
-                remarks = remarks
+                context=context,
+                # remarks = remarks
                 )
 
             # forwarded_to_role = None
@@ -156,7 +182,7 @@ def advance_license_application(request, application_id, stage_id):
     except ValidationError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
     except PermissionDenied as e:
-            return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN            )
+            return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
     except Exception as e:
             return Response({"detail": f"Error advancing stage: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     

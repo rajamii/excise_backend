@@ -1,7 +1,8 @@
 from rest_framework import serializers
-from .models import LicenseApplication, LicenseApplicationTransaction, LocationFee, Objection
+from .models import LicenseApplication, Transaction, LocationFee, Objection
 from auth.user.models import CustomUser
 from auth.roles.models import Role
+from auth.workflow.serializers import WorkflowTransactionSerializer, WorkflowObjectionSerializer
 from . import helpers
 from .models import SiteEnquiryReport
 from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseType
@@ -21,10 +22,10 @@ class RoleSerializer(serializers.ModelSerializer):
 class LicenseApplicationTransactionSerializer(serializers.ModelSerializer):
     performed_by = UserShortSerializer(read_only=True)
     forwarded_by = UserShortSerializer(read_only=True)
-    forwarded_to = RoleSerializer(source='forwarded_to.name', read_only=True)
+    forwarded_to = RoleSerializer(read_only=True)
     
     class Meta:
-        model = LicenseApplicationTransaction
+        model = Transaction
         fields = ['license_application', 'stage', 'remarks', 'timestamp', 'performed_by', 'forwarded_by', 'forwarded_to']
 
 class ObjectionSerializer(serializers.ModelSerializer):
@@ -76,6 +77,9 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
     is_approved = serializers.BooleanField(read_only=True)
     transactions = LicenseApplicationTransactionSerializer(many=True, read_only=True)
     latest_transaction = serializers.SerializerMethodField()
+
+    transactions = WorkflowTransactionSerializer(many=True, read_only=True)
+    objections = WorkflowObjectionSerializer(many=True, read_only=True)
 
     class Meta:
         model = LicenseApplication

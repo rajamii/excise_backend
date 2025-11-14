@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from auth.roles.models import Role
-from .models import SalesmanBarmanModel, SalesmanBarmanTransaction, SalesmanBarmanObjection
+from .models import SalesmanBarmanModel, Transaction, Objection
 from auth.user.models import CustomUser
 from .helpers import validate_email, validate_pan_number, validate_aadhaar_number, validate_phone_number
 
@@ -20,12 +20,12 @@ class TransactionSerializer(serializers.ModelSerializer):
     forwarded_by = UserShortSerializer(read_only=True)
     forwarded_to = serializers.CharField(source='forwarded_to.name', read_only=True)
     class Meta:
-        model = SalesmanBarmanTransaction
+        model = Transaction
         fields = ['application', 'stage', 'remarks', 'timestamp', 'performed_by', 'forwarded_by', 'forwarded_to']
 
 class ObjectionSerializer(serializers.ModelSerializer):
     class Meta:
-        model = SalesmanBarmanObjection
+        model = Objection
         fields = '__all__'
 
 class SalesmanBarmanSerializer(serializers.ModelSerializer):
