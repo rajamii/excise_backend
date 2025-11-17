@@ -8,6 +8,30 @@ from .models import (
 
 
 class WorkflowService:
+
+    @staticmethod
+    @transaction.atomic
+    def submit_application(application, user, remarks=None):
+        initial_stage = application.current_stage
+        if not initial_stage.is_initial:
+            raise ValidationError("Application is not in initial stage.")
+
+        # Find who should receive it
+        perm = StagePermission.objects.filter(stage=initial_stage, can_process=True).first()
+        if not perm:
+            raise ValidationError("No role assigned to initial stage.")
+
+        # Log transaction
+        Transaction.objects.create(
+            content_type=ContentType.objects.get_for_model(application),
+            object_id=str(application.pk),
+            performed_by=user,
+            forwarded_by=user,
+            forwarded_to=perm.role,
+            stage=initial_stage,
+            remarks=remarks or "Application submitted"
+        )
+        
     @staticmethod
     def get_next_stages(application):
         return WorkflowTransition.objects.filter(

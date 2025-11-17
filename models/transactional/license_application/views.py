@@ -64,11 +64,9 @@ def _create_application(request, workflow_name: str, serializer_cls):
             raise ValidationError("No role configured for the initial stage.")
 
         # 4. Generic transaction log (uses WorkflowTransaction, NOT a local model)
-        WorkflowService.advance_stage(
+        WorkflowService.submit_application(
             application=application,
             user=request.user,
-            target_stage=initial_stage,
-            context={"action": "submit"},
             remarks="Application submitted",
         )
 

@@ -19,7 +19,7 @@ class RoleSerializer(serializers.ModelSerializer):
         model = Role
         fields = ['id', 'name']
 
-class LicenseApplicationTransactionSerializer(serializers.ModelSerializer):
+class TransactionSerializer(serializers.ModelSerializer):
     performed_by = UserShortSerializer(read_only=True)
     forwarded_by = UserShortSerializer(read_only=True)
     forwarded_to = RoleSerializer(read_only=True)
@@ -75,8 +75,8 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
     workflow = serializers.PrimaryKeyRelatedField(read_only=True)
     current_stage_name = serializers.CharField(source = 'current_stage.name', read_only=True)
     is_approved = serializers.BooleanField(read_only=True)
-    transactions = LicenseApplicationTransactionSerializer(many=True, read_only=True)
-    latest_transaction = serializers.SerializerMethodField()
+    # transactions = TransactionSerializer(many=True, read_only=True)
+    # latest_transaction = serializers.SerializerMethodField()
 
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)
     objections = WorkflowObjectionSerializer(many=True, read_only=True)
@@ -88,7 +88,7 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
 
     def get_latest_transaction(self, obj):
         transaction = obj.transactions.order_by('-timestamp').first()
-        return LicenseApplicationTransactionSerializer(transaction).data if transaction else None
+        return WorkflowTransactionSerializer(transaction).data if transaction else None
 
     def validate_license_type(self, value):
         return helpers.validate_license_type(value)
