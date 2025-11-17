@@ -27,6 +27,10 @@ ENV/
 .ENV/
 .newenv
 
+# Postman
+.postman/
+postman/
+
 # IDEs and editors
 .vscode/
 .idea/
