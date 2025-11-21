@@ -8,4 +8,5 @@ urlpatterns = [
     path('transactiondata/', include(('models.transactional.transactiondata.urls', 'transactiondata'), namespace='transactiondata')),
     path('supply_chain/ena_requisition_details/', include(('models.transactional.supply_chain.ena_requisition_details.urls', 'ena_requisition_details'), namespace='ena_requisition_details')),
     path('supply_chain/', include(('models.transactional.supply_chain.urls', 'supply_chain'), namespace='supply_chain')),
+    
 ]

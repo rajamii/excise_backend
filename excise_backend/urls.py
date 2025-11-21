@@ -9,6 +9,7 @@ urlpatterns = [
     path('auth/', include('auth.urls')),
     path('masters/', include('models.masters.urls')),
     path('transactional/', include('models.transactional.urls')),
+    
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
 if settings.DEBUG:
