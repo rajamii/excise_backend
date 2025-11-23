@@ -15,6 +15,19 @@ class WorkflowService:
         initial_stage = application.current_stage
         if not initial_stage.is_initial:
             raise ValidationError("Application is not in initial stage.")
+        
+        # Find the next stage (there should be exactly one)
+        transition = WorkflowTransition.objects.filter(
+            workflow=application.workflow,
+            from_stage=initial_stage
+        ).first()
+
+        if not transition:
+            raise ValidationError("No transition defined from initial stage")
+
+        # AUTO ADVANCE
+        application.current_stage = transition.to_stage
+        application.save(update_fields=['current_stage'])
 
         # Find who should receive it
         perm = StagePermission.objects.filter(stage=initial_stage, can_process=True).first()

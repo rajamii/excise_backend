@@ -56,6 +56,7 @@ class UserDetailView(generics.RetrieveAPIView):
     permission_classes = [make_permission('user', 'view')]
 
 class CurrentUserAPI(APIView):
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         user = request.user

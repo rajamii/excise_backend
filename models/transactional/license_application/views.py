@@ -7,8 +7,9 @@ from django.core.exceptions import ValidationError, PermissionDenied
 from auth.roles.permissions import HasAppPermission
 from auth.roles.decorators import has_app_permission
 from .models import LicenseApplication, SiteEnquiryReport, LocationFee
-from .serializers import LicenseApplicationSerializer, SiteEnquiryReportSerializer, LocationFeeSerializer, ObjectionSerializer, ResolveObjectionSerializer
+from .serializers import LicenseApplicationSerializer, SiteEnquiryReportSerializer, LocationFeeSerializer, ResolveObjectionSerializer
 from auth.workflow.models import Objection
+from auth.workflow.serializers import WorkflowObjectionSerializer
 from django.utils import timezone
 from rest_framework import status
 from auth.workflow.models import Workflow, StagePermission, WorkflowStage, WorkflowTransition
@@ -268,8 +269,8 @@ def raise_objection(request, application_id):
 @api_view(['GET'])
 def get_objections(request, application_id):
     application = get_object_or_404(LicenseApplication, pk=application_id)
-    objections = Objection.objects.filter(application=application).order_by('-raised_on')
-    serializer = ObjectionSerializer(objections, many=True)
+    objections = application.objections.all().order_by('-raised_on')
+    serializer = WorkflowObjectionSerializer(objections, many=True)
     return Response(serializer.data)
 
 @permission_classes([HasAppPermission('license_application', 'update'), HasStagePermission])
