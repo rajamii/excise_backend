@@ -133,10 +133,7 @@ def delete_license_application(request, application_id):
 @api_view(['POST'])
 def advance_license_application(request, application_id, stage_id):
     print(request.data)
-    """
-    Advance a license application to the specified stage.
-    Expects application_id and stage_id in the URL, and optional context_data in the request body.
-    """
+    
     # Fetch the application and target stage
     application = get_object_or_404(LicenseApplication, application_id=application_id)
     try:
@@ -158,20 +155,6 @@ def advance_license_application(request, application_id, stage_id):
                 context=context,
                 # remarks = remarks
                 )
-
-            # forwarded_to_role = None
-            # sp_qs = StagePermission.objects.filter(stage=target_stage, can_process=True)
-            # if sp_qs.exists():
-            #     forwarded_to_role = sp_qs.first().role
-
-            # LicenseApplicationTransaction.objects.create(
-            #     license_application=application,
-            #     performed_by=request.user,
-            #     forwarded_by=request.user,
-            #     forwarded_to=forwarded_to_role,
-            #     stage=target_stage,
-            #     remarks=remarks or f"Advanced to {target_stage.name}"
-            #     )
             
             #Return the updated application details
             updated_application = LicenseApplication.objects.get(pk=application.pk)
@@ -184,46 +167,6 @@ def advance_license_application(request, application_id, stage_id):
             return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
     except Exception as e:
             return Response({"detail": f"Error advancing stage: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-'''
-    if context_data.get("new_license_category_id"):
-        try:
-            new_license_category = LicenseCategory.objects.get(pk=context_data.get("new_license_category_id"))
-        except LicenseCategory.DoesNotExist:
-            return Response({"detail": "Invalid license category ID."}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        if context_data.get("action") == 'raise_objection':
-            objections = context_data.get("objections", [])
-            WorkflowService.raise_objection(
-                application= application,
-                user = request.user,
-                target_stage=target_stage,
-                objections=objections,
-                remarks=context_data.get("remarks", "")
-            )
-        elif context_data.get("action") == "resolve_objection":
-            WorkflowService.resolve_objection(
-                application=application,
-                user=request.user,
-                target_stage=target_stage,
-                context_data=context_data
-            )
-        else:
-            WorkflowService.advance_stage(
-                application=application,
-                user=request.user,
-                target_stage=target_stage,
-                context_data=context_data,
-                skip_permission_check=False
-            )
-
-        return Response({"detail": "Application advanced successfully."}, status=status.HTTP_200_OK)
-
-    except ValidationError as e:
-        return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-'''
 
 @permission_classes([HasAppPermission('license_application', 'update'), HasStagePermission])
 @api_view(['POST'])
