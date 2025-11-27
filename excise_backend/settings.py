@@ -63,12 +63,15 @@ INSTALLED_APPS = [
     #########################
     
     # masters models
-
     'models.masters',
     'models.masters.core',
     'models.masters.license',
     'models.masters.contact_us',
-    
+    'models.masters.supply_chain.bulk_spirit',
+    'models.masters.supply_chain.distributor_data_details',
+    'models.masters.supply_chain.ena_checkpost',
+    'models.masters.supply_chain.ena_purpose',
+    'models.masters.supply_chain.liquor_data',
 
     # transcational models
     'models.transactional',
@@ -81,7 +84,6 @@ INSTALLED_APPS = [
     'models.transactional.supply_chain.ena_revalidation_details',
     'models.transactional.supply_chain.ena_cancellation_details',
     'models.transactional.supply_chain.ena_distillery_details',
-    'models.transactional.supply_chain.bulk_spirit',
 
     # auth models 
     'auth.roles',
@@ -90,7 +92,6 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
-
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
