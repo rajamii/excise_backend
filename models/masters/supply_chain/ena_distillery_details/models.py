@@ -14,7 +14,7 @@ class enaDistilleryTypes(models.Model):
 
     class Meta:
         db_table = 'ena_distillery_details'
-        app_label = 'models.transactional.supply_chain.ena_distillery_details'
+        app_label = 'models.masters.supply_chain.ena_distillery_details'
         verbose_name = 'ENA Distillery'
         verbose_name_plural = 'ENA Distilleries'    
 
