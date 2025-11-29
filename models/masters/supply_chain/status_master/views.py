@@ -3,5 +3,5 @@ from .models import StatusMaster
 from .serializers import StatusMasterSerializer
 
 class StatusMasterViewSet(viewsets.ModelViewSet):
-    queryset = StatusMaster.objects.filter(is_active=True)
+    queryset = StatusMaster.objects.all()
     serializer_class = StatusMasterSerializer
