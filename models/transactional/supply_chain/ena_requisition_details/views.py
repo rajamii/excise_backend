@@ -64,27 +64,71 @@ class GetNextRefNumberAPIView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-class UpdateRequisitionStatusAPIView(APIView):
+class PerformRequisitionActionAPIView(APIView):
     """
-    API endpoint to update a requisition's status dynamically.
-    Accepts 'status_code' in request body.
+    API endpoint to perform an action (APPROVE/REJECT) on a requisition.
+    Dynamically determines the next status based on the current status and the action
+    by querying the WorkflowRule table.
     """
     def post(self, request, pk):
         try:
-            from models.masters.supply_chain.status_master.models import StatusMaster
+            from models.masters.supply_chain.status_master.models import StatusMaster, WorkflowRule
             
-            status_code = request.data.get('status_code')
-            if not status_code:
+            action = request.data.get('action')
+            if not action or action not in ['APPROVE', 'REJECT']:
                 return Response({
                     'status': 'error',
-                    'message': 'status_code is required'
+                    'message': 'Valid action (APPROVE or REJECT) is required'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
             # Get the requisition
             requisition = EnaRequisitionDetail.objects.get(pk=pk)
+            current_status_code = requisition.status_code
             
-            # Get the status from status_master
-            new_status = StatusMaster.objects.get(status_code=status_code)
+            # Determine User Role
+            user_role_name = request.user.role.name if hasattr(request.user, 'role') and request.user.role else None
+            
+            if not user_role_name:
+                return Response({
+                    'status': 'error',
+                    'message': 'User role not found'
+                }, status=status.HTTP_403_FORBIDDEN)
+
+            role = None
+            commissioner_roles = ['level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'Site-Admin', 'site_admin', 'commissioner', 'Commissioner']
+            
+            if user_role_name in commissioner_roles:
+                role = 'commissioner'
+            elif user_role_name in ['permit-section', 'Permit-Section', 'Permit Section']:
+                role = 'permit-section'
+            elif user_role_name in ['licensee', 'Licensee']:
+                role = 'licensee'
+            
+            if not role:
+                return Response({
+                    'status': 'error',
+                    'message': f'Unauthorized role: {user_role_name}'
+                }, status=status.HTTP_403_FORBIDDEN)
+
+            # Find the rule in the database
+            try:
+                rule = WorkflowRule.objects.get(
+                    current_status__status_code=current_status_code,
+                    action=action,
+                    allowed_role=role
+                )
+                new_status = rule.next_status
+                
+            except WorkflowRule.DoesNotExist:
+                return Response({
+                    'status': 'error',
+                    'message': f'No workflow rule defined for Action: {action} on Status: {requisition.status} ({current_status_code}) for Role: {role}'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            except WorkflowRule.MultipleObjectsReturned:
+                 return Response({
+                    'status': 'error',
+                    'message': f'Multiple workflow rules found. Configuration error.'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             
             # Update the requisition status
             requisition.status = new_status.status_name
@@ -104,12 +148,6 @@ class UpdateRequisitionStatusAPIView(APIView):
             return Response({
                 'status': 'error',
                 'message': 'Requisition not found'
-            }, status=status.HTTP_404_NOT_FOUND)
-            
-        except StatusMaster.DoesNotExist:
-            return Response({
-                'status': 'error',
-                'message': f'Status code {status_code} not found in status master'
             }, status=status.HTTP_404_NOT_FOUND)
             
         except Exception as e:
