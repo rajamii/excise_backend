@@ -2,40 +2,44 @@ from rest_framework import permissions
 from .models import StagePermission
 
 class HasStagePermission(permissions.BasePermission):
+    """
+    Allows access only if the user's role has can_process=True
+    on the application's CURRENT stage (i.e., the stage they're acting FROM).
+    """
     def has_permission(self, request, view):
-        # === 1. ALLOW ALL POST on /apply/ or /create/ (Licensee submission) ===
-        if request.method == 'POST':
-            path = request.path.lower()
-            if '/apply/' in path or '/create/' in path:
-                print("[HasStagePermission] Allowing POST on /apply/ or /create/")
-                return True
+        user = request.user
+        if not user.is_authenticated or not getattr(user, 'role', None):
+            return False
 
-        # === 2. Try to get application from view (detail, advance, etc.) ===
-        get_object = getattr(view, 'get_object', None)
-        if get_object:
-            try:
-                application = get_object()
-                stage = getattr(application, 'current_stage', None)
-                if stage and request.user.role:
-                    return StagePermission.objects.filter(
-                        stage=stage,
-                        role=request.user.role,
-                        can_process=True
-                    ).exists()
-            except (AttributeError, Exception):
-                pass  # Continue to next checks
+        # 1. Allow licensee to submit new applications
+        if request.method == 'POST' and any(path in request.path for path in ['/apply/', '/create/']):
+            return user.role.name == 'licensee'
 
-        # === 3. Check kwargs for application_id (e.g., advance, detail) ===
-        app_id = (
-            view.kwargs.get("application_id") or
-            view.kwargs.get("pk") or
-            getattr(view, 'application_id', None)
-        )
+        # 2. For advance, raise-objection, resolve-objection, etc.
+        if request.method in ['POST', 'PUT', 'PATCH']:
+            # Try to get application from view (safest)
+            application = None
+            if hasattr(view, 'get_object'):
+                try:
+                    application = view.get_object()
+                except (AttributeError, AssertionError):
+                    pass
 
-        if app_id and request.method in ['GET', 'POST', 'PUT', 'PATCH']:
-            print(f"[HasStagePermission] Allowing {request.method} for app_id={app_id}")
-            return True
+            # Fallback: extract from kwargs and resolve polymorphically
+            if not application:
+                app_id = view.kwargs.get('application_id') or view.kwargs.get('pk')
+                if app_id:
+                    from .services import WorkflowService
+                    try:
+                        application = WorkflowService.get_application_by_id(app_id)
+                    except:
+                        return False
 
-        # === 4. Default: deny ===
-        print(f"[HasStagePermission] DENIED: method={request.method}, path={request.path}")
-        return False
+            if application and user.role:
+                return StagePermission.objects.filter(
+                    stage=application.current_stage,
+                    role=user.role,
+                    can_process=True
+                ).exists()
+
+        return True

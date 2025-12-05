@@ -210,14 +210,18 @@ def advance_application(request, application_id, stage_id):  # request is here
     except WorkflowStage.DoesNotExist:
         return Response({"detail": "Target stage does not exist"}, status=400)
 
+    remarks = request.data.get("remarks", "")
+    if not remarks and "context_data" in request.data:
+                remarks = request.data["context_data"].get("remarks", "")
+    
     try:
         WorkflowService.advance_stage(
             application=application,
             user=request.user,
             target_stage=target_stage,
-            context=request.data.get("context", {}),
-            # remarks=request.data.get("remarks"),
-        )
+            context=request.data.get("context_data", {}),
+            remarks=remarks
+        ) 
         # Pass the request.user down
         return _serialize_application(application, requesting_user=request.user)
     except Exception as e:

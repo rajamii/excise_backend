@@ -175,6 +175,16 @@ class LicenseApplication(models.Model):
             new_number_str = str(new_number).zfill(4)
 
             return f"LIC/{prefix}/{new_number_str}"
+        
+    @staticmethod
+    def generate_fin_year():
+        today = now().date()
+        year = today.year
+        month = today.month
+        if month >= 4:  # April onwards → new financial year
+            return f"{year}-{str(year + 1)[2:]}"
+        else:
+            return f"{year - 1}-{str(year)[2:]}"
 
     class Meta:
         db_table = 'license_application'
