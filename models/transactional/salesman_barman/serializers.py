@@ -1,7 +1,10 @@
 from rest_framework import serializers
 from auth.roles.models import Role
 from .models import SalesmanBarmanModel, Transaction, Objection
+from auth.workflow.serializers import WorkflowTransactionSerializer, WorkflowObjectionSerializer
+from models.masters.core.models import District
 from auth.user.models import CustomUser
+from utils.fields import CodeRelatedField
 from .helpers import validate_email, validate_pan_number, validate_aadhaar_number, validate_phone_number
 
 class UserShortSerializer(serializers.ModelSerializer):
@@ -29,9 +32,12 @@ class ObjectionSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class SalesmanBarmanSerializer(serializers.ModelSerializer):
-    current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
-    transactions = TransactionSerializer(many=True, read_only=True)
-    latest_transaction = serializers.SerializerMethodField()
+    
+    excise_district = CodeRelatedField(queryset=District.objects.all(), lookup_field='district_code')
+    license_category_name = serializers.CharField(source='license_category.license_category', read_only=True)
+
+    transactions = WorkflowTransactionSerializer(many=True, read_only=True)
+    objections = WorkflowObjectionSerializer(many=True, read_only=True)
 
     class Meta:
         model = SalesmanBarmanModel
@@ -40,9 +46,11 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
             'application_id',
             'workflow',
             'current_stage',
-            'current_stage_name', 
-            'is_approved', 
-            'IsActive']
+            'is_approved',
+            'IsActive',
+            'created_at',
+            'updated_at'
+            ]
 
     def get_latest_transaction(self, obj):
         tx = obj.transactions.order_by('-timestamp').first()

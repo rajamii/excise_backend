@@ -1,60 +1,83 @@
-# licenses/signals.py
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from django.utils import timezone
 from django.contrib.contenttypes.models import ContentType
 from auth.workflow.models import Transaction
 from .models import License
+import logging
 
+logger = logging.getLogger(__name__)
 
 @receiver(post_save, sender=Transaction)
 def create_license_on_final_approval(sender, instance, created, **kwargs):
     if not created:
         return
 
-    # Only trigger when transitioning TO "approved" stage
+    # Safety: ensure stage is loaded
+    if not hasattr(instance, 'stage') or not instance.stage:
+        return
+
     if instance.stage.name != "approved":
         return
 
-    application = instance.application
-    if not application:
+    # CRITICAL: Manually resolve the generic relation
+    if instance.content_type is None or instance.object_id is None:
+        logger.warning(f"Transaction {instance.id} has no content_type or object_id")
         return
 
-    # Prevent duplicate license creation
-    ct = ContentType.objects.get_for_model(application)
+    try:
+        # This forces the generic object to be fetched
+        application = instance.content_type.get_object_for_this_type(pk=instance.object_id)
+    except (ContentType.DoesNotExist, instance.content_type.model_class().DoesNotExist):
+        logger.error(f"Could not resolve application for Transaction {instance.id}")
+        return
+    except Exception as e:
+        logger.error(f"Unexpected error resolving application: {e}")
+        return
+
+    # Prevent duplicate license
+    ct = instance.content_type
     if License.objects.filter(
         source_content_type=ct,
-        source_object_id=str(application.pk)
+        source_object_id=instance.object_id
     ).exists():
         return
 
-    # Map model → source_type
-    model_name = application._meta.model_name.lower()
+    # Map model name → source_type
+    model_name = ct.model
     source_type_map = {
-        'new_license_application': 'New License Application',
-        'license_application': 'License Application',
-        'salesman_barman': 'Salesman/Barman',
+        'newlicenseapplication': 'new_license_application',
+        'licenseapplication': 'license_application',
+        'salesmanbarmanmodel': 'salesman_barman',
     }
 
     source_type = source_type_map.get(model_name)
     if not source_type:
-        return  # Unknown model — skip safely
+        logger.warning(f"Unknown model for license creation: {model_name}")
+        return
 
-    # All three models have license_category
+    # Extract required fields — with fallbacks
     try:
-        license_category = application.license_category
-        excise_district = application.excise_district
-    except AttributeError:
-        return  # Safety
+        license_category = getattr(application, 'license_category', None)
+        excise_district = getattr(application, 'excise_district', None) or getattr(application, 'site_district', None)
+        
+        if not license_category or not excise_district:
+            logger.warning(f"Application {application.pk} missing license_category or district")
+            return
+    except AttributeError as e:
+        logger.error(f"Error accessing fields on {type(application)}: {e}")
+        return
 
-    License.objects.create(
-        source_content_type=ct,
-        source_object_id=str(application.pk),
-        source_application=application,
-        source_type=source_type,
-        license_category=license_category,
-        excise_district=excise_district,
-        issue_date=timezone.now().date(),
-        valid_up_to=timezone.now().date().replace(year=timezone.now().year + 1),
-        is_active=True
-    )
+    try:
+        License.objects.create(
+            source_content_type=ct,
+            source_object_id=str(application.pk),
+            source_type=source_type,
+            license_category=license_category,
+            excise_district=excise_district,
+            issue_date=instance.timestamp.date(),
+            valid_up_to=instance.timestamp.date().replace(year=instance.timestamp.year + 1),
+            is_active=True
+        )
+        logger.info(f"License created for application {application.pk}")
+    except Exception as e:
+        logger.error(f"Failed to create license for {application.pk}: {e}")

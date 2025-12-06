@@ -11,7 +11,7 @@ class License(models.Model):
         ('salesman_barman', 'Salesman/Barman'),
     ]
 
-    license_id = models.CharField(max_length=30, primary_key=True, db_index=True, unique=True)
+    license_id = models.CharField(max_length=50, primary_key=True, db_index=True, unique=True)
 
     # application = models.OneToOneField(
     #     LicenseApplication,
@@ -59,45 +59,51 @@ class License(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.license_id:
-            self.license_id = self._generate_license_id()
+            self.license_id = self.generate_license_id()
         super().save(*args, **kwargs)
 
     def generate_license_id(self) -> str:
-        """Generate a unique license ID based on district and financial year."""
+        """Generate a unique license ID based on source_type, district and financial year."""
         try:
             district_code = str(self.excise_district.district_code).strip()
         except AttributeError:
-            raise ValueError("Invalid District object assigned to excise_district.")
+            raise ValueError("Invalid or missing excise_district on License creation.")
 
+        # Determine financial year (April–March)
         today = now().date()
-        year = self.issue_date.year
-        month = today.month
+        issue_year = self.issue_date.year if self.issue_date else today.year
+        if today.month >= 4:
+            fin_year = f"{issue_year}-{str(issue_year + 1)[2:]}"
+        else:
+            fin_year = f"{issue_year - 1}-{str(issue_year)[2:]}"
+
+        # Prefix based on source
         prefix_map = {
             'new_license_application': 'NA',
             'license_application': 'LA',
             'salesman_barman': 'SB',
         }
+        prefix = prefix_map.get(self.source_type, 'XX')  # fallback
 
-        prefix = prefix_map.get(self.source_type)
+        base_prefix = f"{prefix}/{district_code}/{fin_year}"
 
-        if month >= 4:
-            fin_year = f"{year}-{str(year + 1)[2:]}"
-        else:
-            fin_year = f"{year - 1}-{str(year)[2:]}"
-
-        prefixx = f"{prefix}/{district_code}/{fin_year}"
-
-        # Sequential number per prefix + district + year
-        last = License.objects.filter(
-            license_id__startswith=f"{prefixx}/{district_code}/{fin_year}/",
-            source_type=self.source_type
+        # Find last sequence number for this exact prefix
+        last_license = License.objects.filter(
+            license_id__startswith=base_prefix + "/"
         ).order_by('-license_id').first()
 
-        seq = 1
-        if last and '/' in last.license_id:
+        if last_license and '/' in last_license.license_id:
             try:
-                seq = int(last.license_id.split('/')[-1]) + 1
+                seq = int(last_license.license_id.split('/')[-1]) + 1
             except (ValueError, IndexError):
-                pass
+                seq = 1
+        else:
+            seq = 1
 
-        return f"{prefixx}/{district_code}/{fin_year}/{str(seq).zfill(4)}"
+        new_license_id = f"{base_prefix}/{str(seq).zfill(4)}"
+
+        # Final safety: ensure it fits in DB field
+        if len(new_license_id) > 30:
+            raise ValueError(f"Generated license_id '{new_license_id}' exceeds 30 characters")
+
+        return new_license_id

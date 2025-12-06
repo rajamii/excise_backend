@@ -14,6 +14,7 @@ from .permissions import HasStagePermission
 from .services import WorkflowService
 from models.transactional.license_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
+from models.transactional.salesman_barman.models import SalesmanBarmanModel
 
 # Workflow views (from previous response)
 @permission_classes([HasAppPermission('workflows', 'view')])
@@ -186,7 +187,10 @@ def get_next_stages(request, application_id):
         try:
             application = LicenseApplication.objects.get(application_id = application_id)
         except LicenseApplication.DoesNotExist:
-            return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+            try:
+                application = SalesmanBarmanModel.objects.get(application_id = application_id)
+            except LicenseApplication.DoesNotExist:
+                return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
         
     current_stage = application.current_stage
     transitions = WorkflowTransition.objects.filter(workflow=application.workflow, from_stage=current_stage)
@@ -395,6 +399,7 @@ def _get_application_by_id(application_id):
     model_configs = [
         ("license_application", "LicenseApplication"),
         ("new_license_application", "NewLicenseApplication"),
+        ("salesman_barman", "SalesmanBarmanModel"),
     ]
 
     for app_label, model_name in model_configs:

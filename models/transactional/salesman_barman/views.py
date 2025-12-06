@@ -38,11 +38,21 @@ def _create_application(request, workflow_name: str, serializer_cls):
                 {"detail": "Workflow has no initial stage (is_initial=True)."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        district_code = serializer.validated_data['excise_district'].district_code
+        prefix = f"SBM/{district_code}/{SalesmanBarmanModel.generate_fin_year()}"
+        last_app = SalesmanBarmanModel.objects.filter(
+            application_id__startswith=prefix
+        ).select_for_update().order_by('-application_id').first()
 
-        # 2. Persist the application
+        last_number = int(last_app.application_id.split('/')[-1]) if last_app else 0
+        new_number = str(last_number + 1).zfill(4)
+        new_application_id = f"{prefix}/{new_number}"
+
+        
         application = serializer.save(
             workflow=workflow,
             current_stage=initial_stage,
+            application_id=new_application_id,
         )
 
         
@@ -59,11 +69,9 @@ def _create_application(request, workflow_name: str, serializer_cls):
             raise ValidationError("No role configured for the initial stage.")
 
         # 4. Generic transaction log (uses WorkflowTransaction, NOT a local model)
-        WorkflowService.advance_stage(
+        WorkflowService.submit_application(
             application=application,
             user=request.user,
-            target_stage=initial_stage,
-            context={"action": "submit"},
             remarks="Application submitted",
         )
 
@@ -78,7 +86,7 @@ def _create_application(request, workflow_name: str, serializer_cls):
 @parser_classes([MultiPartParser, FormParser, JSONParser])
 @permission_classes([HasStagePermission])
 def create_salesman_barman(request):
-    return _create_application(request, "Salesman/Barman Workflow", SalesmanBarmanSerializer)
+    return _create_application(request, "Salesman Barman", SalesmanBarmanSerializer)
 
 
 
@@ -93,7 +101,7 @@ def list_salesman_barman(request):
     elif role == "licensee":
         applications = SalesmanBarmanModel.objects.filter(
             IsActive=True,
-            current_stage__name__in=["level_1", "awaiting_payment", ...]
+            current_stage__name__in=["level_1", "awaiting_payment", "level_1_objection", "level_2_objection", "level_3_objection", "level_4_objection", "level_5_objection", "approved"]
         )
     else:
         applications = SalesmanBarmanModel.objects.filter(
