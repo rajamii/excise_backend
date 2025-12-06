@@ -67,12 +67,20 @@ class WorkflowService:
             from_stage=application.current_stage,
             to_stage=to_stage
         ).first()
-        if not transition:
-            raise ValidationError(f"Invalid transition {application.current_stage.name} to {to_stage.name}")
 
-        for key, val in (transition.condition or {}).items():
-            if (context or {}).get(key) != val:
-                raise ValidationError(f"Condition failed: {key}={val}")
+        if not transition:
+            raise ValidationError(
+                f"Invalid transition from {application.current_stage.name} "
+                f"to {to_stage.name} in workflow {application.workflow.name}"
+            )
+
+        if transition.condition:
+            for key, expected in transition.condition.items():
+                actual = (context or {}).get(key)
+                if actual != expected:
+                    raise ValidationError(f"Condition failed: {key} must be {expected}")
+
+        return transition
 
     @staticmethod
     @transaction.atomic

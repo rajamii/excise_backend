@@ -1,4 +1,5 @@
 from datetime import timezone
+from django.db import transaction
 from rest_framework.response import Response
 from django.apps import apps
 from django.forms import ValidationError
@@ -231,7 +232,7 @@ def advance_application(request, application_id, stage_id):  # request is here
     except Exception as e:
         return Response({"detail": str(e)}, status=400)
 
-# ---------- REUSABLE: Raise Objection ----------
+# ---------- REUSABLE: Raise Objection (FINAL WORKING VERSION) ----------
 @api_view(['POST'])
 @permission_classes([HasStagePermission])
 def raise_objection(request, application_id):
@@ -239,27 +240,46 @@ def raise_objection(request, application_id):
     if not application:
         return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
 
+    target_stage_id = request.data.get("target_stage_id")
     objections = request.data.get("objections", [])
-    if not objections:
-        return Response({"detail": "objections list is required"}, status=status.HTTP_400_BAD_REQUEST)
+    remarks = request.data.get("remarks", "").strip()
+
+    if not target_stage_id:
+        return Response({"detail": "target_stage_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+    if not objections or not isinstance(objections, list):
+        return Response({"detail": "objections must be a non-empty list"}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        target_stage = application.workflow.stages.get(name__icontains="objection")
+        target_stage = WorkflowStage.objects.get(id=target_stage_id)
     except WorkflowStage.DoesNotExist:
-        return Response({"detail": "No objection stage defined"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Invalid target stage ID"}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Optional: extra safety — ensure the stage belongs to the same workflow
+    if target_stage.workflow != application.workflow:
+        return Response({"detail": "Target stage does not belong to this application workflow"}, status=400)
 
     try:
-        WorkflowService.raise_objection(
-            application=application,
-            user=request.user,
-            target_stage=target_stage,
-            objections=objections,
-            remarks=request.data.get("remarks")
-        )
-    except Exception as e:
-        return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            WorkflowService.raise_objection(
+                application=application,
+                user=request.user,
+                target_stage=target_stage,
+                objections=objections,
+                remarks=remarks or "Objections raised"
+            )
 
-    return _serialize_application(application)
+        return Response({
+            "detail": "Objections raised successfully",
+            "application_id": application.application_id,
+            "current_stage": target_stage.name,
+            "current_stage_id": target_stage.id,
+            "objection_count": len(objections)
+        }, status=status.HTTP_200_OK)
+
+    except ValidationError as e:
+        return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({"detail": f"Server error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # ---------- REUSABLE: Get Objections ----------

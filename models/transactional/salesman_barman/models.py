@@ -54,7 +54,7 @@ class SalesmanBarmanModel(models.Model):
     dateofBirthProof = models.FileField(upload_to=upload_document_path, db_column='dateof_birth_proof')
 
     # --- Soft Delete ---
-    IsActive = models.BooleanField(default=True, db_column='is_active')
+    # IsActive = models.BooleanField(default=True, db_column='is_active')
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
