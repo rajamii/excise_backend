@@ -5,8 +5,10 @@ class EnaRevalidationDetail(models.Model):
     our_ref_no = models.CharField(max_length=50)
     requisition_date = models.DateTimeField()
     grain_ena_number = models.DecimalField(max_digits=18, decimal_places=2)
-    strength_from = models.DecimalField(max_digits=8, decimal_places=2)
-    strength_to = models.DecimalField(max_digits=8, decimal_places=2)
+    # Replaced strength_from/to with strength/bulk_spirit_type
+    bulk_spirit_type = models.CharField(max_length=255, default='', blank=True)
+    strength = models.CharField(max_length=255, default='', blank=True)
+    
     lifted_from = models.CharField(max_length=255)
     via_route = models.CharField(max_length=255)
     total_bl = models.DecimalField(max_digits=18, decimal_places=2)
