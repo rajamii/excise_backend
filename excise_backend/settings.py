@@ -73,6 +73,7 @@ INSTALLED_APPS = [
     'models.transactional',
     'models.transactional.company_registration',
     'models.transactional.license_application',
+    'models.transactional.site_enquiry',
     'models.transactional.new_license_application',
     'models.transactional.salesman_barman',
     'models.transactional.logs',

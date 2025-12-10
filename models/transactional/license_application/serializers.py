@@ -1,11 +1,10 @@
 from rest_framework import serializers
-from .models import LicenseApplication, Transaction, LocationFee, Objection
+from .models import LicenseApplication, Transaction, Objection
 from auth.user.models import CustomUser
 from auth.roles.models import Role
 from auth.workflow.serializers import WorkflowTransactionSerializer, WorkflowObjectionSerializer
 from . import helpers
-from .models import SiteEnquiryReport
-from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseType
+from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseType, LocationFee
 from utils.fields import CodeRelatedField
 
 class UserShortSerializer(serializers.ModelSerializer):
@@ -140,9 +139,3 @@ class LocationFeeSerializer(serializers.ModelSerializer):
     class Meta:
         model = LocationFee
         fields = ['location_name', 'fee_amount']
-
-class SiteEnquiryReportSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = SiteEnquiryReport
-        fields = '__all__'
-        read_only_fields = ['application']

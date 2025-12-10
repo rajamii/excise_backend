@@ -6,7 +6,6 @@ from .views import (
     list_license_applications,
     license_application_detail,
     advance_license_application,
-    level2_site_enquiry,
     dashboard_counts,
     application_group,
     get_location_fees,
@@ -15,7 +14,6 @@ from .views import (
     resolve_objections,
     print_license_view,
     delete_license_application,
-    site_enquiry_detail,
     pay_license_fee,
     get_next_stages,
 )
@@ -53,7 +51,7 @@ urlpatterns = [
     path('<everything:application_id>/advance/<int:stage_id>/', advance_license_application, name='advance-license-application'),
     
     # Level 2 site enquiry, allowing both GET and POST requests
-    path('<everything:application_id>/site-enquiry/', level2_site_enquiry, name='level2-site-enquiry'),
+    # path('<everything:application_id>/site-enquiry/', level2_site_enquiry, name='level2-site-enquiry'),
 
     path('location-fee/', get_location_fees, name='get-location-fees'),
 
@@ -67,7 +65,7 @@ urlpatterns = [
 
     path('<everything:application_id>/delete/', delete_license_application, name='delete-application'),
 
-    path('<everything:application_id>/site-detail/', site_enquiry_detail, name='site-enquiry-detail'),
+    # path('<everything:application_id>/site-detail/', site_enquiry_detail, name='site-enquiry-detail'),
 
     path('<everything:application_id>/pay-license-fee/', pay_license_fee, name="pay-licensee-fee"),
 ]

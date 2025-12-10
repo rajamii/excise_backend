@@ -5,9 +5,9 @@ from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework.response import Response
 from django.core.exceptions import ValidationError, PermissionDenied
 from auth.roles.permissions import HasAppPermission
-from auth.roles.decorators import has_app_permission
-from .models import LicenseApplication, SiteEnquiryReport, LocationFee
-from .serializers import LicenseApplicationSerializer, SiteEnquiryReportSerializer, LocationFeeSerializer, ResolveObjectionSerializer
+from .models import LicenseApplication
+from models.masters.core.models import LocationFee
+from .serializers import LicenseApplicationSerializer, LocationFeeSerializer, ResolveObjectionSerializer
 from auth.workflow.models import Objection
 from auth.workflow.serializers import WorkflowObjectionSerializer
 from django.utils import timezone
@@ -262,86 +262,6 @@ def resolve_objections(request, application_id):
         return Response({'detail': str(e)}, status=status.HTTP_403_FORBIDDEN)
     except Exception as e:
         return Response({'detail': f"Error resolving objection: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-'''
-            # Log transaction
-            LicenseApplicationTransaction.objects.create(
-                license_application=application,
-                performed_by=request.user,
-                forwarded_by=request.user,
-                forwarded_to=StagePermission.objects.filter(
-                    stage=target_stage,
-                    can_process=True
-                ).first().role,
-                stage=target_stage,
-                remarks=request.data.get('remarks', f"Objection resolved, advanced to {target_stage.name}")
-            )
-
-    if serializer.is_valid():
-        serializer.save()
-        objections = Objection.objects.filter(application=application, is_resolved=False)
-        for obj in objections:
-            obj.is_resolved = True
-            obj.resolved_on = timezone.now()
-            obj.save()
-
-        target_stage_name = application.current_stage.name.replace("_objection", "")
-        target_stage = WorkflowStage.objects.filter(name=target_stage_name, workflow = application.workflow).first()
-        if not target_stage:
-            return Response({"detail":f"Target stage {target_stage_name} not found."}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            WorkflowService.resolve_objection(
-                application=application,
-                user=request.user,
-                target_stage=target_stage,
-                context_data={"remarks": request.data.get("remarks", "")}
-            )
-            return Response({"remarks": "Objections reaolved successfully."}, status=status.HTTP_200_OK)
-        except ValidationError as e:
-            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-'''
-
-
-@permission_classes([HasAppPermission('license_application', 'update'), HasStagePermission])
-@api_view(['GET', 'POST'])
-@parser_classes([MultiPartParser, FormParser])
-def level2_site_enquiry(request, application_id):
-    application = get_object_or_404(LicenseApplication, pk=application_id)
-    if request.method == 'GET':
-        report = SiteEnquiryReport.objects.filter(application=application).first()
-        serializer = SiteEnquiryReportSerializer(report) if report else None
-        return Response(serializer.data if serializer else {"detail": "No site enquiry report found."})
-    
-    if request.user.role.name != "level_2":
-        return Response({"detail": "Only level_2 can submit site enquiry."}, status=status.HTTP_403_FORBIDDEN)
-    
-    serializer = SiteEnquiryReportSerializer(data=request.data)
-    if serializer.is_valid():
-        report= serializer.save(application=application)
-        target_stage = WorkflowStage.objects.filter(workflow = application.workflow, name = 'awaiting_payment').first()
-        if target_stage:
-            try:
-                WorkflowService.advance_stage(
-                    application=application,
-                    user=request.user,
-                    target_stage=target_stage,
-                    context_data={"site_enquiry_done": True},
-                    skip_permission_check=False
-                )
-            except ValidationError as e:
-                 return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        return Response(SiteEnquiryReportSerializer(report).data, status=status.HTTP_201_CREATED)
-   
-    
-    
-@permission_classes([HasAppPermission('license_application', 'view')])
-@api_view(['GET'])
-def site_enquiry_detail(request, application_id):
-    application = get_object_or_404(SiteEnquiryReport, application_id=application_id)
-    serializer = SiteEnquiryReportSerializer(application)
-    return Response(serializer.data)
 
 
 @permission_classes([HasAppPermission('license_application', 'update')])

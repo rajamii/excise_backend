@@ -120,12 +120,12 @@ class NewLicenseApplication(models.Model):
         helpers.validate_mobile_number(self.mobile_number)
         if self.company_phone_number is not None:
             helpers.validate_mobile_number(self.company_phone_number)
-        helpers.validate_mobile_number(self.member_mobile_number)
+        
 
         helpers.validate_email_field(self.email)
         if self.company_email:
             helpers.validate_email_field(self.company_email)
-        helpers.validate_email_field(self.member_email)
+        
 
         if self.company_pan:
             helpers.validate_pan_number(self.company_pan)
@@ -133,7 +133,7 @@ class NewLicenseApplication(models.Model):
         if self.company_cin:
             helpers.validate_cin_number(self.company_cin)
 
-        helpers.validate_status(self.status)
+        
         helpers.validate_gender(self.gender)
         helpers.validate_pin_code(self.pin_code)
 
