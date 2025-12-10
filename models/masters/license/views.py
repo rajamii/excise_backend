@@ -1,10 +1,11 @@
 from django.shortcuts import get_object_or_404
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, parser_classes
+from rest_framework.parsers import JSONParser
 from rest_framework.response import Response
 from rest_framework import status
 from auth.roles.permissions import HasAppPermission
 from .models import License
-from .serializers import LicenseSerializer
+from .serializers import LicenseSerializer, LicenseDetailSerializer
 
 @permission_classes([HasAppPermission('license', 'view')])
 @api_view(['GET'])
@@ -17,21 +18,46 @@ def list_licenses(request):
     return Response(serializer.data, status=status.HTTP_200_OK)
 
 @permission_classes([HasAppPermission('license', 'view')])
+@api_view(['POST'])
+@parser_classes([JSONParser])
+def print_license_view(request, application_id):
+    license = get_object_or_404(License, application_id=application_id)
+
+    if not license.is_approved:
+        return Response({"error": "License is not approved yet."}, status=403)
+
+    can_print, fee = license.can_print_license()
+
+    if not can_print:
+        return Response({
+            "error": "Print limit exceeded. Please pay ₹500 to continue printing.",
+            "fee_required": fee
+        }, status=403)
+
+    if fee > 0 and not license.is_print_fee_paid:
+        return Response({"error": "₹500 fee not paid yet."}, status=403)
+
+    license.record_license_print(fee_paid=(fee > 0))
+
+    return Response({
+        "success": "License printed.",
+        "print_count": license.print_count
+    })
+
+
+@permission_classes([HasAppPermission('license', 'view')])
 @api_view(['GET'])
 def license_detail(request, license_id):
-    """
-    Retrieve details of a specific license by its license_id.
-    """
+   
     license = get_object_or_404(License, license_id=license_id)
-    serializer = LicenseSerializer(license)
+    serializer = LicenseDetailSerializer(license)
     return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 @permission_classes([HasAppPermission('license', 'view')])
 @api_view(['GET'])
 def active_licensees(request):
-    """
-    Return all active licensees (used by frontend for filtering).
-    """
+    
     licensees = License.objects.filter(is_active=True).select_related(
         'excise_district', 'license_type'
     ).values(

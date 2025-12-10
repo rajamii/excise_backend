@@ -13,12 +13,6 @@ class License(models.Model):
 
     license_id = models.CharField(max_length=50, primary_key=True, db_index=True, unique=True)
 
-    # application = models.OneToOneField(
-    #     LicenseApplication,
-    #     on_delete=models.CASCADE,
-    #     related_name='issued_license'  # Changed from 'license' to 'issued_license'
-    # )
-
     # Generic Relation
     source_content_type = models.ForeignKey(ContentType, on_delete=models.PROTECT)
     source_object_id = models.CharField(max_length=50)
@@ -41,6 +35,12 @@ class License(models.Model):
 
     issue_date = models.DateField(default=now)
     valid_up_to = models.DateField()
+
+    print_count = models.PositiveIntegerField(default=0)
+    is_print_fee_paid = models.BooleanField(default=False)
+    printed_on = models.DateTimeField(null=True, blank=True)
+    print_fee_paid_on = models.DateTimeField(null=True, blank=True)
+
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -56,6 +56,20 @@ class License(models.Model):
 
     def __str__(self):
         return f"{self.license_id} — {self.get_source_type_display()}"
+    
+    def can_print_license(self):
+        if self.print_count < 5:
+            return True, 0  # Allowed to print, no fee required
+        elif self.is_print_fee_paid:
+            return True, 500  # Allowed to print, fee has been paid
+        else:
+            return False, 500  # Not allowed, fee required
+
+    def record_license_print(self, fee_paid=False):
+        self.print_count += 1
+        if self.print_count > 5 and fee_paid:
+            self.is_print_fee_paid = True
+        self.save()
 
     def save(self, *args, **kwargs):
         if not self.license_id:

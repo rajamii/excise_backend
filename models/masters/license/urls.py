@@ -1,5 +1,17 @@
-from django.urls import path, re_path
+from django.urls import path, register_converter
 from .views import list_licenses, license_detail, active_licensees
+
+class EverythingConverter:
+    regex = '.+'
+
+    def to_python(self, value):
+        return value
+
+    def to_url(self, value):
+        return value
+    
+register_converter(EverythingConverter, 'everything')
+
 
 urlpatterns = [
     # Endpoint to list all licenses (GET)
@@ -7,6 +19,5 @@ urlpatterns = [
 
     path('active/', active_licensees, name='active-licensees'),
     
-    # Endpoint to retrieve details of a specific license by its license_id (GET)
-    re_path(r'detail/(?P<license_id>.+)/$', license_detail, name='license-details'),
+    path('detail/<everything:license_id>/', license_detail, name='license-details'),
 ]

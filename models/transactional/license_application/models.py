@@ -16,8 +16,8 @@ class LicenseApplication(models.Model):
     current_stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name='applications')
 
     is_approved = models.BooleanField(default=False)
-    print_count = models.PositiveIntegerField(default=0)
-    is_print_fee_paid = models.BooleanField(default=False)
+    # print_count = models.PositiveIntegerField(default=0)
+    # is_print_fee_paid = models.BooleanField(default=False)
 
     # Select License
     excise_district = models.ForeignKey(District, on_delete=models.PROTECT, related_name='license_excise_districts')
