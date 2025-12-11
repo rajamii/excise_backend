@@ -6,9 +6,9 @@ from django.forms import ValidationError
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.exceptions import PermissionDenied
 from importlib import import_module
-from .models import Workflow, WorkflowStage, WorkflowTransition, StagePermission, Objection
+from django.contrib.contenttypes.models import ContentType
+from .models import Workflow, WorkflowStage, WorkflowTransition, StagePermission, Objection, Transaction
 from .serializers import WorkflowSerializer, WorkflowStageSerializer, WorkflowTransitionSerializer, WorkflowObjectionSerializer, StagePermissionSerializer
 from auth.roles.permissions import HasAppPermission
 from .permissions import HasStagePermission
@@ -16,6 +16,7 @@ from .services import WorkflowService
 from models.transactional.license_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
 from models.transactional.salesman_barman.models import SalesmanBarmanModel
+import logging
 
 # Workflow views (from previous response)
 @permission_classes([HasAppPermission('workflows', 'view')])
@@ -442,11 +443,6 @@ def _get_model(app_label, model_name):
         return None
 
 
-# auth/workflow/views.py
-
-from django.utils import timezone
-from importlib import import_module
-from rest_framework.response import Response
 
 def _serialize_application(application, requesting_user=None):
     """
@@ -471,3 +467,78 @@ def _serialize_application(application, requesting_user=None):
             "advanced_at": timezone.now().isoformat(),
             "note": "Full details unavailable — app-specific serializer not found."
         })
+    
+logger = logging.getLogger(__name__)
+
+@api_view(['POST'])
+def pay_license_fee(request, application_id):
+   
+    if not request.user.is_authenticated:
+        return Response({"error": "Authentication required"}, status=status.HTTP_401_UNAUTHORIZED)
+
+    if getattr(request.user, 'role', None) and request.user.role.name != 'licensee':
+        return Response(
+            {"error": "Only licensees can pay the license fee."},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+
+    try:
+        application = _get_application_by_id(application_id)
+    except Exception as e:
+        logger.error(f"Failed to resolve application {application_id}: {e}")
+        return Response(
+            {"error": "Application not found or invalid ID"},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    if not application:
+        return Response({"error": "Application not found"}, status.HTTP_404_NOT_FOUND)
+
+    # Must be in payment_pending stage
+    if not hasattr(application, 'current_stage') or application.current_stage.name != 'payment_pending':
+        return Response({
+            "error": "Payment not allowed",
+            "current_stage": getattr(application.current_stage, 'name', 'unknown'),
+            "required_stage": "payment_pending"
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # Verify user is the original applicant
+    first_transaction = Transaction.objects.filter(
+        content_type=ContentType.objects.get_for_model(application),
+        object_id=str(application.pk)
+    ).order_by('timestamp').first()
+
+    if not first_transaction or first_transaction.performed_by != request.user:
+        return Response(
+            {"error": "You are not the applicant for this license."},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    # Get the 'approved' stage
+    try:
+        approved_stage = WorkflowStage.objects.get(
+            workflow=application.workflow,
+            name='approved'
+        )
+    except WorkflowStage.DoesNotExist:
+        return Response(
+            {"error": "Approved stage not configured."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+    # Advance to approved → triggers License creation via signal
+    with transaction.atomic():
+        WorkflowService.advance_stage(
+            application=application,
+            user=request.user,
+            target_stage=approved_stage,
+            remarks="License fee paid by applicant. License issued."
+        )
+
+    return Response({
+        "success": True,
+        "message": "Payment successful. License has been issued.",
+        "application_id": application_id,
+        "stage": "approved"
+    }, status=status.HTTP_200_OK)

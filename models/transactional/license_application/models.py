@@ -94,20 +94,6 @@ class LicenseApplication(models.Model):
         related_query_name='license_application'
     )
 
-    def can_print_license(self):
-        if self.print_count < 5:
-            return True, 0  # Allowed to print, no fee required
-        elif self.is_print_fee_paid:
-            return True, 500  # Allowed to print, fee has been paid
-        else:
-            return False, 500  # Not allowed, fee required
-
-    def record_license_print(self, fee_paid=False):
-        self.print_count += 1
-        if self.print_count > 5 and fee_paid:
-            self.is_print_fee_paid = True
-        self.save()
-
     def clean(self):
         if self.license_type:
             helpers.validate_license_type(self.license_type)
