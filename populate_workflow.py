@@ -6,7 +6,7 @@ django.setup()
 
 from models.masters.supply_chain.status_master.models import StatusMaster, WorkflowRule
 
-def populate_rules():
+def populate_requisition_rules():
     """
     Populate workflow rules for ENA Requisition Status Management.
     
@@ -34,7 +34,9 @@ def populate_rules():
         ('RQ_08', 'REJECT', 'RQ_05', 'commissioner'),
     ]
 
-    print("Populating Workflow Rules...")
+    print("\n" + "="*80)
+    print("POPULATING REQUISITION WORKFLOW RULES")
+    print("="*80 + "\n")
     
     for current_code, action, next_code, role in rules:
         try:
@@ -56,8 +58,78 @@ def populate_rules():
         except StatusMaster.DoesNotExist as e:
             print(f"✗ Error: {e}")
     
-    print(f"\nTotal rules: {WorkflowRule.objects.count()}")
+    requisition_count = WorkflowRule.objects.filter(current_status__status_code__startswith='RQ').count()
+    print(f"\nTotal requisition rules: {requisition_count}")
+
+
+def populate_revalidation_rules():
+    """
+    Populate workflow rules for ENA Revalidation Status Management.
+    
+    Workflow:
+    1. Licensee submits -> RevalidationPending
+    2. Permit Section approves -> ForwardedRevalidationToCommissioner
+    3. Commissioner approves -> ApprovedRevalidation
+    4. Commissioner rejects -> RejectedRevalidation
+    5. Permit Section rejects -> RejectedRevalidation
+    """
+    print("Cleaning up erroneous rules for terminal states (RV_01, RV_02)...")
+    terminate_statuses = ['RV_01', 'RV_02']
+    WorkflowRule.objects.filter(current_status__status_code__in=terminate_statuses).delete()
+
+    print("\n" + "="*80)
+    print("POPULATING REVALIDATION WORKFLOW RULES")
+    print("="*80 + "\n")
+    
+    # Format: (Current Status Code, Action, Next Status Code, Allowed Role)
+    rules = [
+        # Approval Flow
+        ('RV_00', 'APPROVE', 'RV_17', 'permit-section'), # Pending -> ForwardedToCommissioner
+        ('RV_17', 'APPROVE', 'RV_01', 'commissioner'),   # Forwarded -> Approved
+
+        # Rejection Paths
+        ('RV_00', 'REJECT', 'RV_02', 'permit-section'),  # Pending -> Rejected (assuming RV_02 is generic reject)
+        ('RV_17', 'REJECT', 'RV_02', 'commissioner'),    # Forwarded -> Rejected
+
+        # Invalid/Expired Handling (RV_18)
+        ('RV_18', 'APPROVE', 'RV_17', 'permit-section'), # Invalid -> ForwardedToCommissioner
+        ('RV_18', 'REJECT', 'RV_02', 'permit-section'),  # Invalid -> Rejected
+    ]
+
+    print("\n" + "="*80)
+    print("POPULATING REVALIDATION WORKFLOW RULES")
+    print("="*80 + "\n")
+    
+    for current_code, action, next_code, role in rules:
+        try:
+            current_status = StatusMaster.objects.get(status_code=current_code)
+            next_status = StatusMaster.objects.get(status_code=next_code)
+            
+            rule, created = WorkflowRule.objects.update_or_create(
+                current_status=current_status,
+                action=action,
+                allowed_role=role,
+                defaults={'next_status': next_status}
+            )
+            
+            if created:
+                print(f"✓ Created: {current_status.status_name} + {action} ({role}) -> {next_status.status_name}")
+            else:
+                print(f"↻ Updated: {current_status.status_name} + {action} ({role}) -> {next_status.status_name}")
+                
+        except StatusMaster.DoesNotExist as e:
+            print(f"✗ Error: {e}")
+    
+    revalidation_count = WorkflowRule.objects.filter(current_status__status_code__startswith='RV').count()
+    print(f"\nTotal revalidation rules: {revalidation_count}")
 
 
 if __name__ == '__main__':
-    populate_rules()
+    populate_requisition_rules()
+    populate_revalidation_rules()
+    
+    print("\n" + "="*80)
+    print("WORKFLOW RULES POPULATION COMPLETE")
+    print("="*80)
+    total_count = WorkflowRule.objects.count()
+    print(f"\nTotal workflow rules in database: {total_count}\n")

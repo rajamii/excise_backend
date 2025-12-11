@@ -21,6 +21,7 @@ class EnaRevalidationDetail(models.Model):
     state = models.CharField(max_length=100)
     revalidation_date = models.DateTimeField()
     status = models.CharField(max_length=50)
+    status_code = models.CharField(max_length=50, null=True, blank=True) # Added for precise status lookup
     revalidation_br_amount = models.DecimalField(max_digits=18, decimal_places=2)
     licensee_id = models.CharField(max_length=50)
     distillery_name = models.CharField(max_length=255)
