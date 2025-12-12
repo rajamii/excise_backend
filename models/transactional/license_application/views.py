@@ -16,19 +16,8 @@ from auth.workflow.models import Workflow, StagePermission, WorkflowStage, Workf
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
 
-#################################################
-#           License Application                 #
-#################################################
-
 def _create_application(request, workflow_name: str, serializer_cls):
-    """
-    1. Load workflow + **initial** stage (the one with is_initial=True)
-    2. Save the application (serializer must accept workflow & current_stage)
-    3. Determine the role that must receive the first task
-    4. Log the **generic** WorkflowTransaction
-    5. Return the freshly-created object (fully populated)
     
-    """
     serializer = serializer_cls(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -107,7 +96,7 @@ def license_application_detail(request, pk):
     serializer = LicenseApplicationSerializer(application)
     return Response(serializer.data)
 
-
+'''
 @permission_classes([HasAppPermission('license_application', 'delete'), HasStagePermission])
 @api_view(['DELETE'])
 def delete_license_application(request, application_id):
@@ -263,6 +252,7 @@ def resolve_objections(request, application_id):
     except Exception as e:
         return Response({'detail': f"Error resolving objection: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+'''
 
 @permission_classes([HasAppPermission('license_application', 'update')])
 @api_view(['POST'])
@@ -498,6 +488,7 @@ def application_group(request):
 
     return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
 
+'''
 @permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
 def get_next_stages(request, application_id):
@@ -517,3 +508,4 @@ def get_next_stages(request, application_id):
     } for stage in allowed_stages]
 
     return Response(data)
+'''

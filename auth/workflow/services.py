@@ -1,4 +1,4 @@
-from datetime import timezone
+from django.utils import timezone
 from django.db import transaction
 from django.core.exceptions import ValidationError, PermissionDenied
 from django.contrib.contenttypes.models import ContentType
@@ -9,6 +9,13 @@ from .models import (
     Transaction, Objection
 )
 
+# Mapping: (app_label, model_name) -> Serializer class
+SERIALIZER_MAPPING = {
+    # (app_label, model_name_lower): 'full.import.path.to.Serializer'
+    ('license_application', 'licenseapplication'): 'models.transactional.license_application.serializers.LicenseApplicationSerializer',
+    ('new_license_application', 'newlicenseapplication'): 'models.transactional.new_license_application.serializers.NewLicenseApplicationSerializer',
+    ('salesman_barman', 'salesmanbarmanmodel'): 'models.transactional.salesman_barman.serializers.SalesmanBarmanSerializer',
+}
 
 class WorkflowService:
 
@@ -189,44 +196,97 @@ class WorkflowService:
 
     @staticmethod
     @transaction.atomic
-    def resolve_objections(application, user, objection_ids=None):
+    def resolve_objections(application, user, objection_ids=None, updated_fields=None, remarks=None):
+
         if user.role.name != "licensee":
             raise PermissionDenied("Only licensee can resolve objections.")
 
-        # Mark specific or all objections as resolved
-        objections_qs = application.objections.filter(is_resolved=False)
-        if objection_ids:
-            objections_qs = objections_qs.filter(id__in=objection_ids)
+        updated_fields = updated_fields or {}
+        remarks = remarks or "Objections resolved and application returned to previous stage"
 
-        if objections_qs.exists():
-            objections_qs.update(
-                is_resolved=True,
-                resolved_on=timezone.now(),
-                resolved_by=user
+        # --- 1. Early exit if no unresolved objections ---
+        unresolved_qs = application.objections.filter(is_resolved=False)
+        if objection_ids:
+            unresolved_qs = unresolved_qs.filter(id__in=objection_ids)
+
+        if not unresolved_qs.exists():
+            raise ValidationError("No unresolved objections found. Nothing to resolve.")
+
+        # --- 2. Strict validation: all objected fields must be updated ---
+        required_fields = {obj.field_name for obj in unresolved_qs}
+        updated_keys = set(updated_fields.keys())
+        missing = required_fields - updated_keys
+        if missing:
+            raise ValidationError(
+                f"Please provide updates for the following objected fields: {', '.join(missing)}"
             )
 
-        # Find the stage we came from (before entering objection)
-        original_stage = application.transactions.filter(
+        # --- 3. Apply field updates using the correct app-specific serializer ---
+        if updated_fields:
+            app_label = application._meta.app_label
+            model_name = application._meta.model_name.lower()
+
+            key = (app_label, model_name)
+            serializer_path = SERIALIZER_MAPPING.get(key)
+
+            if not serializer_path:
+                raise ValidationError(f"No serializer configured for {app_label}.{model_name}")
+
+            try:
+                module_path, serializer_name = serializer_path.rsplit('.', 1)
+                module = __import__(module_path, fromlist=[serializer_name])
+                AppSerializer = getattr(module, serializer_name)
+            except Exception as e:
+                raise ValidationError(f"Failed to load serializer: {str(e)}")
+
+            serializer = AppSerializer(application, data=updated_fields, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+
+        # --- 4. Mark objections as resolved ---
+        qs = application.objections.filter(is_resolved=False)
+        if objection_ids:
+            qs = qs.filter(id__in=objection_ids)
+        qs.update(is_resolved=True, resolved_on=timezone.now())
+
+        # --- 5. Find the transaction that moved INTO the current objection stage ---
+        entry_to_objection_txn = application.transactions.filter(
+            stage=application.current_stage
+        ).order_by('-timestamp').first()
+
+        if not entry_to_objection_txn:
+            raise ValidationError("Cannot find the transaction that entered the objection stage")
+
+        # The officer who raised the objection (performed_by in the entry txn)
+        forward_to = (
+            entry_to_objection_txn.performed_by.role
+            if entry_to_objection_txn.performed_by and entry_to_objection_txn.performed_by.role
+            else None
+        )
+
+        # --- 6. Determine the original non-objection stage to return to ---
+        original_txn = application.transactions.filter(
             stage__name__contains='_objection'
         ).exclude(stage=application.current_stage).order_by('-id').first()
 
-        if not original_stage:
-            # Fallback: last non-objection stage
-            original_stage = application.transactions.exclude(stage__name__contains='_objection').order_by('-id').first()
+        if not original_txn:
+            original_txn = application.transactions.exclude(
+                stage__name__contains='_objection'
+            ).order_by('-id').first()
 
-        if not original_stage:
+        if not original_txn:
             raise ValidationError("Cannot determine original stage")
 
-        application.current_stage = original_stage.stage
+        application.current_stage = original_txn.stage
         application.save(update_fields=['current_stage'])
 
-        # Log the return
+        # --- 7. Log the return: forward back to the officer ---
         Transaction.objects.create(
             content_type=ContentType.objects.get_for_model(application),
             object_id=str(application.pk),
             performed_by=user,
             forwarded_by=user,
-            forwarded_to=StagePermission.objects.filter(stage=original_stage.stage, can_process=True).first().role,
-            stage=original_stage.stage,
-            remarks="Objections resolved and application returned to previous stage"
+            forwarded_to=forward_to,
+            stage=original_txn.stage,
+            remarks=remarks
         )

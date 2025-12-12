@@ -15,14 +15,7 @@ from .models import SalesmanBarmanModel
 from .serializers import SalesmanBarmanSerializer
 
 def _create_application(request, workflow_name: str, serializer_cls):
-    """
-    1. Load workflow + **initial** stage (the one with is_initial=True)
-    2. Save the application (serializer must accept workflow & current_stage)
-    3. Determine the role that must receive the first task
-    4. Log the **generic** WorkflowTransaction
-    5. Return the freshly-created object (fully populated)
     
-    """
     serializer = serializer_cls(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -90,22 +83,19 @@ def create_salesman_barman(request):
 
 
 
-@permission_classes([HasAppPermission('salesman_barman', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
 def list_salesman_barman(request):
     role = request.user.role.name if request.user.role else None
 
-    valid_admin_roles = ["single_window", "site_admin"]
-    if role in valid_admin_roles:
-        applications = SalesmanBarmanModel.objects.filter(IsActive=True)
+    if role in ["single_window","site_admin"]:
+        applications = SalesmanBarmanModel.objects.all()
     elif role == "licensee":
         applications = SalesmanBarmanModel.objects.filter(
-            IsActive=True,
-            current_stage__name__in=["level_1", "awaiting_payment", "level_1_objection", "level_2_objection", "level_3_objection", "level_4_objection", "level_5_objection", "approved"]
+            current_stage__name__in=[ "level_1", "awaiting_payment", "level_1_objection", "level_2_objection", "level_3_objection", "level_4_objection", "level_5_objection", "approved"]
         )
     else:
         applications = SalesmanBarmanModel.objects.filter(
-            IsActive=True,
             current_stage__stagepermission__role=request.user.role,
             current_stage__stagepermission__can_process=True
         ).distinct()
@@ -116,12 +106,12 @@ def list_salesman_barman(request):
 
 @api_view(['GET'])
 @permission_classes([HasAppPermission('salesman_barman', 'view'), HasStagePermission])
-def detail_salesman_barman(request, application_id):
+def salesman_barman_detail(request, application_id):
     app = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
     serializer = SalesmanBarmanSerializer(app)
     return Response(serializer.data)
 
-
+'''
 @permission_classes([HasAppPermission('salesman_barman', 'update'), HasStagePermission])
 @api_view(['POST'])
 def advance_application(request, application_id, stage_id):
@@ -173,30 +163,165 @@ def get_next_stages(request, application_id):
     } for stage in allowed_stages]
     
     return Response(data)
+'''
 
-# salesman_barman/views.py (add these views)
+# Dashboard Counts
+@permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
-@permission_classes([HasAppPermission('salesman_barman', 'view')])
 def dashboard_counts(request):
-    qs = SalesmanBarmanModel.objects.filter(IsActive=True)
-    data = {
-        'applied': qs.filter(current_stage__name='level_1').count(),  # Adjust as needed
-        'pending': qs.filter(current_stage__name__in=['level_1', 'level_2', 'level_3', 'level_4', 'level_5']).count(),
-        'approved': qs.filter(is_approved=True).count(),
-        'rejected': qs.filter(current_stage__name__startswith='rejected').count(),
-    }
-    return Response(data)
+    role = request.user.role.name if request.user.role else None
+    counts = {}
 
+    if role in ['level_1', 'level_2', 'level_3', 'level_4', 'level_5']:
+        stage = WorkflowStage.objects.get(name=role, workflow__name="License Approval")
+        counts = {
+            "pending": SalesmanBarmanModel.objects.filter(current_stage=stage).count(),
+            "approved": SalesmanBarmanModel.objects.filter(
+                current_stage__name__in=[
+                    f"level_{int(role.split('_')[1]) + 1}", "awaiting_payment", "approved"
+                ]
+            ).count(),
+            "rejected": SalesmanBarmanModel.objects.filter(
+                current_stage__name=f"rejected_by_{role}"
+            ).count() if WorkflowStage.objects.filter(name=f"rejected_by_{role}").exists() else 0,
+        }
+
+    elif role == 'licensee':
+        counts = {
+            "applied": SalesmanBarmanModel.objects.filter(
+                current_stage__name__in=['level_1', 'level_2', 'level_3', 'level_4', 'level_5']).count(),
+            "pending": SalesmanBarmanModel.objects.filter(
+                current_stage__name__in=[
+                    'level_1_objection',
+                    'level_2_objection',
+                    'level_3_objection',
+                    'level_4_objection',
+                    'level_5_objection',
+                    'awaiting_payment'
+                ]
+            ).count(),
+            "approved": SalesmanBarmanModel.objects.filter(
+                current_stage__name='approved', is_approved=True
+            ).count(),
+            "rejected": SalesmanBarmanModel.objects.filter(
+                current_stage__name__in=[
+                    'rejected_by_level_1',
+                    'rejected_by_level_2',
+                    'rejected_by_level_3',
+                    'rejected_by_level_4',
+                    'rejected_by_level_5',
+                    'rejected'
+                ]
+            ).count()
+        }
+
+    elif role in ['site_admin', 'single_window']:
+        counts = {
+            "applied": SalesmanBarmanModel.objects.filter(current_stage__name__in=[
+                'applicant_applied', 'level_1_objection',
+                'level_2_objection', 'level_3_objection',
+                'level_4_objection', 'level_5_objection',
+                'awaiting_payment'
+                ]).count(),
+            "pending": SalesmanBarmanModel.objects.filter(current_stage__name__in=[
+                'level_1','level_2','level_3','level_4','level_5',
+                ]).count(),
+            "approved": SalesmanBarmanModel.objects.filter(
+                current_stage__name='approved', is_approved=True
+            ).count(),
+            "rejected": SalesmanBarmanModel.objects.filter(
+                current_stage__name__in=[
+                    'rejected_by_level_1',
+                    'rejected_by_level_2',
+                    'rejected_by_level_3',
+                    'rejected_by_level_4',
+                    'rejected_by_level_5',
+                    'rejected',
+                ]
+            ).count()
+        }
+
+    else:
+        return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response(counts)
+
+@permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
-@permission_classes([HasAppPermission('salesman_barman', 'view')])
-def applications_by_status(request):
-    qs = SalesmanBarmanModel.objects.filter(IsActive=True)
-    # Filter by role similar to list_sb_applications
-    # ...
-    data = {
-        'applied': SalesmanBarmanSerializer(qs.filter(current_stage__name='level_1'), many=True).data,
-        'pending': SalesmanBarmanSerializer(qs.filter(current_stage__name__in=['level_1', 'level_2', 'level_3', 'level_4', 'level_5']), many=True).data,
-        'approved': SalesmanBarmanSerializer(qs.filter(is_approved=True), many=True).data,
-        'rejected': SalesmanBarmanSerializer(qs.filter(current_stage__name__startswith='rejected'), many=True).data,
+@parser_classes([JSONParser])
+def application_group(request):
+    role = request.user.role.name if request.user.role else None
+
+    level_map = {
+        'level_1': {
+            "pending": ['level_1', 'level_1_objection'],
+            "approved": ['level_2'],
+            "rejected": ['rejected_by_level_1'],
+        },
+        'level_2': {
+            "pending": ['level_2', 'level_2_objection'],
+            "approved": ['awaiting_payment', 'level_3'],
+            "rejected": ['rejected_by_level_2'],
+        },
+        'level_3': {
+            "pending": ['level_3', 'level_3_objection'],
+            "approved": ['level_4'],
+            "rejected": ['rejected_by_level_3'],
+        },
+        'level_4': {
+            "pending": ['level_4', 'level_4_objection'],
+            "approved": ['level_5'],
+            "rejected": ['rejected_by_level_4'],
+        },
+        'level_5': {
+            "pending": ['level_5', 'level_5_objection'],
+            "approved": ['approved'],
+            "rejected": ['rejected_by_level_5'],
+        }
     }
-    return Response(data)
+
+    if role in level_map:
+        result = {}
+        config = level_map[role]
+        for key, stages in config.items():
+            queryset = SalesmanBarmanModel.objects.filter(current_stage__name__in=stages)
+            if key == 'rejected':
+                queryset = queryset.filter(is_approved=False)
+            result[key] = SalesmanBarmanSerializer(queryset, many=True).data
+        return Response(result)
+
+    elif role == 'licensee':
+        result = {
+            "applied": SalesmanBarmanSerializer(
+                SalesmanBarmanModel.objects.filter(current_stage__name__in=[
+                    'level_1', 'level_2', 'level_3', 'level_4', 'level_5'
+                    ]),
+                many=True
+            ).data,
+            "pending": SalesmanBarmanSerializer(
+                SalesmanBarmanModel.objects.filter(current_stage__name__in=[
+                    'level_1_objection',
+                    'level_2_objection',
+                    'level_3_objection',
+                    'level_4_objection',
+                    'level_5_objection',
+                    'awaiting_payment'
+                ]),
+                many=True
+            ).data,
+            "approved": SalesmanBarmanSerializer(
+                SalesmanBarmanModel.objects.filter(current_stage__name='approved'),
+                many=True
+            ).data,
+            "rejected": SalesmanBarmanSerializer(
+                SalesmanBarmanModel.objects.filter(current_stage__name__in=[
+                    'rejected_by_level_1', 'rejected_by_level_2',
+                    'rejected_by_level_3', 'rejected_by_level_4',
+                    'rejected_by_level_5', 'rejected'
+                ]),
+                many=True
+            ).data
+        }
+        return Response(result)
+
+    return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)

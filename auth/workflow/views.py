@@ -1,6 +1,7 @@
-from datetime import timezone
+from django.utils import timezone
 from django.db import transaction
 from rest_framework.response import Response
+from rest_framework.views import PermissionDenied
 from django.apps import apps
 from django.forms import ValidationError
 from rest_framework.decorators import api_view, permission_classes
@@ -301,24 +302,26 @@ def get_objections(request, application_id):
 
 
 # ---------- REUSABLE: Resolve Objections ----------
+
 @api_view(['POST'])
 @permission_classes([HasStagePermission])
 def resolve_objections(request, application_id):
     application = _get_application_by_id(application_id)
     if not application:
-        return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
-
-    if request.user.role.name != "licensee":
-        return Response({"detail": "Only licensee can resolve objections"}, status=status.HTTP_403_FORBIDDEN)
-
-    unresolved = application.objections.filter(is_resolved=False)
-    if unresolved.exists():
-        return Response({"detail": "All objections must be resolved first"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Application not found"}, status=404)
 
     try:
-        WorkflowService.resolve_objections(application, request.user)
-    except Exception as e:
-        return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        WorkflowService.resolve_objections(
+            application=application,
+            user=request.user,
+            objection_ids=request.data.get("objection_ids"),
+            updated_fields=request.data.get("updated_fields", {}),
+            remarks=request.data.get("remarks")
+        )
+    except ValidationError as e:
+        return Response({"detail": str(e)}, status=400)
+    except PermissionDenied as e:
+        return Response({"detail": str(e)}, status=403)
 
     return _serialize_application(application)
 
@@ -465,7 +468,6 @@ def _serialize_application(application, requesting_user=None):
             "status": "Stage advanced successfully",
             "advanced_by": requesting_user.username if requesting_user else "Unknown",
             "advanced_at": timezone.now().isoformat(),
-            "note": "Full details unavailable — app-specific serializer not found."
         })
     
 logger = logging.getLogger(__name__)
@@ -509,7 +511,7 @@ def pay_license_fee(request, application_id):
         object_id=str(application.pk)
     ).order_by('timestamp').first()
 
-    if not first_transaction or first_transaction.performed_by != request.user:
+    if not first_transaction or first_transaction.forwarded_by != request.user:
         return Response(
             {"error": "You are not the applicant for this license."},
             status=status.HTTP_403_FORBIDDEN
