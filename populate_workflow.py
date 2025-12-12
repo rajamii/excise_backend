@@ -51,12 +51,12 @@ def populate_requisition_rules():
             )
             
             if created:
-                print(f"✓ Created: {current_status.status_name} + {action} ({role}) -> {next_status.status_name}")
+                print(f"[CREATED]: {current_status.status_name} + {action} ({role}) -> {next_status.status_name}")
             else:
-                print(f"↻ Updated: {current_status.status_name} + {action} ({role}) -> {next_status.status_name}")
+                print(f"[UPDATED]: {current_status.status_name} + {action} ({role}) -> {next_status.status_name}")
                 
         except StatusMaster.DoesNotExist as e:
-            print(f"✗ Error: {e}")
+            print(f"[ERROR]: {e}")
     
     requisition_count = WorkflowRule.objects.filter(current_status__status_code__startswith='RQ').count()
     print(f"\nTotal requisition rules: {requisition_count}")
@@ -113,20 +113,69 @@ def populate_revalidation_rules():
             )
             
             if created:
-                print(f"✓ Created: {current_status.status_name} + {action} ({role}) -> {next_status.status_name}")
+                print(f"[CREATED]: {current_status.status_name} + {action} ({role}) -> {next_status.status_name}")
             else:
-                print(f"↻ Updated: {current_status.status_name} + {action} ({role}) -> {next_status.status_name}")
+                print(f"[UPDATED]: {current_status.status_name} + {action} ({role}) -> {next_status.status_name}")
                 
         except StatusMaster.DoesNotExist as e:
-            print(f"✗ Error: {e}")
+            print(f"[ERROR]: {e}")
     
     revalidation_count = WorkflowRule.objects.filter(current_status__status_code__startswith='RV').count()
     print(f"\nTotal revalidation rules: {revalidation_count}")
 
 
+def populate_cancellation_rules():
+    """
+    Populate workflow rules for ENA Cancellation Status Management.
+    
+    Workflow:
+    1. Licensee submits -> CancellationPending (CN_00)
+    2. Permit Section approves -> ForwardedCancellationToCommissioner (RQ_14)
+    3. Commissioner approves -> ApprovedCancellationByCommissioner (RQ_19)
+    4. Commissioner rejects -> RejectedCancellationByCommissioner (RQ_20)
+    """
+    print("\n" + "="*80)
+    print("POPULATING CANCELLATION WORKFLOW RULES")
+    print("="*80 + "\n")
+    
+    # Format: (Current Status Code, Action, Next Status Code, Allowed Role)
+    rules = [
+        # Approval Flow
+        ('CN_00', 'APPROVE', 'RQ_14', 'permit-section'), # Pending -> Forwarded
+        ('RQ_14', 'APPROVE', 'RQ_19', 'commissioner'),   # Forwarded -> Approved
+
+        # Rejection Paths
+        ('RQ_14', 'REJECT', 'RQ_20', 'commissioner'),    # Forwarded -> Rejected
+    ]
+    
+    for current_code, action, next_code, role in rules:
+        try:
+            current_status = StatusMaster.objects.get(status_code=current_code)
+            next_status = StatusMaster.objects.get(status_code=next_code)
+            
+            rule, created = WorkflowRule.objects.update_or_create(
+                current_status=current_status,
+                action=action,
+                allowed_role=role,
+                defaults={'next_status': next_status}
+            )
+            
+            if created:
+                print(f"[CREATED]: {current_status.status_name} + {action} ({role}) -> {next_status.status_name}")
+            else:
+                print(f"[UPDATED]: {current_status.status_name} + {action} ({role}) -> {next_status.status_name}")
+                
+        except StatusMaster.DoesNotExist as e:
+            print(f"[ERROR]: {e}")
+    
+    cancellation_count = WorkflowRule.objects.filter(current_status__status_code__in=['CN_00', 'RQ_14']).count()
+    print(f"\nTotal cancellation rules: {cancellation_count}")
+
+
 if __name__ == '__main__':
     populate_requisition_rules()
     populate_revalidation_rules()
+    populate_cancellation_rules()
     
     print("\n" + "="*80)
     print("WORKFLOW RULES POPULATION COMPLETE")

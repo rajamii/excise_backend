@@ -11,6 +11,13 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
     queryset = EnaRequisitionDetail.objects.all()
     serializer_class = EnaRequisitionDetailSerializer
 
+    def get_queryset(self):
+        queryset = EnaRequisitionDetail.objects.all()
+        our_ref_no = self.request.query_params.get('our_ref_no', None)
+        if our_ref_no is not None:
+            queryset = queryset.filter(our_ref_no=our_ref_no)
+        return queryset
+
 
 class EnaRequisitionDetailRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     queryset = EnaRequisitionDetail.objects.all()

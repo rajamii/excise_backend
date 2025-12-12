@@ -4,6 +4,7 @@ import re
 
 class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
+    can_initiate_cancellation = serializers.SerializerMethodField()
 
     class Meta:
         model = EnaRequisitionDetail
@@ -48,6 +49,20 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         ).values_list('action', flat=True)
         
         return list(actions)
+
+    def get_can_initiate_cancellation(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+            
+        # Only Licensee can initiate cancellation
+        user_role_name = request.user.role.name if hasattr(request.user, 'role') and request.user.role else None
+        if user_role_name not in ['licensee', 'Licensee']:
+            return False
+
+        # Status must be 'RQ_09' (Approved)
+        # We explicitly check for the code here in the backend business logic
+        return obj.status_code == 'RQ_09'
 
     def create(self, validated_data):
         from models.masters.supply_chain.status_master.models import StatusMaster
