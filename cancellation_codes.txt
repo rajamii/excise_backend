@@ -1,5 +1,0 @@
-CancellationPending: CN_00
-ForwardedCancellationToCommissioner: RQ_14
-ApprovedCancellationByCommissioner: RQ_19
-RejectedCancellationByCommissioner: RQ_20
-ForwardedCancellationToPermitSection: RQ_13
