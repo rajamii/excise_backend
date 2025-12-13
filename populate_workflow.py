@@ -143,7 +143,7 @@ def populate_cancellation_rules():
         # Approval Flow
         ('CN_00', 'APPROVE', 'RQ_14', 'permit-section'), # Pending -> Forwarded
         ('RQ_14', 'APPROVE', 'RQ_19', 'commissioner'),   # Forwarded -> Approved
-
+        
         # Rejection Paths
         ('RQ_14', 'REJECT', 'RQ_20', 'commissioner'),    # Forwarded -> Rejected
     ]
@@ -167,10 +167,9 @@ def populate_cancellation_rules():
                 
         except StatusMaster.DoesNotExist as e:
             print(f"[ERROR]: {e}")
-    
+            
     cancellation_count = WorkflowRule.objects.filter(current_status__status_code__in=['CN_00', 'RQ_14']).count()
     print(f"\nTotal cancellation rules: {cancellation_count}")
-
 
 if __name__ == '__main__':
     populate_requisition_rules()
