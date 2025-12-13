@@ -3,13 +3,12 @@ from django.forms import ValidationError
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from django.core.exceptions import ValidationError, PermissionDenied
+from django.core.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework import status
-from auth.roles.decorators import has_app_permission
 from auth.roles.permissions import HasAppPermission
 from auth.workflow.permissions import HasStagePermission
-from auth.workflow.models import Workflow, StagePermission, WorkflowTransition, WorkflowStage
+from auth.workflow.models import Workflow, StagePermission, WorkflowStage
 from auth.workflow.services import WorkflowService
 from .models import SalesmanBarmanModel
 from .serializers import SalesmanBarmanSerializer
@@ -111,59 +110,6 @@ def salesman_barman_detail(request, application_id):
     serializer = SalesmanBarmanSerializer(app)
     return Response(serializer.data)
 
-'''
-@permission_classes([HasAppPermission('salesman_barman', 'update'), HasStagePermission])
-@api_view(['POST'])
-def advance_application(request, application_id, stage_id):
-    application = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
-    try:
-        target_stage = get_object_or_404(WorkflowStage, id=stage_id)
-    except WorkflowStage.DoesNotExist:
-        return Response({"detail": f"Stage ID {stage_id} not found in workflow {application.workflow.name}."}, status=status.HTTP_404_NOT_FOUND)
-    
-    context = request.data.get("context", {})
-    # remarks = request.data.get("remarks", "")
-
-    try:
-        with transaction.atomic():
-            WorkflowService.advance_stage(
-                application=application,
-                user=request.user,
-                target_stage=target_stage,
-                # remarks=remarks,
-                context=context,
-            )
-
-            #Return the updated application details
-            updated_application = SalesmanBarmanModel.objects.get(id=application.id)
-            serializer = SalesmanBarmanSerializer(updated_application)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-
-    except ValidationError as e:
-            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-    except PermissionDenied as e:
-            return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
-    except Exception as e:
-            return Response({"detail": f"Error advancing stage: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@permission_classes([HasAppPermission('salesman_barman', 'view'), HasStagePermission])
-@api_view(['GET'])
-def get_next_stages(request, application_id):
-    application = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
-    current_stage = application.current_stage
-
-    # Get all transitions from current stage within the same workflow
-    transitions = WorkflowTransition.objects.filter(workflow=application.workflow, from_stage=current_stage)
-    allowed_stages = [t.to_stage for t in transitions]
-    data = [{
-         'id': stage.id,
-         'name': stage.name,
-         'description': stage.description
-    } for stage in allowed_stages]
-    
-    return Response(data)
-'''
 
 # Dashboard Counts
 @permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])

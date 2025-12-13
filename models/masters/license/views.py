@@ -18,13 +18,10 @@ def list_licenses(request):
     return Response(serializer.data, status=status.HTTP_200_OK)
 
 @permission_classes([HasAppPermission('license', 'view')])
-@api_view(['POST'])
+@api_view(['GET'])
 @parser_classes([JSONParser])
-def print_license_view(request, application_id):
-    license = get_object_or_404(License, application_id=application_id)
-
-    if not license.is_approved:
-        return Response({"error": "License is not approved yet."}, status=403)
+def print_license_view(request, license_id):
+    license = get_object_or_404(License, license_id=license_id)
 
     can_print, fee = license.can_print_license()
 

@@ -29,23 +29,23 @@ urlpatterns = [
     path('list-by-status/', views.application_group, name='applications-by-status'),
 
     # Get Next Stages
-    path('<everything:application_id>/next-stages/', views.get_next_stages, name='license-application-next-stages'),
+    # path('<everything:application_id>/next-stages/', views.get_next_stages, name='license-application-next-stages'),
 
     # Advance an application to the next stage in the workflow (e.g., review -> approval) (POST)
-    path('<everything:application_id>/advance/<int:stage_id>/', views.advance_license_application, name='advance-license-application'),
+    # path('<everything:application_id>/advance/<int:stage_id>/', views.advance_license_application, name='advance-license-application'),
 
     # Raise Objection
-    path('<everything:application_id>/raise-objection/', views.raise_objection, name='raise-objection'),
+    # path('<everything:application_id>/raise-objection/', views.raise_objection, name='raise-objection'),
 
     # Get Objections
-    path('<everything:application_id>/objections/', views.get_objections, name='get-objections'),
+    # path('<everything:application_id>/objections/', views.get_objections, name='get-objections'),
 
     # Resolve Objections
-    path('<everything:application_id>/resolve-objections/', views.resolve_objections, name='resolve-objections'),
+    # path('<everything:application_id>/resolve-objections/', views.resolve_objections, name='resolve-objections'),
 
     # Print License
     path('<everything:application_id>/print/', views.print_license_view, name='print-license'),
 
     # Pay License Fee
-    path('<everything:application_id>/pay-license-fee/', views.pay_license_fee, name="pay-licensee-fee"),
+    # path('<everything:application_id>/pay-license-fee/', views.pay_license_fee, name="pay-licensee-fee"),
 ]
