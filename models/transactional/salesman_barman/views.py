@@ -104,8 +104,8 @@ def list_salesman_barman(request):
     return Response(serializer.data)
 
 
-@api_view(['GET'])
 @permission_classes([HasAppPermission('salesman_barman', 'view'), HasStagePermission])
+@api_view(['GET'])
 def salesman_barman_detail(request, application_id):
     app = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
     serializer = SalesmanBarmanSerializer(app)
