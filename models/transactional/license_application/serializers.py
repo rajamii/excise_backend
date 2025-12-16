@@ -1,18 +1,11 @@
 from rest_framework import serializers
-from .models import LicenseApplication, LicenseApplicationTransaction, LocationFee, Objection
+from .models import LicenseApplication, Transaction, Objection
 from auth.user.models import CustomUser
 from auth.roles.models import Role
+from auth.workflow.serializers import WorkflowTransactionSerializer, WorkflowObjectionSerializer
 from . import helpers
-from .models import SiteEnquiryReport
-from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseType
+from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseType, LocationFee
 from utils.fields import CodeRelatedField
-from auth.workflow.models import WorkflowStage
-
-class SiteEnquiryReportSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = SiteEnquiryReport
-        fields = '__all__'
-        read_only_fields = ['application']
 
 class UserShortSerializer(serializers.ModelSerializer):
     role_name = serializers.CharField(source='role.name', read_only=True)
@@ -25,19 +18,14 @@ class RoleSerializer(serializers.ModelSerializer):
         model = Role
         fields = ['id', 'name']
 
-class LicenseApplicationTransactionSerializer(serializers.ModelSerializer):
+class TransactionSerializer(serializers.ModelSerializer):
     performed_by = UserShortSerializer(read_only=True)
     forwarded_by = UserShortSerializer(read_only=True)
     forwarded_to = RoleSerializer(read_only=True)
     
     class Meta:
-        model = LicenseApplicationTransaction
+        model = Transaction
         fields = ['license_application', 'stage', 'remarks', 'timestamp', 'performed_by', 'forwarded_by', 'forwarded_to']
-
-class LocationFeeSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = LocationFee
-        fields = ['location_name', 'fee_amount']
 
 class ObjectionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -57,7 +45,6 @@ class ResolveObjectionSerializer(serializers.ModelSerializer):
     police_station = CodeRelatedField(
         queryset=PoliceStation.objects.all(), lookup_field='police_station_code', required=False
     )
-    # Add more fields if needed
 
     class Meta:
         model = LicenseApplication
@@ -87,8 +74,11 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
     workflow = serializers.PrimaryKeyRelatedField(read_only=True)
     current_stage_name = serializers.CharField(source = 'current_stage.name', read_only=True)
     is_approved = serializers.BooleanField(read_only=True)
-    transactions = LicenseApplicationTransactionSerializer(many=True, read_only=True)
-    latest_transaction = serializers.SerializerMethodField()
+    # transactions = TransactionSerializer(many=True, read_only=True)
+    # latest_transaction = serializers.SerializerMethodField()
+
+    transactions = WorkflowTransactionSerializer(many=True, read_only=True)
+    objections = WorkflowObjectionSerializer(many=True, read_only=True)
 
     class Meta:
         model = LicenseApplication
@@ -97,7 +87,7 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
 
     def get_latest_transaction(self, obj):
         transaction = obj.transactions.order_by('-timestamp').first()
-        return LicenseApplicationTransactionSerializer(transaction).data if transaction else None
+        return WorkflowTransactionSerializer(transaction).data if transaction else None
 
     def validate_license_type(self, value):
         return helpers.validate_license_type(value)
@@ -143,3 +133,9 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
 
     def validate_status(self, value):
         return helpers.validate_status(value)
+
+
+class LocationFeeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LocationFee
+        fields = ['location_name', 'fee_amount']

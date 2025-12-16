@@ -1,37 +1,45 @@
 from rest_framework import permissions
 from .models import StagePermission
-from models.transactional.license_application.models import LicenseApplication
 
 class HasStagePermission(permissions.BasePermission):
-    """Checks if a user's role has permission to process a stage."""
-
+    """
+    Allows access only if the user's role has can_process=True
+    on the application's CURRENT stage (i.e., the stage they're acting FROM).
+    """
     def has_permission(self, request, view):
-        # For advance views, infer current stage from application_id in kwargs
-        application_id = view.kwargs.get("application_id")
-        if application_id:
-            try:
-                application = LicenseApplication.objects.get(application_id=application_id)
-                stage_id = application.current_stage_id
-            except LicenseApplication.DoesNotExist:
-                return False
-        else:        
-            # Try to get stage_id from URL kwargs, request.data, or query params
-            stage_id = (
-                view.kwargs.get("stage_id") or
-                request.data.get("stage_id") or
-                request.query_params.get("stage_id")
-            )
+        user = request.user
+        if not user.is_authenticated or not getattr(user, 'role', None):
+            return False
 
-        # If no stage_id provided (e.g., list views), allow access (read-only)
-        if not stage_id:
-            return True
+        # 1. Allow licensee to submit new applications
+        if request.method == 'POST' and any(path in request.path for path in ['/apply/', '/create/']):
+            return user.role.name == 'licensee'
 
-        # Check if user's role can process this stage
-        try:
-            return StagePermission.objects.filter(
-                stage_id=stage_id,
-                role=request.user.role,
-                can_process=True
-            ).exists()
-        except AttributeError:
-            return False  # User has no role assigned
+        # 2. For advance, raise-objection, resolve-objection, etc.
+        if request.method in ['POST', 'PUT', 'PATCH']:
+            # Try to get application from view (safest)
+            application = None
+            if hasattr(view, 'get_object'):
+                try:
+                    application = view.get_object()
+                except (AttributeError, AssertionError):
+                    pass
+
+            # Fallback: extract from kwargs and resolve polymorphically
+            if not application:
+                app_id = view.kwargs.get('application_id') or view.kwargs.get('pk')
+                if app_id:
+                    from .services import WorkflowService
+                    try:
+                        application = WorkflowService.get_application_by_id(app_id)
+                    except:
+                        return False
+
+            if application and user.role:
+                return StagePermission.objects.filter(
+                    stage=application.current_stage,
+                    role=user.role,
+                    can_process=True
+                ).exists()
+
+        return True

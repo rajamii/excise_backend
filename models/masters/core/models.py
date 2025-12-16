@@ -230,3 +230,13 @@ class Road(models.Model):
 
     def __str__(self):
         return f"{self.road_name} ({self.road_type})"
+    
+class LocationFee(models.Model):
+    location_name = models.CharField(max_length=100, unique=True)
+    fee_amount = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        db_table = 'location_fee'
+
+    def __str__(self):
+        return f"{self.location_name} - ₹{self.fee_amount}"

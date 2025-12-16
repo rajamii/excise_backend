@@ -79,14 +79,14 @@ INSTALLED_APPS = [
     'models.transactional',
     'models.transactional.company_registration',
     'models.transactional.license_application',
+    'models.transactional.site_enquiry',
+    'models.transactional.new_license_application',
     'models.transactional.salesman_barman',
     'models.transactional.logs',
     'models.transactional.transactiondata',
     'models.transactional.supply_chain.ena_transit_permit_details',
     'models.transactional.supply_chain.ena_revalidation_details',
     'models.transactional.supply_chain.ena_cancellation_details',
-    
-
     # auth models 
     'auth.roles',
     'auth.user',

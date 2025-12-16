@@ -56,6 +56,7 @@ class UserDetailView(generics.RetrieveAPIView):
     permission_classes = [make_permission('user', 'view')]
 
 class CurrentUserAPI(APIView):
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         user = request.user
@@ -248,6 +249,7 @@ def verify_otp_api(request):
         return Response({'error': 'Phone number, OTP, and otp_id are required'}, status=status.HTTP_400_BAD_REQUEST)
 
     success, message = verify_otp(otp_id, phone_number, otp_input)
+    
     if success:
         try:
             user = CustomUser.objects.get(phone_number=phone_number)

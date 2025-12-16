@@ -1,219 +1,292 @@
-from django.core.exceptions import ValidationError, PermissionDenied
-from django.db import transaction
-from .permissions import StagePermission
-from .models import WorkflowTransition, StagePermission
-from models.transactional.license_application.models import LicenseApplicationTransaction, SiteEnquiryReport, Objection
-from models.masters.core.models import LicenseCategory
-from models.masters.license.models import License
 from django.utils import timezone
+from django.db import transaction
+from django.core.exceptions import ValidationError, PermissionDenied
+from django.contrib.contenttypes.models import ContentType
+
+from django.apps import apps
+from .models import (
+    WorkflowTransition, StagePermission,
+    Transaction, Objection
+)
+
+# Mapping: (app_label, model_name) -> Serializer class
+SERIALIZER_MAPPING = {
+    # (app_label, model_name_lower): 'full.import.path.to.Serializer'
+    ('license_application', 'licenseapplication'): 'models.transactional.license_application.serializers.LicenseApplicationSerializer',
+    ('new_license_application', 'newlicenseapplication'): 'models.transactional.new_license_application.serializers.NewLicenseApplicationSerializer',
+    ('salesman_barman', 'salesmanbarmanmodel'): 'models.transactional.salesman_barman.serializers.SalesmanBarmanSerializer',
+}
 
 class WorkflowService:
-    @staticmethod
-    def get_next_stages(workflow, current_stage):
-        return WorkflowTransition.objects.filter(
-            workflow=workflow,
-            from_stage=current_stage
-        ).select_related("to_stage")
 
     @staticmethod
-    def validate_transition(workflow, from_stage, to_stage, context=None):
+    @transaction.atomic
+    def submit_application(application, user, remarks=None):
+        initial_stage = application.current_stage
+        if not initial_stage.is_initial:
+            raise ValidationError("Not in initial stage")
 
+        # 1. Log submission
+        Transaction.objects.create(
+            content_type=ContentType.objects.get_for_model(application),
+            object_id=str(application.pk),
+            performed_by=user,
+            forwarded_by=user,
+            forwarded_to=None,
+            stage=initial_stage,
+            remarks=remarks or "Application submitted by applicant"
+        )
+
+        # 2. Auto-advance to level_1
         transition = WorkflowTransition.objects.filter(
-            workflow=workflow,
-            from_stage=from_stage,
+            workflow=application.workflow,
+            from_stage=initial_stage
+        ).first()
+        if not transition:
+            raise ValidationError("No transition from applicant_applied")
+
+        application.current_stage = transition.to_stage
+        application.save(update_fields=['current_stage'])
+
+        # 3. Log auto-forward
+        perm = StagePermission.objects.filter(stage=transition.to_stage, can_process=True).first()
+        Transaction.objects.create(
+            content_type=ContentType.objects.get_for_model(application),
+            object_id=str(application.pk),
+            performed_by=user,
+            forwarded_by=user,
+            forwarded_to=perm.role,
+            stage=transition.to_stage,
+            remarks="Application forwarded to Level 1 for review"
+        )
+        
+    @staticmethod
+    def get_next_stages(application):
+        return WorkflowTransition.objects.filter(
+            workflow=application.workflow,
+            from_stage=application.current_stage
+        ).select_related('to_stage')
+
+    @staticmethod
+    def validate_transition(application, to_stage, context=None):
+        transition = WorkflowTransition.objects.filter(
+            workflow=application.workflow,
+            from_stage=application.current_stage,
             to_stage=to_stage
         ).first()
 
         if not transition:
-            raise ValidationError(f"Invalid transition: {from_stage.name} → {to_stage.name}")
-        
-        condition = transition.condition or {}
-        for key, expected_value in condition.items():
-            if (context or {}).get(key) != expected_value:
-                raise ValidationError(f"Condition not met: {key}={expected_value}")
-
-    @staticmethod
-    @transaction.atomic
-    def advance_stage(application, user, target_stage, context_data=None, skip_permission_check=False):
-
-        context_data = context_data or {}
-
-        # Check permissions
-        if not skip_permission_check and not user.is_superuser:
-            if not StagePermission.objects.filter(
-                stage=application.current_stage,
-                role=user.role,
-                can_process=True
-            ).exists():
-                raise PermissionError(f"Role {user.role.name} cannot process stage {target_stage.name}")
-
-        # Validate transition
-        WorkflowService.validate_transition(
-            workflow=application.workflow,
-            from_stage=application.current_stage,
-            to_stage=target_stage,
-            context=context_data,
-        )
-
-        # Special logic for specific stages
-        if target_stage.name == "level_1":
-            if context_data.get("action") == "set_fee":
-                if application.is_fee_calculated:
-                    raise ValidationError("Fee already calculated.")
-                fee_amount = context_data.get("fee_amount")
-                if not fee_amount:
-                    raise ValidationError("Fee amount must be provided.")
-                try:
-                    application.yearly_license_fee = str(float(fee_amount))
-                    application.is_fee_calculated = True
-                except ValueError:
-                    raise ValidationError("Invalid fee amount format.")
-
-        elif target_stage.name == "level_2":
-            if context_data.get("action") == "update_category":
-                new_category_id = context_data.get("new_license_category")
-                if new_category_id:
-                    try:
-                        new_category = LicenseCategory.objects.get(pk=new_category_id)
-                        application.license_category = new_category
-                        application.is_license_category_updated = True
-                    except LicenseCategory.DoesNotExist:
-                        raise ValidationError("Invalid license category ID.")
-
-        elif target_stage.name == "awaiting_payment":
-            if not SiteEnquiryReport.objects.filter(application=application).exists():
-                raise ValidationError("Site Enquiry Report must be filled.")
-
-        elif target_stage.name == "approved":
-            application.is_approved = True
-            license = License.objects.create(
-                application=application,
-                license_type=application.license_type,
-                establishment_name=application.establishment_name,
-                licensee_name=application.member_name,
-                excise_district=application.excise_district,
-                issue_date=timezone.now().date(),
-                valid_up_to=application.valid_up_to or (timezone.now().date() + timezone.timedelta(days=365)),
+            raise ValidationError(
+                f"Invalid transition from {application.current_stage.name} "
+                f"to {to_stage.name} in workflow {application.workflow.name}"
             )
-            application.license_no = license.license_id
 
-        # Update stage
-        application.current_stage = target_stage
-        application.save()
-        
-        
-        # Determine forwarded_to_role
-        forwarded_to_role = None
-        stage_perms = StagePermission.objects.filter(stage=target_stage, can_process=True)
-        if target_stage.name in ["applicant_applied", "awaiting_payment", "level_1_objection", "level_2_objection", 
-                                "level_3_objection", "level_4_objection", "level_5_objection"]:
-            first_txn = LicenseApplicationTransaction.objects.filter(
-                license_application=application
-            ).order_by('id').first()
-            if first_txn and getattr(first_txn.performed_by, 'role', None):
-                forwarded_to_role = first_txn.performed_by.role
-        elif stage_perms.exists():
-            forwarded_to_role = stage_perms.first().role
+        if transition.condition:
+            for key, expected in transition.condition.items():
+                actual = (context or {}).get(key)
+                if actual != expected:
+                    raise ValidationError(f"Condition failed: {key} must be {expected}")
 
-        # Log transaction
-        LicenseApplicationTransaction.objects.create(
-            license_application=application,
-            performed_by=user,
-            forwarded_by=user,
-            forwarded_to=forwarded_to_role,
-            stage=target_stage,
-            remarks=context_data.get("remarks")
-        )
-        
+        return transition
 
     @staticmethod
     @transaction.atomic
-    def raise_objection(application, user, target_stage, objections, remarks=None):
-        # Validate objections
-        if not objections:
-            raise ValidationError("No objection fields provided.")
-        for obj in objections:
-            if not obj.get("field") or not obj.get("remarks"):
-                raise ValidationError("Each objection must include 'field' and 'remarks'.")
+    def advance_stage(application, user, target_stage, context=None, remarks=None):
+        context = context or {}
 
-        # Check permissions
+        # ---------- Permission ----------
         if not user.is_superuser:
             if not StagePermission.objects.filter(
                 stage=application.current_stage,
                 role=user.role,
                 can_process=True
             ).exists():
-                raise PermissionError(f"Role {user.role.name} cannot raise objections in stage {application.current_stage.name}")
+                raise PermissionDenied("You cannot process this stage.")
 
-        # Validate transition to objection stage
-        WorkflowService.validate_transition(
-            workflow=application.workflow,
-            from_stage=application.current_stage,
-            to_stage=target_stage,
-            context={"has_objections": True}
+        # ---------- Transition ----------
+        WorkflowService.validate_transition(application, target_stage, context)
+
+        # ---------- App-specific hooks (via context) ----------
+        # if getattr(application, 'is_fee_calculated', None) is not None and target_stage.name == "level_1":
+        #     if context.get("action") == "set_fee":
+        #         if application.is_fee_calculated:
+        #             raise ValidationError("Fee already set.")
+        #         fee = context.get("fee_amount")
+        #         if not fee:
+        #             raise ValidationError("fee_amount required.")
+        #         application.yearly_license_fee = str(float(fee))
+        #         application.is_fee_calculated = True
+
+        # ---------- Update stage ----------
+        application.current_stage = target_stage
+        application.save(update_fields=['current_stage'])
+
+        # ---------- Forwarded role ----------
+        forwarded_to = None
+        if "objection" in target_stage.name.lower() or target_stage.name == "awaiting_payment":
+            first_txn = application.transactions.order_by('id').first()
+            if first_txn and first_txn.performed_by.role:
+                forwarded_to = first_txn.performed_by.role
+        else:
+            perm = StagePermission.objects.filter(stage=target_stage, can_process=True).first()
+            if perm:
+                forwarded_to = perm.role
+
+        # ---------- Log ----------
+        Transaction.objects.create(
+            content_type=ContentType.objects.get_for_model(application),
+            object_id=str(application.pk),
+            performed_by=user,
+            forwarded_by=user,
+            forwarded_to=forwarded_to,
+            stage=target_stage,
+            remarks=remarks or context.get("remarks", "")
         )
 
-        # Create objections
+    @staticmethod
+    def get_application_by_id(application_id):
+        from django.db import models
+        from auth.workflow.models import WorkflowStage
+
+        # Find all models that have a ForeignKey to WorkflowStage named 'current_stage'
+        for model in apps.get_models():
+            if hasattr(model, 'current_stage') and isinstance(getattr(model, 'current_stage'), models.ForeignKey):
+                field = model.current_stage.field
+                if field.related_model == WorkflowStage:
+                    try:
+                        return model.objects.select_related('current_stage', 'workflow').get(
+                            application_id=application_id
+                        )
+                    except model.DoesNotExist:
+                        continue
+        return None
+
+    @staticmethod
+    @transaction.atomic
+    def raise_objection(application, user, target_stage, objections, remarks=None):
+        if not objections:
+            raise ValidationError("Objections list cannot be empty.")
+        WorkflowService.validate_transition(application, target_stage, {"has_objections": True})
+
         for obj in objections:
             Objection.objects.create(
-                application=application,
+                content_type=ContentType.objects.get_for_model(application),
+                object_id=str(application.pk),
                 field_name=obj["field"],
                 remarks=obj["remarks"],
                 raised_by=user,
                 stage=target_stage
             )
 
-        # Forward to licensee
-        first_txn = LicenseApplicationTransaction.objects.filter(
-            license_application=application
-        ).order_by('id').first()
-        if not first_txn:
-            raise ValidationError("Cannot determine licensee user.")
-
         application.current_stage = target_stage
-        application.save()
+        application.save(update_fields=['current_stage'])
 
-        LicenseApplicationTransaction.objects.create(
-            license_application=application,
+        first_txn = application.transactions.order_by('id').first()
+        applicant_role = first_txn.performed_by.role if first_txn else None
+
+        Transaction.objects.create(
+            content_type=ContentType.objects.get_for_model(application),
+            object_id=str(application.pk),
             performed_by=user,
             forwarded_by=user,
-            forwarded_to=first_txn.performed_by.role,
+            forwarded_to=applicant_role,
             stage=target_stage,
-            remarks=remarks or "Objection raised."
+            remarks=remarks or "Objection raised"
         )
 
     @staticmethod
     @transaction.atomic
-    def resolve_objection(application, user, target_stage, context_data=None):
-        # Check permissions (licensee only)
-        if user.role.name != "licensee":
-            raise PermissionError("Only licensee can resolve objections.")
+    def resolve_objections(application, user, objection_ids=None, updated_fields=None, remarks=None):
 
-        # Validate transition
-        WorkflowService.validate_transition(
-            workflow=application.workflow,
-            from_stage=application.current_stage,
-            to_stage=target_stage,
-            context={"objections_resolved": True}
+        if user.role.name != "licensee":
+            raise PermissionDenied("Only licensee can resolve objections.")
+
+        updated_fields = updated_fields or {}
+        remarks = remarks or "Objections resolved and application returned to previous stage"
+
+        # --- 1. Early exit if no unresolved objections ---
+        unresolved_qs = application.objections.filter(is_resolved=False)
+        if objection_ids:
+            unresolved_qs = unresolved_qs.filter(id__in=objection_ids)
+
+        if not unresolved_qs.exists():
+            raise ValidationError("No unresolved objections found. Nothing to resolve.")
+
+        # --- 2. Strict validation: all objected fields must be updated ---
+        required_fields = {obj.field_name for obj in unresolved_qs}
+        updated_keys = set(updated_fields.keys())
+        missing = required_fields - updated_keys
+        if missing:
+            raise ValidationError(
+                f"Please provide updates for the following objected fields: {', '.join(missing)}"
+            )
+
+        # --- 3. Apply field updates using the correct app-specific serializer ---
+        if updated_fields:
+            app_label = application._meta.app_label
+            model_name = application._meta.model_name.lower()
+
+            key = (app_label, model_name)
+            serializer_path = SERIALIZER_MAPPING.get(key)
+
+            if not serializer_path:
+                raise ValidationError(f"No serializer configured for {app_label}.{model_name}")
+
+            try:
+                module_path, serializer_name = serializer_path.rsplit('.', 1)
+                module = __import__(module_path, fromlist=[serializer_name])
+                AppSerializer = getattr(module, serializer_name)
+            except Exception as e:
+                raise ValidationError(f"Failed to load serializer: {str(e)}")
+
+            serializer = AppSerializer(application, data=updated_fields, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+
+        # --- 4. Mark objections as resolved ---
+        qs = application.objections.filter(is_resolved=False)
+        if objection_ids:
+            qs = qs.filter(id__in=objection_ids)
+        qs.update(is_resolved=True, resolved_on=timezone.now())
+
+        # --- 5. Find the transaction that moved INTO the current objection stage ---
+        entry_to_objection_txn = application.transactions.filter(
+            stage=application.current_stage
+        ).order_by('-timestamp').first()
+
+        if not entry_to_objection_txn:
+            raise ValidationError("Cannot find the transaction that entered the objection stage")
+
+        # The officer who raised the objection (performed_by in the entry txn)
+        forward_to = (
+            entry_to_objection_txn.performed_by.role
+            if entry_to_objection_txn.performed_by and entry_to_objection_txn.performed_by.role
+            else None
         )
 
-        # Check if all objections are resolved
-        unresolved_objections = Objection.objects.filter(application=application, is_resolved=False)
-        if unresolved_objections.exists():
-            raise ValidationError("Not all objections are resolved.")
+        # --- 6. Determine the original non-objection stage to return to ---
+        original_txn = application.transactions.filter(
+            stage__name__contains='_objection'
+        ).exclude(stage=application.current_stage).order_by('-id').first()
 
-        application.current_stage = target_stage
-        application.save()
+        if not original_txn:
+            original_txn = application.transactions.exclude(
+                stage__name__contains='_objection'
+            ).order_by('-id').first()
 
-        forwarded_to_role = StagePermission.objects.filter(
-            stage=target_stage, can_process=True
-        ).first().role if StagePermission.objects.filter(stage=target_stage, can_process=True).exists() else None
+        if not original_txn:
+            raise ValidationError("Cannot determine original stage")
 
-        LicenseApplicationTransaction.objects.create(
-            license_application=application,
+        application.current_stage = original_txn.stage
+        application.save(update_fields=['current_stage'])
+
+        # --- 7. Log the return: forward back to the officer ---
+        Transaction.objects.create(
+            content_type=ContentType.objects.get_for_model(application),
+            object_id=str(application.pk),
             performed_by=user,
             forwarded_by=user,
-            forwarded_to=forwarded_to_role,
-            stage=target_stage,
-            remarks=context_data.get("remarks", "Objections resolved.")
+            forwarded_to=forward_to,
+            stage=original_txn.stage,
+            remarks=remarks
         )

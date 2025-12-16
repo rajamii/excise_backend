@@ -3,6 +3,9 @@
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator, EmailValidator, MaxLengthValidator
 
+ROLE_CHOICES = [('Salesman', 'Salesman'), ('Barman', 'Barman')]
+GENDER_CHOICES = [('Male', 'Male'), ('Female', 'Female'), ('Other', 'Other')]
+
 # Validators for fields
 def validate_pan_number(value):
     pan_validator = RegexValidator(r'^[A-Z]{5}[0-9]{4}[A-Z]{1}$', 'Invalid PAN format')
