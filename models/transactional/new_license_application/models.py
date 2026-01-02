@@ -3,6 +3,7 @@ from django.contrib.contenttypes.fields import GenericRelation
 from django.utils.timezone import now
 from . import helpers
 from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseSubcategory, LicenseType
+from auth.user.models import CustomUser
 from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
 
 def upload_document_path(instance, filename):
@@ -85,6 +86,12 @@ class NewLicenseApplication(models.Model):
     sikkim_certificate = models.FileField(upload_to=upload_document_path)
     dob_proof = models.FileField(upload_to=upload_document_path)
     noc_landlord = models.FileField(upload_to=upload_document_path, blank=True, null=True)
+
+    applicant = models.ForeignKey(
+        CustomUser,
+        on_delete=models.PROTECT,
+        related_name='license_applications'
+    )
 
     # Polymorphic links
     transactions = GenericRelation(
@@ -195,40 +202,5 @@ class NewLicenseApplication(models.Model):
             models.Index(fields=['license_type']),
             models.Index(fields=['site_subdivision']),
             models.Index(fields=['current_stage']),
+            models.Index(fields=['applicant']),
         ]
-
-'''
-class Transaction(models.Model):
-    license_application = models.ForeignKey(NewLicenseApplication, on_delete=models.CASCADE, related_name='new_license_transactions')
-    performed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='new_license_performed_transactions')
-    forwarded_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='new_license_forwarded_by_transactions')
-    forwarded_to = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, related_name='new_license_forwarded_to_transactions')
-    stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name='new_license_transactions')
-    remarks = models.TextField(blank=True, null=True)
-    timestamp = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = 'new_license_application_transaction'
-        ordering = ['timestamp']
-
-    def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
-        if self.license_application.current_stage != self.stage:
-            self.license_application.current_stage = self.stage
-            self.license_application.save(update_fields=['current_stage'])
-
-class Objection(models.Model):
-    application = models.ForeignKey(NewLicenseApplication, on_delete=models.CASCADE, related_name='new_license_objections')
-    field_name = models.CharField(max_length=255, db_index=True)
-    remarks = models.TextField()
-    raised_by = models.ForeignKey('user.CustomUser', on_delete=models.SET_NULL, null=True, related_name='new_license_objections')
-    stage = models.ForeignKey('workflow.WorkflowStage', on_delete=models.SET_NULL, null=True, related_name='new_license_objections_stage')
-    is_resolved = models.BooleanField(default=False, db_index=True)
-    raised_on = models.DateTimeField(auto_now_add=True)
-    resolved_on = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        db_table = 'new_license_application_objection'
-        ordering = ['raised_on']
-
-'''

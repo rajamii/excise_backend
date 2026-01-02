@@ -48,6 +48,7 @@ def _create_application(request, workflow_name: str, serializer_cls):
             workflow=workflow,
             current_stage=initial_stage,
             application_id=new_application_id,
+            applicant=request.user
         )   
        
         sp = StagePermission.objects.filter(stage=initial_stage, can_process=True).first()
@@ -88,6 +89,7 @@ def list_license_applications(request):
         applications = NewLicenseApplication.objects.all()
     elif role == "licensee":
         applications = NewLicenseApplication.objects.filter(
+            applicant=request.user,
             current_stage__name__in=[ "level_1", "awaiting_payment", "level_1_objection", "level_2_objection", "level_3_objection", "level_4_objection", "level_5_objection", "approved"]
         )
     else:
@@ -159,10 +161,11 @@ def dashboard_counts(request):
         }
 
     elif role == 'licensee':
+        base_qs = NewLicenseApplication.objects.filter(applicant=request.user)
         counts = {
-            "applied": NewLicenseApplication.objects.filter(
+            "applied": base_qs.filter(
                 current_stage__name__in=['level_1', 'level_2', 'level_3', 'level_4', 'level_5']).count(),
-            "pending": NewLicenseApplication.objects.filter(
+            "pending": base_qs.filter(
                 current_stage__name__in=[
                     'level_1_objection',
                     'level_2_objection',
@@ -172,10 +175,10 @@ def dashboard_counts(request):
                     'awaiting_payment'
                 ]
             ).count(),
-            "approved": NewLicenseApplication.objects.filter(
+            "approved": base_qs.filter(
                 current_stage__name='approved', is_approved=True
             ).count(),
-            "rejected": NewLicenseApplication.objects.filter(
+            "rejected": base_qs.filter(
                 current_stage__name__in=[
                     'rejected_by_level_1',
                     'rejected_by_level_2',
@@ -264,15 +267,16 @@ def application_group(request):
         return Response(result)
 
     elif role == 'licensee':
+        base_qs = NewLicenseApplication.objects.filter(applicant=request.user)
         result = {
             "applied": NewLicenseApplicationSerializer(
-                NewLicenseApplication.objects.filter(current_stage__name__in=[
+                base_qs.filter(current_stage__name__in=[
                     'level_1', 'level_2', 'level_3', 'level_4', 'level_5'
                     ]),
                 many=True
             ).data,
             "pending": NewLicenseApplicationSerializer(
-                NewLicenseApplication.objects.filter(current_stage__name__in=[
+                base_qs.filter(current_stage__name__in=[
                     'level_1_objection',
                     'level_2_objection',
                     'level_3_objection',
@@ -283,11 +287,11 @@ def application_group(request):
                 many=True
             ).data,
             "approved": NewLicenseApplicationSerializer(
-                NewLicenseApplication.objects.filter(current_stage__name='approved'),
+                base_qs.filter(current_stage__name='approved'),
                 many=True
             ).data,
             "rejected": NewLicenseApplicationSerializer(
-                NewLicenseApplication.objects.filter(current_stage__name__in=[
+                base_qs.filter(current_stage__name__in=[
                     'rejected_by_level_1', 'rejected_by_level_2',
                     'rejected_by_level_3', 'rejected_by_level_4',
                     'rejected_by_level_5', 'rejected'

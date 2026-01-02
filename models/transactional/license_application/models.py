@@ -4,6 +4,7 @@ from django.utils.timezone import now
 from . import helpers
 from models.masters.core.models import District , LicenseCategory ,LicenseType
 from models.masters.core.models import PoliceStation, Subdivision
+from auth.user.models import CustomUser
 from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
 
 
@@ -79,6 +80,12 @@ class LicenseApplication(models.Model):
     is_license_fee_paid = models.BooleanField(default=False)
 
     is_license_category_updated = models.BooleanField(default=False)  # For Level 2
+
+    applicant = models.ForeignKey(
+        CustomUser,
+        on_delete=models.PROTECT,
+        related_name='new_license_applications'
+    )
 
     # Polymorphic links
     transactions = GenericRelation(
@@ -179,6 +186,7 @@ class LicenseApplication(models.Model):
             models.Index(fields=['license_type']),
             models.Index(fields=['excise_subdivision']),
             models.Index(fields=['current_stage']),
+            models.Index(fields=['applicant']),
         ]
 
 

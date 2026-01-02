@@ -59,6 +59,12 @@ class SalesmanBarmanModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    applicant = models.ForeignKey(
+        CustomUser,
+        on_delete=models.PROTECT,
+        related_name='salesman_barman_applications'
+    )
+
      # Polymorphic links
     transactions = GenericRelation(
         Transaction,
@@ -136,41 +142,5 @@ class SalesmanBarmanModel(models.Model):
             models.Index(fields=['excise_district']),
             models.Index(fields=['license_category']),
             models.Index(fields=['current_stage']),
+            models.Index(fields=['applicant']),
         ]
-
-'''  
-class Transaction(models.Model):
-    application = models.ForeignKey(SalesmanBarmanModel, on_delete=models.CASCADE, related_name='transactions')
-    performed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='+')
-    forwarded_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, related_name='+')
-    forwarded_to = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True)
-    stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT)
-    remarks = models.TextField(blank=True)
-    timestamp = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = 'salesman_barman_transaction'
-        ordering = ['-timestamp']
-
-    def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
-        if self.application.current_stage != self.stage:
-            self.application.current_stage = self.stage
-            self.application.save(update_fields=['current_stage'])
-
-
-class Objection(models.Model):
-    application = models.ForeignKey(SalesmanBarmanModel, on_delete=models.CASCADE, related_name='objections')
-    field_name = models.CharField(max_length=255, db_index=True)
-    remarks = models.TextField()
-    raised_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True)
-    stage = models.ForeignKey(WorkflowStage, on_delete=models.SET_NULL, null=True)
-    is_resolved = models.BooleanField(default=False)
-    raised_on = models.DateTimeField(auto_now_add=True)
-    resolved_on = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        db_table = 'salesman_barman_objection'
-        ordering = ['raised_on']
-
-'''    
