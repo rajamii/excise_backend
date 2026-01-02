@@ -5,7 +5,7 @@ from rest_framework.views import APIView
 from auth.roles.permissions import make_permission
 from rest_framework.permissions import IsAuthenticated
 from auth.user.models import CustomUser
-from auth.user.serializer import UserSerializer, UserCreateSerializer, LoginSerializer
+from auth.user.serializer import UserSerializer, UserCreateSerializer, LoginSerializer, LicenseeSignupSerializer
 from typing import cast
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 
@@ -38,6 +38,38 @@ def register_user(request):
             'user_id': user.username,
         }, status=status.HTTP_201_CREATED)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# Licensee self-signup (public endpoint)
+@api_view(['POST'])
+@permission_classes([])  # Public access
+def licensee_signup(request):
+    
+    serializer = LicenseeSignupSerializer(data=request.data)
+    if serializer.is_valid():
+        user = serializer.save()
+
+        # Generate tokens
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'success': True,
+            'message': 'Registration successful. You can now log in.',
+            'user': {
+                'username': user.username,
+                'phone_number': user.phone_number,
+                'email': user.email
+            },
+            'tokens': {
+                'access': str(refresh.access_token),
+                'refresh': str(refresh)
+            }
+        }, status=status.HTTP_201_CREATED)
+
+    return Response({
+        'success': False,
+        'errors': serializer.errors
+    }, status=status.HTTP_400_BAD_REQUEST)
+
 
 class UserListView(generics.ListAPIView):
     """

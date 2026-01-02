@@ -1,7 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager
 from django.core.validators import validate_email
-from django.db.models.functions import Abs
+from django.conf import settings
 from auth.user.validators import validate_name, validate_phone_number
 from auth.roles.models import Role
 from models.masters.core.models import District, Subdivision
@@ -167,4 +167,20 @@ class OTP(models.Model):
 
     def __str__(self):
         return f"{self.phone_number} - {self.otp}"   
+
+
+class LicenseeProfile(models.Model):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='licensee_profile'
+    )
+
+    pan_number = models.CharField(max_length=10, unique=True)
+    
+
+    class Meta:
+        db_table = 'licensee_profile'
+        verbose_name = 'Licensee Profile'
+        verbose_name_plural = 'Licensee Profiles'
  
