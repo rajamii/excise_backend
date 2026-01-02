@@ -67,6 +67,14 @@ INSTALLED_APPS = [
     'models.masters.core',
     'models.masters.license',
     'models.masters.contact_us',
+
+    'models.masters.supply_chain.bulk_spirit',
+    'models.masters.supply_chain.distributor_data_details',
+    'models.masters.supply_chain.ena_checkpost',
+    'models.masters.supply_chain.ena_purpose',
+    'models.masters.supply_chain.liquor_data',
+    'models.masters.supply_chain.ena_distillery_details',
+    'models.masters.supply_chain.status_master',
     
 
     # transcational models
@@ -77,6 +85,10 @@ INSTALLED_APPS = [
     'models.transactional.new_license_application',
     'models.transactional.salesman_barman',
     'models.transactional.logs',
+
+    'models.transactional.supply_chain.ena_transit_permit_details',
+    'models.transactional.supply_chain.ena_revalidation_details',
+    'models.transactional.supply_chain.ena_cancellation_details',
 
     # auth models 
     'auth.roles',
