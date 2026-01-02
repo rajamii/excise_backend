@@ -1,6 +1,7 @@
 from django.urls import path, include
 from .views import (
     register_user,
+    licensee_signup,
     UserListView,
     UserDetailView,
     CurrentUserAPI,
@@ -30,6 +31,7 @@ urlpatterns = [
 
     # User management
     path('register/', register_user, name='user-register'),
+    path('register/licensee/', licensee_signup, name='licensee-signup'),
     path('', UserListView.as_view(), name='user-list'),
     path('<int:pk>/detail/', UserDetailView.as_view(), name='user-detail'),
     path('me/', CurrentUserAPI.as_view(), name='current-user'),
