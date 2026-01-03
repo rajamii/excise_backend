@@ -3,6 +3,7 @@ from datetime import timedelta
 from django.utils import timezone
 from django.db import transaction
 from auth.user.models import OTP
+from django.core.cache import cache
 
 def get_new_otp(phone_number):
 
@@ -45,4 +46,12 @@ def verify_otp(otp_id, phone_number, otp_input):
         return False, "Invalid OTP or already used."
     
 
+def mark_phone_as_verified(phone_number: str):
+    """Mark this phone as verified for 10 minutes"""
+    cache.set(f"phone_verified_{phone_number}", True, timeout=600)  # 10 minutes
 
+def is_phone_verified(phone_number: str) -> bool:
+    return cache.get(f"phone_verified_{phone_number}") is True
+
+def clear_phone_verified(phone_number: str):
+    cache.delete(f"phone_verified_{phone_number}")
