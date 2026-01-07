@@ -49,7 +49,9 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
             'is_approved',
             'IsActive',
             'created_at',
-            'updated_at'
+            'updated_at',
+            'applicant',
+            'workflow'
             ]
 
     def get_latest_transaction(self, obj):

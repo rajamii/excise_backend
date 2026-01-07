@@ -83,7 +83,7 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
     class Meta:
         model = LicenseApplication
         fields = '__all__'
-        read_only_fields = ['application_id', 'current_stage_name', 'is_approved']
+        read_only_fields = ['application_id', 'current_stage_name', 'is_approved', 'applicant', 'workflow']
 
     def get_latest_transaction(self, obj):
         transaction = obj.transactions.order_by('-timestamp').first()

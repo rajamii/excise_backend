@@ -79,7 +79,7 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = [
             'application_id', 'current_stage', 'is_approved', 'print_count',
-            'is_print_fee_paid', 'created_at', 'updated_at'
+            'is_print_fee_paid', 'created_at', 'updated_at', 'applicant', 'workflow'
         ]
 
     def validate(self, data):
