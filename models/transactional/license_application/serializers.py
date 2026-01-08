@@ -45,6 +45,7 @@ class ResolveObjectionSerializer(serializers.ModelSerializer):
     police_station = CodeRelatedField(
         queryset=PoliceStation.objects.all(), lookup_field='police_station_code', required=False
     )
+    
 
     class Meta:
         model = LicenseApplication
@@ -74,8 +75,8 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
     workflow = serializers.PrimaryKeyRelatedField(read_only=True)
     current_stage_name = serializers.CharField(source = 'current_stage.name', read_only=True)
     is_approved = serializers.BooleanField(read_only=True)
-    # transactions = TransactionSerializer(many=True, read_only=True)
-    # latest_transaction = serializers.SerializerMethodField()
+    
+    renewal_of_license_id = serializers.CharField(source='renewal_of.license_id', read_only=True)
 
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)
     objections = WorkflowObjectionSerializer(many=True, read_only=True)

@@ -20,8 +20,7 @@ urlpatterns = [
     path('apply/', views.create_salesman_barman, name='apply'),
     path('list/', views.list_salesman_barman, name='list'),
     path('detail/<everything:application_id>/', views.salesman_barman_detail, name='detail'),
-    # path('<everything:application_id>/advance/<int:stage_id>/', views.advance_application, name='advance'),
-    # path('<everything:application_id>/next-stages/', views.get_next_stages, name='next-stages'),
+    path('renew/<everything:license_id>/', views.initiate_renewal, name='renew'),
     path('dashboard-counts/', views.dashboard_counts, name='sb-dashboard-counts'),
     path('list-by-status/', views.application_group, name='applications-by-status'),
 ]

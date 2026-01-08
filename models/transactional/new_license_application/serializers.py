@@ -71,6 +71,7 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     site_subdivision_name = serializers.CharField(source='site_subdivision.subdivision', read_only=True)
     police_station_name = serializers.CharField(source='police_station.police_station', read_only=True)
 
+    renewal_of_license_id = serializers.CharField(source='renewal_of.license_id', read_only=True)
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)
     objections = WorkflowObjectionSerializer(many=True, read_only=True)
 

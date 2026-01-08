@@ -10,6 +10,7 @@ from auth.roles.permissions import HasAppPermission
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.models import Workflow, StagePermission, WorkflowStage
 from auth.workflow.services import WorkflowService
+from models.masters.license.models import License
 from .models import SalesmanBarmanModel
 from .serializers import SalesmanBarmanSerializer
 
@@ -81,6 +82,104 @@ def _create_application(request, workflow_name: str, serializer_cls):
 def create_salesman_barman(request):
     return _create_application(request, "Salesman Barman", SalesmanBarmanSerializer)
 
+
+@api_view(['POST'])
+@permission_classes([HasStagePermission])
+def initiate_renewal(request, license_id):
+    """
+    Initiate renewal by creating a pre-filled new application from an existing license.
+    """
+    old_license = get_object_or_404(License, license_id=license_id, source_type='salesman_barman')
+
+    old_app = old_license.source_application
+    if not isinstance(old_app, SalesmanBarmanModel):
+        return Response({"detail": "Invalid license source."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if old_app.applicant != request.user:
+        return Response({"detail": "You can only renew your own license."}, status=status.HTTP_403_FORBIDDEN)
+
+    # Optional early renewal restriction (adjust or remove as needed)
+    from datetime import date, timedelta
+    today = date.today()
+    if old_license.valid_up_to > today + timedelta(days=90):  # More than 90 days left
+        return Response({
+            "detail": f"Renewal not allowed yet. License valid until {old_license.valid_up_to.strftime('%d/%m/%Y')}. "
+                     "You can renew within the last 90 days or after expiry."
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # Build pre-filled data
+    new_data = {
+        'role': old_app.role,
+        'firstName': old_app.firstName,
+        'middleName': old_app.middleName or '',
+        'lastName': old_app.lastName,
+        'fatherHusbandName': old_app.fatherHusbandName,
+        'gender': old_app.gender,
+        'dob': old_app.dob.strftime('%Y-%m-%d'),  # Ensure correct date format
+        'nationality': old_app.nationality,
+        'address': old_app.address,
+        'pan': old_app.pan,
+        'aadhaar': old_app.aadhaar,
+        'mobileNumber': old_app.mobileNumber,
+        'emailId': old_app.emailId or '',
+        'sikkimSubject': old_app.sikkimSubject,
+        'excise_district': old_app.excise_district,          # Note: _id for PK
+        'license_category': old_app.license_category,        # Note: _id for PK
+        'license': old_app.license,                          # Note: _id for PK
+    }
+
+    # Files: We cannot auto-copy files directly in background, but we can allow existing ones
+    # Since _create_application uses MultiPartParser, we need to simulate request.data + request.FILES
+    # Better approach: Manually create the instance after generating application_id
+
+    # === MANUAL CREATION TO BYPASS SERIALIZER FILE ISSUE ===
+    from django.utils.timezone import now
+
+    # Generate application_id manually (same logic as model)
+    district_code = str(old_app.excise_district.district_code)
+    fin_year = SalesmanBarmanModel.generate_fin_year()
+    prefix = f"SBM/{district_code}/{fin_year}"
+
+    with transaction.atomic():
+        last_app = SalesmanBarmanModel.objects.filter(
+            application_id__startswith=prefix
+        ).select_for_update().order_by('-application_id').first()
+
+        last_number = int(last_app.application_id.split('/')[-1]) if last_app else 0
+        new_number = str(last_number + 1).zfill(4)
+        new_application_id = f"{prefix}/{new_number}"
+
+        # Get workflow and initial stage
+        workflow = get_object_or_404(Workflow, name="Salesman Barman")
+        initial_stage = workflow.stages.get(is_initial=True)
+
+        # Create the application instance directly
+        new_application = SalesmanBarmanModel.objects.create(
+            application_id=new_application_id,
+            workflow=workflow,
+            current_stage=initial_stage,
+            applicant=request.user,
+            renewal_of=old_license,
+            **new_data,
+            passPhoto=old_app.passPhoto,
+            aadhaarCard=old_app.aadhaarCard,
+            residentialCertificate=old_app.residentialCertificate,
+            dateofBirthProof=old_app.dateofBirthProof,
+        )
+
+    # Log submission transaction
+    WorkflowService.submit_application(
+        application=new_application,
+        user=request.user,
+        remarks="Renewal application auto-submitted (pre-filled from previous license)"
+    )
+
+    # Return fresh serialized data
+    serializer = SalesmanBarmanSerializer(new_application)
+    return Response({
+        "detail": "Renewal application initiated and submitted successfully.",
+        "application": serializer.data
+    }, status=status.HTTP_201_CREATED)
 
 
 @permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])

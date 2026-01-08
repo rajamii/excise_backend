@@ -28,20 +28,7 @@ urlpatterns = [
     # List applications filtered by their current status (e.g., pending, approved, etc.) (GET)
     path('list-by-status/', views.application_group, name='applications-by-status'),
 
-    # Get Next Stages
-    # path('<everything:application_id>/next-stages/', views.get_next_stages, name='license-application-next-stages'),
-
-    # Advance an application to the next stage in the workflow (e.g., review -> approval) (POST)
-    # path('<everything:application_id>/advance/<int:stage_id>/', views.advance_license_application, name='advance-license-application'),
-
-    # Raise Objection
-    # path('<everything:application_id>/raise-objection/', views.raise_objection, name='raise-objection'),
-
-    # Get Objections
-    # path('<everything:application_id>/objections/', views.get_objections, name='get-objections'),
-
-    # Resolve Objections
-    # path('<everything:application_id>/resolve-objections/', views.resolve_objections, name='resolve-objections'),
+    path('renew/<everything:license_id>/', views.initiate_renewal, name='renew'),
 
     # Print License
     path('<everything:application_id>/print/', views.print_license_view, name='print-license'),

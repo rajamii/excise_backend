@@ -1,4 +1,5 @@
 from django.shortcuts import get_object_or_404
+from datetime import date, timedelta
 from django.db import transaction
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
@@ -9,6 +10,7 @@ from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
 from auth.workflow.models import Workflow, StagePermission
 from .models import NewLicenseApplication
+from models.masters.license.models import License
 from .serializers import NewLicenseApplicationSerializer, ObjectionSerializer, ResolveObjectionSerializer
 from auth.workflow.models import WorkflowStage, WorkflowTransition, Objection
 from django.core.exceptions import ValidationError, PermissionDenied
@@ -78,6 +80,99 @@ def _create_application(request, workflow_name: str, serializer_cls):
 @permission_classes([HasStagePermission])
 def create_new_license_application(request):
     return _create_application(request, "License Approval", NewLicenseApplicationSerializer)
+
+
+@api_view(['POST'])
+@permission_classes([HasStagePermission])
+def initiate_renewal(request, license_id):
+    """
+    Initiate renewal by creating a pre-filled new application from an existing license.
+    """
+    old_license = get_object_or_404(License, license_id=license_id, source_type='new_license_application')
+
+    old_app = old_license.source_application
+    if not isinstance(old_app, NewLicenseApplication):
+        return Response({"detail": "Invalid license source."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if old_app.applicant != request.user:
+        return Response({"detail": "You can only renew your own license."}, status=status.HTTP_403_FORBIDDEN)
+
+    today = date.today()
+    if old_license.valid_up_to > today + timedelta(days=90):
+        return Response({
+            "detail": f"Renewal not allowed yet. License valid until {old_license.valid_up_to.strftime('%d/%m/%Y')}. "
+                     "You can renew within the last 90 days or after expiry."
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # Build pre-filled data
+    new_data = {
+        'license_type': old_app.license_type,
+        'license_category': old_app.license_category,
+        'license_sub_category': old_app.license_sub_category,
+        'establishment_name': old_app.establishment_name,
+        'site_type': old_app.site_type,
+        'applicant_name': old_app.applicant_name,
+        'father_husband_name': old_app.father_husband_name,
+        'dob': old_app.dob,
+        'gender': old_app.gender,
+        'nationality': old_app.nationality,
+        'residential_status': old_app.residential_status,
+        'present_address': old_app.present_address,
+        'permanent_address': old_app.permanent_address,
+        'pan': old_app.pan,
+        'email': old_app.email,
+        'mobile_number': old_app.mobile_number,
+        'mode_of_operation': old_app.mode_of_operation,
+        'site_district': old_app.site_district,
+        'site_subdivision': old_app.site_subdivision,
+        'road_name': old_app.road_name,
+        'ward_name': old_app.ward_name,
+        'police_station': old_app.police_station,
+        'pin_code': old_app.pin_code,
+        'company_name': old_app.company_name,
+        'company_pan': old_app.company_pan,
+        'company_cin': old_app.company_cin,
+        'company_email': old_app.company_email,
+        'company_phone_number': old_app.company_phone_number,
+    }
+
+    # Manual creation
+    district_code = str(old_app.site_district.district_code)
+    fin_year = NewLicenseApplication.generate_fin_year()
+    prefix = f"NLI/{district_code}/{fin_year}"
+
+    with transaction.atomic():
+        last_app = NewLicenseApplication.objects.filter(
+            application_id__startswith=prefix
+        ).select_for_update().order_by('-application_id').first()
+
+        last_number = int(last_app.application_id.split('/')[-1]) if last_app else 0
+        new_number = str(last_number + 1).zfill(4)
+        new_application_id = f"{prefix}/{new_number}"
+
+        workflow = get_object_or_404(Workflow, name="License Approval")  # Adjust workflow name if different
+        initial_stage = workflow.stages.get(is_initial=True)
+
+        new_application = NewLicenseApplication.objects.create(
+            application_id=new_application_id,
+            workflow=workflow,
+            current_stage=initial_stage,
+            applicant=request.user,
+            renewal_of=old_license,
+            **new_data,
+        )
+
+    WorkflowService.submit_application(
+        application=new_application,
+        user=request.user,
+        remarks="Renewal application auto-submitted"
+    )
+
+    serializer = NewLicenseApplicationSerializer(new_application)
+    return Response({
+        "detail": "Renewal application initiated and submitted successfully.",
+        "application": serializer.data
+    }, status=status.HTTP_201_CREATED)
 
 
 @permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])

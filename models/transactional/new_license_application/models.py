@@ -2,8 +2,10 @@ from django.db import models, transaction
 from django.contrib.contenttypes.fields import GenericRelation
 from django.utils.timezone import now
 from . import helpers
+from models.masters.license.models import License
 from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseSubcategory, LicenseType
 from auth.user.models import CustomUser
+
 from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
 
 def upload_document_path(instance, filename):
@@ -91,6 +93,14 @@ class NewLicenseApplication(models.Model):
         CustomUser,
         on_delete=models.PROTECT,
         related_name='license_applications'
+    )
+
+    renewal_of = models.ForeignKey(
+        License,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name='new_license_renewal'
     )
 
     # Polymorphic links

@@ -65,6 +65,14 @@ class SalesmanBarmanModel(models.Model):
         related_name='salesman_barman_applications'
     )
 
+    renewal_of = models.ForeignKey(
+        License,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name='salesman_barman_renewal'
+    )
+
      # Polymorphic links
     transactions = GenericRelation(
         Transaction,
