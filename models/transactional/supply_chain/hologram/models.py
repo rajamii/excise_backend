@@ -64,6 +64,7 @@ class HologramRequest(models.Model):
     quantity = models.IntegerField()
     hologram_type = models.CharField(max_length=50, default='LOCAL') # LOCAL, EXPORT, DEFENCE
     issued_assets = models.JSONField(default=list, blank=True) # allocated rolls/serials
+    rolls_assigned = models.JSONField(default=list, blank=True, help_text='Assigned rolls for daily register - cartoon_number, from_serial, to_serial, quantity')
 
     workflow = models.ForeignKey(Workflow, on_delete=models.PROTECT, related_name='hologram_requests', null=True, blank=True)
     current_stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name='hologram_requests', null=True, blank=True)

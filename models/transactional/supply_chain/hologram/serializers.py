@@ -92,8 +92,14 @@ class HologramRequestSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = HologramRequest
-        fields = ['id', 'ref_no', 'submission_date', 'usage_date', 'quantity', 'hologram_type', 'issued_assets', 'licensee', 'licensee_name', 'workflow', 'workflow_name', 'current_stage', 'status', 'stage_id', 'allowed_actions', 'available_cartons']
+        fields = ['id', 'ref_no', 'submission_date', 'usage_date', 'quantity', 'hologram_type', 'issued_assets', 'rolls_assigned', 'licensee', 'licensee_name', 'workflow', 'workflow_name', 'current_stage', 'status', 'stage_id', 'allowed_actions', 'available_cartons']
         read_only_fields = ('ref_no', 'submission_date', 'workflow', 'current_stage', 'licensee')
+    
+    def to_representation(self, instance):
+        """Add logging to debug issued_assets"""
+        ret = super().to_representation(instance)
+        print(f"DEBUG SERIALIZER: Request {ret.get('ref_no')} - issued_assets: {ret.get('issued_assets')}")
+        return ret
 
     def get_available_cartons(self, obj):
         """

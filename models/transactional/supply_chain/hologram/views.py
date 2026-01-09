@@ -344,6 +344,11 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
             # If assets were issued (e.g. on approval), update their status in Procurement inventory
             if issued_assets:
                 self._update_inventory_status(instance, issued_assets)
+                
+                # CRITICAL FIX: Populate rolls_assigned for daily register dropdown
+                instance.rolls_assigned = issued_assets
+                instance.save(update_fields=['rolls_assigned'])
+                print(f"DEBUG: Saved rolls_assigned for {instance.ref_no}: {len(issued_assets)} rolls")
             
         return Response(self.get_serializer(instance).data)
 
