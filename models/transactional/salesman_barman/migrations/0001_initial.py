@@ -13,7 +13,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('core', '0001_initial'),
-        ('license', '0002_initial'),
+        ('license', '0001_initial'),
         ('roles', '0001_initial'),
         ('workflow', '0002_alter_workflowtransition_unique_together'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),

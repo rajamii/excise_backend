@@ -73,7 +73,9 @@ INSTALLED_APPS = [
     'models.masters.supply_chain.ena_purpose',
     'models.masters.supply_chain.liquor_data',
     'models.masters.supply_chain.ena_distillery_details',
-    'models.masters.supply_chain.status_master',
+    'models.masters.supply_chain.profile',
+    # 'models.masters.supply_chain.vehicles',
+    # 'models.masters.supply_chain.status_master',
 
     # transcational models
     'models.transactional',
@@ -87,6 +89,7 @@ INSTALLED_APPS = [
     'models.transactional.supply_chain.ena_transit_permit_details',
     'models.transactional.supply_chain.ena_revalidation_details',
     'models.transactional.supply_chain.ena_cancellation_details',
+    'models.transactional.supply_chain.hologram',
     # auth models 
     'auth.roles',
     'auth.user',

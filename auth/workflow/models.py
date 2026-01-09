@@ -16,7 +16,7 @@ class Workflow(models.Model):
 class WorkflowStage(models.Model):
     """A stage in a workflow (e.g., 'Payment Pending')."""
     workflow = models.ForeignKey(Workflow, on_delete=models.CASCADE, related_name="stages")
-    name = models.CharField(max_length=50)  # e.g., "level_1_review"
+    name = models.CharField(max_length=255)  # Increased from 50 to 255 to match StatusMaster
     description = models.CharField(max_length=255, blank=True)
     is_initial = models.BooleanField(default=False)
     is_final = models.BooleanField(default=False)

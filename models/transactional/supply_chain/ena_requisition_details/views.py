@@ -13,6 +13,15 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         queryset = EnaRequisitionDetail.objects.all()
+        
+        # Filter by Licensee ID if user has a profile
+        try:
+            if hasattr(self.request.user, 'supply_chain_profile'):
+                 profile = self.request.user.supply_chain_profile
+                 queryset = queryset.filter(licensee_id=profile.licensee_id)
+        except Exception:
+            pass # Or handle specific roles if needed
+
         our_ref_no = self.request.query_params.get('our_ref_no', None)
         if our_ref_no is not None:
             queryset = queryset.filter(our_ref_no=our_ref_no)
@@ -79,7 +88,7 @@ class PerformRequisitionActionAPIView(APIView):
     """
     def post(self, request, pk):
         try:
-            from models.masters.supply_chain.status_master.models import StatusMaster, WorkflowRule
+             # from models.masters.supply_chain.status_master.models import StatusMaster, WorkflowRule # Removed
             
             action = request.data.get('action')
             if not action or action not in ['APPROVE', 'REJECT']:
@@ -112,45 +121,95 @@ class PerformRequisitionActionAPIView(APIView):
                 role = 'licensee'
             
             if not role:
-                return Response({
+                 return Response({
                     'status': 'error',
                     'message': f'Unauthorized role: {user_role_name}'
                 }, status=status.HTTP_403_FORBIDDEN)
 
-            # Find the rule in the database
-            try:
-                rule = WorkflowRule.objects.get(
-                    current_status__status_code=current_status_code,
-                    action=action,
-                    allowed_role=role
-                )
-                new_status = rule.next_status
-                
-            except WorkflowRule.DoesNotExist:
+            # Determine User Role
+            user_role_name = request.user.role.name if hasattr(request.user, 'role') and request.user.role else None
+            
+            if not user_role_name:
+                return Response({'status': 'error', 'message': 'User role not found'}, status=status.HTTP_403_FORBIDDEN)
+
+            # --- Use WorkflowService to advance stage ---
+            from auth.workflow.services import WorkflowService
+            from auth.workflow.models import WorkflowStage
+            
+            # Ensure current_stage is set (if missing for some reason)
+            if not requisition.current_stage:
+                 try:
+                     current_stage = WorkflowStage.objects.get(workflow__name='Supply Chain', name=requisition.status)
+                     requisition.current_stage = current_stage
+                     requisition.save()
+                 except WorkflowStage.DoesNotExist:
+                     return Response({'status': 'error', 'message': f'Current stage undefined and could not be inferred from status {requisition.status}'}, status=400)
+            
+            # Context for validation (if rules use condition)
+            context = {
+                "role": role,  # role determined above
+                "action": action
+            }
+
+            # WorkflowService.advance_stage expects:
+            # - application
+            # - user
+            # - target_stage (We need to find this first via validate_transition logic or just find it ourselves)
+            
+            # Actually, WorkflowService.advance_stage takes `target_stage`. We need to determine which stage is next.
+            # WorkflowService.get_next_stages(application) returns generic transitions.
+            # We filter for the one matching our role/action.
+            
+            transitions = WorkflowService.get_next_stages(requisition)
+            target_transition = None
+            
+            for t in transitions:
+                cond = t.condition or {}
+                # Match logic: condition role/action must match request
+                if cond.get('role') == role and cond.get('action') == action:
+                    target_transition = t
+                    break
+            
+            if not target_transition:
                 return Response({
                     'status': 'error',
-                    'message': f'No workflow rule defined for Action: {action} on Status: {requisition.status} ({current_status_code}) for Role: {role}'
+                    'message': f'No valid transition for Action: {action} on Stage: {requisition.current_stage.name} for Role: {role}'
                 }, status=status.HTTP_400_BAD_REQUEST)
-            except WorkflowRule.MultipleObjectsReturned:
+                
+            try:
+                WorkflowService.advance_stage(
+                    application=requisition,
+                    user=request.user,
+                    target_stage=target_transition.to_stage,
+                    context=context, # Context might be used for extra validation in service
+                    remarks=f"Action: {action}"
+                )
+                
+                # Sync back to status/status_code for legacy
+                # from models.masters.supply_chain.status_master.models import StatusMaster # Removed
+                new_stage_name = target_transition.to_stage.name
+                requisition.status = new_stage_name
+                
+                # status_obj = StatusMaster.objects.filter(status_name=new_stage_name).first() # Removed
+                # if status_obj:
+                #     requisition.status_code = status_obj.status_code
+                
+                requisition.save() # status update
+                
+                # Return updated requisition
+                serializer = EnaRequisitionDetailSerializer(requisition)
+                return Response({
+                    'status': 'success',
+                    'message': f'Requisition status updated to {new_stage_name}',
+                    'data': serializer.data
+                }, status=status.HTTP_200_OK)
+
+            except Exception as e:
                  return Response({
                     'status': 'error',
-                    'message': f'Multiple workflow rules found. Configuration error.'
+                    'message': str(e)
                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            
-            # Update the requisition status
-            requisition.status = new_status.status_name
-            requisition.status_code = new_status.status_code
-            requisition.save()
-            
-            # Return updated requisition
-            serializer = EnaRequisitionDetailSerializer(requisition)
-            
-            return Response({
-                'status': 'success',
-                'message': f'Requisition status updated to {new_status.status_name}',
-                'data': serializer.data
-            }, status=status.HTTP_200_OK)
-            
+
         except EnaRequisitionDetail.DoesNotExist:
             return Response({
                 'status': 'error',

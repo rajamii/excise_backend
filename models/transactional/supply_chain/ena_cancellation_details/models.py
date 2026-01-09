@@ -1,4 +1,6 @@
 from django.db import models
+from django.contrib.contenttypes.fields import GenericRelation
+from auth.workflow.models import Transaction, Objection, Workflow, WorkflowStage
 
 
 class EnaCancellationDetail(models.Model):
@@ -31,6 +33,22 @@ class EnaCancellationDetail(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    workflow = models.ForeignKey(Workflow, on_delete=models.PROTECT, related_name='ena_cancellations', null=True, blank=True)
+    current_stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name='ena_cancellations', null=True, blank=True)
+
+    # Polymorphic links
+    transactions = GenericRelation(
+        Transaction,
+        content_type_field='content_type',
+        object_id_field='object_id',
+        related_query_name='ena_cancellation_detail'
+    )
+    objections = GenericRelation(
+        Objection,
+        content_type_field='content_type',
+        object_id_field='object_id',
+        related_query_name='ena_cancellation_detail'
+    )
 
     class Meta:
         db_table = 'ena_cancellation_detail'

@@ -36,7 +36,7 @@ class Role(models.Model):
     
     role_precedence = models.IntegerField(
         default=0,
-        validators=[MinValueValidator(0), MaxValueValidator(9)],
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
         help_text="Higher number = higher privileges"
     )
 
