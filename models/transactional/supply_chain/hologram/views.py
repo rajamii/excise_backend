@@ -156,12 +156,17 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         try:
             print(f"DEBUG: Syncing {len(carton_details)} cartons to HologramRollsDetails for {procurement.ref_no}")
             
-            # Determine type from procurement quantities if not in item
-            proc_type = 'LOCAL'
+            # Collect all procurement types for fallback logic
+            proc_types = []
+            if procurement.local_qty and procurement.local_qty > 0:
+                proc_types.append('LOCAL')
             if procurement.export_qty and procurement.export_qty > 0:
-                proc_type = 'EXPORT'
-            elif procurement.defence_qty and procurement.defence_qty > 0:
-                proc_type = 'DEFENCE'
+                proc_types.append('EXPORT')
+            if procurement.defence_qty and procurement.defence_qty > 0:
+                proc_types.append('DEFENCE')
+            
+            # Default fallback type (for backward compatibility)
+            default_proc_type = proc_types[0] if proc_types else 'LOCAL'
                 
             for item in carton_details:
                 carton_num = item.get('cartoonNumber') or item.get('cartoon_number') or item.get('carton_number')
@@ -169,7 +174,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     continue
                 
                 defaults = {
-                     'type': item.get('type') or proc_type,
+                     'type': item.get('type') or default_proc_type,
                      'from_serial': item.get('fromSerial') or item.get('from_serial'),
                      'to_serial': item.get('toSerial') or item.get('to_serial'),
                      'total_count': item.get('numberOfHolograms') or item.get('number_of_holograms') or item.get('total_count', 0),
