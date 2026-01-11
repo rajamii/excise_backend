@@ -615,10 +615,29 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
             if target_procurement and target_detail_index >= 0:
                 detail = target_procurement.carton_details[target_detail_index]
                 
-                # Calculate new values
-                current_used = int(detail.get('used_qty', 0))
-                current_damaged = int(detail.get('damage_qty', 0))
-                total_count = int(detail.get('numberOfHolograms') or detail.get('number_of_holograms') or detail.get('total_count') or 0)
+                # CRITICAL FIX: Try to get the authoritative total_count from HologramRollsDetails first
+                # The JSON carton_details may have missing or incorrect values
+                roll_obj = None
+                try:
+                    roll_obj = HologramRollsDetails.objects.get(
+                        procurement=target_procurement,
+                        carton_number=carton_number
+                    )
+                except HologramRollsDetails.DoesNotExist:
+                    pass
+                
+                # Get total_count from DB model if available, otherwise fallback to JSON
+                if roll_obj and roll_obj.total_count > 0:
+                    total_count = roll_obj.total_count
+                    current_used = roll_obj.used
+                    current_damaged = roll_obj.damaged
+                    print(f"DEBUG: Using HologramRollsDetails values - total_count: {total_count}, used: {current_used}, damaged: {current_damaged}")
+                else:
+                    # Fallback to JSON values
+                    current_used = int(detail.get('used_qty', 0))
+                    current_damaged = int(detail.get('damage_qty', 0))
+                    total_count = int(detail.get('numberOfHolograms') or detail.get('number_of_holograms') or detail.get('total_count') or 0)
+                    print(f"DEBUG: Using carton_details JSON values - total_count: {total_count}, used: {current_used}, damaged: {current_damaged}")
                 
                 # Add this entry's usage
                 # instance.issued_qty is what was just consumed.
@@ -627,6 +646,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 
                 # Calculate available
                 new_available = max(0, total_count - new_used - new_damaged)
+                print(f"DEBUG: Calculated new_available = {total_count} - {new_used} - {new_damaged} = {new_available}")
                 
                 # Update Dictionary
                 detail['used_qty'] = new_used
@@ -655,19 +675,17 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 
                 # ALSO Update the new HologramRollsDetails table if it exists
                 # This ensures the new table stays in sync with usage
-                try:
+                # NOTE: We already fetched roll_obj earlier, so just reuse it
+                if roll_obj:
                     print(f"DEBUG: Syncing usage to HologramRollsDetails for Carton {carton_number}")
-                    roll_obj = HologramRollsDetails.objects.get(
-                        procurement=target_procurement,
-                        carton_number=carton_number
-                    )
                     roll_obj.used = new_used
                     roll_obj.damaged = new_damaged
                     roll_obj.available = new_available
                     roll_obj.status = detail['status']
                     roll_obj.save()
-                except HologramRollsDetails.DoesNotExist:
-                     print(f"DEBUG: HologramRollsDetails not found for {carton_number}, skipping sync.")
+                    print(f"DEBUG: Updated HologramRollsDetails - available: {roll_obj.available}, used: {roll_obj.used}")
+                else:
+                    print(f"DEBUG: HologramRollsDetails not found for {carton_number}, skipping sync.")
                 
         except Exception as e:
             print(f"ERROR updating procurement usage: {e}")
