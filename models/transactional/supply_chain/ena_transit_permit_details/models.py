@@ -30,6 +30,12 @@ class EnaTransitPermitDetail(models.Model):
     total_additional_excise = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
     total_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
 
+    # Workflow Status
+    workflow = models.ForeignKey('workflow.Workflow', on_delete=models.SET_NULL, null=True, blank=True, related_name='transit_permits')
+    status = models.CharField(max_length=100, default='Ready for Payment', blank=True)
+    status_code = models.CharField(max_length=50, default='TRP_01', blank=True)
+    current_stage = models.ForeignKey('workflow.WorkflowStage', on_delete=models.SET_NULL, null=True, blank=True, related_name='transit_permits')
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
