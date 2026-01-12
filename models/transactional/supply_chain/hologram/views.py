@@ -653,11 +653,11 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 detail['damage_qty'] = new_damaged
                 detail['available_qty'] = new_available
                 
-                # Status Update
+                # Status Update - AVAILABLE if still has quantity, COMPLETED if fully used
                 if new_available == 0:
                     detail['status'] = 'COMPLETED'
-                elif new_available < total_count:
-                    detail['status'] = 'IN_USE'
+                else:
+                    detail['status'] = 'AVAILABLE'
                 
                 # Save changes to JSON
                 target_procurement.carton_details[target_detail_index] = detail 
