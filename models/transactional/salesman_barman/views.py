@@ -115,7 +115,7 @@ def initiate_renewal(request, license_id):
         'lastName': old_app.lastName,
         'fatherHusbandName': old_app.fatherHusbandName,
         'gender': old_app.gender,
-        'dob': old_app.dob.strftime('%Y-%m-%d'),  # Ensure correct date format
+        'dob': old_app.dob.strftime('%Y-%m-%d'),
         'nationality': old_app.nationality,
         'address': old_app.address,
         'pan': old_app.pan,
@@ -123,19 +123,12 @@ def initiate_renewal(request, license_id):
         'mobileNumber': old_app.mobileNumber,
         'emailId': old_app.emailId or '',
         'sikkimSubject': old_app.sikkimSubject,
-        'excise_district': old_app.excise_district,          # Note: _id for PK
-        'license_category': old_app.license_category,        # Note: _id for PK
-        'license': old_app.license,                          # Note: _id for PK
+        'excise_district': old_app.excise_district,
+        'license_category': old_app.license_category,
+        'license': old_app.license,
     }
 
-    # Files: We cannot auto-copy files directly in background, but we can allow existing ones
-    # Since _create_application uses MultiPartParser, we need to simulate request.data + request.FILES
-    # Better approach: Manually create the instance after generating application_id
-
-    # === MANUAL CREATION TO BYPASS SERIALIZER FILE ISSUE ===
-    from django.utils.timezone import now
-
-    # Generate application_id manually (same logic as model)
+    # Generate application_id manually
     district_code = str(old_app.excise_district.district_code)
     fin_year = SalesmanBarmanModel.generate_fin_year()
     prefix = f"SBM/{district_code}/{fin_year}"

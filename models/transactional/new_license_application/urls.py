@@ -32,7 +32,4 @@ urlpatterns = [
 
     # Print License
     path('<everything:application_id>/print/', views.print_license_view, name='print-license'),
-
-    # Pay License Fee
-    # path('<everything:application_id>/pay-license-fee/', views.pay_license_fee, name="pay-licensee-fee"),
 ]
