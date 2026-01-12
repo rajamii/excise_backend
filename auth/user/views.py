@@ -3,22 +3,130 @@ from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.views import APIView
 from auth.roles.permissions import make_permission
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from auth.user.models import CustomUser
-from auth.user.serializer import UserSerializer, UserCreateSerializer, LoginSerializer
+from auth.user.serializer import UserSerializer, UserCreateSerializer, LoginSerializer, LicenseeSignupSerializer
 from typing import cast
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
-
-from auth.user.otp import get_new_otp, verify_otp   
+from auth.user.otp import get_new_otp, verify_otp, mark_phone_as_verified, clear_phone_verified, is_phone_verified
 from captcha.helpers import captcha_image_url
 from captcha.models import CaptchaStore
 from rest_framework_simplejwt.views import TokenRefreshView
 from ..roles.permissions import HasAppPermission
-
-# Import your UserActivity model and get_client_ip function
 from models.transactional.logs.models import UserActivity
-
 from models.transactional.logs.signals import get_client_ip
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def verify_otp_for_registration(request):
+    phone_number = request.data.get('phone_number')
+    otp_input = request.data.get('otp')
+    otp_id = request.data.get('otp_id')
+
+    if not (phone_number and otp_input and otp_id):
+        return Response(
+            {'success': False, 'error': 'Missing required fields'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    success, message = verify_otp(otp_id, phone_number, otp_input)
+    
+    if success:
+        mark_phone_as_verified(phone_number)
+        return Response({
+            'success': True,
+            'message': 'OTP verified successfully.'
+        }, status=status.HTTP_200_OK)
+    
+    # Always return a response, even on error
+    return Response({
+        'success': False,
+        'error': message or 'OTP verification failed.'
+    }, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def licensee_register_after_verification(request):
+    required_fields = [
+        'phone_number', 'first_name', 'last_name',
+        'email', 'pan_number', 'address', 'district', 'subdivision',
+        'password', 'hashkey', 'response'
+    ]
+
+    missing = [field for field in required_fields if not request.data.get(field)]
+    if missing:
+        return Response({
+            'success': False,
+            'errors': {f: ['This field is required.'] for f in missing}
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    phone_number = request.data['phone_number']
+
+    # CRITICAL: Check if phone was verified recently
+    if not is_phone_verified(phone_number):
+        return Response({
+            'success': False,
+            'errors': {'non_field_errors': ['Phone number not verified or verification expired. Please verify OTP again.']}
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # Optional: Clear it now so can't reuse
+    clear_phone_verified(phone_number)
+
+    # Validate CAPTCHA
+    hashkey = request.data['hashkey']
+    response = request.data['response']
+    try:
+        captcha_store = CaptchaStore.objects.get(hashkey=hashkey)
+        if captcha_store.response.strip().lower() != response.strip().lower():
+            return Response({
+                'success': False,
+                'errors': {'captcha': ['Invalid CAPTCHA.']}
+            }, status=status.HTTP_400_BAD_REQUEST)
+        captcha_store.delete()
+    except CaptchaStore.DoesNotExist:
+        return Response({
+            'success': False,
+            'errors': {'captcha': ['Invalid CAPTCHA key.']}
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # Register user
+    registration_data = {
+        'email': request.data['email'],
+        'first_name': request.data['first_name'],
+        'middle_name': request.data.get('middle_name', ''),
+        'last_name': request.data['last_name'],
+        'phone_number': phone_number,
+        'pan_number': request.data['pan_number'],
+        'address': request.data['address'],
+        'district': request.data['district'],
+        'subdivision': request.data['subdivision'],
+        'password': request.data['password'],
+    }
+
+    serializer = LicenseeSignupSerializer(data=registration_data)
+    if serializer.is_valid():
+        user = serializer.save()
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'success': True,
+            'message': 'Registration successful. You are now logged in.',
+            'user': {
+                'username': user.username,
+                'phoneNumber': user.phone_number,
+                'email': user.email,
+                'firstName': user.first_name,
+                'lastName': user.last_name
+            },
+            'tokens': {
+                'access': str(refresh.access_token),
+                'refresh': str(refresh)
+            }
+        }, status=status.HTTP_201_CREATED)
+
+    return Response({
+        'success': False,
+        'errors': serializer.errors
+    }, status=status.HTTP_400_BAD_REQUEST)
 
 # User registration by staff 
 @permission_classes([HasAppPermission('user', 'create')])
@@ -38,6 +146,38 @@ def register_user(request):
             'user_id': user.username,
         }, status=status.HTTP_201_CREATED)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# Licensee self-signup (public endpoint)
+@api_view(['POST'])
+@permission_classes([])  # Public access
+def licensee_signup(request):
+    
+    serializer = LicenseeSignupSerializer(data=request.data)
+    if serializer.is_valid():
+        user = serializer.save()
+
+        # Generate tokens
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'success': True,
+            'message': 'Registration successful. You can now log in.',
+            'user': {
+                'username': user.username,
+                'phone_number': user.phone_number,
+                'email': user.email
+            },
+            'tokens': {
+                'access': str(refresh.access_token),
+                'refresh': str(refresh)
+            }
+        }, status=status.HTTP_201_CREATED)
+
+    return Response({
+        'success': False,
+        'errors': serializer.errors
+    }, status=status.HTTP_400_BAD_REQUEST)
+
 
 class UserListView(generics.ListAPIView):
     """
@@ -224,20 +364,33 @@ class TokenRefreshAPI(TokenRefreshView):
 @api_view(['POST'])
 def send_otp_api(request):
     phone_number = request.data.get('phone_number')
+    purpose = request.data.get('purpose')  # New optional field: 'login' or 'register'
+
     if not phone_number:
-        return Response({'error': 'Phone number is required for OTP login'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'error': 'Phone number is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # If purpose is 'register', skip user existence check
+    if purpose != 'register':
+        try:
+            user = CustomUser.objects.get(phone_number=phone_number)
+        except CustomUser.DoesNotExist:
+            return Response({'error': 'User with this phone number does not exist'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Optional: For registration, check if phone already registered
+    if purpose == 'register':
+        if CustomUser.objects.filter(phone_number=phone_number).exists():
+            return Response({'error': 'This phone number is already registered.'}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        user = CustomUser.objects.get(phone_number=phone_number)
-    except CustomUser.DoesNotExist:
-        return Response({'error': 'User with this phone number does not exist'}, status=status.HTTP_404_NOT_FOUND)
-
-    otp_obj = get_new_otp(phone_number)
-    # In production, send otp_obj.otp via SMS, do NOT return it in the API response!
-    return Response({
-        'otp_id': str(otp_obj.id),
-        'otp': otp_obj.otp 
-    }, status=status.HTTP_200_OK)
+        otp_obj = get_new_otp(phone_number)
+        # In production: send SMS here
+        # For dev: return OTP (remove in prod!)
+        return Response({
+            'otp_id': str(otp_obj.id),
+            'otp': otp_obj.otp  # REMOVE IN PRODUCTION
+        }, status=status.HTTP_200_OK)
+    except ValueError as e:
+        return Response({'error': str(e)}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
 @api_view(['POST'])
 def verify_otp_api(request):

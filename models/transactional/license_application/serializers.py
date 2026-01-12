@@ -45,10 +45,11 @@ class ResolveObjectionSerializer(serializers.ModelSerializer):
     police_station = CodeRelatedField(
         queryset=PoliceStation.objects.all(), lookup_field='police_station_code', required=False
     )
+    
 
     class Meta:
         model = LicenseApplication
-        fields = '__all__'
+        fields = '__all__'  # or limit to only fields needed in objection resolution
 
 class LicenseApplicationSerializer(serializers.ModelSerializer):
 
@@ -70,10 +71,12 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
 
     # Read-only computed fields
     application_id = serializers.CharField(read_only=True)
-    current_stage = serializers.PrimaryKeyRelatedField(read_only=True)
+    current_stage = serializers.PrimaryKeyRelatedField(read_only = True)
     workflow = serializers.PrimaryKeyRelatedField(read_only=True)
-    current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
+    current_stage_name = serializers.CharField(source = 'current_stage.name', read_only=True)
     is_approved = serializers.BooleanField(read_only=True)
+    
+    renewal_of_license_id = serializers.CharField(source='renewal_of.license_id', read_only=True)
 
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)
     objections = WorkflowObjectionSerializer(many=True, read_only=True)
@@ -81,7 +84,7 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
     class Meta:
         model = LicenseApplication
         fields = '__all__'
-        read_only_fields = ['application_id', 'workflow', 'current_stage', 'current_stage_name', 'is_approved']
+        read_only_fields = ['application_id', 'current_stage_name', 'is_approved', 'applicant', 'workflow']
 
     def get_latest_transaction(self, obj):
         transaction = obj.transactions.order_by('-timestamp').first()

@@ -1,13 +1,21 @@
+from django.utils import timezone
 from django.db import transaction
 from django.core.exceptions import ValidationError, PermissionDenied
 from django.contrib.contenttypes.models import ContentType
+
 from django.apps import apps
-from django.utils import timezone
 from .models import (
     WorkflowTransition, StagePermission,
     Transaction, Objection
 )
 
+# Mapping: (app_label, model_name) -> Serializer class
+SERIALIZER_MAPPING = {
+    # (app_label, model_name_lower): 'full.import.path.to.Serializer'
+    ('license_application', 'licenseapplication'): 'models.transactional.license_application.serializers.LicenseApplicationSerializer',
+    ('new_license_application', 'newlicenseapplication'): 'models.transactional.new_license_application.serializers.NewLicenseApplicationSerializer',
+    ('salesman_barman', 'salesmanbarmanmodel'): 'models.transactional.salesman_barman.serializers.SalesmanBarmanSerializer',
+}
 
 class WorkflowService:
 
@@ -47,7 +55,7 @@ class WorkflowService:
             object_id=str(application.pk),
             performed_by=user,
             forwarded_by=user,
-            forwarded_to=perm.role if perm else None,
+            forwarded_to=perm.role,
             stage=transition.to_stage,
             remarks="Application forwarded to Level 1 for review"
         )
@@ -61,48 +69,25 @@ class WorkflowService:
 
     @staticmethod
     def validate_transition(application, to_stage, context=None):
-        """
-        IMPROVED: Validates transition with proper context matching.
-        Now checks if context contains required keys, not exact match.
-        """
-        context = context or {}
-        
-        # Find all transitions from current stage to target stage
-        transitions = WorkflowTransition.objects.filter(
+        transition = WorkflowTransition.objects.filter(
             workflow=application.workflow,
             from_stage=application.current_stage,
             to_stage=to_stage
-        )
+        ).first()
 
-        if not transitions.exists():
+        if not transition:
             raise ValidationError(
                 f"Invalid transition from {application.current_stage.name} "
                 f"to {to_stage.name} in workflow {application.workflow.name}"
             )
 
-        # Try to find a matching transition based on conditions
-        for transition in transitions:
-            if not transition.condition:
-                # Empty condition = always valid
-                return transition
-            
-            # Check if ALL required keys in condition are satisfied by context
-            condition_match = True
-            for key, expected_value in transition.condition.items():
-                actual_value = context.get(key)
-                if actual_value != expected_value:
-                    condition_match = False
-                    break
-            
-            if condition_match:
-                return transition
-        
-        # If we get here, no transition matched
-        raise ValidationError(
-            f"Invalid transition from {application.current_stage.name} to {to_stage.name}. "
-            f"Required conditions not met. Context: {context}, "
-            f"Available transitions require: {[t.condition for t in transitions]}"
-        )
+        if transition.condition:
+            for key, expected in transition.condition.items():
+                actual = (context or {}).get(key)
+                if actual != expected:
+                    raise ValidationError(f"Condition failed: {key} must be {expected}")
+
+        return transition
 
     @staticmethod
     @transaction.atomic
@@ -118,27 +103,36 @@ class WorkflowService:
             ).exists():
                 raise PermissionDenied("You cannot process this stage.")
 
-        # ---------- Transition Validation ----------
+        # ---------- Transition ----------
         WorkflowService.validate_transition(application, target_stage, context)
+
+        # ---------- App-specific hooks (via context) ----------
+        # if getattr(application, 'is_fee_calculated', None) is not None and target_stage.name == "level_1":
+        #     if context.get("action") == "set_fee":
+        #         if application.is_fee_calculated:
+        #             raise ValidationError("Fee already set.")
+        #         fee = context.get("fee_amount")
+        #         if not fee:
+        #             raise ValidationError("fee_amount required.")
+        #         application.yearly_license_fee = str(float(fee))
+        #         application.is_fee_calculated = True
 
         # ---------- Update stage ----------
         application.current_stage = target_stage
         application.save(update_fields=['current_stage'])
 
-        # ---------- Determine forwarded role ----------
+        # ---------- Forwarded role ----------
         forwarded_to = None
         if "objection" in target_stage.name.lower() or target_stage.name == "awaiting_payment":
-            # Send back to licensee
             first_txn = application.transactions.order_by('id').first()
-            if first_txn and first_txn.performed_by and first_txn.performed_by.role:
+            if first_txn and first_txn.performed_by.role:
                 forwarded_to = first_txn.performed_by.role
         else:
-            # Send to role that can process this stage
             perm = StagePermission.objects.filter(stage=target_stage, can_process=True).first()
             if perm:
                 forwarded_to = perm.role
 
-        # ---------- Log Transaction ----------
+        # ---------- Log ----------
         Transaction.objects.create(
             content_type=ContentType.objects.get_for_model(application),
             object_id=str(application.pk),
@@ -156,16 +150,15 @@ class WorkflowService:
 
         # Find all models that have a ForeignKey to WorkflowStage named 'current_stage'
         for model in apps.get_models():
-            if hasattr(model, 'current_stage'):
-                field = getattr(model, 'current_stage')
-                if hasattr(field, 'field') and isinstance(field.field, models.ForeignKey):
-                    if field.field.related_model == WorkflowStage:
-                        try:
-                            return model.objects.select_related('current_stage', 'workflow').get(
-                                application_id=application_id
-                            )
-                        except model.DoesNotExist:
-                            continue
+            if hasattr(model, 'current_stage') and isinstance(getattr(model, 'current_stage'), models.ForeignKey):
+                field = model.current_stage.field
+                if field.related_model == WorkflowStage:
+                    try:
+                        return model.objects.select_related('current_stage', 'workflow').get(
+                            application_id=application_id
+                        )
+                    except model.DoesNotExist:
+                        continue
         return None
 
     @staticmethod
@@ -189,7 +182,7 @@ class WorkflowService:
         application.save(update_fields=['current_stage'])
 
         first_txn = application.transactions.order_by('id').first()
-        applicant_role = first_txn.performed_by.role if first_txn and first_txn.performed_by else None
+        applicant_role = first_txn.performed_by.role if first_txn else None
 
         Transaction.objects.create(
             content_type=ContentType.objects.get_for_model(application),
@@ -203,50 +196,97 @@ class WorkflowService:
 
     @staticmethod
     @transaction.atomic
-    def resolve_objections(application, user, objection_ids=None):
+    def resolve_objections(application, user, objection_ids=None, updated_fields=None, remarks=None):
+
         if user.role.name != "licensee":
             raise PermissionDenied("Only licensee can resolve objections.")
 
-        # Mark specific or all objections as resolved
-        objections_qs = application.objections.filter(is_resolved=False)
-        if objection_ids:
-            objections_qs = objections_qs.filter(id__in=objection_ids)
+        updated_fields = updated_fields or {}
+        remarks = remarks or "Objections resolved and application returned to previous stage"
 
-        if objections_qs.exists():
-            objections_qs.update(
-                is_resolved=True,
-                resolved_on=timezone.now()
+        # --- 1. Early exit if no unresolved objections ---
+        unresolved_qs = application.objections.filter(is_resolved=False)
+        if objection_ids:
+            unresolved_qs = unresolved_qs.filter(id__in=objection_ids)
+
+        if not unresolved_qs.exists():
+            raise ValidationError("No unresolved objections found. Nothing to resolve.")
+
+        # --- 2. Strict validation: all objected fields must be updated ---
+        required_fields = {obj.field_name for obj in unresolved_qs}
+        updated_keys = set(updated_fields.keys())
+        missing = required_fields - updated_keys
+        if missing:
+            raise ValidationError(
+                f"Please provide updates for the following objected fields: {', '.join(missing)}"
             )
 
-        # Find the stage we came from (before entering objection)
-        original_stage = application.transactions.filter(
+        # --- 3. Apply field updates using the correct app-specific serializer ---
+        if updated_fields:
+            app_label = application._meta.app_label
+            model_name = application._meta.model_name.lower()
+
+            key = (app_label, model_name)
+            serializer_path = SERIALIZER_MAPPING.get(key)
+
+            if not serializer_path:
+                raise ValidationError(f"No serializer configured for {app_label}.{model_name}")
+
+            try:
+                module_path, serializer_name = serializer_path.rsplit('.', 1)
+                module = __import__(module_path, fromlist=[serializer_name])
+                AppSerializer = getattr(module, serializer_name)
+            except Exception as e:
+                raise ValidationError(f"Failed to load serializer: {str(e)}")
+
+            serializer = AppSerializer(application, data=updated_fields, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+
+        # --- 4. Mark objections as resolved ---
+        qs = application.objections.filter(is_resolved=False)
+        if objection_ids:
+            qs = qs.filter(id__in=objection_ids)
+        qs.update(is_resolved=True, resolved_on=timezone.now())
+
+        # --- 5. Find the transaction that moved INTO the current objection stage ---
+        entry_to_objection_txn = application.transactions.filter(
+            stage=application.current_stage
+        ).order_by('-timestamp').first()
+
+        if not entry_to_objection_txn:
+            raise ValidationError("Cannot find the transaction that entered the objection stage")
+
+        # The officer who raised the objection (performed_by in the entry txn)
+        forward_to = (
+            entry_to_objection_txn.performed_by.role
+            if entry_to_objection_txn.performed_by and entry_to_objection_txn.performed_by.role
+            else None
+        )
+
+        # --- 6. Determine the original non-objection stage to return to ---
+        original_txn = application.transactions.filter(
             stage__name__contains='_objection'
         ).exclude(stage=application.current_stage).order_by('-id').first()
 
-        if not original_stage:
-            # Fallback: last non-objection stage
-            original_stage = application.transactions.exclude(
+        if not original_txn:
+            original_txn = application.transactions.exclude(
                 stage__name__contains='_objection'
             ).order_by('-id').first()
 
-        if not original_stage:
+        if not original_txn:
             raise ValidationError("Cannot determine original stage")
 
-        application.current_stage = original_stage.stage
+        application.current_stage = original_txn.stage
         application.save(update_fields=['current_stage'])
 
-        # Log the return
-        perm = StagePermission.objects.filter(
-            stage=original_stage.stage, 
-            can_process=True
-        ).first()
-        
+        # --- 7. Log the return: forward back to the officer ---
         Transaction.objects.create(
             content_type=ContentType.objects.get_for_model(application),
             object_id=str(application.pk),
             performed_by=user,
             forwarded_by=user,
-            forwarded_to=perm.role if perm else None,
-            stage=original_stage.stage,
-            remarks="Objections resolved and application returned to previous stage"
+            forwarded_to=forward_to,
+            stage=original_txn.stage,
+            remarks=remarks
         )

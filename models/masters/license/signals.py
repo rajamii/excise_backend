@@ -1,3 +1,4 @@
+from datetime import date
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.contrib.contenttypes.models import ContentType
@@ -6,6 +7,15 @@ from .models import License
 import logging
 
 logger = logging.getLogger(__name__)
+
+def get_license_valid_up_to(issue_date: date) -> date:
+    year = issue_date.year
+    if issue_date.month >= 3:  
+        end_year = year + 1
+    else: 
+        end_year = year
+    return date(end_year, 3, 31)
+
 
 @receiver(post_save, sender=Transaction)
 def create_license_on_final_approval(sender, instance, created, **kwargs):
@@ -36,6 +46,7 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
 
     # Prevent duplicate license
     ct = instance.content_type
+
     if License.objects.filter(
         source_content_type=ct,
         source_object_id=instance.object_id
@@ -66,18 +77,74 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
     except AttributeError as e:
         logger.error(f"Error accessing fields on {type(application)}: {e}")
         return
+    
+    issue_date = instance.timestamp.date()
+    is_renewal = hasattr(application, 'renewal_of') and application.renewal_of is not None
+
+    def get_current_fy_end(d):
+        y = d.year
+        if d.month >= 4:
+            return date(y + 1, 3, 31)
+        else:
+            return date(y, 3, 31)
+
+    if is_renewal:
+        valid_up_to = get_current_fy_end(issue_date).replace(year=get_current_fy_end(issue_date).year + 1)
+    else:
+        valid_up_to = get_current_fy_end(issue_date)
+
+    # === license_id logic ===
+    district_code = str(excise_district.district_code)
+
+    if is_renewal:
+        # Force NEXT financial year
+        renewal_year = issue_date.year
+        if issue_date.month >= 4:
+            fin_year = f"{renewal_year}-{str(renewal_year + 1)[2:]}"
+        else:
+            fin_year = f"{renewal_year}-{str(renewal_year + 1)[2:]}"  # Jan-Mar 2026 → 2026-27
+    else:
+        # Let model handle it (but we can still use same logic for consistency)
+        if issue_date.month >= 4:
+            fin_year = f"{issue_date.year}-{str(issue_date.year + 1)[2:]}"
+        else:
+            fin_year = f"{issue_date.year - 1}-{str(issue_date.year)[2:]}"  # 2025-26
+
+    prefix_map = {'new_license_application': 'NA', 'license_application': 'LA', 'salesman_barman': 'SB'}
+    prefix = prefix_map.get(source_type, 'XX')
+    base_prefix = f"{prefix}/{district_code}/{fin_year}"
+
+    # Get next sequence
+    last_license = License.objects.filter(license_id__startswith=base_prefix + "/").order_by('-license_id').first()
+    seq = 1
+    if last_license:
+        try:
+            seq = int(last_license.license_id.split('/')[-1]) + 1
+        except:
+            pass
+    new_license_id = f"{base_prefix}/{str(seq).zfill(4)}"
 
     try:
         License.objects.create(
+            license_id=new_license_id,
             source_content_type=ct,
             source_object_id=str(application.pk),
             source_type=source_type,
             license_category=license_category,
             excise_district=excise_district,
-            issue_date=instance.timestamp.date(),
-            valid_up_to=instance.timestamp.date().replace(year=instance.timestamp.year + 1),
+            issue_date=issue_date,
+            valid_up_to=valid_up_to,
             is_active=True
         )
         logger.info(f"License created for application {application.pk}")
+
+        # === NEW: If this is a renewal, deactivate the old license ===
+        if hasattr(application, 'renewal_of') and application.renewal_of:
+            old_license = application.renewal_of
+            if old_license.is_active:
+                old_license.is_active = False
+                old_license.save(update_fields=['is_active'])
+                logger.info(f"Deactivated previous license {old_license.license_id} due to renewal")
+
     except Exception as e:
         logger.error(f"Failed to create license for {application.pk}: {e}")

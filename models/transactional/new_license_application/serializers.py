@@ -71,6 +71,7 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     site_subdivision_name = serializers.CharField(source='site_subdivision.subdivision', read_only=True)
     police_station_name = serializers.CharField(source='police_station.police_station', read_only=True)
 
+    renewal_of_license_id = serializers.CharField(source='renewal_of.license_id', read_only=True)
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)
     objections = WorkflowObjectionSerializer(many=True, read_only=True)
 
@@ -78,8 +79,8 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         model = NewLicenseApplication
         fields = '__all__'
         read_only_fields = [
-            'application_id', 'workflow', 'current_stage', 'is_approved', 'print_count',
-            'is_print_fee_paid', 'created_at', 'updated_at'
+            'application_id', 'current_stage', 'is_approved', 'print_count',
+            'is_print_fee_paid', 'created_at', 'updated_at', 'applicant', 'workflow'
         ]
 
     def validate(self, data):

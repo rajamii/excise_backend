@@ -49,4 +49,6 @@ urlpatterns = [
     path('dashboard-counts/', views.dashboard_counts, name='dashboard-counts'),
     # List applications filtered by their current status (e.g., pending, approved, etc.) (GET)
     path('list-by-status/', views.application_group, name='applications-by-status'),
+    #pay license fee
+    path('<everything:application_id>/pay-license-fee/', views.pay_license_fee, name='pay-license-fee'),
 ]

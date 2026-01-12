@@ -1,6 +1,6 @@
 from rest_framework import serializers
-from auth.user.models import CustomUser
-
+from auth.user.models import CustomUser, LicenseeProfile
+from auth.roles.models import Role
 from captcha.models import CaptchaStore
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
@@ -10,10 +10,15 @@ class UserSerializer(serializers.ModelSerializer):
     created_by = serializers.SerializerMethodField()
     district = serializers.SerializerMethodField()
     subdivision = serializers.SerializerMethodField()
+    firstName = serializers.CharField(source='first_name', read_only=True)
+    middleName = serializers.CharField(source='middle_name', read_only=True)
+    lastName = serializers.CharField(source='last_name', read_only=True)
+    phoneNumber = serializers.CharField(source='phone_number', read_only=True)
+    
     class Meta:
         model = CustomUser
-        fields = ['id', 'email', 'username', 'first_name', 'middle_name', 'last_name', 
-                 'phone_number', 'district', 'subdivision', 'address', 'role',
+        fields = ['id', 'email', 'username', 'firstName', 'middleName', 'lastName', 
+                 'phoneNumber', 'district', 'subdivision', 'address', 'role',
                  'created_by'
         ]
                  
@@ -107,3 +112,59 @@ class LoginSerializer(serializers.Serializer):
             'access': access_token,
             'refresh': refresh_token,
         }
+
+class LicenseeSignupSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, min_length=8)
+    pan_number = serializers.CharField(max_length=10)
+    address= serializers.CharField(max_length=255)
+    class Meta:
+        model = CustomUser
+        fields = [
+            'email', 'first_name', 'middle_name', 'last_name', 'phone_number',
+            'district', 'subdivision', 'address', 'pan_number', 'password'
+        ]
+
+    def validate_phone_number(self, value):
+        if CustomUser.objects.filter(phone_number=value).exists():
+            raise serializers.ValidationError("This phone number is already registered.")
+        return value
+
+    def validate_email(self, value):
+        if CustomUser.objects.filter(email=value).exists():
+            raise serializers.ValidationError("This email is already registered.")
+        return value
+    
+    def create(self, validated_data):
+        # Extract licensee-specific data BEFORE creating the user
+        pan_number = validated_data.pop('pan_number')
+
+        # Get Licensee role
+        try:
+            licensee_role = Role.objects.get(name__iexact="licensee")
+        except Role.DoesNotExist:
+            raise serializers.ValidationError("Licensee role not configured. Contact support.")
+
+        # Create the user — do NOT pass pan_number or address here!
+        user = CustomUser.objects.create_user(
+            email=validated_data['email'],
+            first_name=validated_data['first_name'],
+            middle_name=validated_data.get('middle_name', ''),
+            last_name=validated_data['last_name'],
+            phone_number=validated_data['phone_number'],
+            district=validated_data.get('district'),
+            subdivision=validated_data.get('subdivision'),
+            address=validated_data['address'],
+            password=validated_data['password'],
+            role=licensee_role,
+            created_by=None  # Self-registered
+        )
+
+        # Now create the LicenseeProfile with the extracted data
+        LicenseeProfile.objects.create(
+            user=user,
+            pan_number=pan_number
+        )
+
+        return user
+
+       
