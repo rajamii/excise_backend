@@ -347,9 +347,8 @@ def dashboard_counts(request):
         counts = {
             "pending": LicenseApplication.objects.filter(current_stage=stage).count(),
             "approved": LicenseApplication.objects.filter(
-                current_stage__name__in=[
-                    f"level_{int(role.split('_')[1]) + 1}", "awaiting_payment", "approved"
-                ]
+                current_stage__name='approved',
+                is_approved=True
             ).count(),
             "rejected": LicenseApplication.objects.filter(
                 current_stage__name=f"rejected_by_{role}"
@@ -417,37 +416,37 @@ def dashboard_counts(request):
     return Response(counts)
 
 
-
 @permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
 @parser_classes([JSONParser])
 def application_group(request):
     role = request.user.role.name if request.user.role else None
 
+    # ✅ CORRECTED: All levels now show truly approved applications in 'approved' category
     level_map = {
         'level_1': {
             "pending": ['level_1', 'level_1_objection'],
-            "approved": ['level_2'],
+            "approved": ['approved'],  # ✅ Changed from ['level_2']
             "rejected": ['rejected_by_level_1'],
         },
         'level_2': {
             "pending": ['level_2', 'level_2_objection'],
-            "approved": ['awaiting_payment', 'level_3'],
+            "approved": ['approved'],  # ✅ Changed from ['awaiting_payment', 'level_3']
             "rejected": ['rejected_by_level_2'],
         },
         'level_3': {
             "pending": ['level_3', 'level_3_objection'],
-            "approved": ['level_4'],
+            "approved": ['approved'],  # ✅ Changed from ['level_4']
             "rejected": ['rejected_by_level_3'],
         },
         'level_4': {
             "pending": ['level_4', 'level_4_objection'],
-            "approved": ['level_5'],
+            "approved": ['approved'],  # ✅ Changed from ['level_5']
             "rejected": ['rejected_by_level_4'],
         },
         'level_5': {
             "pending": ['level_5', 'level_5_objection'],
-            "approved": ['approved'],
+            "approved": ['approved'],  # ✅ Already correct
             "rejected": ['rejected_by_level_5'],
         }
     }
@@ -457,6 +456,9 @@ def application_group(request):
         config = level_map[role]
         for key, stages in config.items():
             queryset = LicenseApplication.objects.filter(current_stage__name__in=stages)
+            # ✅ Added: Filter approved applications by is_approved flag
+            if key == 'approved':
+                queryset = queryset.filter(is_approved=True)
             if key == 'rejected':
                 queryset = queryset.filter(is_approved=False)
             result[key] = LicenseApplicationSerializer(queryset, many=True).data
@@ -482,7 +484,45 @@ def application_group(request):
                 many=True
             ).data,
             "approved": LicenseApplicationSerializer(
-                LicenseApplication.objects.filter(current_stage__name='approved'),
+                LicenseApplication.objects.filter(
+                    current_stage__name='approved',
+                    is_approved=True
+                ),
+                many=True
+            ).data,
+            "rejected": LicenseApplicationSerializer(
+                LicenseApplication.objects.filter(current_stage__name__in=[
+                    'rejected_by_level_1', 'rejected_by_level_2',
+                    'rejected_by_level_3', 'rejected_by_level_4',
+                    'rejected_by_level_5', 'rejected'
+                ]),
+                many=True
+            ).data
+        }
+        return Response(result)
+
+    elif role in ['site_admin', 'single_window']:
+        result = {
+            "applied": LicenseApplicationSerializer(
+                LicenseApplication.objects.filter(current_stage__name__in=[
+                    'applicant_applied', 'level_1_objection',
+                    'level_2_objection', 'level_3_objection',
+                    'level_4_objection', 'level_5_objection',
+                    'awaiting_payment'
+                ]),
+                many=True
+            ).data,
+            "pending": LicenseApplicationSerializer(
+                LicenseApplication.objects.filter(current_stage__name__in=[
+                    'level_1', 'level_2', 'level_3', 'level_4', 'level_5'
+                ]),
+                many=True
+            ).data,
+            "approved": LicenseApplicationSerializer(
+                LicenseApplication.objects.filter(
+                    current_stage__name='approved',
+                    is_approved=True
+                ),
                 many=True
             ).data,
             "rejected": LicenseApplicationSerializer(

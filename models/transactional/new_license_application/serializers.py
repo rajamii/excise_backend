@@ -78,7 +78,7 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         model = NewLicenseApplication
         fields = '__all__'
         read_only_fields = [
-            'application_id', 'current_stage', 'is_approved', 'print_count',
+            'application_id', 'workflow', 'current_stage', 'is_approved', 'print_count',
             'is_print_fee_paid', 'created_at', 'updated_at'
         ]
 

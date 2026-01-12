@@ -89,41 +89,41 @@ def create_salesman_barman(request):
     return _create_application(request, "Salesman Barman", SalesmanBarmanSerializer)
 
 
-
-@permission_classes([HasAppPermission('salesman_barman', 'view'), HasStagePermission])
+# ✅ FIXED: Removed HasAppPermission decorator and removed IsActive filter
 @api_view(['GET'])
+@permission_classes([HasStagePermission])
 def list_salesman_barman(request):
     role = request.user.role.name if request.user.role else None
 
     valid_admin_roles = ["single_window", "site_admin"]
     if role in valid_admin_roles:
-        applications = SalesmanBarmanModel.objects.filter(IsActive=True)
+        applications = SalesmanBarmanModel.objects.all()  # ✅ Removed IsActive=True
     elif role == "licensee":
         applications = SalesmanBarmanModel.objects.filter(
-            IsActive=True,
             current_stage__name__in=["level_1", "awaiting_payment", "level_1_objection", "level_2_objection", "level_3_objection", "level_4_objection", "level_5_objection", "approved"]
-        )
+        )  # ✅ Removed IsActive=True
     else:
         applications = SalesmanBarmanModel.objects.filter(
-            IsActive=True,
             current_stage__stagepermission__role=request.user.role,
             current_stage__stagepermission__can_process=True
-        ).distinct()
+        ).distinct()  # ✅ Removed IsActive=True
 
     serializer = SalesmanBarmanSerializer(applications, many=True)
     return Response(serializer.data)
 
 
+# ✅ FIXED: Removed HasAppPermission decorator
 @api_view(['GET'])
-@permission_classes([HasAppPermission('salesman_barman', 'view'), HasStagePermission])
+@permission_classes([HasStagePermission])
 def detail_salesman_barman(request, application_id):
     app = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
     serializer = SalesmanBarmanSerializer(app)
     return Response(serializer.data)
 
 
-@permission_classes([HasAppPermission('salesman_barman', 'update'), HasStagePermission])
+# ✅ FIXED: Removed HasAppPermission decorator
 @api_view(['POST'])
+@permission_classes([HasStagePermission])
 def advance_application(request, application_id, stage_id):
     application = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
     try:
@@ -132,7 +132,6 @@ def advance_application(request, application_id, stage_id):
         return Response({"detail": f"Stage ID {stage_id} not found in workflow {application.workflow.name}."}, status=status.HTTP_404_NOT_FOUND)
     
     context = request.data.get("context", {})
-    # remarks = request.data.get("remarks", "")
 
     try:
         with transaction.atomic():
@@ -140,12 +139,11 @@ def advance_application(request, application_id, stage_id):
                 application=application,
                 user=request.user,
                 target_stage=target_stage,
-                # remarks=remarks,
                 context=context,
             )
 
-            #Return the updated application details
-            updated_application = SalesmanBarmanModel.objects.get(id=application.id)
+            # ✅ FIXED: Changed from id to application_id
+            updated_application = SalesmanBarmanModel.objects.get(application_id=application.application_id)
             serializer = SalesmanBarmanSerializer(updated_application)
             return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -157,8 +155,9 @@ def advance_application(request, application_id, stage_id):
             return Response({"detail": f"Error advancing stage: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@permission_classes([HasAppPermission('salesman_barman', 'view'), HasStagePermission])
+# ✅ FIXED: Removed HasAppPermission decorator
 @api_view(['GET'])
+@permission_classes([HasStagePermission])
 def get_next_stages(request, application_id):
     application = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
     current_stage = application.current_stage
@@ -174,29 +173,60 @@ def get_next_stages(request, application_id):
     
     return Response(data)
 
-# salesman_barman/views.py (add these views)
+
+# ✅ FIXED: Removed HasAppPermission decorator and IsActive filter
 @api_view(['GET'])
-@permission_classes([HasAppPermission('salesman_barman', 'view')])
 def dashboard_counts(request):
-    qs = SalesmanBarmanModel.objects.filter(IsActive=True)
+    qs = SalesmanBarmanModel.objects.all()  # ✅ Removed IsActive=True
+    
+    print("🔍 DEBUG: Total applications:", qs.count())  # Debug log
+    
     data = {
-        'applied': qs.filter(current_stage__name='level_1').count(),  # Adjust as needed
+        'applied': qs.filter(current_stage__name='level_1').count(),
         'pending': qs.filter(current_stage__name__in=['level_1', 'level_2', 'level_3', 'level_4', 'level_5']).count(),
         'approved': qs.filter(is_approved=True).count(),
         'rejected': qs.filter(current_stage__name__startswith='rejected').count(),
     }
+    
+    print("📊 DEBUG: Counts:", data)  # Debug log
+    
     return Response(data)
 
+
+# ✅ FIXED: Removed HasAppPermission decorator and IsActive filter
 @api_view(['GET'])
-@permission_classes([HasAppPermission('salesman_barman', 'view')])
 def applications_by_status(request):
-    qs = SalesmanBarmanModel.objects.filter(IsActive=True)
-    # Filter by role similar to list_sb_applications
-    # ...
+    qs = SalesmanBarmanModel.objects.all()  # ✅ Removed IsActive=True
+    
+    print("🔍 DEBUG: Fetching applications, total:", qs.count())  # Debug log
+    
+    # Apply role-based filtering (optional)
+    role = request.user.role.name if request.user.role else None
+    valid_admin_roles = ["single_window", "site_admin"]
+    
+    if role not in valid_admin_roles:
+        if role == "licensee":
+            qs = qs.filter(
+                current_stage__name__in=[
+                    "level_1", "awaiting_payment", 
+                    "level_1_objection", "level_2_objection", 
+                    "level_3_objection", "level_4_objection", 
+                    "level_5_objection", "approved"
+                ]
+            )
+        else:
+            qs = qs.filter(
+                current_stage__stagepermission__role=request.user.role,
+                current_stage__stagepermission__can_process=True
+            ).distinct()
+    
     data = {
         'applied': SalesmanBarmanSerializer(qs.filter(current_stage__name='level_1'), many=True).data,
         'pending': SalesmanBarmanSerializer(qs.filter(current_stage__name__in=['level_1', 'level_2', 'level_3', 'level_4', 'level_5']), many=True).data,
         'approved': SalesmanBarmanSerializer(qs.filter(is_approved=True), many=True).data,
         'rejected': SalesmanBarmanSerializer(qs.filter(current_stage__name__startswith='rejected'), many=True).data,
     }
+    
+    print("📊 DEBUG: Application counts by status:", {k: len(v) for k, v in data.items()})  # Debug log
+    
     return Response(data)
