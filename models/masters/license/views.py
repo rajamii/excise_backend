@@ -1,3 +1,4 @@
+from django.utils.timezone import now
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.parsers import JSONParser
@@ -54,28 +55,55 @@ def license_detail(request, license_id):
 @permission_classes([HasAppPermission('license', 'view')])
 @api_view(['GET'])
 def active_licensees(request):
+
+    district_code = request.query_params.get('district_code', None)
+    license_category = request.query_params.get('license_category', None)
+    mode = request.query_params.get('mode', None)
     
-    licensees = License.objects.filter(is_active=True).select_related(
-        'excise_district', 'license_type'
-    ).values(
-        'license_id',
-        'establishment_name',
-        'licensee_name',
-        'excise_district__district',
-        'excise_district__district_code',
-        'license_type__license_type',
+    licensees = License.objects.filter(
+        is_active=True,
+        valid_up_to__gte=now().date()
+        ).select_related(
+        'excise_district',
+        'license_category',
+        'source_content_type'
     )
 
-    data = [
-        {
-            "id": l['license_id'],
-            "licensee_id": l['license_id'],
-            "establishment_name": l['establishment_name'],
-            "license_category": l['license_type__license_type'],
-            "district": l['excise_district__district'],
-            "district_code": l['excise_district__district_code'],
+    if district_code:
+        licensees = licensees.filter(excise_district__district_code=district_code)
+
+    if license_category:
+        licensees = licensees.filter(license_category_id=license_category)
+
+    data = []
+
+    for license in licensees:
+        source_app = license.source_application
+
+        if source_app:
+            if hasattr(source_app, 'establishment_name'):
+                establishment_name = source_app.establishment_name
+
+            if hasattr(source_app, 'mode_of_operation'):
+                mode_of_operation = source_app.mode_of_operation
+
+            if mode:
+                mode_formatted = mode.capitalize()
+                if mode_of_operation != mode_formatted:
+                    continue
+
+            if mode and mode_of_operation == "N/A":
+                continue
+
+        data.append({
+            "licenseeId": license.license_id,
+            "id": license.license_id,
+            "establishmentName": establishment_name,
+            "license_category": license.license_category.license_category,
+            "district": license.excise_district.district,
+            "district_code": license.excise_district.district_code,
+            "valid_up_to": license.valid_up_to.strftime("%Y-%m-%d"),
+            "mode_of_operation": mode_of_operation,
             "status": "Active"
-        }
-        for l in licensees
-    ]
-    return Response(data)
+        })
+    return Response(data, status=status.HTTP_200_OK)
