@@ -171,11 +171,18 @@ from .models import DailyHologramRegister
 
 class DailyHologramRegisterSerializer(serializers.ModelSerializer):
     licensee_name = serializers.CharField(source='licensee.manufacturing_unit_name', read_only=True)
+    hologram_type = serializers.SerializerMethodField()
     
     class Meta:
         model = DailyHologramRegister
         fields = '__all__'
         read_only_fields = ('submission_date', 'licensee')
+    
+    def get_hologram_type(self, obj):
+        """Get hologram_type from related hologram_request"""
+        if obj.hologram_request:
+            return obj.hologram_request.hologram_type
+        return 'LOCAL'  # Default fallback
 
 from .models import HologramRollsDetails
 

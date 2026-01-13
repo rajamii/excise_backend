@@ -496,19 +496,16 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
         
         # OIC / Licensee Access - Return entries for their licensee profile
         # Also support OIC roles which may use fallback profile
-        if role_name in ['licensee', 'Licensee', 'officer_in_charge', 'Officer In-Charge', 'OIC', 
-                         'officer-in-charge', 'Officer-In-Charge', 'officer-incharge', 'Officer-Incharge',
-                         'Officer In Charge', 'Officer in Charge', 'Officer in charge']:
+        if role_name in ['licensee', 'Licensee']:
             if hasattr(user, 'supply_chain_profile'):
                 return DailyHologramRegister.objects.filter(licensee=user.supply_chain_profile)
-            else:
-                # Fallback: If user has no profile but is an OIC, show ALL entries (dev mode fallback)
-                # This mirrors the fallback in perform_create
-                print(f"DEBUG: get_queryset - User {user.username} has no supply_chain_profile, returning all entries as fallback")
-                return DailyHologramRegister.objects.all()
+            return DailyHologramRegister.objects.none()
                 
-        # IT Cell / Admin Access (View All)
-        if role_name in ['it_cell', 'IT Cell', 'IT-Cell', 'Site-Admin', 'site_admin']:
+        # IT Cell / Admin / OIC Access (View All)
+        if role_name in ['it_cell', 'IT Cell', 'IT-Cell', 'Site-Admin', 'site_admin',
+                         'officer_in_charge', 'Officer In-Charge', 'OIC', 
+                         'officer-in-charge', 'Officer-In-Charge', 'officer-incharge', 'Officer-Incharge',
+                         'Officer In Charge', 'Officer in Charge', 'Officer in charge']:
              return DailyHologramRegister.objects.all()
              
         return DailyHologramRegister.objects.none()
