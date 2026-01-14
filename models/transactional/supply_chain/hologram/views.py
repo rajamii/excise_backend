@@ -836,6 +836,49 @@ class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
              
         return HologramRollsDetails.objects.none()
     
+    def list(self, request, *args, **kwargs):
+        """Override list to calculate and populate available_range for each roll"""
+        print("=" * 80)
+        print("🔥 HologramRollsDetailsViewSet.list() CALLED")
+        print("=" * 80)
+        
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        print(f"Queryset count: {queryset.count()}")
+        
+        # Update available_range for all rolls in queryset
+        roll_ids = []
+        for roll in queryset:
+            print(f"Updating available_range for roll {roll.carton_number}...")
+            roll.update_available_range()
+            print(f"  -> available_range = {roll.available_range}")
+            roll_ids.append(roll.id)
+        
+        # Refresh queryset to get updated values
+        queryset = self.get_queryset().filter(id__in=roll_ids)
+        
+        print(f"After refresh, queryset count: {queryset.count()}")
+        for roll in queryset:
+            print(f"Roll {roll.carton_number}: available_range = {roll.available_range}")
+        
+        # Now serialize and return
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            print(f"Serialized data (paginated): {serializer.data}")
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        print(f"Serialized data: {serializer.data}")
+        return Response(serializer.data)
+    
+    def retrieve(self, request, *args, **kwargs):
+        """Override retrieve to calculate and populate available_range"""
+        instance = self.get_object()
+        instance.update_available_range()
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+    
     @action(detail=True, methods=['get'])
     def serial_ranges(self, request, pk=None):
         """
@@ -864,30 +907,28 @@ class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
             usage_history = roll.usage_history or []
             serial_ranges = []
             
-            # Generate available range
-            if roll.available > 0:
-                # Calculate next available serial
-                from_num = self._extract_serial_number(roll.from_serial)
-                next_num = from_num + roll.used + roll.damaged
-                prefix = roll.from_serial[:-len(str(from_num))] if from_num > 0 else roll.from_serial
-                
-                next_serial = prefix + str(next_num).zfill(6)
-                
-                serial_ranges.append({
-                    'from_serial': next_serial,
-                    'to_serial': roll.to_serial,
-                    'count': roll.available,
-                    'status': 'AVAILABLE',
-                    'description': 'Available for production use'
-                })
+            # Calculate what serials have been used/damaged
+            used_serials = set()
             
-            # Generate used/damaged ranges from usage_history
             for entry in usage_history:
                 if entry.get('type') == 'ISSUED':
+                    from_serial = entry.get('issuedFromSerial') or entry.get('fromSerial')
+                    to_serial = entry.get('issuedToSerial') or entry.get('toSerial')
+                    qty = entry.get('issuedQuantity') or entry.get('quantity') or 0
+                    
+                    if from_serial and to_serial:
+                        # Extract numeric parts
+                        from_num = self._extract_serial_number(from_serial)
+                        to_num = self._extract_serial_number(to_serial)
+                        
+                        # Mark all serials in this range as used
+                        for num in range(from_num, to_num + 1):
+                            used_serials.add(num)
+                    
                     serial_ranges.append({
-                        'from_serial': entry.get('issuedFromSerial') or entry.get('fromSerial'),
-                        'to_serial': entry.get('issuedToSerial') or entry.get('toSerial'),
-                        'count': entry.get('issuedQuantity') or entry.get('quantity'),
+                        'from_serial': from_serial,
+                        'to_serial': to_serial,
+                        'count': qty,
                         'status': 'USED',
                         'description': f"Used on {entry.get('date')}",
                         'used_date': entry.get('date'),
@@ -896,16 +937,76 @@ class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
                         'bottle_size': entry.get('bottleSize'),
                         'brand_details': entry.get('brandDetails')
                     })
+                    
                 elif entry.get('type') in ['WASTAGE', 'DAMAGED']:
+                    from_serial = entry.get('wastageFromSerial') or entry.get('fromSerial')
+                    to_serial = entry.get('wastageToSerial') or entry.get('toSerial')
+                    qty = entry.get('wastageQuantity') or entry.get('quantity') or 0
+                    
+                    if from_serial and to_serial:
+                        # Extract numeric parts
+                        from_num = self._extract_serial_number(from_serial)
+                        to_num = self._extract_serial_number(to_serial)
+                        
+                        # Mark all serials in this range as damaged
+                        for num in range(from_num, to_num + 1):
+                            used_serials.add(num)
+                    
                     serial_ranges.append({
-                        'from_serial': entry.get('wastageFromSerial') or entry.get('fromSerial'),
-                        'to_serial': entry.get('wastageToSerial') or entry.get('toSerial'),
-                        'count': entry.get('wastageQuantity') or entry.get('quantity'),
+                        'from_serial': from_serial,
+                        'to_serial': to_serial,
+                        'count': qty,
                         'status': 'DAMAGED',
                         'description': entry.get('damageReason') or 'Damaged',
                         'damage_date': entry.get('date'),
                         'damage_reason': entry.get('damageReason'),
                         'reported_by': entry.get('reportedBy') or entry.get('approvedBy')
+                    })
+            
+            # Generate available range(s)
+            if roll.available > 0:
+                # Get the roll's full range
+                from_num = self._extract_serial_number(roll.from_serial)
+                to_num = self._extract_serial_number(roll.to_serial)
+                prefix = roll.from_serial[:-len(str(from_num))] if from_num > 0 else roll.from_serial
+                
+                # Find available ranges (gaps in used_serials)
+                available_ranges = []
+                current_start = None
+                
+                for num in range(from_num, to_num + 1):
+                    if num not in used_serials:
+                        if current_start is None:
+                            current_start = num
+                    else:
+                        if current_start is not None:
+                            # End of available range
+                            available_ranges.append({
+                                'from': current_start,
+                                'to': num - 1,
+                                'count': num - current_start
+                            })
+                            current_start = None
+                
+                # Handle last range
+                if current_start is not None:
+                    available_ranges.append({
+                        'from': current_start,
+                        'to': to_num,
+                        'count': to_num - current_start + 1
+                    })
+                
+                # Add available ranges to response
+                for avail_range in available_ranges:
+                    from_serial = prefix + str(avail_range['from']).zfill(6)
+                    to_serial = prefix + str(avail_range['to']).zfill(6)
+                    
+                    serial_ranges.append({
+                        'from_serial': from_serial,
+                        'to_serial': to_serial,
+                        'count': avail_range['count'],
+                        'status': 'AVAILABLE',
+                        'description': 'Available for production use'
                     })
             
             return Response({
@@ -921,3 +1022,239 @@ class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
         return int(match.group()) if match else 0
 
 
+
+
+class HologramMonthlyReportViewSet(viewsets.ViewSet):
+    """
+    ViewSet for generating monthly hologram reports
+    Auto-calculates from approved daily register entries
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @action(detail=False, methods=['get'])
+    def generate_report(self, request):
+        """
+        Generate monthly report for a specific month, year, and hologram type
+        Query params:
+        - month: Month name (e.g., 'January', 'jan')
+        - year: Year (e.g., '2026')
+        - hologram_type: Type (LOCAL, EXPORT, DEFENCE)
+        - licensee_id: Optional licensee ID filter
+        """
+        from django.db.models import Sum, Q
+        from datetime import datetime
+        import calendar
+        
+        # Get query parameters
+        month_param = request.query_params.get('month', '').lower()
+        year_param = request.query_params.get('year', str(timezone.now().year))
+        hologram_type = request.query_params.get('hologram_type', 'LOCAL').upper()
+        licensee_id = request.query_params.get('licensee_id')
+        
+        # Month mapping
+        month_map = {
+            'jan': 1, 'january': 1,
+            'feb': 2, 'february': 2,
+            'mar': 3, 'march': 3,
+            'apr': 4, 'april': 4,
+            'may': 5,
+            'jun': 6, 'june': 6,
+            'jul': 7, 'july': 7,
+            'aug': 8, 'august': 8,
+            'sep': 9, 'september': 9,
+            'oct': 10, 'october': 10,
+            'nov': 11, 'november': 11,
+            'dec': 12, 'december': 12
+        }
+        
+        month_num = month_map.get(month_param, timezone.now().month)
+        year_num = int(year_param)
+        
+        # Get licensee from user if not provided
+        if not licensee_id and hasattr(request.user, 'supply_chain_profile'):
+            licensee_id = request.user.supply_chain_profile.id
+        
+        # Build query filters
+        filters = Q(
+            usage_date__year=year_num,
+            usage_date__month=month_num,
+            hologram_type=hologram_type,
+            approval_status='APPROVED'
+        )
+        
+        if licensee_id:
+            filters &= Q(licensee_id=licensee_id)
+        
+        # Get approved daily register entries for the month
+        daily_entries = DailyHologramRegister.objects.filter(filters).order_by('usage_date', 'id')
+        
+        # Calculate previous month's closing balance
+        prev_month = month_num - 1 if month_num > 1 else 12
+        prev_year = year_num if month_num > 1 else year_num - 1
+        
+        # Get previous month's data
+        prev_filters = Q(
+            usage_date__year=prev_year,
+            usage_date__month=prev_month,
+            hologram_type=hologram_type,
+            approval_status='APPROVED'
+        )
+        if licensee_id:
+            prev_filters &= Q(licensee_id=licensee_id)
+        
+        prev_entries = DailyHologramRegister.objects.filter(prev_filters)
+        
+        # Calculate previous month totals
+        prev_utilized = prev_entries.aggregate(total=Sum('issued_qty'))['total'] or 0
+        prev_wastage = prev_entries.aggregate(total=Sum('wastage_qty'))['total'] or 0
+        
+        # Get fresh arrivals for current month (from HologramRollsDetails)
+        arrival_filters = Q(
+            received_date__year=year_num,
+            received_date__month=month_num,
+            type=hologram_type
+        )
+        if licensee_id:
+            arrival_filters &= Q(procurement__licensee_id=licensee_id)
+        
+        arrivals = HologramRollsDetails.objects.filter(arrival_filters)
+        fresh_arrivals = arrivals.aggregate(total=Sum('total_count'))['total'] or 0
+        arrival_count = arrivals.count()
+        
+        # Calculate current month totals
+        total_utilized = daily_entries.aggregate(total=Sum('issued_qty'))['total'] or 0
+        total_wastage = daily_entries.aggregate(total=Sum('wastage_qty'))['total'] or 0
+        utilization_count = daily_entries.filter(issued_qty__gt=0).count()
+        wastage_count = daily_entries.filter(wastage_qty__gt=0).count()
+        
+        # Get opening stock (previous month's closing balance)
+        # This should come from the previous month's report or initial procurement
+        opening_stock = 0
+        
+        # Try to get from previous month's closing
+        if prev_month and prev_year:
+            # Get all rolls up to previous month
+            all_prev_rolls = HologramRollsDetails.objects.filter(
+                Q(received_date__year__lt=prev_year) |
+                Q(received_date__year=prev_year, received_date__month__lte=prev_month),
+                type=hologram_type
+            )
+            if licensee_id:
+                all_prev_rolls = all_prev_rolls.filter(procurement__licensee_id=licensee_id)
+            
+            total_received = all_prev_rolls.aggregate(total=Sum('total_count'))['total'] or 0
+            
+            # Get all usage up to previous month
+            all_prev_usage = DailyHologramRegister.objects.filter(
+                Q(usage_date__year__lt=prev_year) |
+                Q(usage_date__year=prev_year, usage_date__month__lte=prev_month),
+                hologram_type=hologram_type,
+                approval_status='APPROVED'
+            )
+            if licensee_id:
+                all_prev_usage = all_prev_usage.filter(licensee_id=licensee_id)
+            
+            total_prev_utilized = all_prev_usage.aggregate(total=Sum('issued_qty'))['total'] or 0
+            total_prev_wastage = all_prev_usage.aggregate(total=Sum('wastage_qty'))['total'] or 0
+            
+            opening_stock = total_received - total_prev_utilized - total_prev_wastage
+        
+        # Calculate closing balance
+        closing_balance = opening_stock + fresh_arrivals - total_utilized - total_wastage
+        
+        # Build statement rows
+        statement_rows = []
+        
+        # Group entries by date
+        from collections import defaultdict
+        entries_by_date = defaultdict(list)
+        for entry in daily_entries:
+            entries_by_date[entry.usage_date].append(entry)
+        
+        # Add arrival rows
+        for arrival in arrivals:
+            statement_rows.append({
+                'rowType': 'ARRIVAL',
+                'label': f"Arrival - {arrival.received_date.strftime('%d %b %Y')}",
+                'freshArrival': arrival.total_count,
+                'closingBalance': None,  # Will be calculated on frontend
+                'meta': {
+                    'cartoonNumber': arrival.carton_number,
+                    'notes': f"Received {arrival.total_count} holograms"
+                }
+            })
+        
+        # Add utilization/wastage rows
+        for date, entries in sorted(entries_by_date.items()):
+            for entry in entries:
+                row = {
+                    'rowType': 'UTILIZATION',
+                    'label': f"Utilization - {date.strftime('%d %b %Y')}",
+                    'brandDetails': entry.brand_details or '-',
+                    'bottleSize': entry.bottle_size or '-',
+                    'utilizationFrom': entry.issued_from or '-',
+                    'utilizationTo': entry.issued_to or '-',
+                    'utilizationQty': entry.issued_qty,
+                    'wastageFrom': entry.wastage_from or '-',
+                    'wastageTo': entry.wastage_to or '-',
+                    'wastageQty': entry.wastage_qty,
+                    'leftOver': 0,  # Calculated on frontend
+                    'closingBalance': None,  # Calculated on frontend
+                    'meta': {
+                        'referenceNo': entry.reference_no,
+                        'cartoonNumber': entry.cartoon_number,
+                        'serialRange': f"{entry.issued_from}-{entry.issued_to}" if entry.issued_from and entry.issued_to else None
+                    }
+                }
+                
+                # Add utilization details if multiple ranges
+                if entry.issued_ranges:
+                    row['utilizationDetails'] = [{
+                        'rollName': entry.cartoon_number,
+                        'ranges': [
+                            {
+                                'from': r.get('fromSerial'),
+                                'to': r.get('toSerial'),
+                                'qty': r.get('quantity')
+                            }
+                            for r in entry.issued_ranges
+                        ]
+                    }]
+                
+                # Add wastage details if multiple ranges
+                if entry.wastage_ranges:
+                    row['wastageDetails'] = [{
+                        'rollName': entry.cartoon_number,
+                        'ranges': [
+                            {
+                                'from': r.get('fromSerial'),
+                                'to': r.get('toSerial'),
+                                'qty': r.get('quantity')
+                            }
+                            for r in entry.wastage_ranges
+                        ]
+                    }]
+                
+                statement_rows.append(row)
+        
+        # Build response
+        response_data = {
+            'month': month_param,
+            'year': year_param,
+            'hologramType': hologram_type,
+            'overviewSummary': {
+                'openingStock': opening_stock,
+                'totalArrivals': fresh_arrivals,
+                'arrivalCount': arrival_count,
+                'totalUtilized': total_utilized,
+                'utilizationCount': utilization_count,
+                'totalWastage': total_wastage,
+                'wastageCount': wastage_count,
+                'closingBalance': closing_balance
+            },
+            'statementRows': statement_rows,
+            'approvedEntriesCount': daily_entries.count(),
+            'previousMonthBalance': opening_stock
+        }
+        
+        return Response(response_data)

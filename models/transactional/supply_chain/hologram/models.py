@@ -136,6 +136,9 @@ class HologramRollsDetails(models.Model):
     usage_history = models.JSONField(default=list, blank=True)
     serial_ranges = models.JSONField(default=list, blank=True)
     
+    # Available range display (computed field)
+    available_range = models.CharField(max_length=255, blank=True, null=True, help_text='Available serial range for this roll (e.g., "101-1000")')
+    
     # Metadata
     is_new = models.BooleanField(default=True)
     new_until = models.DateTimeField(null=True, blank=True)
@@ -163,6 +166,85 @@ class HologramRollsDetails(models.Model):
         else:
             self.status = self.STATUS_AVAILABLE
         self.save(update_fields=['status'])
+    
+    def calculate_available_range(self):
+        """Calculate the available serial range based on usage_history or serial_ranges table"""
+        if self.available == 0:
+            return "None"
+        
+        # Try to get from hologram_serial_ranges table first
+        available_ranges = self.ranges.filter(status='AVAILABLE').order_by('from_serial')
+        if available_ranges.exists():
+            # Combine consecutive ranges
+            ranges_list = []
+            for range_obj in available_ranges:
+                ranges_list.append(f"{range_obj.from_serial}-{range_obj.to_serial}")
+            return ", ".join(ranges_list)
+        
+        # Fallback: Calculate from usage_history
+        if not self.from_serial or not self.to_serial:
+            return "N/A"
+        
+        try:
+            from_num = int(self.from_serial)
+            to_num = int(self.to_serial)
+            
+            # Get all used ranges from usage_history
+            used_ranges = []
+            if self.usage_history:
+                for entry in self.usage_history:
+                    entry_type = entry.get('type', '').upper()
+                    
+                    # Handle ISSUED entries
+                    if entry_type == 'ISSUED':
+                        from_serial = entry.get('issuedFromSerial') or entry.get('fromSerial')
+                        to_serial = entry.get('issuedToSerial') or entry.get('toSerial')
+                        
+                        if from_serial and to_serial:
+                            try:
+                                from_s = int(str(from_serial).replace(str(self.from_serial)[:-len(str(from_num))], ''))
+                                to_s = int(str(to_serial).replace(str(self.from_serial)[:-len(str(from_num))], ''))
+                                used_ranges.append((from_s, to_s))
+                            except (ValueError, TypeError):
+                                pass
+                    
+                    # Handle WASTAGE/DAMAGED entries
+                    elif entry_type in ['WASTAGE', 'DAMAGED']:
+                        from_serial = entry.get('wastageFromSerial') or entry.get('fromSerial')
+                        to_serial = entry.get('wastageToSerial') or entry.get('toSerial')
+                        
+                        if from_serial and to_serial:
+                            try:
+                                from_s = int(str(from_serial).replace(str(self.from_serial)[:-len(str(from_num))], ''))
+                                to_s = int(str(to_serial).replace(str(self.from_serial)[:-len(str(from_num))], ''))
+                                used_ranges.append((from_s, to_s))
+                            except (ValueError, TypeError):
+                                pass
+            
+            # Sort used ranges
+            used_ranges.sort()
+            
+            # Find available ranges
+            available = []
+            current = from_num
+            
+            for used_start, used_end in used_ranges:
+                if current < used_start:
+                    available.append(f"{current}-{used_start - 1}")
+                current = max(current, used_end + 1)
+            
+            if current <= to_num:
+                available.append(f"{current}-{to_num}")
+            
+            return ", ".join(available) if available else "None"
+        except (ValueError, TypeError) as e:
+            print(f"Error calculating available range for {self.carton_number}: {e}")
+            return "N/A"
+    
+    def update_available_range(self):
+        """Update the available_range field"""
+        self.available_range = self.calculate_available_range()
+        self.save(update_fields=['available_range'])
 
 
 class DailyHologramRegister(models.Model):
@@ -224,6 +306,9 @@ class DailyHologramRegister(models.Model):
     approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='approved_daily_registers')
     approved_at = models.DateTimeField(null=True, blank=True)
     rejection_reason = models.TextField(blank=True, null=True)
+    
+    # Creation tracking for chronological ordering
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
     
     class Meta:
         db_table = 'daily_hologram_register'
