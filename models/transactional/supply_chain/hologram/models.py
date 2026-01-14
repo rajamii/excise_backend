@@ -158,13 +158,24 @@ class HologramRollsDetails(models.Model):
         return f"{self.carton_number} - {self.procurement.ref_no}"
     
     def update_status(self):
-        """Auto-update status based on available count"""
+        """
+        Auto-update status based on available count and assignment state
+        
+        Status Logic:
+        - COMPLETED: No holograms left (available = 0)
+        - IN_USE: Roll is assigned to a request OR has been partially used
+        - AVAILABLE: Roll has holograms available and is not assigned
+        """
         if self.available == 0:
+            # Roll is exhausted
             self.status = self.STATUS_COMPLETED
         elif self.available < self.total_count:
+            # Roll has been partially used - mark as IN_USE
             self.status = self.STATUS_IN_USE
         else:
+            # Roll is fully available and not used yet
             self.status = self.STATUS_AVAILABLE
+        
         self.save(update_fields=['status'])
     
     def calculate_available_range(self):

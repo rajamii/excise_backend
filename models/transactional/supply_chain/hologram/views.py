@@ -805,7 +805,14 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 roll_obj.status = detail['status']
                 roll_obj.save()
                 
+                # Update status based on new counts (AVAILABLE/IN_USE/COMPLETED)
+                roll_obj.update_status()
+                
+                # Update available_range to reflect new state
+                roll_obj.update_available_range()
+                
                 print(f"✅ Updated HologramRollsDetails - available: {roll_obj.available}, used: {roll_obj.used}, damaged: {roll_obj.damaged}")
+                print(f"✅ Status: {roll_obj.status}, Available Range: {roll_obj.available_range}")
                 print(f"✅ Usage history entries: {len(roll_obj.usage_history)}")
                 
         except Exception as e:
