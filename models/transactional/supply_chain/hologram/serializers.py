@@ -172,23 +172,83 @@ from .models import DailyHologramRegister
 class DailyHologramRegisterSerializer(serializers.ModelSerializer):
     licensee_name = serializers.CharField(source='licensee.manufacturing_unit_name', read_only=True)
     hologram_type = serializers.SerializerMethodField()
+    approved_by_name = serializers.CharField(source='approved_by.username', read_only=True, allow_null=True)
+    rolls_used_details = serializers.SerializerMethodField()
     
     class Meta:
         model = DailyHologramRegister
         fields = '__all__'
-        read_only_fields = ('submission_date', 'licensee')
+        read_only_fields = ('submission_date', 'licensee', 'approved_by', 'approved_at')
     
     def get_hologram_type(self, obj):
-        """Get hologram_type from related hologram_request"""
+        """Get hologram_type from related hologram_request or direct field"""
+        if obj.hologram_type:
+            return obj.hologram_type
         if obj.hologram_request:
             return obj.hologram_request.hologram_type
         return 'LOCAL'  # Default fallback
+    
+    def get_rolls_used_details(self, obj):
+        """Get details of rolls used in this entry"""
+        rolls = obj.rolls_used.all()
+        return [{
+            'id': roll.id,
+            'carton_number': roll.carton_number,
+            'type': roll.type,
+            'from_serial': roll.from_serial,
+            'to_serial': roll.to_serial,
+            'available': roll.available
+        } for roll in rolls]
 
-from .models import HologramRollsDetails
+from .models import HologramRollsDetails, HologramSerialRange, HologramUsageHistory
 
 class HologramRollsDetailsSerializer(serializers.ModelSerializer):
     procurement_ref = serializers.CharField(source='procurement.ref_no', read_only=True)
+    procurement_date = serializers.DateTimeField(source='procurement.date', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
+    updated_by_name = serializers.CharField(source='updated_by.username', read_only=True, allow_null=True)
     
     class Meta:
         model = HologramRollsDetails
         fields = '__all__'
+        read_only_fields = ('created_by', 'confirmed_at', 'last_updated', 'updated_by')
+
+
+class HologramSerialRangeSerializer(serializers.ModelSerializer):
+    roll_carton_number = serializers.CharField(source='roll.carton_number', read_only=True)
+    
+    class Meta:
+        model = HologramSerialRange
+        fields = '__all__'
+        read_only_fields = ('created_at', 'updated_at')
+
+
+class HologramUsageHistorySerializer(serializers.ModelSerializer):
+    roll_carton_number = serializers.CharField(source='roll.carton_number', read_only=True)
+    approved_by_name = serializers.CharField(source='approved_by.username', read_only=True)
+    daily_register_ref = serializers.CharField(source='daily_register_entry.reference_no', read_only=True, allow_null=True)
+    
+    class Meta:
+        model = HologramUsageHistory
+        fields = '__all__'
+        read_only_fields = ('approved_by', 'approved_at')
+
+
+class HologramRollsDetailedSerializer(HologramRollsDetailsSerializer):
+    """Extended serializer with usage history and serial ranges"""
+    history = HologramUsageHistorySerializer(many=True, read_only=True)
+    ranges = HologramSerialRangeSerializer(many=True, read_only=True)
+    
+    class Meta(HologramRollsDetailsSerializer.Meta):
+        fields = HologramRollsDetailsSerializer.Meta.fields
+
+
+class HologramRollsSummarySerializer(serializers.Serializer):
+    """Summary statistics for rolls"""
+    total_rolls = serializers.IntegerField()
+    total_holograms = serializers.IntegerField()
+    available = serializers.IntegerField()
+    used = serializers.IntegerField()
+    damaged = serializers.IntegerField()
+    by_type = serializers.DictField()
+    by_status = serializers.DictField()

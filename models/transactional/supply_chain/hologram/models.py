@@ -1,6 +1,7 @@
 from django.db import models
 from django.utils import timezone
 from django.contrib.contenttypes.fields import GenericRelation
+from django.conf import settings
 from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile
 
@@ -90,7 +91,91 @@ class HologramRequest(models.Model):
         return f"{self.ref_no} - {self.hologram_type}"
 
 
+class HologramRollsDetails(models.Model):
+    STATUS_AVAILABLE = 'AVAILABLE'
+    STATUS_IN_USE = 'IN_USE'
+    STATUS_COMPLETED = 'COMPLETED'
+    STATUS_DAMAGED = 'DAMAGED'
+    
+    STATUS_CHOICES = [
+        (STATUS_AVAILABLE, 'Available'),
+        (STATUS_IN_USE, 'In Use'),
+        (STATUS_COMPLETED, 'Completed'),
+        (STATUS_DAMAGED, 'Damaged'),
+    ]
+    
+    TYPE_LOCAL = 'LOCAL'
+    TYPE_EXPORT = 'EXPORT'
+    TYPE_DEFENCE = 'DEFENCE'
+    
+    TYPE_CHOICES = [
+        (TYPE_LOCAL, 'Local'),
+        (TYPE_EXPORT, 'Export'),
+        (TYPE_DEFENCE, 'Defence'),
+    ]
+    
+    procurement = models.ForeignKey(HologramProcurement, on_delete=models.CASCADE, related_name='rolls_details')
+    received_date = models.DateTimeField(default=timezone.now)
+    carton_number = models.CharField(max_length=100, unique=True)
+    type = models.CharField(max_length=50, choices=TYPE_CHOICES, blank=True, null=True)
+    from_serial = models.CharField(max_length=100, blank=True, null=True)
+    to_serial = models.CharField(max_length=100, blank=True, null=True)
+    total_count = models.IntegerField(default=0)
+    available = models.IntegerField(default=0)
+    used = models.IntegerField(default=0)
+    damaged = models.IntegerField(default=0)
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default=STATUS_AVAILABLE)
+    
+    # Tracking fields
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='created_rolls', null=True, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    last_updated = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='updated_rolls', null=True, blank=True)
+    
+    # Usage tracking
+    usage_history = models.JSONField(default=list, blank=True)
+    serial_ranges = models.JSONField(default=list, blank=True)
+    
+    # Metadata
+    is_new = models.BooleanField(default=True)
+    new_until = models.DateTimeField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        db_table = 'hologram_rolls_details'
+        ordering = ['-received_date', '-id']
+        indexes = [
+            models.Index(fields=['carton_number']),
+            models.Index(fields=['type']),
+            models.Index(fields=['status']),
+            models.Index(fields=['procurement']),
+        ]
+    
+    def __str__(self):
+        return f"{self.carton_number} - {self.procurement.ref_no}"
+    
+    def update_status(self):
+        """Auto-update status based on available count"""
+        if self.available == 0:
+            self.status = self.STATUS_COMPLETED
+        elif self.available < self.total_count:
+            self.status = self.STATUS_IN_USE
+        else:
+            self.status = self.STATUS_AVAILABLE
+        self.save(update_fields=['status'])
+
+
 class DailyHologramRegister(models.Model):
+    APPROVAL_STATUS_PENDING = 'PENDING'
+    APPROVAL_STATUS_APPROVED = 'APPROVED'
+    APPROVAL_STATUS_REJECTED = 'REJECTED'
+    
+    APPROVAL_STATUS_CHOICES = [
+        (APPROVAL_STATUS_PENDING, 'Pending'),
+        (APPROVAL_STATUS_APPROVED, 'Approved'),
+        (APPROVAL_STATUS_REJECTED, 'Rejected'),
+    ]
+    
     # Link to Licensee
     licensee = models.ForeignKey(SupplyChainUserProfile, on_delete=models.CASCADE, related_name='daily_register_entries')
     
@@ -100,6 +185,11 @@ class DailyHologramRegister(models.Model):
     
     # Roll Info
     roll_range = models.TextField(blank=True, null=True)
+    rolls_used = models.ManyToManyField(HologramRollsDetails, related_name='daily_entries', blank=True)
+    
+    # Cartoon tracking
+    cartoon_number = models.CharField(max_length=100, blank=True)
+    hologram_type = models.CharField(max_length=50, blank=True)  # LOCAL/EXPORT/DEFENCE
     
     # Dates
     submission_date = models.DateField(auto_now_add=True)
@@ -127,32 +217,116 @@ class DailyHologramRegister(models.Model):
     damage_reason = models.TextField(blank=True, null=True)
     
     # Status
-    is_fixed = models.BooleanField(default=False) # True indicates the entry is saved/locked
+    is_fixed = models.BooleanField(default=False)  # True indicates the entry is saved/locked
+    
+    # Approval tracking
+    approval_status = models.CharField(max_length=20, choices=APPROVAL_STATUS_CHOICES, default=APPROVAL_STATUS_PENDING)
+    approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='approved_daily_registers')
+    approved_at = models.DateTimeField(null=True, blank=True)
+    rejection_reason = models.TextField(blank=True, null=True)
     
     class Meta:
         db_table = 'daily_hologram_register'
         ordering = ['-usage_date', '-id']
+        indexes = [
+            models.Index(fields=['licensee', 'approval_status']),
+            models.Index(fields=['cartoon_number', 'hologram_type']),
+            models.Index(fields=['usage_date']),
+        ]
 
     def __str__(self):
         return f"{self.reference_no} ({self.usage_date})"
 
 
-class HologramRollsDetails(models.Model):
-    procurement = models.ForeignKey(HologramProcurement, on_delete=models.CASCADE, related_name='rolls_details')
-    received_date = models.DateTimeField(default=timezone.now)
-    carton_number = models.CharField(max_length=100)
-    type = models.CharField(max_length=50, blank=True, null=True)
-    from_serial = models.CharField(max_length=100, blank=True, null=True)
-    to_serial = models.CharField(max_length=100, blank=True, null=True)
-    total_count = models.IntegerField(default=0)
-    available = models.IntegerField(default=0)
-    used = models.IntegerField(default=0)
-    damaged = models.IntegerField(default=0)
-    status = models.CharField(max_length=50, default='AVAILABLE')
-
+class HologramSerialRange(models.Model):
+    STATUS_AVAILABLE = 'AVAILABLE'
+    STATUS_USED = 'USED'
+    STATUS_DAMAGED = 'DAMAGED'
+    
+    STATUS_CHOICES = [
+        (STATUS_AVAILABLE, 'Available'),
+        (STATUS_USED, 'Used'),
+        (STATUS_DAMAGED, 'Damaged'),
+    ]
+    
+    roll = models.ForeignKey(HologramRollsDetails, on_delete=models.CASCADE, related_name='ranges')
+    from_serial = models.CharField(max_length=100)
+    to_serial = models.CharField(max_length=100)
+    count = models.IntegerField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_AVAILABLE)
+    
+    # For USED status
+    used_date = models.DateField(null=True, blank=True)
+    reference_no = models.CharField(max_length=100, blank=True)
+    brand_name = models.CharField(max_length=255, blank=True)
+    bottle_size = models.CharField(max_length=100, blank=True)
+    production_line = models.CharField(max_length=100, blank=True)
+    
+    # For DAMAGED status
+    damage_date = models.DateField(null=True, blank=True)
+    damage_reason = models.TextField(blank=True)
+    reported_by = models.CharField(max_length=255, blank=True)
+    
+    # Common fields
+    description = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
     class Meta:
-        db_table = 'hologram_rolls_details'
-        ordering = ['carton_number']
+        db_table = 'hologram_serial_ranges'
+        ordering = ['from_serial']
+        indexes = [
+            models.Index(fields=['roll', 'status']),
+            models.Index(fields=['from_serial', 'to_serial']),
+        ]
     
     def __str__(self):
-        return f"{self.carton_number} - {self.procurement.ref_no}"
+        return f"{self.from_serial} - {self.to_serial} ({self.status})"
+
+
+class HologramUsageHistory(models.Model):
+    USAGE_TYPE_ISSUED = 'ISSUED'
+    USAGE_TYPE_WASTAGE = 'WASTAGE'
+    USAGE_TYPE_RETURNED = 'RETURNED'
+    
+    USAGE_TYPE_CHOICES = [
+        (USAGE_TYPE_ISSUED, 'Issued for Production'),
+        (USAGE_TYPE_WASTAGE, 'Wastage/Damaged'),
+        (USAGE_TYPE_RETURNED, 'Returned to Stock'),
+    ]
+    
+    roll = models.ForeignKey(HologramRollsDetails, on_delete=models.CASCADE, related_name='history')
+    usage_type = models.CharField(max_length=20, choices=USAGE_TYPE_CHOICES)
+    
+    # Serial range affected
+    from_serial = models.CharField(max_length=100)
+    to_serial = models.CharField(max_length=100)
+    quantity = models.IntegerField()
+    
+    # Reference data
+    reference_no = models.CharField(max_length=100, blank=True)
+    brand_name = models.CharField(max_length=255, blank=True)
+    bottle_size = models.CharField(max_length=100, blank=True)
+    
+    # Damage specific
+    damage_reason = models.TextField(blank=True)
+    
+    # Tracking
+    date = models.DateField()
+    approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='approved_hologram_usage')
+    approved_at = models.DateTimeField(auto_now_add=True)
+    notes = models.TextField(blank=True)
+    
+    # Link to daily register
+    daily_register_entry = models.ForeignKey('DailyHologramRegister', null=True, blank=True, on_delete=models.SET_NULL, related_name='usage_history')
+    
+    class Meta:
+        db_table = 'hologram_usage_history'
+        ordering = ['-date', '-approved_at']
+        indexes = [
+            models.Index(fields=['roll', 'usage_type']),
+            models.Index(fields=['date']),
+        ]
+    
+    def __str__(self):
+        return f"{self.usage_type} - {self.from_serial} to {self.to_serial} ({self.date})"

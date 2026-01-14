@@ -571,6 +571,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
         """
         Updates the usage and available quantity in the original HologramProcurement
         based on the DailyHologramRegister entry.
+        Also updates usage_history JSON and creates HologramSerialRange records.
         """
         try:
             carton_number = None
@@ -584,10 +585,9 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 print(f"DEBUG: No carton number extracted from '{instance.roll_range}'")
                 return
 
-            print(f"DEBUG: Updating usage for Carton '{carton_number}' (Used: {instance.hologram_qty}, Wasted: {instance.wastage_qty})")
+            print(f"DEBUG: Updating usage for Carton '{carton_number}' (Issued: {instance.issued_qty}, Wastage: {instance.wastage_qty})")
 
             # Find matching procurement
-            # We must iterate because carton_details is JSON list
             from .models import HologramProcurement
             procurements = HologramProcurement.objects.filter(licensee=instance.licensee)
             
@@ -612,8 +612,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
             if target_procurement and target_detail_index >= 0:
                 detail = target_procurement.carton_details[target_detail_index]
                 
-                # CRITICAL FIX: Try to get the authoritative total_count from HologramRollsDetails first
-                # The JSON carton_details may have missing or incorrect values
+                # Get HologramRollsDetails object
                 roll_obj = None
                 try:
                     roll_obj = HologramRollsDetails.objects.get(
@@ -621,45 +620,30 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                         carton_number=carton_number
                     )
                 except HologramRollsDetails.DoesNotExist:
-                    pass
+                    print(f"ERROR: HologramRollsDetails not found for {carton_number}")
+                    return
                 
-                # Get total_count from DB model if available, otherwise fallback to JSON
-                if roll_obj and roll_obj.total_count > 0:
-                    total_count = roll_obj.total_count
-                    current_used = roll_obj.used
-                    current_damaged = roll_obj.damaged
-                    print(f"DEBUG: Using HologramRollsDetails values - total_count: {total_count}, used: {current_used}, damaged: {current_damaged}")
-                else:
-                    # Fallback to JSON values
-                    current_used = int(detail.get('used_qty', 0))
-                    current_damaged = int(detail.get('damage_qty', 0))
-                    total_count = int(detail.get('numberOfHolograms') or detail.get('number_of_holograms') or detail.get('total_count') or 0)
-                    print(f"DEBUG: Using carton_details JSON values - total_count: {total_count}, used: {current_used}, damaged: {current_damaged}")
+                # Get current counts
+                total_count = roll_obj.total_count
+                current_used = roll_obj.used
+                current_damaged = roll_obj.damaged
+                print(f"DEBUG: Current state - total: {total_count}, used: {current_used}, damaged: {current_damaged}")
                 
-                # Add this entry's usage
-                # instance.issued_qty is what was just consumed.
+                # Calculate new counts
                 new_used = current_used + (instance.issued_qty or 0) 
                 new_damaged = current_damaged + (instance.wastage_qty or 0)
-                
-                # Calculate available
                 new_available = max(0, total_count - new_used - new_damaged)
-                print(f"DEBUG: Calculated new_available = {total_count} - {new_used} - {new_damaged} = {new_available}")
                 
-                # Update Dictionary
+                print(f"DEBUG: New state - available: {new_available}, used: {new_used}, damaged: {new_damaged}")
+                
+                # Update JSON in procurement
                 detail['used_qty'] = new_used
                 detail['damage_qty'] = new_damaged
                 detail['available_qty'] = new_available
-                
-                # Status Update - AVAILABLE if still has quantity, COMPLETED if fully used
-                if new_available == 0:
-                    detail['status'] = 'COMPLETED'
-                else:
-                    detail['status'] = 'AVAILABLE'
-                
-                # Save changes to JSON
+                detail['status'] = 'COMPLETED' if new_available == 0 else 'AVAILABLE'
                 target_procurement.carton_details[target_detail_index] = detail 
                 
-                # -- Balance Updates Logic (omitted for brevity) --
+                # Update balance
                 deduct_qty = instance.issued_qty or 0
                 if target_procurement.local_qty > 0:
                      target_procurement.local_qty = max(0, float(target_procurement.local_qty) - deduct_qty)
@@ -670,19 +654,159 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 
                 target_procurement.save()
                 
-                # ALSO Update the new HologramRollsDetails table if it exists
-                # This ensures the new table stays in sync with usage
-                # NOTE: We already fetched roll_obj earlier, so just reuse it
-                if roll_obj:
-                    print(f"DEBUG: Syncing usage to HologramRollsDetails for Carton {carton_number}")
-                    roll_obj.used = new_used
-                    roll_obj.damaged = new_damaged
-                    roll_obj.available = new_available
-                    roll_obj.status = detail['status']
-                    roll_obj.save()
-                    print(f"DEBUG: Updated HologramRollsDetails - available: {roll_obj.available}, used: {roll_obj.used}")
-                else:
-                    print(f"DEBUG: HologramRollsDetails not found for {carton_number}, skipping sync.")
+                # ===== NEW: Update HologramRollsDetails with usage_history =====
+                
+                # Initialize usage_history if not exists
+                if not roll_obj.usage_history:
+                    roll_obj.usage_history = []
+                
+                # Add ISSUED entry to usage_history
+                if instance.issued_qty and instance.issued_qty > 0:
+                    # Handle multiple issued ranges
+                    issued_ranges = instance.issued_ranges or []
+                    if issued_ranges:
+                        for issued_range in issued_ranges:
+                            usage_entry = {
+                                'type': 'ISSUED',
+                                'cartoonNumber': carton_number,
+                                'issuedFromSerial': issued_range.get('fromSerial') or issued_range.get('from_serial'),
+                                'issuedToSerial': issued_range.get('toSerial') or issued_range.get('to_serial'),
+                                'issuedQuantity': issued_range.get('quantity'),
+                                'date': str(instance.usage_date),
+                                'referenceNo': instance.reference_no,
+                                'brandName': instance.brand_details,
+                                'brandDetails': instance.brand_details,
+                                'bottleSize': instance.bottle_size,
+                                'approvedBy': self.request.user.username if self.request else 'System',
+                                'approvedAt': timezone.now().isoformat()
+                            }
+                            roll_obj.usage_history.append(usage_entry)
+                            
+                            # Create HologramSerialRange record
+                            from .models import HologramSerialRange
+                            HologramSerialRange.objects.create(
+                                roll=roll_obj,
+                                from_serial=usage_entry['issuedFromSerial'],
+                                to_serial=usage_entry['issuedToSerial'],
+                                count=usage_entry['issuedQuantity'],
+                                status='USED',
+                                used_date=instance.usage_date,
+                                reference_no=instance.reference_no,
+                                brand_name=instance.brand_details,
+                                bottle_size=instance.bottle_size,
+                                description=f"Used on {instance.usage_date}"
+                            )
+                            print(f"✅ Created USED serial range: {usage_entry['issuedFromSerial']} - {usage_entry['issuedToSerial']}")
+                    else:
+                        # Legacy: single issued range
+                        usage_entry = {
+                            'type': 'ISSUED',
+                            'cartoonNumber': carton_number,
+                            'issuedFromSerial': instance.issued_from,
+                            'issuedToSerial': instance.issued_to,
+                            'issuedQuantity': instance.issued_qty,
+                            'date': str(instance.usage_date),
+                            'referenceNo': instance.reference_no,
+                            'brandName': instance.brand_details,
+                            'brandDetails': instance.brand_details,
+                            'bottleSize': instance.bottle_size,
+                            'approvedBy': self.request.user.username if self.request else 'System',
+                            'approvedAt': timezone.now().isoformat()
+                        }
+                        roll_obj.usage_history.append(usage_entry)
+                        
+                        # Create HologramSerialRange record
+                        from .models import HologramSerialRange
+                        HologramSerialRange.objects.create(
+                            roll=roll_obj,
+                            from_serial=instance.issued_from,
+                            to_serial=instance.issued_to,
+                            count=instance.issued_qty,
+                            status='USED',
+                            used_date=instance.usage_date,
+                            reference_no=instance.reference_no,
+                            brand_name=instance.brand_details,
+                            bottle_size=instance.bottle_size,
+                            description=f"Used on {instance.usage_date}"
+                        )
+                        print(f"✅ Created USED serial range: {instance.issued_from} - {instance.issued_to}")
+                
+                # Add WASTAGE entry to usage_history
+                if instance.wastage_qty and instance.wastage_qty > 0:
+                    # Handle multiple wastage ranges
+                    wastage_ranges = instance.wastage_ranges or []
+                    if wastage_ranges:
+                        for wastage_range in wastage_ranges:
+                            usage_entry = {
+                                'type': 'WASTAGE',
+                                'cartoonNumber': carton_number,
+                                'wastageFromSerial': wastage_range.get('fromSerial') or wastage_range.get('from_serial'),
+                                'wastageToSerial': wastage_range.get('toSerial') or wastage_range.get('to_serial'),
+                                'wastageQuantity': wastage_range.get('quantity'),
+                                'date': str(instance.usage_date),
+                                'damageReason': wastage_range.get('damageReason') or instance.damage_reason,
+                                'referenceNo': instance.reference_no,
+                                'reportedBy': self.request.user.username if self.request else 'System',
+                                'approvedBy': self.request.user.username if self.request else 'System',
+                                'approvedAt': timezone.now().isoformat()
+                            }
+                            roll_obj.usage_history.append(usage_entry)
+                            
+                            # Create HologramSerialRange record
+                            from .models import HologramSerialRange
+                            HologramSerialRange.objects.create(
+                                roll=roll_obj,
+                                from_serial=usage_entry['wastageFromSerial'],
+                                to_serial=usage_entry['wastageToSerial'],
+                                count=usage_entry['wastageQuantity'],
+                                status='DAMAGED',
+                                damage_date=instance.usage_date,
+                                damage_reason=usage_entry['damageReason'],
+                                reported_by=self.request.user.username if self.request else 'System',
+                                description=usage_entry['damageReason'] or 'Damaged during production'
+                            )
+                            print(f"✅ Created DAMAGED serial range: {usage_entry['wastageFromSerial']} - {usage_entry['wastageToSerial']}")
+                    else:
+                        # Legacy: single wastage range
+                        usage_entry = {
+                            'type': 'WASTAGE',
+                            'cartoonNumber': carton_number,
+                            'wastageFromSerial': instance.wastage_from,
+                            'wastageToSerial': instance.wastage_to,
+                            'wastageQuantity': instance.wastage_qty,
+                            'date': str(instance.usage_date),
+                            'damageReason': instance.damage_reason,
+                            'referenceNo': instance.reference_no,
+                            'reportedBy': self.request.user.username if self.request else 'System',
+                            'approvedBy': self.request.user.username if self.request else 'System',
+                            'approvedAt': timezone.now().isoformat()
+                        }
+                        roll_obj.usage_history.append(usage_entry)
+                        
+                        # Create HologramSerialRange record
+                        from .models import HologramSerialRange
+                        HologramSerialRange.objects.create(
+                            roll=roll_obj,
+                            from_serial=instance.wastage_from,
+                            to_serial=instance.wastage_to,
+                            count=instance.wastage_qty,
+                            status='DAMAGED',
+                            damage_date=instance.usage_date,
+                            damage_reason=instance.damage_reason,
+                            reported_by=self.request.user.username if self.request else 'System',
+                            description=instance.damage_reason or 'Damaged during production'
+                        )
+                        print(f"✅ Created DAMAGED serial range: {instance.wastage_from} - {instance.wastage_to}")
+                
+                # Update HologramRollsDetails counts and save
+                roll_obj.used = new_used
+                roll_obj.damaged = new_damaged
+                roll_obj.available = new_available
+                roll_obj.status = detail['status']
+                roll_obj.save()
+                
+                print(f"✅ Updated HologramRollsDetails - available: {roll_obj.available}, used: {roll_obj.used}, damaged: {roll_obj.damaged}")
+                print(f"✅ Usage history entries: {len(roll_obj.usage_history)}")
                 
         except Exception as e:
             print(f"ERROR updating procurement usage: {e}")
@@ -711,5 +835,89 @@ class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
              return HologramRollsDetails.objects.all()
              
         return HologramRollsDetails.objects.none()
+    
+    @action(detail=True, methods=['get'])
+    def serial_ranges(self, request, pk=None):
+        """
+        Get detailed serial ranges for a specific roll
+        Returns ranges from HologramSerialRange table if available,
+        otherwise generates from usage_history JSON
+        """
+        roll = self.get_object()
+        
+        # Try to get from HologramSerialRange table first
+        from .models import HologramSerialRange
+        from .serializers import HologramSerialRangeSerializer
+        
+        ranges = HologramSerialRange.objects.filter(roll=roll).order_by('from_serial')
+        
+        if ranges.exists():
+            # Return from database table
+            serializer = HologramSerialRangeSerializer(ranges, many=True)
+            return Response({
+                'source': 'database',
+                'ranges': serializer.data,
+                'total_count': ranges.count()
+            })
+        else:
+            # Fallback: Generate from usage_history JSON
+            usage_history = roll.usage_history or []
+            serial_ranges = []
+            
+            # Generate available range
+            if roll.available > 0:
+                # Calculate next available serial
+                from_num = self._extract_serial_number(roll.from_serial)
+                next_num = from_num + roll.used + roll.damaged
+                prefix = roll.from_serial[:-len(str(from_num))] if from_num > 0 else roll.from_serial
+                
+                next_serial = prefix + str(next_num).zfill(6)
+                
+                serial_ranges.append({
+                    'from_serial': next_serial,
+                    'to_serial': roll.to_serial,
+                    'count': roll.available,
+                    'status': 'AVAILABLE',
+                    'description': 'Available for production use'
+                })
+            
+            # Generate used/damaged ranges from usage_history
+            for entry in usage_history:
+                if entry.get('type') == 'ISSUED':
+                    serial_ranges.append({
+                        'from_serial': entry.get('issuedFromSerial') or entry.get('fromSerial'),
+                        'to_serial': entry.get('issuedToSerial') or entry.get('toSerial'),
+                        'count': entry.get('issuedQuantity') or entry.get('quantity'),
+                        'status': 'USED',
+                        'description': f"Used on {entry.get('date')}",
+                        'used_date': entry.get('date'),
+                        'reference_no': entry.get('referenceNo'),
+                        'brand_name': entry.get('brandName'),
+                        'bottle_size': entry.get('bottleSize'),
+                        'brand_details': entry.get('brandDetails')
+                    })
+                elif entry.get('type') in ['WASTAGE', 'DAMAGED']:
+                    serial_ranges.append({
+                        'from_serial': entry.get('wastageFromSerial') or entry.get('fromSerial'),
+                        'to_serial': entry.get('wastageToSerial') or entry.get('toSerial'),
+                        'count': entry.get('wastageQuantity') or entry.get('quantity'),
+                        'status': 'DAMAGED',
+                        'description': entry.get('damageReason') or 'Damaged',
+                        'damage_date': entry.get('date'),
+                        'damage_reason': entry.get('damageReason'),
+                        'reported_by': entry.get('reportedBy') or entry.get('approvedBy')
+                    })
+            
+            return Response({
+                'source': 'json',
+                'ranges': serial_ranges,
+                'total_count': len(serial_ranges)
+            })
+    
+    def _extract_serial_number(self, serial: str) -> int:
+        """Extract numeric part from serial string"""
+        import re
+        match = re.search(r'\d+$', serial or '')
+        return int(match.group()) if match else 0
 
 
