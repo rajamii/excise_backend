@@ -707,6 +707,38 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             )
                 except Exception as e:
                     print(f"ERROR: Failed to update request status: {e}")
+            else:
+                # FALLBACK: Try to find request by reference number
+                try:
+                    if instance.reference_no:
+                        req = HologramRequest.objects.filter(ref_no=instance.reference_no).first()
+                        if req:
+                            print(f"DEBUG: Found request by reference_no: {req.ref_no}")
+                            # Link the entry to the request
+                            instance.hologram_request = req
+                            instance.save(update_fields=['hologram_request'])
+                            
+                            # Update request status
+                            from auth.workflow.models import WorkflowStage, WorkflowTransition, Transaction
+                            
+                            if req.current_stage and req.current_stage.name == 'In Use':
+                                completed_stage = WorkflowStage.objects.filter(workflow=req.workflow, name='Production Completed').first()
+                                
+                                if completed_stage:
+                                    req.current_stage = completed_stage
+                                    req.save()
+                                    print(f"DEBUG: Auto-completed HologramRequest {req.ref_no} (via reference_no match)")
+                                    
+                                    Transaction.objects.create(
+                                        application=req,
+                                        stage=completed_stage,
+                                        performed_by=self.request.user,
+                                        remarks='Hologram Production Completed via Daily Register'
+                                    )
+                        else:
+                            print(f"WARNING: No request found with ref_no={instance.reference_no}")
+                except Exception as e:
+                    print(f"ERROR: Failed to find/update request by reference_no: {e}")
             
         except Exception as e:
             import traceback
