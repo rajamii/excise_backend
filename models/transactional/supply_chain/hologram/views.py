@@ -1165,9 +1165,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 roll_obj.status = detail['status']
                 roll_obj.save()
                 
-                # Update status based on new counts (AVAILABLE/IN_USE/COMPLETED)
-                roll_obj.update_status()
-                
                 # Recalculate available count from AVAILABLE ranges
                 available_ranges = HologramSerialRange.objects.filter(roll=roll_obj, status='AVAILABLE')
                 total_available = sum(r.count for r in available_ranges)
@@ -1175,6 +1172,26 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                     roll_obj.available = total_available
                     roll_obj.save(update_fields=['available'])
                     print(f"✅ Updated roll.available to {total_available} from AVAILABLE ranges")
+                
+                # CRITICAL: Update status based on available count
+                if roll_obj.available == 0:
+                    roll_obj.status = 'COMPLETED'
+                    print(f"✅ Status changed to COMPLETED (no holograms left)")
+                elif roll_obj.available > 0 and roll_obj.available < roll_obj.total_count:
+                    # Has some available, but not all - could be IN_USE or AVAILABLE
+                    # Check if there are any IN_USE ranges
+                    in_use_count = HologramSerialRange.objects.filter(roll=roll_obj, status='IN_USE').count()
+                    if in_use_count > 0:
+                        roll_obj.status = 'IN_USE'
+                        print(f"✅ Status remains IN_USE (has IN_USE ranges)")
+                    else:
+                        roll_obj.status = 'AVAILABLE'
+                        print(f"✅ Status changed to AVAILABLE (has {roll_obj.available} holograms available)")
+                elif roll_obj.available == roll_obj.total_count:
+                    roll_obj.status = 'AVAILABLE'
+                    print(f"✅ Status changed to AVAILABLE (fully available)")
+                
+                roll_obj.save(update_fields=['status'])
                 
                 # Update available_range to reflect new state
                 roll_obj.update_available_range()
