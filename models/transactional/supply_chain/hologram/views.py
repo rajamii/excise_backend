@@ -1458,6 +1458,205 @@ class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 
+class CommissionerDashboardViewSet(viewsets.ViewSet):
+    """
+    ViewSet for Commissioner Dashboard - Track all hologram requests with complete flow
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @action(detail=False, methods=['get'])
+    def daily_register_overview(self, request):
+        """
+        Get complete overview of all hologram requests for commissioner dashboard
+        Shows: Applied, Under Process, Completed On Time, Completed Late, Overdue
+        """
+        from django.db.models import Q
+        from datetime import datetime
+        
+        try:
+            # Get all hologram requests
+            requests = HologramRequest.objects.select_related(
+                'licensee', 'workflow', 'current_stage'
+            ).prefetch_related('transactions').all()
+            
+            result_data = []
+            
+            for req in requests:
+                print(f"\n=== Processing Request: {req.ref_no} ===")
+                print(f"Current Stage: {req.current_stage.name if req.current_stage else 'None'}")
+                
+                # Get submission transaction
+                submission_txn = req.transactions.filter(
+                    stage__is_initial=True
+                ).order_by('timestamp').first()
+                
+                # Get approval transaction - check multiple possible stage names
+                approval_txn = req.transactions.filter(
+                    Q(stage__name__icontains='Approved') | 
+                    Q(stage__name__icontains='In Use') |
+                    Q(stage__name='Approved by Permit Section')
+                ).order_by('timestamp').first()
+                
+                print(f"Approval Transaction: {approval_txn.stage.name if approval_txn else 'None'}")
+                
+                # Get daily register entries for this request
+                daily_entries = DailyHologramRegister.objects.filter(
+                    Q(hologram_request=req) | Q(reference_no=req.ref_no)
+                ).order_by('created_at')
+                
+                print(f"Daily Register Entries: {daily_entries.count()}")
+                
+                # Determine status based on current stage
+                status = 'APPLIED'
+                completed_on_time = None
+                is_overdue = False
+                time_remaining = None
+                deadline = None
+                completion_date = None
+                completion_time = None
+                officer_name = None
+                brands_entered = []
+                
+                # Check current stage to determine status
+                if req.current_stage:
+                    stage_name = req.current_stage.name.lower()
+                    
+                    # Check if completed
+                    if 'completed' in stage_name or 'production completed' in stage_name:
+                        status = 'COMPLETED'
+                        print(f"Status: COMPLETED (from stage name)")
+                    # Check if approved/in use
+                    elif 'approved' in stage_name or 'in use' in stage_name:
+                        status = 'UNDER_PROCESS'
+                        print(f"Status: UNDER_PROCESS (from stage name)")
+                    # Check if submitted/initial
+                    elif 'submitted' in stage_name or req.current_stage.is_initial:
+                        status = 'APPLIED'
+                        print(f"Status: APPLIED (from stage name)")
+                
+                # Override status if we have daily register entries (means it's completed)
+                if daily_entries.exists():
+                    status = 'COMPLETED'
+                    print(f"Status: COMPLETED (has daily register entries)")
+                
+                # Calculate deadline and time remaining if approved
+                if approval_txn:
+                    # Deadline is 5 PM on approval date (make timezone-aware)
+                    from django.utils import timezone as django_timezone
+                    
+                    approval_date = approval_txn.timestamp.date()
+                    deadline_naive = datetime.combine(approval_date, datetime.strptime('17:00', '%H:%M').time())
+                    # Make deadline timezone-aware
+                    deadline = django_timezone.make_aware(deadline_naive) if django_timezone.is_naive(deadline_naive) else deadline_naive
+                    
+                    # Check if completed
+                    if status == 'COMPLETED' and daily_entries.exists():
+                        last_entry = daily_entries.last()
+                        completion_datetime = datetime.combine(
+                            last_entry.usage_date,
+                            datetime.strptime('00:00', '%H:%M').time()
+                        )
+                        if last_entry.created_at:
+                            completion_datetime = last_entry.created_at
+                        
+                        # Make completion_datetime timezone-aware if needed
+                        if django_timezone.is_naive(completion_datetime):
+                            completion_datetime = django_timezone.make_aware(completion_datetime)
+                        
+                        completion_date = last_entry.usage_date.isoformat()
+                        completion_time = last_entry.created_at.strftime('%H:%M:%S') if last_entry.created_at else '00:00:00'
+                        completed_on_time = completion_datetime <= deadline
+                        
+                        # Get officer who entered the data
+                        if last_entry.licensee:
+                            officer_name = last_entry.licensee.manufacturing_unit_name
+                        
+                        # Get brands entered
+                        for entry in daily_entries:
+                            if entry.brand_details:
+                                brands_entered.append({
+                                    'brand': entry.brand_details,
+                                    'bottleSize': entry.bottle_size or '',
+                                    'quantity': entry.issued_qty or 0,
+                                    'usageDate': entry.usage_date.isoformat()
+                                })
+                    elif status == 'UNDER_PROCESS':
+                        # Check if overdue
+                        now = django_timezone.now()  # Use timezone-aware now
+                        if now > deadline:
+                            is_overdue = True
+                            time_remaining = f"Overdue by {int((now - deadline).total_seconds() / 3600)}h"
+                        else:
+                            hours_left = int((deadline - now).total_seconds() / 3600)
+                            minutes_left = int(((deadline - now).total_seconds() % 3600) / 60)
+                            time_remaining = f"{hours_left}h {minutes_left}m remaining"
+                
+                print(f"Final Status: {status}")
+                
+                result_data.append({
+                    'id': req.id,
+                    'referenceNo': req.ref_no,
+                    'distilleryName': req.licensee.manufacturing_unit_name if req.licensee else 'Unknown',
+                    'submissionDate': submission_txn.timestamp.isoformat() if submission_txn else req.submission_date.isoformat(),
+                    'submissionTime': submission_txn.timestamp.strftime('%H:%M:%S') if submission_txn else '00:00:00',
+                    'approvalDate': approval_txn.timestamp.date().isoformat() if approval_txn else None,
+                    'approvalTime': approval_txn.timestamp.strftime('%H:%M:%S') if approval_txn else None,
+                    'usageDate': req.usage_date.isoformat(),
+                    'hologramType': req.hologram_type,
+                    'quantity': req.quantity,
+                    'status': status,
+                    'completedOnTime': completed_on_time,
+                    'isOverdue': is_overdue,
+                    'timeRemaining': time_remaining,
+                    'deadline': deadline.isoformat() if deadline else None,
+                    'completionDate': completion_date,
+                    'completionTime': completion_time,
+                    'officerName': officer_name,
+                    'brandsEntered': brands_entered,
+                    'currentStage': req.current_stage.name if req.current_stage else 'Unknown'
+                })
+            
+            # Calculate summary statistics
+            total_entries = len(result_data)
+            applied_count = sum(1 for r in result_data if r['status'] == 'APPLIED')
+            under_process_count = sum(1 for r in result_data if r['status'] == 'UNDER_PROCESS')
+            completed_on_time_count = sum(1 for r in result_data if r['status'] == 'COMPLETED' and r['completedOnTime'])
+            completed_late_count = sum(1 for r in result_data if r['status'] == 'COMPLETED' and not r['completedOnTime'])
+            overdue_count = sum(1 for r in result_data if r['isOverdue'])
+            
+            print(f"\n=== Summary ===")
+            print(f"Total: {total_entries}, Applied: {applied_count}, Under Process: {under_process_count}")
+            print(f"Completed On Time: {completed_on_time_count}, Completed Late: {completed_late_count}, Overdue: {overdue_count}")
+            
+            return Response({
+                'summary': {
+                    'totalEntries': total_entries,
+                    'applied': applied_count,
+                    'underProcess': under_process_count,
+                    'completedOnTime': completed_on_time_count,
+                    'completedLate': completed_late_count,
+                    'overdue': overdue_count
+                },
+                'entries': result_data
+            })
+        except Exception as e:
+            import traceback
+            print(f"ERROR in daily_register_overview: {str(e)}")
+            print(traceback.format_exc())
+            return Response({
+                'error': str(e),
+                'summary': {
+                    'totalEntries': 0,
+                    'applied': 0,
+                    'underProcess': 0,
+                    'completedOnTime': 0,
+                    'completedLate': 0,
+                    'overdue': 0
+                },
+                'entries': []
+            }, status=500)
+
+
 class HologramMonthlyReportViewSet(viewsets.ViewSet):
     """
     ViewSet for generating monthly hologram reports
