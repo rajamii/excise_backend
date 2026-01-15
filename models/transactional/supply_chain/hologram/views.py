@@ -803,9 +803,231 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 if not roll_obj.usage_history:
                     roll_obj.usage_history = []
                 
-                # Add ISSUED entry to usage_history
+                from .models import HologramSerialRange
+                
+                print(f"=" * 80)
+                print(f"🔥 DAILY REGISTER SAVE - RANGE SPLITTING DEBUG")
+                print(f"=" * 80)
+                print(f"Roll: {carton_number}")
+                print(f"Issued Qty: {instance.issued_qty}")
+                print(f"Wastage Qty: {instance.wastage_qty}")
+                print(f"Issued Ranges: {instance.issued_ranges}")
+                print(f"Wastage Ranges: {instance.wastage_ranges}")
+                print(f"Issued From/To: {instance.issued_from} - {instance.issued_to}")
+                print(f"Wastage From/To: {instance.wastage_from} - {instance.wastage_to}")
+                
+                # Check existing IN_USE ranges
+                existing_in_use = HologramSerialRange.objects.filter(roll=roll_obj, status='IN_USE')
+                print(f"Existing IN_USE ranges: {existing_in_use.count()}")
+                for r in existing_in_use:
+                    print(f"  - {r.from_serial} to {r.to_serial} (status: {r.status})")
+                print(f"=" * 80)
+                
+                # CRITICAL: Find and delete IN_USE ranges that will be split
+                # Collect all serials that will be marked as USED or DAMAGED
+                used_serials = set()
+                damaged_serials = set()
+                
+                # Collect USED serials
                 if instance.issued_qty and instance.issued_qty > 0:
-                    # Handle multiple issued ranges
+                    issued_ranges = instance.issued_ranges or []
+                    if issued_ranges:
+                        for issued_range in issued_ranges:
+                            from_s = issued_range.get('fromSerial') or issued_range.get('from_serial')
+                            to_s = issued_range.get('toSerial') or issued_range.get('to_serial')
+                            try:
+                                from_num = int(from_s)
+                                to_num = int(to_s)
+                                for serial in range(from_num, to_num + 1):
+                                    used_serials.add(serial)
+                            except (ValueError, TypeError):
+                                pass
+                    else:
+                        try:
+                            from_num = int(instance.issued_from)
+                            to_num = int(instance.issued_to)
+                            for serial in range(from_num, to_num + 1):
+                                used_serials.add(serial)
+                        except (ValueError, TypeError):
+                            pass
+                
+                # Collect DAMAGED serials
+                if instance.wastage_qty and instance.wastage_qty > 0:
+                    wastage_ranges = instance.wastage_ranges or []
+                    if wastage_ranges:
+                        for wastage_range in wastage_ranges:
+                            from_s = wastage_range.get('fromSerial') or wastage_range.get('from_serial')
+                            to_s = wastage_range.get('toSerial') or wastage_range.get('to_serial')
+                            try:
+                                from_num = int(from_s)
+                                to_num = int(to_s)
+                                for serial in range(from_num, to_num + 1):
+                                    damaged_serials.add(serial)
+                            except (ValueError, TypeError):
+                                pass
+                    else:
+                        try:
+                            from_num = int(instance.wastage_from)
+                            to_num = int(instance.wastage_to)
+                            for serial in range(from_num, to_num + 1):
+                                damaged_serials.add(serial)
+                        except (ValueError, TypeError):
+                            pass
+                
+                print(f"📊 Collected serials:")
+                print(f"   Used serials: {len(used_serials)} - Sample: {sorted(list(used_serials))[:10] if used_serials else 'None'}")
+                print(f"   Damaged serials: {len(damaged_serials)} - Sample: {sorted(list(damaged_serials))[:10] if damaged_serials else 'None'}")
+                
+                # Find IN_USE ranges that overlap with used/damaged serials
+                in_use_ranges = HologramSerialRange.objects.filter(roll=roll_obj, status='IN_USE').order_by('from_serial')
+                print(f"🔍 Found {in_use_ranges.count()} IN_USE range(s) to check for splitting")
+                
+                if in_use_ranges.count() == 0:
+                    print(f"⚠️ WARNING: No IN_USE ranges found for roll {carton_number}")
+                    print(f"   This might mean the allocation didn't create IN_USE ranges properly")
+                    print(f"   Checking all ranges for this roll:")
+                    all_ranges = HologramSerialRange.objects.filter(roll=roll_obj)
+                    for r in all_ranges:
+                        print(f"     - {r.from_serial} to {r.to_serial} (status: {r.status})")
+                    
+                    # FALLBACK: If no IN_USE ranges exist, we need to infer the allocated range
+                    # from the request's rolls_assigned data
+                    print(f"🔧 FALLBACK: Attempting to infer allocated range from request data")
+                    
+                    # Try to find the hologram request that was allocated
+                    from .models import HologramRequest
+                    try:
+                        request = HologramRequest.objects.get(ref_no=instance.reference_no)
+                        if request.rolls_assigned:
+                            for assigned_roll in request.rolls_assigned:
+                                if assigned_roll.get('cartoonNumber') == carton_number or assigned_roll.get('cartoon_number') == carton_number:
+                                    # Found the allocated range
+                                    alloc_from = assigned_roll.get('fromSerial') or assigned_roll.get('from_serial')
+                                    alloc_to = assigned_roll.get('toSerial') or assigned_roll.get('to_serial')
+                                    alloc_count = assigned_roll.get('count') or assigned_roll.get('quantity')
+                                    
+                                    print(f"✅ Found allocated range from request: {alloc_from}-{alloc_to} ({alloc_count} units)")
+                                    
+                                    # Create a virtual IN_USE range for processing
+                                    try:
+                                        alloc_from_num = int(alloc_from)
+                                        alloc_to_num = int(alloc_to)
+                                        
+                                        # Calculate leftover serials
+                                        allocated_serials = set(range(alloc_from_num, alloc_to_num + 1))
+                                        leftover_serials = allocated_serials - used_serials - damaged_serials
+                                        
+                                        print(f"📊 Fallback range analysis:")
+                                        print(f"   Total allocated: {len(allocated_serials)}")
+                                        print(f"   Used: {len(allocated_serials & used_serials)}")
+                                        print(f"   Damaged: {len(allocated_serials & damaged_serials)}")
+                                        print(f"   Leftover: {len(leftover_serials)}")
+                                        
+                                        # Create AVAILABLE ranges for leftovers
+                                        if leftover_serials:
+                                            sorted_leftovers = sorted(leftover_serials)
+                                            leftover_ranges = []
+                                            current_start = sorted_leftovers[0]
+                                            current_end = sorted_leftovers[0]
+                                            
+                                            for serial in sorted_leftovers[1:]:
+                                                if serial == current_end + 1:
+                                                    current_end = serial
+                                                else:
+                                                    leftover_ranges.append((current_start, current_end))
+                                                    current_start = serial
+                                                    current_end = serial
+                                            leftover_ranges.append((current_start, current_end))
+                                            
+                                            print(f"📦 Creating {len(leftover_ranges)} AVAILABLE leftover range(s) via fallback")
+                                            
+                                            for left_from, left_to in leftover_ranges:
+                                                leftover_count = left_to - left_from + 1
+                                                HologramSerialRange.objects.create(
+                                                    roll=roll_obj,
+                                                    from_serial=str(left_from),
+                                                    to_serial=str(left_to),
+                                                    count=leftover_count,
+                                                    status='AVAILABLE',
+                                                    description=f'Leftover from allocation {instance.reference_no}'
+                                                )
+                                                print(f"✅ Created AVAILABLE leftover range (fallback): {left_from}-{left_to} ({leftover_count} units)")
+                                        
+                                    except (ValueError, TypeError) as e:
+                                        print(f"⚠️ Could not parse allocated range: {e}")
+                                    
+                                    break
+                    except HologramRequest.DoesNotExist:
+                        print(f"⚠️ Could not find request {instance.reference_no} for fallback")
+                
+                for in_use_range in in_use_ranges:
+                    try:
+                        range_from = int(in_use_range.from_serial)
+                        range_to = int(in_use_range.to_serial)
+                        
+                        # Check if this IN_USE range overlaps with used/damaged serials
+                        range_serials = set(range(range_from, range_to + 1))
+                        overlaps_used = bool(range_serials & used_serials)
+                        overlaps_damaged = bool(range_serials & damaged_serials)
+                        
+                        if overlaps_used or overlaps_damaged:
+                            print(f"🔄 Splitting IN_USE range {range_from}-{range_to}")
+                            
+                            # Save reference_no before deleting
+                            ref_no = in_use_range.reference_no or instance.reference_no
+                            
+                            # Delete the original IN_USE range - we'll recreate the pieces
+                            in_use_range.delete()
+                            print(f"✅ Deleted IN_USE range {range_from}-{range_to}")
+                            
+                            # Find leftover serials (not used and not damaged)
+                            leftover_serials = range_serials - used_serials - damaged_serials
+                            
+                            print(f"📊 Range analysis:")
+                            print(f"   Total serials in range: {len(range_serials)}")
+                            print(f"   Used serials: {len(range_serials & used_serials)}")
+                            print(f"   Damaged serials: {len(range_serials & damaged_serials)}")
+                            print(f"   Leftover serials: {len(leftover_serials)}")
+                            
+                            # Create AVAILABLE ranges for leftovers
+                            if leftover_serials:
+                                # Sort and group consecutive serials
+                                sorted_leftovers = sorted(leftover_serials)
+                                leftover_ranges = []
+                                current_start = sorted_leftovers[0]
+                                current_end = sorted_leftovers[0]
+                                
+                                for serial in sorted_leftovers[1:]:
+                                    if serial == current_end + 1:
+                                        current_end = serial
+                                    else:
+                                        leftover_ranges.append((current_start, current_end))
+                                        current_start = serial
+                                        current_end = serial
+                                leftover_ranges.append((current_start, current_end))
+                                
+                                print(f"📦 Creating {len(leftover_ranges)} AVAILABLE leftover range(s)")
+                                
+                                # Create AVAILABLE range entries
+                                for left_from, left_to in leftover_ranges:
+                                    leftover_count = left_to - left_from + 1
+                                    HologramSerialRange.objects.create(
+                                        roll=roll_obj,
+                                        from_serial=str(left_from),
+                                        to_serial=str(left_to),
+                                        count=leftover_count,
+                                        status='AVAILABLE',
+                                        description=f'Leftover from allocation {ref_no}'
+                                    )
+                                    print(f"✅ Created AVAILABLE leftover range: {left_from}-{left_to} ({leftover_count} units)")
+                            else:
+                                print(f"⚠️ No leftover serials found - entire range was used/damaged")
+                    
+                    except (ValueError, TypeError) as e:
+                        print(f"⚠️ Could not parse IN_USE range {in_use_range.from_serial}-{in_use_range.to_serial}: {e}")
+                
+                # Now create USED ranges
+                if instance.issued_qty and instance.issued_qty > 0:
                     issued_ranges = instance.issued_ranges or []
                     if issued_ranges:
                         for issued_range in issued_ranges:
@@ -825,8 +1047,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             }
                             roll_obj.usage_history.append(usage_entry)
                             
-                            # Create HologramSerialRange record
-                            from .models import HologramSerialRange
+                            # Create USED range
                             HologramSerialRange.objects.create(
                                 roll=roll_obj,
                                 from_serial=usage_entry['issuedFromSerial'],
@@ -858,8 +1079,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                         }
                         roll_obj.usage_history.append(usage_entry)
                         
-                        # Create HologramSerialRange record
-                        from .models import HologramSerialRange
+                        # Create USED range
                         HologramSerialRange.objects.create(
                             roll=roll_obj,
                             from_serial=instance.issued_from,
@@ -874,9 +1094,8 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                         )
                         print(f"✅ Created USED serial range: {instance.issued_from} - {instance.issued_to}")
                 
-                # Add WASTAGE entry to usage_history
+                # Now create DAMAGED ranges
                 if instance.wastage_qty and instance.wastage_qty > 0:
-                    # Handle multiple wastage ranges
                     wastage_ranges = instance.wastage_ranges or []
                     if wastage_ranges:
                         for wastage_range in wastage_ranges:
@@ -895,8 +1114,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             }
                             roll_obj.usage_history.append(usage_entry)
                             
-                            # Create HologramSerialRange record
-                            from .models import HologramSerialRange
+                            # Create DAMAGED range
                             HologramSerialRange.objects.create(
                                 roll=roll_obj,
                                 from_serial=usage_entry['wastageFromSerial'],
@@ -926,8 +1144,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                         }
                         roll_obj.usage_history.append(usage_entry)
                         
-                        # Create HologramSerialRange record
-                        from .models import HologramSerialRange
+                        # Create DAMAGED range
                         HologramSerialRange.objects.create(
                             roll=roll_obj,
                             from_serial=instance.wastage_from,
@@ -951,8 +1168,23 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 # Update status based on new counts (AVAILABLE/IN_USE/COMPLETED)
                 roll_obj.update_status()
                 
+                # Recalculate available count from AVAILABLE ranges
+                available_ranges = HologramSerialRange.objects.filter(roll=roll_obj, status='AVAILABLE')
+                total_available = sum(r.count for r in available_ranges)
+                if total_available != roll_obj.available:
+                    roll_obj.available = total_available
+                    roll_obj.save(update_fields=['available'])
+                    print(f"✅ Updated roll.available to {total_available} from AVAILABLE ranges")
+                
                 # Update available_range to reflect new state
                 roll_obj.update_available_range()
+                
+                # CRITICAL VERIFICATION: Check if leftover ranges were actually created
+                final_available_ranges = HologramSerialRange.objects.filter(roll=roll_obj, status='AVAILABLE')
+                print(f"🔍 FINAL VERIFICATION - AVAILABLE ranges in database:")
+                for r in final_available_ranges:
+                    print(f"   - {r.from_serial} to {r.to_serial} ({r.count} units, status: {r.status})")
+                print(f"📊 Final available_range field: {roll_obj.available_range}")
                 
                 print(f"✅ Updated HologramRollsDetails - available: {roll_obj.available}, used: {roll_obj.used}, damaged: {roll_obj.damaged}")
                 print(f"✅ Status: {roll_obj.status}, Available Range: {roll_obj.available_range}")
