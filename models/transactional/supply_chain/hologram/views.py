@@ -308,9 +308,12 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         print(f"DEBUG: perform_action. Ref: {instance.ref_no}, Current Stage: {instance.current_stage.name}, Action: {action_name}")
         print(f"DEBUG: issued_assets received: {issued_assets}")
 
+        # CRITICAL FIX: Save both issued_assets and rolls_assigned immediately
         if issued_assets:
             instance.issued_assets = issued_assets
+            instance.rolls_assigned = issued_assets  # Save for "Currently Issued Holograms" tab
             instance.save()
+            print(f"DEBUG: Saved issued_assets and rolls_assigned for {instance.ref_no}: {len(issued_assets)} rolls")
         
         if not action_name:
             return Response({'error': 'Action is required'}, status=status.HTTP_400_BAD_REQUEST)
