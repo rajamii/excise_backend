@@ -88,6 +88,7 @@ class HologramRequestSerializer(serializers.ModelSerializer):
     stage_id = serializers.IntegerField(source='current_stage.id', read_only=True)
     allowed_actions = serializers.SerializerMethodField()
     workflow_name = serializers.CharField(source='workflow.name', read_only=True)
+    rolls_assigned = serializers.SerializerMethodField()
     available_cartons = serializers.SerializerMethodField()
 
     class Meta:
@@ -98,13 +99,67 @@ class HologramRequestSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         """Add logging to debug issued_assets"""
         ret = super().to_representation(instance)
-        print(f"DEBUG SERIALIZER: Request {ret.get('ref_no')} - issued_assets: {ret.get('issued_assets')}")
+        # print(f"DEBUG SERIALIZER: Request {ret.get('ref_no')} - issued_assets: {ret.get('issued_assets')}")
         return ret
+
+    # CRITICAL FIX: Dynamically fetch latest roll stats from HologramRollsDetails
+    # This prevents stale JSON data from showing incorrect Available/Used counts in UI
+    def get_rolls_assigned(self, obj):
+        assigned_rolls = obj.rolls_assigned or []
+        if not assigned_rolls:
+            return []
+            
+        updated_rolls = []
+        try:
+            # Get valid carton numbers to minimize DB queries
+            carton_numbers = [
+                r.get('cartoonNumber') or r.get('cartoon_number') 
+                for r in assigned_rolls 
+                if (r.get('cartoonNumber') or r.get('cartoon_number'))
+            ]
+            
+            if not carton_numbers:
+                return assigned_rolls
+                
+            # Fetch current details from DB
+            from .models import HologramRollsDetails
+            current_details = HologramRollsDetails.objects.filter(
+                cartoon_number__in=carton_numbers,
+                procurement__licensee=obj.licensee
+            )
+            
+            # Map for quick lookup
+            details_map = {roll.carton_number: roll for roll in current_details}
+            
+            for roll_json in assigned_rolls:
+                # Create a copy to avoid mutating the original object in memory
+                updated_roll = dict(roll_json) 
+                
+                c_num = updated_roll.get('cartoonNumber') or updated_roll.get('cartoon_number')
+                
+                if c_num and c_num in details_map:
+                    db_roll = details_map[c_num]
+                    # Override with live DB values
+                    updated_roll['availableCount'] = db_roll.available
+                    updated_roll['available_qty'] = db_roll.available
+                    updated_roll['used'] = db_roll.used
+                    updated_roll['damaged'] = db_roll.damaged
+                    updated_roll['status'] = db_roll.status
+                    # print(f"DEBUG: Dynamic updated {c_num}: Avail={db_roll.available}, Used={db_roll.used}")
+                
+                updated_rolls.append(updated_roll)
+                
+            return updated_rolls
+            
+        except Exception as e:
+            print(f"ERROR in get_rolls_assigned: {e}")
+            return assigned_rolls
 
     def get_available_cartons(self, obj):
         """
         Auto-pull carton details from hologram_procurement for this licensee.
         Returns all cartons from procurements that have been assigned (have carton_details).
+        CRITICAL FIX: Overlay live DB statistics
         """
         try:
             procurements = HologramProcurement.objects.filter(
@@ -112,12 +167,45 @@ class HologramRequestSerializer(serializers.ModelSerializer):
             ).exclude(carton_details__isnull=True).exclude(carton_details=[])
             
             cartons = []
+            
+            # Collect all carton numbers to fetch in bulk
+            all_carton_numbers = []
+            for proc in procurements:
+                if proc.carton_details:
+                    for carton in proc.carton_details:
+                        c_num = carton.get('cartoonNumber') or carton.get('cartoon_number')
+                        if c_num:
+                            all_carton_numbers.append(c_num)
+                            
+            if not all_carton_numbers:
+                return []
+                
+            # Fetch live details
+            from .models import HologramRollsDetails
+            live_details = HologramRollsDetails.objects.filter(
+                cartoon_number__in=all_carton_numbers,
+                procurement__in=procurements
+            )
+            details_map = {d.carton_number: d for d in live_details}
+            
             for proc in procurements:
                 if proc.carton_details:
                     for carton in proc.carton_details:
                         carton_copy = dict(carton)  # Copy to avoid modifying original
                         carton_copy['procurement_ref'] = proc.ref_no
                         carton_copy['procurement_id'] = proc.id
+                        
+                        # Overlay live data
+                        c_num = carton_copy.get('cartoonNumber') or carton_copy.get('cartoon_number')
+                        if c_num and c_num in details_map:
+                            db_roll = details_map[c_num]
+                            carton_copy['available_qty'] = db_roll.available
+                            carton_copy['used_qty'] = db_roll.used
+                            carton_copy['damaged_qty'] = db_roll.damaged
+                            carton_copy['status'] = db_roll.status
+                            # Map for frontend consistency
+                            carton_copy['availableCount'] = db_roll.available
+                        
                         cartons.append(carton_copy)
             return cartons
         except Exception as e:
@@ -175,10 +263,32 @@ class DailyHologramRegisterSerializer(serializers.ModelSerializer):
     approved_by_name = serializers.CharField(source='approved_by.username', read_only=True, allow_null=True)
     rolls_used_details = serializers.SerializerMethodField()
     
+    # CRITICAL: Accept allocated range fields from frontend for "Not In Use" entries
+    # These are write_only because they're not database fields, just used for processing
+    allocated_from_serial = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    allocated_to_serial = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    
     class Meta:
         model = DailyHologramRegister
         fields = '__all__'
         read_only_fields = ('submission_date', 'licensee', 'approved_by', 'approved_at')
+    
+    def create(self, validated_data):
+        # Extract allocated range fields before creating instance
+        # These are not model fields, so we need to pop them and attach later
+        allocated_from_serial = validated_data.pop('allocated_from_serial', None)
+        allocated_to_serial = validated_data.pop('allocated_to_serial', None)
+        
+        # Create the instance normally
+        instance = super().create(validated_data)
+        
+        # Attach as instance attributes (not saved to DB, but available for views)
+        if allocated_from_serial:
+            instance.allocated_from_serial = allocated_from_serial
+        if allocated_to_serial:
+            instance.allocated_to_serial = allocated_to_serial
+        
+        return instance
     
     def get_hologram_type(self, obj):
         """Get hologram_type from related hologram_request or direct field"""

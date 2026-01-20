@@ -517,22 +517,22 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                                                  # There's an overlap - need to split
                                                  
                                                  if from_num == avail_from and to_num == avail_to:
-                                                     # Exact match - just mark as USED
-                                                     avail_range.status = 'USED'
+                                                     # Exact match - mark as IN_USE (so Not In Use can release it)
+                                                     avail_range.status = 'IN_USE'
                                                      avail_range.used_date = request_instance.usage_date if hasattr(request_instance, 'usage_date') else None
                                                      avail_range.reference_no = request_instance.ref_no
                                                      avail_range.save()
-                                                     print(f"✅ Marked entire range as USED: {from_serial}-{to_serial}")
+                                                     print(f"✅ Marked entire range as IN_USE: {from_serial}-{to_serial}")
                                                      
                                                  elif from_num == avail_from and to_num < avail_to:
-                                                     # Allocated from start - split into USED and AVAILABLE
-                                                     # Create USED range
+                                                     # Allocated from start - split into IN_USE and AVAILABLE
+                                                     # Create IN_USE range (so Not In Use can release it)
                                                      HologramSerialRange.objects.create(
                                                          roll=roll_obj,
                                                          from_serial=from_serial,
                                                          to_serial=to_serial,
                                                          count=allocated_count,
-                                                         status='USED',
+                                                         status='IN_USE',
                                                          used_date=request_instance.usage_date if hasattr(request_instance, 'usage_date') else None,
                                                          reference_no=request_instance.ref_no,
                                                          description=f'Allocated for request {request_instance.ref_no}'
@@ -541,17 +541,17 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                                                      avail_range.from_serial = str(to_num + 1)
                                                      avail_range.count = avail_to - to_num
                                                      avail_range.save()
-                                                     print(f"✅ Split range: USED {from_serial}-{to_serial}, AVAILABLE {to_num + 1}-{avail_to}")
+                                                     print(f"✅ Split range: IN_USE {from_serial}-{to_serial}, AVAILABLE {to_num + 1}-{avail_to}")
                                                      
                                                  elif from_num > avail_from and to_num == avail_to:
-                                                     # Allocated from middle to end - split into AVAILABLE and USED
-                                                     # Create USED range
+                                                     # Allocated from middle to end - split into AVAILABLE and IN_USE
+                                                     # Create IN_USE range (so Not In Use can release it)
                                                      HologramSerialRange.objects.create(
                                                          roll=roll_obj,
                                                          from_serial=from_serial,
                                                          to_serial=to_serial,
                                                          count=allocated_count,
-                                                         status='USED',
+                                                         status='IN_USE',
                                                          used_date=request_instance.usage_date if hasattr(request_instance, 'usage_date') else None,
                                                          reference_no=request_instance.ref_no,
                                                          description=f'Allocated for request {request_instance.ref_no}'
@@ -560,17 +560,17 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                                                      avail_range.to_serial = str(from_num - 1)
                                                      avail_range.count = from_num - 1 - avail_from + 1
                                                      avail_range.save()
-                                                     print(f"✅ Split range: AVAILABLE {avail_from}-{from_num - 1}, USED {from_serial}-{to_serial}")
+                                                     print(f"✅ Split range: AVAILABLE {avail_from}-{from_num - 1}, IN_USE {from_serial}-{to_serial}")
                                                      
                                                  elif from_num > avail_from and to_num < avail_to:
-                                                     # Allocated from middle - split into 3 parts: AVAILABLE, USED, AVAILABLE
-                                                     # Create USED range
+                                                     # Allocated from middle - split into 3 parts: AVAILABLE, IN_USE, AVAILABLE
+                                                     # Create IN_USE range (so Not In Use can release it)
                                                      HologramSerialRange.objects.create(
                                                          roll=roll_obj,
                                                          from_serial=from_serial,
                                                          to_serial=to_serial,
                                                          count=allocated_count,
-                                                         status='USED',
+                                                         status='IN_USE',
                                                          used_date=request_instance.usage_date if hasattr(request_instance, 'usage_date') else None,
                                                          reference_no=request_instance.ref_no,
                                                          description=f'Allocated for request {request_instance.ref_no}'
@@ -758,22 +758,41 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
         based on the DailyHologramRegister entry.
         Also updates usage_history JSON and creates HologramSerialRange records.
         """
+        print(f"\n{'='*80}")
+        print(f"🔥 _update_procurement_usage_impl CALLED")
+        print(f"{'='*80}")
+        print(f"Entry ID: {instance.id if instance.id else 'NEW'}")
+        print(f"Reference: {instance.reference_no}")
+        print(f"Roll Range: {instance.roll_range}")
+        print(f"Issued Qty: {instance.issued_qty}, Wastage Qty: {instance.wastage_qty}")
+        print(f"{'='*80}\n")
+        
         try:
             carton_number = None
             # Extract carton number strictly
             # roll_range format usually "CARTON - Range X-Y" or "CARTON-X-Y"
             if instance.roll_range:
+                # CRITICAL FIX: Handle multi-brand format like "a2_BRAND_1", "a2_BRAND_2"
+                # Extract the base carton number before any "_BRAND_" suffix
+                roll_range_str = instance.roll_range.strip()
+                
+                # Check if this is a multi-brand format
+                if '_BRAND_' in roll_range_str:
+                    # Extract everything before "_BRAND_"
+                    parts = roll_range_str.split('_BRAND_')
+                    carton_number = parts[0].strip()
+                    print(f"DEBUG: Multi-brand format detected. Extracted carton: '{carton_number}' from '{roll_range_str}'")
                 # Try splitting by " - " first (standard format)
-                if ' - ' in instance.roll_range:
-                    parts = instance.roll_range.split(' - ')
+                elif ' - ' in roll_range_str:
+                    parts = roll_range_str.split(' - ')
                     carton_number = parts[0].strip()
                 # Fallback: try splitting by "-" if no spaces found (e.g. "a2-51-100")
-                elif '-' in instance.roll_range:
-                    parts = instance.roll_range.split('-')
+                elif '-' in roll_range_str:
+                    parts = roll_range_str.split('-')
                     carton_number = parts[0].strip()
                 # Fallback: just use the whole string if no separators
                 else:
-                    carton_number = instance.roll_range.strip()
+                    carton_number = roll_range_str
             
             if not carton_number:
                 print(f"DEBUG: No carton number extracted from '{instance.roll_range}'")
@@ -873,22 +892,39 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                     print(f"⚠️ 'Not Used' case detected (Issued: 0, Wastage: 0)")
                     
                     try:
-                        import re
-                        # Use regex to find all numbers in the string
-                        # This handles "a2 - 51 - 100", "a1 - Range 1-50", "51-100", etc.
-                        # We expect the last two numbers to be the start and end of the range
-                        numbers = re.findall(r'\d+', instance.roll_range)
+                        start_int = None
+                        end_int = None
                         
-                        if len(numbers) >= 2:
-                            # Assume the last two numbers are the range
-                            start_s = numbers[-2]
-                            end_s = numbers[-1]
+                        # PRIORITY 1: Use allocated_from_serial and allocated_to_serial if available
+                        # These fields are sent by the frontend for "Not In Use" entries
+                        if hasattr(instance, 'allocated_from_serial') and hasattr(instance, 'allocated_to_serial'):
+                            if instance.allocated_from_serial and instance.allocated_to_serial:
+                                try:
+                                    start_int = int(instance.allocated_from_serial)
+                                    end_int = int(instance.allocated_to_serial)
+                                    print(f"✅ Using allocated_from_serial/allocated_to_serial: {start_int}-{end_int}")
+                                except (ValueError, TypeError):
+                                    pass
+                        
+                        # FALLBACK: Use regex to extract range from roll_range string
+                        if start_int is None or end_int is None:
+                            import re
+                            # Use regex to find all numbers in the string
+                            # This handles "a2 - 51 - 100", "a1 - Range 1-50", "51-100", etc.
+                            # We expect the last two numbers to be the start and end of the range
+                            numbers = re.findall(r'\d+', instance.roll_range)
                             
-                            start_int = int(start_s)
-                            end_int = int(end_s)
-                            
-                            print(f"🔍 Parsed range via Regex: {start_int}-{end_int} (from '{instance.roll_range}')")
-                            
+                            if len(numbers) >= 2:
+                                # Assume the last two numbers are the range
+                                start_s = numbers[-2]
+                                end_s = numbers[-1]
+                                
+                                start_int = int(start_s)
+                                end_int = int(end_s)
+                                
+                                print(f"🔍 Parsed range via Regex: {start_int}-{end_int} (from '{instance.roll_range}')")
+                        
+                        if start_int is not None and end_int is not None:
                             # Fetch ALL IN_USE ranges for this roll
                             in_use_candidates = HologramSerialRange.objects.filter(roll=roll_obj, status='IN_USE')
                             
@@ -912,6 +948,8 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             if not match_found:
                                 print(f"⚠️ No matching IN_USE ranges found for {start_int}-{end_int}")
                                 print(f"   Existing IN_USE ranges: {[f'{r.from_serial}-{r.to_serial}' for r in in_use_candidates]}")
+                        else:
+                            print(f"⚠️ Could not determine allocated range for Not In Use entry")
 
                     except Exception as e:
                         print(f"ERROR processing Not Used range: {e}")
@@ -1432,6 +1470,36 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                     print(f"✅ Status changed to AVAILABLE (fully available)")
                 
                 roll_obj.save(update_fields=['status'])
+                
+                # CRITICAL FIX: Sync these changes back to the HologramProcurement JSON
+                # This ensures that APIs reading from carton_details (JSON) see the same data as those reading from HologramRollsDetails (Table)
+                try:
+                    proc_to_update = roll_obj.procurement
+                    # Reload procurement to get latest JSON
+                    proc_to_update.refresh_from_db()
+                    
+                    if proc_to_update.carton_details:
+                        json_updated = False
+                        updated_details = proc_to_update.carton_details
+                        
+                        for d in updated_details:
+                            d_c_num = d.get('cartoonNumber') or d.get('cartoon_number')
+                            if d_c_num and str(d_c_num).strip().upper() == str(carton_number).strip().upper():
+                                # Found the matching entry in JSON - update it!
+                                d['available_qty'] = roll_obj.available
+                                d['used_qty'] = roll_obj.used
+                                d['damaged_qty'] = roll_obj.damaged
+                                d['status'] = roll_obj.status
+                                json_updated = True
+                                print(f"✅ Synced JSON for {carton_number}: Avail={roll_obj.available}, Used={roll_obj.used}, Status={roll_obj.status}")
+                                break
+                        
+                        if json_updated:
+                            proc_to_update.carton_details = updated_details
+                            proc_to_update.save(update_fields=['carton_details'])
+                            print(f"✅ Saved Procurement JSON updates")
+                except Exception as json_e:
+                    print(f"⚠️ Warning: Failed to sync Procurement JSON: {json_e}")
                 
                 # Update available_range to reflect new state
                 roll_obj.update_available_range()
