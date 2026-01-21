@@ -36,11 +36,15 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             return queryset
             
         elif role_name in ['level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'Site-Admin', 'site_admin', 'commissioner', 'Commissioner']:
-            # Commissioner sees Forwarded + Decision History
+            # Commissioner sees ALL stages from Forwarded onwards (complete history)
+            # This ensures approved records remain visible for future reference
             return queryset.filter(current_stage__name__in=[
                 'Forwarded to Commissioner', 
                 'Approved by Commissioner', 
-                'Rejected by Commissioner'
+                'Rejected by Commissioner',
+                'Payment Completed',
+                'Cartoon Assigned',
+                'ARRIVED'
             ])
             
         elif role_name in ['officer_in_charge', 'Officer In-Charge', 'OIC', 'officer-incharge']:
