@@ -778,9 +778,12 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 
                 # Check if this is a multi-brand format
                 if '_BRAND_' in roll_range_str:
-                    # Extract everything before "_BRAND_"
+                    # Multi-brand format: 'a1 - 1 - 50_BRAND_1'
+                    # Extract the base part before '_BRAND_' and then get the first element (carton number)
                     parts = roll_range_str.split('_BRAND_')
-                    carton_number = parts[0].strip()
+                    base_range = parts[0].strip()  # 'a1 - 1 - 50'
+                    # Now extract just the carton number (first part before ' - ')
+                    carton_number = base_range.split(' - ')[0].strip()  # 'a1'
                     print(f"DEBUG: Multi-brand format detected. Extracted carton: '{carton_number}' from '{roll_range_str}'")
                 # Try splitting by " - " first (standard format)
                 elif ' - ' in roll_range_str:
