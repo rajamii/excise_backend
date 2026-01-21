@@ -11,6 +11,7 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
     workflow_name = serializers.CharField(source='workflow.name', read_only=True)
     carton_details = serializers.JSONField(required=False)
     total_available_holograms = serializers.SerializerMethodField()
+    edit_history = serializers.SerializerMethodField()
 
     class Meta:
         model = HologramProcurement
@@ -41,6 +42,65 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
                 damaged = int(c.get('damage_qty', 0))
                 total += max(0, total_cnt - used - damaged)
         return total
+    
+    def get_edit_history(self, obj):
+        """
+        Extract quantity edit history from transaction logs
+        Returns the most recent quantity update transaction
+        """
+        try:
+            # Find transaction with quantity update remarks
+            edit_txn = obj.transactions.filter(
+                remarks__icontains='Quantities updated by Commissioner'
+            ).order_by('-timestamp').first()
+            
+            if not edit_txn:
+                return None
+            
+            # Parse the remarks to extract quantities
+            # Format: "Quantities updated by Commissioner: Local 30.00 → 50.00, Export 0.00 → 0.00, Defence 0.00 → 0.00. New payment amount: ₹7.50"
+            remarks = edit_txn.remarks
+            
+            import re
+            
+            # Extract quantities using regex
+            local_match = re.search(r'Local ([\d.]+) → ([\d.]+)', remarks)
+            export_match = re.search(r'Export ([\d.]+) → ([\d.]+)', remarks)
+            defence_match = re.search(r'Defence ([\d.]+) → ([\d.]+)', remarks)
+            payment_match = re.search(r'New payment amount: ₹([\d.]+)', remarks)
+            
+            if not local_match:
+                return None
+            
+            original_local = float(local_match.group(1))
+            updated_local = float(local_match.group(2))
+            original_export = float(export_match.group(1)) if export_match else 0
+            updated_export = float(export_match.group(2)) if export_match else 0
+            original_defence = float(defence_match.group(1)) if defence_match else 0
+            updated_defence = float(defence_match.group(2)) if defence_match else 0
+            new_payment = float(payment_match.group(1)) if payment_match else 0
+            
+            return {
+                'editedBy': edit_txn.performed_by.username if edit_txn.performed_by else 'Commissioner',
+                'editedDate': edit_txn.timestamp.strftime('%Y-%m-%d'),
+                'originalQuantities': {
+                    'local': original_local,
+                    'export': original_export,
+                    'defence': original_defence,
+                    'total': original_local + original_export + original_defence
+                },
+                'updatedQuantities': {
+                    'local': updated_local,
+                    'export': updated_export,
+                    'defence': updated_defence,
+                    'total': updated_local + updated_export + updated_defence
+                },
+                'originalPayment': (original_local + original_export + original_defence) * 0.15,
+                'updatedPayment': new_payment
+            }
+        except Exception as e:
+            print(f"Error extracting edit history: {e}")
+            return None
 
     def get_allowed_actions(self, obj):
         request = self.context.get('request')

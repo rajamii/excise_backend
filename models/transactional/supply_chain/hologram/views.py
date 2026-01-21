@@ -18,7 +18,8 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         
-        queryset = super().get_queryset()
+        # Prefetch transactions for edit history
+        queryset = super().get_queryset().prefetch_related('transactions', 'transactions__performed_by')
         
         if not user.is_authenticated:
             return queryset.none()
@@ -152,6 +153,80 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             )
             
         return Response(self.get_serializer(instance).data)
+    
+    @action(detail=True, methods=['patch'], url_path='update-quantities')
+    def update_quantities(self, request, pk=None):
+        """
+        Commissioner can edit hologram quantities before approval.
+        Updates quantities and recalculates payment amount.
+        """
+        instance = self.get_object()
+        
+        # Extract new quantities from request
+        local_qty = request.data.get('local_qty')
+        export_qty = request.data.get('export_qty')
+        defence_qty = request.data.get('defence_qty')
+        
+        # Validate that at least one quantity is provided
+        if local_qty is None and export_qty is None and defence_qty is None:
+            return Response(
+                {'error': 'At least one quantity field must be provided'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Store original quantities for audit trail
+        original_quantities = {
+            'local': float(instance.local_qty),
+            'export': float(instance.export_qty),
+            'defence': float(instance.defence_qty),
+            'total': float(instance.local_qty) + float(instance.export_qty) + float(instance.defence_qty)
+        }
+        
+        # Update quantities
+        if local_qty is not None:
+            instance.local_qty = local_qty
+        if export_qty is not None:
+            instance.export_qty = export_qty
+        if defence_qty is not None:
+            instance.defence_qty = defence_qty
+        
+        # Calculate new totals
+        new_total = float(instance.local_qty) + float(instance.export_qty) + float(instance.defence_qty)
+        
+        # Update payment details with new amount (₹0.15 per hologram)
+        new_payment_amount = new_total * 0.15
+        if not instance.payment_details:
+            instance.payment_details = {}
+        instance.payment_details['wallet_payment'] = new_payment_amount
+        instance.payment_details['total_amount'] = new_payment_amount
+        
+        # Save changes
+        instance.save()
+        
+        # Create transaction log for audit trail
+        edit_remarks = f"Quantities updated by Commissioner: Local {original_quantities['local']} → {instance.local_qty}, Export {original_quantities['export']} → {instance.export_qty}, Defence {original_quantities['defence']} → {instance.defence_qty}. New payment amount: ₹{new_payment_amount:.2f}"
+        
+        Transaction.objects.create(
+            application=instance,
+            stage=instance.current_stage,
+            performed_by=self.request.user,
+            remarks=edit_remarks
+        )
+        
+        # Return updated data
+        return Response({
+            'success': True,
+            'message': 'Quantities updated successfully',
+            'data': self.get_serializer(instance).data,
+            'original_quantities': original_quantities,
+            'updated_quantities': {
+                'local': float(instance.local_qty),
+                'export': float(instance.export_qty),
+                'defence': float(instance.defence_qty),
+                'total': new_total
+            },
+            'new_payment_amount': new_payment_amount
+        })
 
     def _sync_rolls_details(self, procurement, carton_details):
         """
