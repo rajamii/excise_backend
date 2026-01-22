@@ -327,6 +327,173 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
     queryset = HologramRequest.objects.all()
     serializer_class = HologramRequestSerializer
     permission_classes = [permissions.IsAuthenticated]
+    
+    def allocate_holograms_fifo(self, roll, quantity_needed, reference_no, usage_date=None):
+        """
+        Allocate holograms from a roll using FIFO (First In, First Out) principle.
+        
+        Args:
+            roll: HologramRollsDetails instance
+            quantity_needed: Number of holograms to allocate
+            reference_no: Reference number for the allocation
+            usage_date: Usage date for the allocation
+        
+        Returns:
+            Dict with allocation details: {'success': bool, 'allocated_ranges': list, 'message': str}
+        """
+        from models.transactional.supply_chain.hologram.models import HologramSerialRange
+        
+        print(f"\n🎯 FIFO Allocation for Roll {roll.carton_number}")
+        print(f"   Requested: {quantity_needed} holograms")
+        
+        # Get all available ranges ordered by from_serial (FIFO)
+        available_ranges = HologramSerialRange.objects.filter(
+            roll=roll,
+            status='AVAILABLE'
+        ).order_by('from_serial')  # CRITICAL: This ensures FIFO order
+        
+        print(f"   Available ranges: {available_ranges.count()}")
+        for r in available_ranges:
+            print(f"     - {r.from_serial}-{r.to_serial} ({r.count} units)")
+        
+        # Check if we have enough inventory
+        total_available = sum(r.count for r in available_ranges)
+        if total_available < quantity_needed:
+            return {
+                'success': False,
+                'allocated_ranges': [],
+                'message': f'Insufficient inventory. Available: {total_available}, Needed: {quantity_needed}'
+            }
+        
+        allocated_ranges = []
+        remaining_needed = quantity_needed
+        
+        # Allocate from earliest ranges first (FIFO)
+        for avail_range in available_ranges:
+            if remaining_needed <= 0:
+                break
+                
+            range_from = int(avail_range.from_serial)
+            range_to = int(avail_range.to_serial)
+            range_count = avail_range.count
+            
+            if remaining_needed >= range_count:
+                # Take the entire range
+                allocated_ranges.append({
+                    'from': range_from,
+                    'to': range_to,
+                    'count': range_count,
+                    'range_obj': avail_range
+                })
+                remaining_needed -= range_count
+                print(f"   ✅ Allocated entire range: {range_from}-{range_to} ({range_count} units)")
+                
+            else:
+                # Take partial range from the beginning (FIFO)
+                allocated_to = range_from + remaining_needed - 1
+                allocated_ranges.append({
+                    'from': range_from,
+                    'to': allocated_to,
+                    'count': remaining_needed,
+                    'range_obj': avail_range
+                })
+                print(f"   ✅ Allocated partial range: {range_from}-{allocated_to} ({remaining_needed} units)")
+                remaining_needed = 0
+        
+        # Apply allocation to database
+        for alloc in allocated_ranges:
+            avail_range = alloc['range_obj']
+            alloc_from = alloc['from']
+            alloc_to = alloc['to']
+            alloc_count = alloc['count']
+            
+            avail_from = int(avail_range.from_serial)
+            avail_to = int(avail_range.to_serial)
+            
+            if avail_from == alloc_from and avail_to == alloc_to:
+                # Exact match - convert entire range to IN_USE
+                avail_range.status = 'IN_USE'
+                avail_range.used_date = usage_date
+                avail_range.reference_no = reference_no
+                avail_range.description = f'Allocated for request {reference_no}'
+                avail_range.save()
+                print(f"     ✅ Converted entire range to IN_USE: {alloc_from}-{alloc_to}")
+                
+            elif avail_from == alloc_from and alloc_to < avail_to:
+                # Allocated from start - split into IN_USE and AVAILABLE
+                # Create IN_USE range
+                HologramSerialRange.objects.create(
+                    roll=roll,
+                    from_serial=str(alloc_from),
+                    to_serial=str(alloc_to),
+                    count=alloc_count,
+                    status='IN_USE',
+                    used_date=usage_date,
+                    reference_no=reference_no,
+                    description=f'Allocated for request {reference_no}'
+                )
+                # Update original to remaining AVAILABLE range
+                avail_range.from_serial = str(alloc_to + 1)
+                avail_range.count = avail_to - alloc_to
+                avail_range.save()
+                print(f"     ✅ Split: IN_USE {alloc_from}-{alloc_to}, AVAILABLE {alloc_to + 1}-{avail_to}")
+                
+            elif avail_from < alloc_from and alloc_to == avail_to:
+                # Allocated from middle to end - split into AVAILABLE and IN_USE
+                # Create IN_USE range
+                HologramSerialRange.objects.create(
+                    roll=roll,
+                    from_serial=str(alloc_from),
+                    to_serial=str(alloc_to),
+                    count=alloc_count,
+                    status='IN_USE',
+                    used_date=usage_date,
+                    reference_no=reference_no,
+                    description=f'Allocated for request {reference_no}'
+                )
+                # Update original to remaining AVAILABLE range
+                avail_range.to_serial = str(alloc_from - 1)
+                avail_range.count = alloc_from - 1 - avail_from + 1
+                avail_range.save()
+                print(f"     ✅ Split: AVAILABLE {avail_from}-{alloc_from - 1}, IN_USE {alloc_from}-{alloc_to}")
+                
+            elif avail_from < alloc_from and alloc_to < avail_to:
+                # Allocated from middle - split into 3 parts: AVAILABLE, IN_USE, AVAILABLE
+                # Create IN_USE range
+                HologramSerialRange.objects.create(
+                    roll=roll,
+                    from_serial=str(alloc_from),
+                    to_serial=str(alloc_to),
+                    count=alloc_count,
+                    status='IN_USE',
+                    used_date=usage_date,
+                    reference_no=reference_no,
+                    description=f'Allocated for request {reference_no}'
+                )
+                # Create second AVAILABLE range (after allocated)
+                HologramSerialRange.objects.create(
+                    roll=roll,
+                    from_serial=str(alloc_to + 1),
+                    to_serial=str(avail_to),
+                    count=avail_to - alloc_to,
+                    status='AVAILABLE',
+                    description=f'Remaining range after allocation'
+                )
+                # Update original to first AVAILABLE range (before allocated)
+                avail_range.to_serial = str(alloc_from - 1)
+                avail_range.count = alloc_from - 1 - avail_from + 1
+                avail_range.save()
+                print(f"     ✅ Split into 3: AVAILABLE {avail_from}-{alloc_from - 1}, IN_USE {alloc_from}-{alloc_to}, AVAILABLE {alloc_to + 1}-{avail_to}")
+        
+        # Update the roll's available_range field
+        roll.update_available_range()
+        print(f"   ✅ Updated available_range: {roll.available_range}")
+        
+        return {
+            'success': True,
+            'allocated_ranges': allocated_ranges,
+            'message': f'Successfully allocated {quantity_needed} holograms using FIFO'
+        }
 
     def get_queryset(self):
         user = self.request.user
@@ -568,129 +735,68 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                                  roll_obj.save()
                                  print(f"DEBUG: Synced RollsDetails for {c_num}: Available now {roll_obj.available}")
                                  
-                                 # CRITICAL: Create/Update HologramSerialRange entries for allocated range
-                                 # This enables dynamic available range calculation
-                                 from_serial = asset.get('fromSerial') or asset.get('from_serial')
-                                 to_serial = asset.get('toSerial') or asset.get('to_serial')
+                                 # CRITICAL: Use FIFO allocation instead of pre-determined ranges
+                                 a_qty = asset.get('quantity') or asset.get('count', 0)
                                  
-                                 if from_serial and to_serial:
+                                 if a_qty > 0:
                                      from models.transactional.supply_chain.hologram.models import HologramSerialRange
                                      
-                                     try:
-                                         from_num = int(from_serial)
-                                         to_num = int(to_serial)
-                                         allocated_count = to_num - from_num + 1
+                                     print(f"🎯 Allocating {a_qty} holograms from roll {c_num} using FIFO")
+                                     
+                                     # Use FIFO allocation to determine which ranges to allocate
+                                     allocation_result = self.allocate_holograms_fifo(
+                                         roll=roll_obj,
+                                         quantity_needed=a_qty,
+                                         reference_no=request_instance.ref_no,
+                                         usage_date=request_instance.usage_date if hasattr(request_instance, 'usage_date') else None
+                                     )
+                                     
+                                     if allocation_result['success']:
+                                         print(f"✅ FIFO allocation successful: {allocation_result['message']}")
                                          
-                                         # Find AVAILABLE ranges that overlap with the allocated range
-                                         available_ranges = HologramSerialRange.objects.filter(
-                                             roll=roll_obj,
-                                             status='AVAILABLE'
-                                         ).order_by('from_serial')
-                                         
-                                         for avail_range in available_ranges:
-                                             avail_from = int(avail_range.from_serial)
-                                             avail_to = int(avail_range.to_serial)
+                                         # Update the asset with the actual allocated ranges (for response)
+                                         if allocation_result['allocated_ranges']:
+                                             first_range = allocation_result['allocated_ranges'][0]
+                                             last_range = allocation_result['allocated_ranges'][-1]
                                              
-                                             # Check if allocated range overlaps with this available range
-                                             if from_num <= avail_to and to_num >= avail_from:
-                                                 # There's an overlap - need to split
-                                                 
-                                                 if from_num == avail_from and to_num == avail_to:
-                                                     # Exact match - mark as IN_USE (so Not In Use can release it)
-                                                     avail_range.status = 'IN_USE'
-                                                     avail_range.used_date = request_instance.usage_date if hasattr(request_instance, 'usage_date') else None
-                                                     avail_range.reference_no = request_instance.ref_no
-                                                     avail_range.save()
-                                                     print(f"✅ Marked entire range as IN_USE: {from_serial}-{to_serial}")
-                                                     
-                                                 elif from_num == avail_from and to_num < avail_to:
-                                                     # Allocated from start - split into IN_USE and AVAILABLE
-                                                     # Create IN_USE range (so Not In Use can release it)
-                                                     HologramSerialRange.objects.create(
-                                                         roll=roll_obj,
-                                                         from_serial=from_serial,
-                                                         to_serial=to_serial,
-                                                         count=allocated_count,
-                                                         status='IN_USE',
-                                                         used_date=request_instance.usage_date if hasattr(request_instance, 'usage_date') else None,
-                                                         reference_no=request_instance.ref_no,
-                                                         description=f'Allocated for request {request_instance.ref_no}'
-                                                     )
-                                                     # Update original to remaining AVAILABLE range
-                                                     avail_range.from_serial = str(to_num + 1)
-                                                     avail_range.count = avail_to - to_num
-                                                     avail_range.save()
-                                                     print(f"✅ Split range: IN_USE {from_serial}-{to_serial}, AVAILABLE {to_num + 1}-{avail_to}")
-                                                     
-                                                 elif from_num > avail_from and to_num == avail_to:
-                                                     # Allocated from middle to end - split into AVAILABLE and IN_USE
-                                                     # Create IN_USE range (so Not In Use can release it)
-                                                     HologramSerialRange.objects.create(
-                                                         roll=roll_obj,
-                                                         from_serial=from_serial,
-                                                         to_serial=to_serial,
-                                                         count=allocated_count,
-                                                         status='IN_USE',
-                                                         used_date=request_instance.usage_date if hasattr(request_instance, 'usage_date') else None,
-                                                         reference_no=request_instance.ref_no,
-                                                         description=f'Allocated for request {request_instance.ref_no}'
-                                                     )
-                                                     # Update original to remaining AVAILABLE range
-                                                     avail_range.to_serial = str(from_num - 1)
-                                                     avail_range.count = from_num - 1 - avail_from + 1
-                                                     avail_range.save()
-                                                     print(f"✅ Split range: AVAILABLE {avail_from}-{from_num - 1}, IN_USE {from_serial}-{to_serial}")
-                                                     
-                                                 elif from_num > avail_from and to_num < avail_to:
-                                                     # Allocated from middle - split into 3 parts: AVAILABLE, IN_USE, AVAILABLE
-                                                     # Create IN_USE range (so Not In Use can release it)
-                                                     HologramSerialRange.objects.create(
-                                                         roll=roll_obj,
-                                                         from_serial=from_serial,
-                                                         to_serial=to_serial,
-                                                         count=allocated_count,
-                                                         status='IN_USE',
-                                                         used_date=request_instance.usage_date if hasattr(request_instance, 'usage_date') else None,
-                                                         reference_no=request_instance.ref_no,
-                                                         description=f'Allocated for request {request_instance.ref_no}'
-                                                     )
-                                                     # Create second AVAILABLE range (after allocated)
-                                                     HologramSerialRange.objects.create(
-                                                         roll=roll_obj,
-                                                         from_serial=str(to_num + 1),
-                                                         to_serial=str(avail_to),
-                                                         count=avail_to - to_num,
-                                                         status='AVAILABLE',
-                                                         description=f'Remaining range after allocation'
-                                                     )
-                                                     # Update original to first AVAILABLE range (before allocated)
-                                                     avail_range.to_serial = str(from_num - 1)
-                                                     avail_range.count = from_num - 1 - avail_from + 1
-                                                     avail_range.save()
-                                                     print(f"✅ Split into 3: AVAILABLE {avail_from}-{from_num - 1}, USED {from_serial}-{to_serial}, AVAILABLE {to_num + 1}-{avail_to}")
-                                                 
-                                                 break  # Found and processed the overlapping range
+                                             # Update asset with actual allocated range
+                                             asset['fromSerial'] = str(first_range['from'])
+                                             asset['toSerial'] = str(last_range['to'])
+                                             asset['from_serial'] = str(first_range['from'])
+                                             asset['to_serial'] = str(last_range['to'])
+                                             
+                                             print(f"✅ Updated asset with allocated range: {first_range['from']}-{last_range['to']}")
+                                     else:
+                                         print(f"❌ FIFO allocation failed: {allocation_result['message']}")
+                                         # Keep original logic as fallback
+                                         from_serial = asset.get('fromSerial') or asset.get('from_serial')
+                                         to_serial = asset.get('toSerial') or asset.get('to_serial')
                                          
-                                         # Update available_range field to reflect new state
-                                         roll_obj.update_available_range()
-                                         print(f"✅ Updated available_range for {c_num}: {roll_obj.available_range}")
-                                         
-                                     except (ValueError, TypeError) as e:
-                                         print(f"⚠️ Could not parse serial numbers for range splitting: {e}")
-                                         # Fallback: Just create a USED entry without splitting
-                                         HologramSerialRange.objects.get_or_create(
-                                             roll=roll_obj,
-                                             from_serial=from_serial,
-                                             to_serial=to_serial,
-                                             defaults={
-                                                 'count': a_qty,
-                                                 'status': 'USED',
-                                                 'used_date': request_instance.usage_date if hasattr(request_instance, 'usage_date') else None,
-                                                 'reference_no': request_instance.ref_no,
-                                                 'description': f'Allocated for request {request_instance.ref_no}'
-                                             }
-                                         )
-                                         roll_obj.update_available_range()
+                                         if from_serial and to_serial:
+                                             try:
+                                                 from_num = int(from_serial)
+                                                 to_num = int(to_serial)
+                                                 allocated_count = to_num - from_num + 1
+                                                 
+                                                 # Fallback: Just create a IN_USE entry without FIFO
+                                                 HologramSerialRange.objects.get_or_create(
+                                                     roll=roll_obj,
+                                                     from_serial=from_serial,
+                                                     to_serial=to_serial,
+                                                     defaults={
+                                                         'count': allocated_count,
+                                                         'status': 'IN_USE',
+                                                         'used_date': request_instance.usage_date if hasattr(request_instance, 'usage_date') else None,
+                                                         'reference_no': request_instance.ref_no,
+                                                         'description': f'Allocated for request {request_instance.ref_no} (fallback)'
+                                                     }
+                                                 )
+                                                 roll_obj.update_available_range()
+                                                 print(f"⚠️ Used fallback allocation for {from_serial}-{to_serial}")
+                                             except (ValueError, TypeError) as e:
+                                                 print(f"⚠️ Fallback allocation also failed: {e}")
+                                 else:
+                                     print(f"⚠️ No quantity specified for roll {c_num}, skipping allocation")
                              
                          except HologramRollsDetails.DoesNotExist:
                              pass 
