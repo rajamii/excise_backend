@@ -1,9 +1,7 @@
 from rest_framework import serializers
-from django.contrib.contenttypes.models import ContentType
 from .models import License
-from models.transactional.license_application.models import LicenseApplication
-from models.transactional.new_license_application.models import NewLicenseApplication
-from models.transactional.salesman_barman.models import SalesmanBarmanModel
+from auth.user.models import CustomUser
+
 
 class LicenseSerializer(serializers.ModelSerializer):
     license_category_name = serializers.CharField(source='license_category.license_category', read_only=True)
@@ -122,3 +120,39 @@ class LicenseDetailSerializer(serializers.ModelSerializer):
             }
 
         return {}
+
+class MyLicenseDetailsSerializer(serializers.ModelSerializer):
+
+    first_name = serializers.CharField(source='source_application.applicant.first_name', read_only=True)
+    middle_name = serializers.CharField(source='source_application.applicant.middle_name', read_only=True)
+    last_name = serializers.CharField(source='source_application.applicant.last_name', read_only=True)
+    username = serializers.CharField(source='source_application.applicant.username', read_only=True)
+    email = serializers.CharField(source='source_application.applicant.email', read_only=True)
+    phone_number = serializers.CharField(source='source_application.applicant.phone_number', read_only=True)
+    role = serializers.CharField(source='source_application.applicant.role', read_only=True)
+    district = serializers.CharField(source='source_application.applicant.district.district', read_only=True)
+    
+    application_type = serializers.CharField(source='get_source_type_display', read_only=True)
+    license_category = serializers.CharField(source='license_category.license_category', read_only=True)
+    license_sub_category = serializers.CharField(source='source_application.license_sub_category.description', read_only=True)
+    establishment_name = serializers.CharField(source='source_application.establishment_name', read_only=True)
+    site_district = serializers.CharField(source='excise_district.district', read_only=True)
+
+    class Meta:
+        model = License
+        fields = [
+            'license_id',
+            'first_name',
+            'middle_name',
+            'last_name',
+            'username',
+            'email',
+            'phone_number',
+            'role',
+            'district',
+            'application_type',
+            'license_category',
+            'license_sub_category',
+            'establishment_name',
+            'site_district',
+        ]

@@ -22,4 +22,6 @@ urlpatterns = [
     path('detail/<everything:license_id>/', views.license_detail, name='license-details'),
 
     path('<everything:license_id>/print/', views.print_license_view, name='print-license'),
+
+    path('me/', views.MyLicensesListView.as_view(), name='my-licenses-list'),
 ]

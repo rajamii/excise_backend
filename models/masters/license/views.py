@@ -3,10 +3,13 @@ from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.parsers import JSONParser
 from rest_framework.response import Response
-from rest_framework import status
+from django.contrib.contenttypes.models import ContentType
+from rest_framework.permissions import IsAuthenticated
+from rest_framework import status, generics
 from auth.roles.permissions import HasAppPermission
 from .models import License
-from .serializers import LicenseSerializer, LicenseDetailSerializer
+from models.transactional.new_license_application.models import NewLicenseApplication
+from .serializers import LicenseSerializer, LicenseDetailSerializer, MyLicenseDetailsSerializer
 
 @permission_classes([HasAppPermission('license', 'view')])
 @api_view(['GET'])
@@ -107,3 +110,22 @@ def active_licensees(request):
             "status": "Active"
         })
     return Response(data, status=status.HTTP_200_OK)
+
+class MyLicensesListView(generics.ListAPIView):
+   
+    serializer_class = MyLicenseDetailsSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
+
+        user_app_ids = NewLicenseApplication.objects.filter(
+            applicant=user
+        ).values_list('application_id', flat=True)
+        
+        return License.objects.filter(
+            source_content_type=new_app_ct,
+            source_object_id__in=user_app_ids
+        ).select_related('license_category', 'excise_district')
