@@ -2,138 +2,150 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from django.db.models import Q, Sum, Count
+from django.db.models import Q, Sum, Count, Avg
 from django.utils import timezone
+from django.apps import apps
 from datetime import datetime, timedelta
 
-from .models import BrandWarehouse, BrandWarehouseUtilization
+from .models import BrandWarehouse, BrandWarehouseUtilization, BrandWarehouseArrival
 from .serializers import (
     BrandWarehouseSerializer,
     BrandWarehouseSummarySerializer,
     BrandWarehouseUtilizationSerializer,
-    StockAdjustmentSerializer
+    BrandWarehouseArrivalSerializer,
+    StockAdjustmentSerializer,
+    AllSikkimBrandsSerializer
 )
+from .production_serializers import (
+    ProductionBatchSerializer,
+    CreateProductionBatchSerializer
+)
+from .services import BrandWarehouseStockService
 from models.masters.supply_chain.liquor_data.models import LiquorData
 
 
 class BrandWarehouseViewSet(viewsets.ModelViewSet):
     """
     ViewSet for Brand Warehouse CRUD operations and custom actions
+    Ensures ALL Sikkim brands are always shown (no brands go missing)
     """
-    queryset = BrandWarehouse.objects.all().select_related('liquor_data').prefetch_related('utilizations')
+    queryset = BrandWarehouse.objects.all().select_related('liquor_data').prefetch_related('utilizations', 'arrivals')
     permission_classes = [AllowAny]
 
     def get_serializer_class(self):
         """Return appropriate serializer based on action"""
         if self.action == 'list':
             return BrandWarehouseSummarySerializer
+        elif self.action == 'all_sikkim_brands':
+            return AllSikkimBrandsSerializer
         return BrandWarehouseSerializer
 
     def get_queryset(self):
-        """Filter queryset based on query parameters"""
-        queryset = BrandWarehouse.objects.all().select_related('liquor_data').prefetch_related('utilizations')
+        """
+        Get queryset - ensures ALL Sikkim brands are included
+        """
+        # First ensure all Sikkim brands have Brand Warehouse entries
+        BrandWarehouseStockService.get_all_sikkim_brands_with_stock()
         
-        # Filter by distillery name
+        # Then return the queryset with filters - only Sikkim Distilleries Ltd brands
+        queryset = BrandWarehouse.objects.filter(
+            distillery_name__icontains='Sikkim Distilleries Ltd'
+        ).select_related('liquor_data').prefetch_related('utilizations', 'arrivals')
+        
+        # Apply filters
         distillery_name = self.request.query_params.get('distillery_name', None)
         if distillery_name:
             queryset = queryset.filter(distillery_name__icontains=distillery_name)
             
-        # Filter by brand type
         brand_type = self.request.query_params.get('brand_type', None)
         if brand_type:
             queryset = queryset.filter(brand_type=brand_type)
             
-        # Filter by status
         status_filter = self.request.query_params.get('status', None)
         if status_filter:
             queryset = queryset.filter(status=status_filter)
             
-        # Filter by stock level (custom logic would be needed or just naive filter)
-        # Assuming frontend passes simpler filters or we handle complex logic elsewhere
-        
-        return queryset
+        return queryset.order_by('brand_details', 'capacity_size')
 
-    @action(detail=False, methods=['post'], url_path='initialize-sikkim-brands')
-    def initialize_sikkim_brands(self, request):
+    def list(self, request, *args, **kwargs):
         """
-        Initialize brand warehouse entries for ALL brands from liquor_data_details table.
-        Creates one entry per Brand + Pack Size combination.
+        List all Sikkim brands with NEW tags
+        Ensures no brands go missing by showing ALL brands from LiquorData
         """
         try:
-            # Fetch all LiquorData entries, we need distinct brand + distillery + pack_size
-            # We fetch all to map them accurately
-            liquor_data_query = LiquorData.objects.values(
-                'id',
-                'brand_name', 
-                'manufacturing_unit_name', 
-                'brand_owner', 
-                'liquor_type',
-                'pack_size_ml'
+            # First ensure all Sikkim brands have warehouse entries
+            BrandWarehouseStockService.get_all_sikkim_brands_with_stock()
+            
+            # Get the base queryset (only Sikkim Distilleries Ltd brands)
+            queryset = BrandWarehouse.objects.filter(
+                distillery_name__icontains='Sikkim Distilleries Ltd'
+            ).select_related('liquor_data').prefetch_related('utilizations', 'arrivals')
+            
+            # Apply any filters from query parameters
+            distillery_name = self.request.query_params.get('distillery_name', None)
+            if distillery_name:
+                queryset = queryset.filter(distillery_name__icontains=distillery_name)
+                
+            brand_type = self.request.query_params.get('brand_type', None)
+            if brand_type:
+                queryset = queryset.filter(brand_type=brand_type)
+                
+            status_filter = self.request.query_params.get('status', None)
+            if status_filter:
+                queryset = queryset.filter(status=status_filter)
+            
+            # Order by brand name and pack size
+            queryset = queryset.order_by('brand_details', 'capacity_size')
+            
+            # Paginate if needed
+            page = self.paginate_queryset(queryset)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                return self.get_paginated_response(serializer.data)
+            
+            # Serialize all brands
+            serializer = self.get_serializer(queryset, many=True)
+            
+            # Add summary information
+            total_brands = queryset.count()
+            new_brands_count = sum(1 for brand in queryset if BrandWarehouseStockService.check_if_brand_is_new(brand))
+            total_stock = sum(brand.current_stock for brand in queryset)
+            
+            # Return in the format expected by frontend
+            return Response(serializer.data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e),
+                'message': 'Error loading brands'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['get'], url_path='test-brands')
+    def test_brands(self, request):
+        """
+        Test endpoint to verify brands are visible
+        """
+        try:
+            # Get all Sikkim brands
+            sikkim_brands = BrandWarehouse.objects.filter(
+                distillery_name__icontains='sikkim'
             )
-            
-            created_count = 0
-            updated_count = 0
-            errors = []
-            
-            # Group by composite key to ensure uniqueness in BrandWarehouse
-            # Key: (distillery, brand_name, pack_size)
-            processed_keys = set()
-            
-            for item in liquor_data_query:
-                brand_name = item['brand_name']
-                distillery = item['manufacturing_unit_name']
-                pack_size = item['pack_size_ml']
-                
-                if not brand_name or not distillery or not pack_size:
-                    continue
-                
-                # Create a unique key for this batch
-                key = (distillery, brand_name, pack_size)
-                if key in processed_keys:
-                    continue
-                processed_keys.add(key)
-                
-                try:
-                    # Create or update warehouse entry
-                    # One entry per Brand + Pack Size
-                    warehouse_entry, created = BrandWarehouse.objects.get_or_create(
-                        distillery_name=distillery,
-                        brand_details__icontains=brand_name,
-                        capacity_size=pack_size,
-                        defaults={
-                            'brand_type': item['liquor_type'] or 'Unknown',
-                            'brand_details': f"{brand_name} - {item['brand_owner']}",
-                            'current_stock': 0,
-                            'max_capacity': 10000, # Default capacity
-                            'reorder_level': 1000,
-                            'average_daily_usage': 0,
-                            'status': 'OUT_OF_STOCK',
-                            'liquor_data_id': item['id'] # Link to source
-                        }
-                    )
-                    
-                    if not created:
-                        # Update if exists
-                        warehouse_entry.brand_details = f"{brand_name} - {item['brand_owner']}"
-                        warehouse_entry.liquor_data_id = item['id']
-                        warehouse_entry.save(update_fields=['brand_details', 'liquor_data'])
-                        updated_count += 1
-                    else:
-                        created_count += 1
-                        
-                except Exception as e:
-                    errors.append({
-                        'brand': f"{brand_name} ({pack_size}ml)",
-                        'error': str(e)
-                    })
             
             return Response({
                 'success': True,
-                'message': 'Brand warehouse initialized successfully',
-                'created': created_count,
-                'updated': updated_count,
-                'total_processed': len(liquor_data_query),
-                'errors': errors if errors else None
+                'message': 'Test endpoint working',
+                'total_sikkim_brands': sikkim_brands.count(),
+                'sample_brands': [
+                    {
+                        'id': brand.id,
+                        'brand_name': brand.brand_details,
+                        'pack_size': f"{brand.capacity_size}ml",
+                        'current_stock': brand.current_stock,
+                        'status': brand.status
+                    }
+                    for brand in sikkim_brands[:5]
+                ]
             }, status=status.HTTP_200_OK)
             
         except Exception as e:
@@ -142,26 +154,204 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
                 'error': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    @action(detail=True, methods=['post'], url_path='add-utilization')
-    def add_utilization(self, request, pk=None):
+    @action(detail=False, methods=['get'], url_path='all-sikkim-brands')
+    def all_sikkim_brands(self, request):
         """
-        Add a utilization record (transit permit) to a brand warehouse entry
+        Get ALL Sikkim brands with NEW tags (ensures no brands go missing)
         """
-        brand_warehouse = self.get_object()
-        
-        serializer = BrandWarehouseUtilizationSerializer(
-            data=request.data,
-            context={'request': request}
-        )
-        
-        if serializer.is_valid():
-            # Set the brand_warehouse for this utilization
-            serializer.save(brand_warehouse=brand_warehouse)
+        try:
+            # This method ensures ALL Sikkim brands are shown
+            serializer = AllSikkimBrandsSerializer()
+            data = serializer.to_representation(None)
             
             return Response({
                 'success': True,
-                'message': 'Utilization record added successfully',
-                'data': serializer.data
+                **data
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['get'], url_path='brand-details')
+    def get_brand_details(self, request, pk=None):
+        """
+        Get detailed brand information including stock, arrivals, and utilization
+        This is used for the Brand Details modal with tabs
+        """
+        brand_warehouse = self.get_object()
+        
+        # Get recent arrivals (last 20)
+        recent_arrivals = BrandWarehouseStockService.get_arrival_history(brand_warehouse.id, 20)
+        arrival_summary = BrandWarehouseStockService.get_arrival_summary(brand_warehouse.id, 30)
+        
+        # Get recent utilizations (last 10)
+        recent_utilizations = brand_warehouse.utilizations.all()[:10]
+        
+        # Serialize data
+        arrivals_data = BrandWarehouseArrivalSerializer(recent_arrivals, many=True).data
+        utilizations_data = BrandWarehouseUtilizationSerializer(recent_utilizations, many=True).data
+        
+        # Calculate additional metrics
+        total_arrivals_30_days = arrival_summary['total_quantity_added']
+        total_utilizations_30_days = brand_warehouse.utilizations.filter(
+            date__gte=timezone.now().date() - timedelta(days=30)
+        ).aggregate(total=Sum('quantity'))['total'] or 0
+        
+        # Check if brand is new
+        is_new = BrandWarehouseStockService.check_if_brand_is_new(brand_warehouse)
+        
+        return Response({
+            'success': True,
+            'brand_details': {
+                'id': brand_warehouse.id,
+                'distillery_name': brand_warehouse.distillery_name,
+                'brand_name': brand_warehouse.brand_details,
+                'brand_type': brand_warehouse.brand_type,
+                'pack_size': f"{brand_warehouse.capacity_size}ml",
+                'last_updated': brand_warehouse.updated_at,
+                'is_new': is_new,
+            },
+            'stock_information': {
+                'current_stock': brand_warehouse.current_stock,
+                'max_capacity': brand_warehouse.max_capacity,
+                'reorder_level': brand_warehouse.reorder_level,
+                'utilization_percentage': brand_warehouse.utilization_percentage,
+                'status': brand_warehouse.status,
+                'status_display': brand_warehouse.get_status_display(),
+            },
+            'pack_size_details': {
+                'capacity_ml': brand_warehouse.capacity_size,
+                'current_stock': brand_warehouse.current_stock,
+                'max_capacity': brand_warehouse.max_capacity,
+                'utilization_percentage': brand_warehouse.utilization_percentage,
+            },
+            'arrivals_tab': {
+                'recent_arrivals': arrivals_data,
+                'summary_30_days': {
+                    'total_arrivals': arrival_summary['total_arrivals'],
+                    'total_quantity': arrival_summary['total_quantity_added'],
+                    'average_per_arrival': arrival_summary['average_per_arrival'],
+                },
+                'total_count': len(arrivals_data)
+            },
+            'utilizations_tab': {
+                'recent_utilizations': utilizations_data,
+                'total_30_days': total_utilizations_30_days,
+                'total_count': len(utilizations_data)
+            }
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get'], url_path='arrivals')
+    def get_arrivals(self, request, pk=None):
+        """
+        Get arrival history for a brand warehouse entry
+        """
+        brand_warehouse = self.get_object()
+        
+        # Get query parameters
+        limit = int(request.query_params.get('limit', 50))
+        days = int(request.query_params.get('days', 30))
+        
+        # Get arrivals
+        arrivals = BrandWarehouseStockService.get_arrival_history(brand_warehouse.id, limit)
+        arrival_summary = BrandWarehouseStockService.get_arrival_summary(brand_warehouse.id, days)
+        
+        # Serialize arrivals
+        serializer = BrandWarehouseArrivalSerializer(arrivals, many=True)
+        
+        return Response({
+            'success': True,
+            'arrivals': serializer.data,
+            'summary': arrival_summary,
+            'total_count': arrivals.count() if hasattr(arrivals, 'count') else len(arrivals)
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get'], url_path='production-history')
+    def get_production_history(self, request, pk=None):
+        """
+        Get production history for a specific brand warehouse
+        """
+        brand_warehouse = self.get_object()
+        ProductionBatch = apps.get_model('brand_warehouse', 'ProductionBatch')
+        
+        # Get query parameters
+        limit = int(request.query_params.get('limit', 20))
+        days = int(request.query_params.get('days', 30))
+        
+        # Get production batches
+        production_batches = ProductionBatch.objects.filter(
+            brand_warehouse=brand_warehouse,
+            production_date__gte=timezone.now().date() - timedelta(days=days)
+        ).order_by('-production_date', '-production_time')[:limit]
+        
+        # Calculate summary
+        total_production = production_batches.aggregate(
+            total_quantity=Sum('quantity_produced'),
+            total_batches=Count('id'),
+            avg_batch_size=Avg('quantity_produced')
+        )
+        
+        # Serialize data
+        serializer = ProductionBatchSerializer(production_batches, many=True)
+        
+        return Response({
+            'success': True,
+            'production_history': serializer.data,
+            'summary': {
+                'total_quantity': total_production['total_quantity'] or 0,
+                'total_batches': total_production['total_batches'] or 0,
+                'average_batch_size': float(total_production['avg_batch_size'] or 0),
+                'period_days': days
+            },
+            'brand_info': {
+                'brand_name': brand_warehouse.brand_details,
+                'pack_size': f"{brand_warehouse.capacity_size}ml",
+                'current_stock': brand_warehouse.current_stock
+            }
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='add-production')
+    def add_production(self, request, pk=None):
+        """
+        Add a new production batch for a brand warehouse
+        """
+        brand_warehouse = self.get_object()
+        ProductionBatch = apps.get_model('brand_warehouse', 'ProductionBatch')
+        
+        # Prepare data
+        data = request.data.copy()
+        data['brand_warehouse_id'] = brand_warehouse.id
+        
+        # Auto-generate batch reference if not provided
+        if not data.get('batch_reference'):
+            today = timezone.now().date()
+            existing_count = ProductionBatch.objects.filter(
+                brand_warehouse=brand_warehouse,
+                production_date=today
+            ).count()
+            data['batch_reference'] = f"PROD-{today.strftime('%Y%m%d')}-{brand_warehouse.id:03d}-{existing_count + 1:03d}"
+        
+        # Create serializer
+        serializer = CreateProductionBatchSerializer(data=data)
+        
+        if serializer.is_valid():
+            production_batch = serializer.save()
+            
+            # Return created batch data
+            response_serializer = ProductionBatchSerializer(production_batch)
+            
+            return Response({
+                'success': True,
+                'message': 'Production batch added successfully',
+                'production_batch': response_serializer.data,
+                'updated_stock': {
+                    'previous_stock': production_batch.stock_before,
+                    'new_stock': production_batch.stock_after,
+                    'quantity_added': production_batch.quantity_produced
+                }
             }, status=status.HTTP_201_CREATED)
         
         return Response({
@@ -169,121 +359,98 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
             'errors': serializer.errors
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    @action(detail=True, methods=['post'], url_path='adjust-stock')
-    def adjust_stock(self, request, pk=None):
+    @action(detail=False, methods=['get'], url_path='production-summary')
+    def get_production_summary(self, request):
         """
-        Adjust stock for a brand warehouse entry
+        Get overall production summary for all Sikkim brands
         """
-        brand_warehouse = self.get_object()
+        ProductionBatch = apps.get_model('brand_warehouse', 'ProductionBatch')
         
-        serializer = StockAdjustmentSerializer(
-            data=request.data,
-            context={'brand_warehouse': brand_warehouse}
+        # Get date range
+        days = int(request.query_params.get('days', 30))
+        start_date = timezone.now().date() - timedelta(days=days)
+        
+        # Get Sikkim brand warehouses
+        sikkim_warehouses = BrandWarehouse.objects.filter(
+            distillery_name__icontains='sikkim'
         )
         
-        if serializer.is_valid():
-            adjustment_type = serializer.validated_data['adjustment_type']
-            quantity = serializer.validated_data['quantity']
-            reason = serializer.validated_data['reason']
-            
-            # Store previous stock
-            previous_stock = brand_warehouse.current_stock
-            
-            # Adjust stock
-            if adjustment_type == 'ADD':
-                brand_warehouse.current_stock += quantity
-            else:  # SUBTRACT
-                brand_warehouse.current_stock = max(0, brand_warehouse.current_stock - quantity)
-            
-            # Update status
-            brand_warehouse.update_status()
+        # Get production data
+        production_data = ProductionBatch.objects.filter(
+            brand_warehouse__in=sikkim_warehouses,
+            production_date__gte=start_date
+        ).aggregate(
+            total_batches=Count('id'),
+            total_quantity=Sum('quantity_produced'),
+            avg_batch_size=Avg('quantity_produced')
+        )
+        
+        # Get today's production
+        today_production = ProductionBatch.objects.filter(
+            brand_warehouse__in=sikkim_warehouses,
+            production_date=timezone.now().date()
+        ).aggregate(
+            today_quantity=Sum('quantity_produced'),
+            today_batches=Count('id')
+        )
+        
+        # Get this week's production
+        week_start = timezone.now().date() - timedelta(days=timezone.now().weekday())
+        week_production = ProductionBatch.objects.filter(
+            brand_warehouse__in=sikkim_warehouses,
+            production_date__gte=week_start
+        ).aggregate(
+            week_quantity=Sum('quantity_produced'),
+            week_batches=Count('id')
+        )
+        
+        # Get this month's production
+        month_start = timezone.now().date().replace(day=1)
+        month_production = ProductionBatch.objects.filter(
+            brand_warehouse__in=sikkim_warehouses,
+            production_date__gte=month_start
+        ).aggregate(
+            month_quantity=Sum('quantity_produced'),
+            month_batches=Count('id')
+        )
+        
+        # Get last production date
+        last_production = ProductionBatch.objects.filter(
+            brand_warehouse__in=sikkim_warehouses
+        ).order_by('-production_date', '-production_time').first()
+        
+        return Response({
+            'success': True,
+            'summary': {
+                'total_batches': production_data['total_batches'] or 0,
+                'total_quantity': production_data['total_quantity'] or 0,
+                'average_batch_size': float(production_data['avg_batch_size'] or 0),
+                'today_production': today_production['today_quantity'] or 0,
+                'today_batches': today_production['today_batches'] or 0,
+                'week_production': week_production['week_quantity'] or 0,
+                'week_batches': week_production['week_batches'] or 0,
+                'month_production': month_production['month_quantity'] or 0,
+                'month_batches': month_production['month_batches'] or 0,
+                'last_production_date': last_production.production_date if last_production else None,
+                'period_days': days
+            }
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], url_path='initialize-all-brands')
+    def initialize_all_brands(self, request):
+        """
+        Initialize ALL Sikkim brands from LiquorData
+        This ensures no brands go missing
+        """
+        try:
+            # Get all Sikkim brands and create warehouse entries
+            all_brands = BrandWarehouseStockService.get_all_sikkim_brands_with_stock()
             
             return Response({
                 'success': True,
-                'message': 'Stock adjusted successfully',
-                'data': {
-                    'previous_stock': previous_stock,
-                    'new_stock': brand_warehouse.current_stock,
-                    'adjustment_type': adjustment_type,
-                    'quantity': quantity,
-                    'reason': reason,
-                    'status': brand_warehouse.status
-                }
+                'message': f'Initialized {all_brands.count()} Sikkim brands',
+                'total_brands': all_brands.count()
             }, status=status.HTTP_200_OK)
-        
-        return Response({
-            'success': False,
-            'errors': serializer.errors
-        }, status=status.HTTP_400_BAD_REQUEST)
-
-    @action(detail=False, methods=['get'], url_path='grouped')
-    def get_grouped_brands(self, request):
-        """
-        Get brands grouped by brand name with all pack sizes and their stock levels
-        """
-        try:
-            # Get all brand warehouse entries
-            queryset = self.get_queryset()
-            
-            # Group by brand name (extracted from brand_details)
-            grouped_brands = {}
-            
-            for item in queryset:
-                # Extract brand name from brand_details
-                brand_name = item.brand_details.split(' - ')[0].strip() if item.brand_details else item.distillery_name
-                
-                if brand_name not in grouped_brands:
-                    grouped_brands[brand_name] = {
-                        'brandName': brand_name,
-                        'distilleryName': item.distillery_name,
-                        'brandType': item.brand_type,
-                        'packSizes': {},
-                        'totalStock': 0,
-                        'totalCapacity': 0,
-                        'totalUtilized': 0,
-                        'lastUpdated': item.updated_at,
-                        'overallStatus': 'OUT_OF_STOCK'
-                    }
-                
-                # Add pack size information
-                pack_size = item.capacity_size
-                grouped_brands[brand_name]['packSizes'][pack_size] = {
-                    'id': item.id,
-                    'capacitySize': pack_size,
-                    'currentStock': item.current_stock,
-                    'maxCapacity': item.max_capacity,
-                    'status': item.status,
-                    'totalUtilized': item.total_utilized,
-                    'reorderLevel': item.reorder_level,
-                    'utilizationPercentage': item.utilization_percentage
-                }
-                
-                # Update totals
-                grouped_brands[brand_name]['totalStock'] += item.current_stock
-                grouped_brands[brand_name]['totalCapacity'] += item.max_capacity
-                grouped_brands[brand_name]['totalUtilized'] += item.total_utilized
-                
-                # Update overall status (if any pack size is in stock, brand is in stock)
-                if item.status == 'IN_STOCK':
-                    grouped_brands[brand_name]['overallStatus'] = 'IN_STOCK'
-                elif item.status == 'LOW_STOCK' and grouped_brands[brand_name]['overallStatus'] == 'OUT_OF_STOCK':
-                    grouped_brands[brand_name]['overallStatus'] = 'LOW_STOCK'
-                
-                # Update last updated time
-                if item.updated_at > grouped_brands[brand_name]['lastUpdated']:
-                    grouped_brands[brand_name]['lastUpdated'] = item.updated_at
-            
-            # Convert to list and sort pack sizes
-            result = []
-            for brand_data in grouped_brands.values():
-                # Sort pack sizes
-                brand_data['packSizes'] = dict(sorted(brand_data['packSizes'].items()))
-                result.append(brand_data)
-            
-            # Sort by brand name
-            result.sort(key=lambda x: x['brandName'])
-            
-            return Response(result, status=status.HTTP_200_OK)
             
         except Exception as e:
             return Response({
@@ -291,64 +458,34 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
                 'error': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    @action(detail=False, methods=['get'], url_path='overview')
-    def get_warehouse_overview(self, request):
+    @action(detail=False, methods=['post'], url_path='sync-production-stock')
+    def sync_production_stock(self, request):
         """
-        Get warehouse overview statistics for dashboard
+        Manually sync production batches with brand warehouse stock
+        This fixes any inconsistencies between production records and stock levels
         """
         try:
-            total_brands = BrandWarehouse.objects.count()
+            # Get parameters
+            brand_id = request.data.get('brand_id')
+            days = int(request.data.get('days', 30))
             
-            # Calculate totals
-            totals = BrandWarehouse.objects.aggregate(
-                total_capacity=Sum('max_capacity'),
-                total_current_stock=Sum('current_stock'),
+            # Perform sync
+            sync_results = BrandWarehouseStockService.sync_production_with_stock(
+                brand_warehouse_id=brand_id,
+                days=days
             )
-            
-            # Status counts
-            status_counts = BrandWarehouse.objects.values('status').annotate(
-                count=Count('id')
-            )
-            
-            low_stock_alerts = next((item['count'] for item in status_counts if item['status'] == 'LOW_STOCK'), 0)
-            out_of_stock_alerts = next((item['count'] for item in status_counts if item['status'] == 'OUT_OF_STOCK'), 0)
-            
-            # Today's statistics
-            today = timezone.now().date()
-            today_updated = BrandWarehouse.objects.filter(
-                updated_at__date=today
-            ).count()
-            
-            # Calculate total utilized today (from utilizations created today)
-            today_utilizations = BrandWarehouseUtilization.objects.filter(
-                created_at__date=today,
-                status__in=['APPROVED', 'IN_TRANSIT', 'DELIVERED']
-            ).aggregate(
-                total=Sum('quantity')
-            )
-            today_consumption = today_utilizations['total'] or 0
-            
-            # Pending adjustments (can be customized based on your business logic)
-            pending_permits = BrandWarehouseUtilization.objects.filter(
-                status='PENDING'
-            ).count()
             
             return Response({
-                'totalBrands': total_brands,
-                'totalCapacity': totals['total_capacity'] or 0,
-                'totalCurrentStock': totals['total_current_stock'] or 0,
-                'lowStockAlerts': low_stock_alerts,
-                'outOfStockAlerts': out_of_stock_alerts,
-                'newArrivals': today_updated,
-                'todayProduction': 0,  # Can be calculated from production entries
-                'todayConsumption': today_consumption,
-                'pendingAdjustments': pending_permits,
+                'success': True,
+                'message': 'Production stock sync completed',
+                'results': sync_results
             }, status=status.HTTP_200_OK)
             
         except Exception as e:
             return Response({
                 'success': False,
-                'error': str(e)
+                'error': str(e),
+                'message': 'Error during production stock sync'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -358,75 +495,181 @@ class BrandWarehouseUtilizationViewSet(viewsets.ModelViewSet):
     """
     queryset = BrandWarehouseUtilization.objects.all().select_related('brand_warehouse')
     serializer_class = BrandWarehouseUtilizationSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get_queryset(self):
         """Filter queryset based on query parameters"""
-        queryset = super().get_queryset()
+        queryset = BrandWarehouseUtilization.objects.all().select_related('brand_warehouse')
         
         # Filter by brand warehouse
         brand_warehouse_id = self.request.query_params.get('brand_warehouse', None)
         if brand_warehouse_id:
             queryset = queryset.filter(brand_warehouse_id=brand_warehouse_id)
-        
+            
         # Filter by status
         status_filter = self.request.query_params.get('status', None)
         if status_filter:
             queryset = queryset.filter(status=status_filter)
-        
+            
+        return queryset.order_by('-date')
+
+
+class ProductionBatchViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for Production Batch CRUD operations
+    """
+    serializer_class = ProductionBatchSerializer
+    permission_classes = [AllowAny]
+
+    def get_queryset(self):
+        ProductionBatch = apps.get_model('brand_warehouse', 'ProductionBatch')
+        return ProductionBatch.objects.all().select_related('brand_warehouse')
+
+    def get_serializer_class(self):
+        """Return appropriate serializer based on action"""
+        if self.action == 'create':
+            return CreateProductionBatchSerializer
+        return ProductionBatchSerializer
+
+    def filter_queryset(self, queryset):
+        """Filter queryset based on query parameters"""
+        # Filter by brand warehouse
+        brand_warehouse_id = self.request.query_params.get('brand_warehouse', None)
+        if brand_warehouse_id:
+            queryset = queryset.filter(brand_warehouse_id=brand_warehouse_id)
+            
         # Filter by date range
         date_from = self.request.query_params.get('date_from', None)
-        date_to = self.request.query_params.get('date_to', None)
-        
         if date_from:
-            queryset = queryset.filter(date__gte=date_from)
+            queryset = queryset.filter(production_date__gte=date_from)
+            
+        date_to = self.request.query_params.get('date_to', None)
         if date_to:
-            queryset = queryset.filter(date__lte=date_to)
-        
-        return queryset
+            queryset = queryset.filter(production_date__lte=date_to)
+            
+        # Filter by status
+        status_filter = self.request.query_params.get('status', None)
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+            
+        return queryset.order_by('-production_date', '-production_time')
 
-    @action(detail=True, methods=['post'], url_path='approve')
-    def approve_utilization(self, request, pk=None):
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='daily-summary')
+    def daily_summary(self, request):
         """
-        Approve a utilization record
+        Get daily production summary
         """
-        utilization = self.get_object()
+        ProductionBatch = apps.get_model('brand_warehouse', 'ProductionBatch')
         
-        approved_by = request.data.get('approved_by', 'System')
+        # Get date parameter or default to today
+        date_str = request.query_params.get('date', timezone.now().date().isoformat())
+        try:
+            target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({
+                'success': False,
+                'error': 'Invalid date format. Use YYYY-MM-DD'
+            }, status=status.HTTP_400_BAD_REQUEST)
         
-        utilization.status = 'APPROVED'
-        utilization.approved_by = approved_by
-        utilization.approval_date = timezone.now()
-        utilization.save()
+        # Get production batches for the date
+        daily_batches = ProductionBatch.objects.filter(
+            production_date=target_date
+        ).select_related('brand_warehouse')
         
-        serializer = self.get_serializer(utilization)
+        # Calculate summary
+        summary_data = daily_batches.aggregate(
+            total_quantity=Sum('quantity_produced'),
+            batch_count=Count('id')
+        )
+        
+        # Get unique brands and managers
+        brands_produced = list(daily_batches.values_list(
+            'brand_warehouse__brand_details', flat=True
+        ).distinct())
+        
+        managers = list(daily_batches.values_list(
+            'production_manager', flat=True
+        ).distinct())
+        
+        reference_numbers = list(daily_batches.values_list(
+            'batch_reference', flat=True
+        ))
         
         return Response({
             'success': True,
-            'message': 'Utilization approved successfully',
-            'data': serializer.data
+            'date': target_date,
+            'summary': {
+                'total_quantity': summary_data['total_quantity'] or 0,
+                'batch_count': summary_data['batch_count'] or 0,
+                'brands_produced': brands_produced,
+                'production_managers': managers,
+                'reference_numbers': reference_numbers
+            },
+            'batches': ProductionBatchSerializer(daily_batches, many=True).data
         }, status=status.HTTP_200_OK)
 
-    @action(detail=True, methods=['post'], url_path='cancel')
-    def cancel_utilization(self, request, pk=None):
+    @action(detail=False, methods=['get'], url_path='brand-production')
+    def brand_production(self, request):
         """
-        Cancel a utilization record
+        Get production data for a specific brand
         """
-        utilization = self.get_object()
+        ProductionBatch = apps.get_model('brand_warehouse', 'ProductionBatch')
         
-        old_status = utilization.status
-        utilization.status = 'CANCELLED'
-        utilization.save()
+        brand_warehouse_id = request.query_params.get('brand_warehouse_id')
+        if not brand_warehouse_id:
+            return Response({
+                'success': False,
+                'error': 'brand_warehouse_id parameter is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
         
-        # If it was previously approved/in-transit/delivered, restore the stock
-        if old_status in ['APPROVED', 'IN_TRANSIT', 'DELIVERED']:
-            utilization.brand_warehouse.current_stock += utilization.quantity
-            utilization.brand_warehouse.update_status()
+        try:
+            brand_warehouse = BrandWarehouse.objects.get(id=brand_warehouse_id)
+        except BrandWarehouse.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Brand warehouse not found'
+            }, status=status.HTTP_404_NOT_FOUND)
         
-        serializer = self.get_serializer(utilization)
+        # Get date range
+        days = int(request.query_params.get('days', 30))
+        start_date = timezone.now().date() - timedelta(days=days)
+        
+        # Get production batches
+        production_batches = ProductionBatch.objects.filter(
+            brand_warehouse=brand_warehouse,
+            production_date__gte=start_date
+        ).order_by('-production_date', '-production_time')
+        
+        # Calculate summary
+        summary_data = production_batches.aggregate(
+            total_quantity=Sum('quantity_produced'),
+            total_batches=Count('id'),
+            avg_batch_size=Avg('quantity_produced')
+        )
         
         return Response({
             'success': True,
-            'message': 'Utilization cancelled successfully',
-            'data': serializer.data
+            'brand_info': {
+                'id': brand_warehouse.id,
+                'brand_name': brand_warehouse.brand_details,
+                'pack_size': f"{brand_warehouse.capacity_size}ml",
+                'current_stock': brand_warehouse.current_stock
+            },
+            'summary': {
+                'total_quantity': summary_data['total_quantity'] or 0,
+                'total_batches': summary_data['total_batches'] or 0,
+                'average_batch_size': float(summary_data['avg_batch_size'] or 0),
+                'period_days': days
+            },
+            'production_history': ProductionBatchSerializer(production_batches, many=True).data
         }, status=status.HTTP_200_OK)

@@ -1,4 +1,8 @@
 from django.db import models
+from django.utils import timezone
+
+# Import production models to make them available to Django
+from .production_models import ProductionBatch
 
 
 class BrandWarehouse(models.Model):
@@ -139,6 +143,114 @@ class BrandWarehouse(models.Model):
         else:
             self.status = 'IN_STOCK'
         self.save(update_fields=['status', 'updated_at'])
+
+    def add_stock(self, quantity, reference_no, source_type='HOLOGRAM_REGISTER'):
+        """
+        Add stock to brand warehouse and create arrival record
+        """
+        previous_stock = self.current_stock
+        self.current_stock += quantity
+        self.save(update_fields=['current_stock', 'updated_at'])
+        
+        # Update status after stock change
+        self.update_status()
+        
+        # Create arrival record
+        BrandWarehouseArrival.objects.create(
+            brand_warehouse=self,
+            reference_no=reference_no,
+            source_type=source_type,
+            quantity_added=quantity,
+            previous_stock=previous_stock,
+            new_stock=self.current_stock,
+            arrival_date=timezone.now()
+        )
+        
+        return self.current_stock
+
+
+class BrandWarehouseArrival(models.Model):
+    """
+    Model to track stock arrivals in brand warehouse with reference numbers
+    """
+    SOURCE_TYPE_CHOICES = [
+        ('HOLOGRAM_REGISTER', 'Monthly Statement of Hologram'),
+        ('MANUAL_ADJUSTMENT', 'Manual Stock Adjustment'),
+        ('PRODUCTION', 'Production Entry'),
+        ('TRANSFER', 'Stock Transfer'),
+    ]
+
+    # Foreign Key to Brand Warehouse
+    brand_warehouse = models.ForeignKey(
+        BrandWarehouse,
+        on_delete=models.CASCADE,
+        related_name='arrivals',
+        db_column='brand_warehouse_id',
+        help_text='Related brand warehouse entry'
+    )
+
+    # Reference Information
+    reference_no = models.CharField(
+        max_length=100,
+        db_column='reference_no',
+        help_text='Reference number from source system (e.g., Daily Register Ref No)'
+    )
+    source_type = models.CharField(
+        max_length=50,
+        choices=SOURCE_TYPE_CHOICES,
+        default='HOLOGRAM_REGISTER',
+        db_column='source_type',
+        help_text='Source of the stock arrival'
+    )
+
+    # Stock Information
+    quantity_added = models.IntegerField(
+        db_column='quantity_added',
+        help_text='Quantity added to stock'
+    )
+    previous_stock = models.IntegerField(
+        db_column='previous_stock',
+        help_text='Stock level before this arrival'
+    )
+    new_stock = models.IntegerField(
+        db_column='new_stock',
+        help_text='Stock level after this arrival'
+    )
+
+    # Timing
+    arrival_date = models.DateTimeField(
+        default=timezone.now,
+        db_column='arrival_date',
+        help_text='Date and time of stock arrival'
+    )
+
+    # Additional Details
+    notes = models.TextField(
+        blank=True,
+        null=True,
+        db_column='notes',
+        help_text='Additional notes about the arrival'
+    )
+
+    # Timestamps
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        db_column='created_at'
+    )
+
+    class Meta:
+        db_table = 'brand_warehouse_arrival'
+        ordering = ['-arrival_date']
+        verbose_name = 'Brand Warehouse Arrival'
+        verbose_name_plural = 'Brand Warehouse Arrivals'
+        indexes = [
+            models.Index(fields=['brand_warehouse', 'arrival_date']),
+            models.Index(fields=['reference_no']),
+            models.Index(fields=['source_type']),
+        ]
+
+    def __str__(self):
+        return f"{self.reference_no} - {self.quantity_added} units to {self.brand_warehouse}"
 
 
 class BrandWarehouseUtilization(models.Model):

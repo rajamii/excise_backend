@@ -2134,10 +2134,15 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
         - year: Year (e.g., '2026')
         - hologram_type: Type (LOCAL, EXPORT, DEFENCE)
         - licensee_id: Optional licensee ID filter
+        - force_refresh: Set to 'true' to bypass cache and get fresh data
         """
         from django.db.models import Sum, Q
         from datetime import datetime
         import calendar
+        from django.core.cache import cache
+        import logging
+        
+        logger = logging.getLogger(__name__)
         
         # Get query parameters
         month_param = request.query_params.get('month', '').lower()

@@ -184,7 +184,7 @@ class HologramRequestSerializer(serializers.ModelSerializer):
             # Fetch current details from DB
             from .models import HologramRollsDetails
             current_details = HologramRollsDetails.objects.filter(
-                cartoon_number__in=carton_numbers,
+                carton_number__in=carton_numbers,
                 procurement__licensee=obj.licensee
             )
             
@@ -243,7 +243,7 @@ class HologramRequestSerializer(serializers.ModelSerializer):
             # Fetch live details
             from .models import HologramRollsDetails
             live_details = HologramRollsDetails.objects.filter(
-                cartoon_number__in=all_carton_numbers,
+                carton_number__in=all_carton_numbers,
                 procurement__in=procurements
             )
             details_map = {d.carton_number: d for d in live_details}
