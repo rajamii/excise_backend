@@ -90,6 +90,7 @@ INSTALLED_APPS = [
     'models.transactional.supply_chain.ena_revalidation_details',
     'models.transactional.supply_chain.ena_cancellation_details',
     'models.transactional.supply_chain.hologram',
+    'models.transactional.supply_chain.brand_warehouse',
     # auth models 
     'auth.roles',
     'auth.user',
