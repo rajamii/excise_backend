@@ -553,13 +553,34 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
 
         print(f"DEBUG: perform_action. Ref: {instance.ref_no}, Current Stage: {instance.current_stage.name}, Action: {action_name}")
         print(f"DEBUG: issued_assets received: {issued_assets}")
-
-        # CRITICAL FIX: Save both issued_assets and rolls_assigned immediately
+        
+        # CRITICAL DEBUG: Print each asset's serial ranges
         if issued_assets:
-            instance.issued_assets = issued_assets
-            instance.rolls_assigned = issued_assets  # Save for "Currently Issued Holograms" tab
+            for idx, asset in enumerate(issued_assets):
+                print(f"  Asset {idx + 1}:")
+                print(f"    cartoonNumber: {asset.get('cartoonNumber') or asset.get('cartoon_number')}")
+                print(f"    fromSerial: {asset.get('fromSerial') or asset.get('from_serial')}")
+                print(f"    toSerial: {asset.get('toSerial') or asset.get('to_serial')}")
+                print(f"    quantity: {asset.get('quantity') or asset.get('count')}")
+
+        # CRITICAL FIX: Save issued_assets to rolls_assigned IMMEDIATELY before any processing
+        # This ensures the frontend-provided ranges are preserved exactly as sent
+        if issued_assets:
+            # Create a deep copy to preserve original ranges
+            import copy
+            original_assets = copy.deepcopy(issued_assets)
+            
+            instance.issued_assets = original_assets
+            instance.rolls_assigned = original_assets  # Save for "Currently Issued Holograms" tab
             instance.save()
-            print(f"DEBUG: Saved issued_assets and rolls_assigned for {instance.ref_no}: {len(issued_assets)} rolls")
+            print(f"DEBUG: Saved issued_assets and rolls_assigned for {instance.ref_no}: {len(original_assets)} rolls")
+            print(f"DEBUG: rolls_assigned content: {instance.rolls_assigned}")
+            
+            # Verify the ranges were saved correctly
+            for idx, asset in enumerate(instance.rolls_assigned):
+                print(f"  ✅ Saved Asset {idx + 1}:")
+                print(f"     fromSerial: {asset.get('fromSerial') or asset.get('from_serial')}")
+                print(f"     toSerial: {asset.get('toSerial') or asset.get('to_serial')}")
         
         if not action_name:
             return Response({'error': 'Action is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -617,11 +638,7 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
             # If assets were issued (e.g. on approval), update their status in Procurement inventory
             if issued_assets:
                 self._update_inventory_status(instance, issued_assets)
-                
-                # CRITICAL FIX: Populate rolls_assigned for daily register dropdown
-                instance.rolls_assigned = issued_assets
-                instance.save(update_fields=['rolls_assigned'])
-                print(f"DEBUG: Saved rolls_assigned for {instance.ref_no}: {len(issued_assets)} rolls")
+                # Note: rolls_assigned was already saved above before any processing
             
         return Response(self.get_serializer(instance).data)
 
@@ -735,66 +752,88 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                                  roll_obj.save()
                                  print(f"DEBUG: Synced RollsDetails for {c_num}: Available now {roll_obj.available}")
                                  
-                                 # CRITICAL: Use FIFO allocation instead of pre-determined ranges
+                                 # CRITICAL FIX: Trust frontend allocation if valid ranges are provided
+                                 # Only use FIFO as fallback if frontend didn't provide ranges
+                                 from_serial = asset.get('fromSerial') or asset.get('from_serial')
+                                 to_serial = asset.get('toSerial') or asset.get('to_serial')
                                  a_qty = asset.get('quantity') or asset.get('count', 0)
                                  
                                  if a_qty > 0:
                                      from models.transactional.supply_chain.hologram.models import HologramSerialRange
                                      
-                                     print(f"🎯 Allocating {a_qty} holograms from roll {c_num} using FIFO")
-                                     
-                                     # Use FIFO allocation to determine which ranges to allocate
-                                     allocation_result = self.allocate_holograms_fifo(
-                                         roll=roll_obj,
-                                         quantity_needed=a_qty,
-                                         reference_no=request_instance.ref_no,
-                                         usage_date=request_instance.usage_date if hasattr(request_instance, 'usage_date') else None
-                                     )
-                                     
-                                     if allocation_result['success']:
-                                         print(f"✅ FIFO allocation successful: {allocation_result['message']}")
+                                     # Check if frontend provided valid serial ranges
+                                     if from_serial and to_serial:
+                                         print(f"✅ Using frontend-provided ranges: {from_serial}-{to_serial} ({a_qty} units)")
                                          
-                                         # Update the asset with the actual allocated ranges (for response)
-                                         if allocation_result['allocated_ranges']:
-                                             first_range = allocation_result['allocated_ranges'][0]
-                                             last_range = allocation_result['allocated_ranges'][-1]
+                                         # Trust the frontend allocation - just mark the range as IN_USE
+                                         try:
+                                             # Use FIFO to properly split ranges in the database
+                                             allocation_result = self.allocate_holograms_fifo(
+                                                 roll=roll_obj,
+                                                 quantity_needed=a_qty,
+                                                 reference_no=request_instance.ref_no,
+                                                 usage_date=request_instance.usage_date if hasattr(request_instance, 'usage_date') else None
+                                             )
                                              
-                                             # Update asset with actual allocated range
-                                             asset['fromSerial'] = str(first_range['from'])
-                                             asset['toSerial'] = str(last_range['to'])
-                                             asset['from_serial'] = str(first_range['from'])
-                                             asset['to_serial'] = str(last_range['to'])
-                                             
-                                             print(f"✅ Updated asset with allocated range: {first_range['from']}-{last_range['to']}")
-                                     else:
-                                         print(f"❌ FIFO allocation failed: {allocation_result['message']}")
-                                         # Keep original logic as fallback
-                                         from_serial = asset.get('fromSerial') or asset.get('from_serial')
-                                         to_serial = asset.get('toSerial') or asset.get('to_serial')
-                                         
-                                         if from_serial and to_serial:
-                                             try:
-                                                 from_num = int(from_serial)
-                                                 to_num = int(to_serial)
-                                                 allocated_count = to_num - from_num + 1
+                                             if allocation_result['success']:
+                                                 print(f"✅ FIFO allocation successful: {allocation_result['message']}")
                                                  
-                                                 # Fallback: Just create a IN_USE entry without FIFO
-                                                 HologramSerialRange.objects.get_or_create(
-                                                     roll=roll_obj,
-                                                     from_serial=from_serial,
-                                                     to_serial=to_serial,
-                                                     defaults={
-                                                         'count': allocated_count,
-                                                         'status': 'IN_USE',
-                                                         'used_date': request_instance.usage_date if hasattr(request_instance, 'usage_date') else None,
-                                                         'reference_no': request_instance.ref_no,
-                                                         'description': f'Allocated for request {request_instance.ref_no} (fallback)'
-                                                     }
-                                                 )
-                                                 roll_obj.update_available_range()
-                                                 print(f"⚠️ Used fallback allocation for {from_serial}-{to_serial}")
-                                             except (ValueError, TypeError) as e:
-                                                 print(f"⚠️ Fallback allocation also failed: {e}")
+                                                 # CRITICAL FIX: Don't overwrite frontend ranges!
+                                                 # Keep the frontend-provided ranges in the response
+                                                 print(f"✅ Keeping frontend ranges: {from_serial}-{to_serial}")
+                                             else:
+                                                 print(f"⚠️ FIFO allocation failed: {allocation_result['message']}")
+                                                 # Fallback: Create IN_USE entry with frontend ranges
+                                                 try:
+                                                     from_num = int(from_serial)
+                                                     to_num = int(to_serial)
+                                                     allocated_count = to_num - from_num + 1
+                                                     
+                                                     HologramSerialRange.objects.get_or_create(
+                                                         roll=roll_obj,
+                                                         from_serial=from_serial,
+                                                         to_serial=to_serial,
+                                                         defaults={
+                                                             'count': allocated_count,
+                                                             'status': 'IN_USE',
+                                                             'used_date': request_instance.usage_date if hasattr(request_instance, 'usage_date') else None,
+                                                             'reference_no': request_instance.ref_no,
+                                                             'description': f'Allocated for request {request_instance.ref_no} (frontend ranges)'
+                                                         }
+                                                     )
+                                                     roll_obj.update_available_range()
+                                                     print(f"✅ Created IN_USE range with frontend ranges: {from_serial}-{to_serial}")
+                                                 except (ValueError, TypeError) as e:
+                                                     print(f"❌ Failed to create IN_USE range: {e}")
+                                         except Exception as e:
+                                             print(f"❌ Error during allocation: {e}")
+                                     else:
+                                         # No ranges provided by frontend - use FIFO to calculate
+                                         print(f"⚠️ No ranges provided by frontend, using FIFO to allocate {a_qty} holograms")
+                                         
+                                         allocation_result = self.allocate_holograms_fifo(
+                                             roll=roll_obj,
+                                             quantity_needed=a_qty,
+                                             reference_no=request_instance.ref_no,
+                                             usage_date=request_instance.usage_date if hasattr(request_instance, 'usage_date') else None
+                                         )
+                                         
+                                         if allocation_result['success']:
+                                             print(f"✅ FIFO allocation successful: {allocation_result['message']}")
+                                             
+                                             # Update the asset with the FIFO-calculated ranges
+                                             if allocation_result['allocated_ranges']:
+                                                 first_range = allocation_result['allocated_ranges'][0]
+                                                 last_range = allocation_result['allocated_ranges'][-1]
+                                                 
+                                                 asset['fromSerial'] = str(first_range['from'])
+                                                 asset['toSerial'] = str(last_range['to'])
+                                                 asset['from_serial'] = str(first_range['from'])
+                                                 asset['to_serial'] = str(last_range['to'])
+                                                 
+                                                 print(f"✅ Updated asset with FIFO ranges: {first_range['from']}-{last_range['to']}")
+                                         else:
+                                             print(f"❌ FIFO allocation failed: {allocation_result['message']}")
                                  else:
                                      print(f"⚠️ No quantity specified for roll {c_num}, skipping allocation")
                              
