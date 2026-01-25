@@ -14,9 +14,26 @@ class BrandWarehouseStockService:
     """
     
     @staticmethod
+    def get_all_brands_with_stock():
+        """
+        Get ALL brands from BrandWarehouse (not just Sikkim)
+        The frontend filtering will handle showing only relevant brands for each distillery
+        
+        Returns:
+            QuerySet of ALL BrandWarehouse entries
+        """
+        try:
+            # Return ALL Brand Warehouse entries - frontend will filter by distillery
+            return BrandWarehouse.objects.all().select_related('liquor_data').prefetch_related('arrivals', 'utilizations')
+            
+        except Exception as e:
+            logger.error(f"Error getting all brands: {str(e)}")
+            return BrandWarehouse.objects.none()
+    
+    @staticmethod
     def get_all_sikkim_brands_with_stock():
         """
-        Get ALL Sikkim Distilleries Ltd brands from LiquorData and ensure they have Brand Warehouse entries
+        Get ALL Sikkim Distilleries Ltd brands from BrandWarehouse and ensure they have entries
         This ensures no brands go missing - all brands are always shown
         
         Returns:
@@ -125,6 +142,18 @@ class BrandWarehouseStockService:
                 if not brand_warehouse:
                     logger.error(f"Could not find/create brand warehouse for {distillery_name} - {brand_name} ({capacity_ml}ml)")
                     return False
+                
+                # CRITICAL: Check if arrival record already exists to prevent duplicates
+                existing_arrival = BrandWarehouseArrival.objects.filter(
+                    brand_warehouse=brand_warehouse,
+                    reference_no=reference_no,
+                    quantity_added=issued_qty
+                ).first()
+                
+                if existing_arrival:
+                    logger.warning(f"⚠️ Arrival record already exists for {reference_no} - skipping duplicate stock update")
+                    logger.warning(f"   Existing arrival ID: {existing_arrival.id}, Quantity: {existing_arrival.quantity_added}")
+                    return True  # Return True since the stock was already updated correctly
                 
                 # Update current_stock by adding the issued quantity
                 previous_stock = brand_warehouse.current_stock

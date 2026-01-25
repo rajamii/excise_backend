@@ -42,17 +42,12 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """
-        Get queryset - ensures ALL Sikkim brands are included
+        Get queryset - returns ALL brands, frontend filtering handles distillery-specific display
         """
-        # First ensure all Sikkim brands have Brand Warehouse entries
-        BrandWarehouseStockService.get_all_sikkim_brands_with_stock()
+        # Return ALL Brand Warehouse entries - frontend will filter by distillery
+        queryset = BrandWarehouse.objects.all().select_related('liquor_data').prefetch_related('utilizations', 'arrivals')
         
-        # Then return the queryset with filters - only Sikkim Distilleries Ltd brands
-        queryset = BrandWarehouse.objects.filter(
-            distillery_name__icontains='Sikkim Distilleries Ltd'
-        ).select_related('liquor_data').prefetch_related('utilizations', 'arrivals')
-        
-        # Apply filters
+        # Apply filters from query parameters
         distillery_name = self.request.query_params.get('distillery_name', None)
         if distillery_name:
             queryset = queryset.filter(distillery_name__icontains=distillery_name)
@@ -65,21 +60,16 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         if status_filter:
             queryset = queryset.filter(status=status_filter)
             
-        return queryset.order_by('brand_details', 'capacity_size')
+        return queryset.order_by('distillery_name', 'brand_details', 'capacity_size')
 
     def list(self, request, *args, **kwargs):
         """
-        List all Sikkim brands with NEW tags
-        Ensures no brands go missing by showing ALL brands from LiquorData
+        List all brands with NEW tags
+        Frontend filtering will handle showing only relevant brands for each distillery
         """
         try:
-            # First ensure all Sikkim brands have warehouse entries
-            BrandWarehouseStockService.get_all_sikkim_brands_with_stock()
-            
-            # Get the base queryset (only Sikkim Distilleries Ltd brands)
-            queryset = BrandWarehouse.objects.filter(
-                distillery_name__icontains='Sikkim Distilleries Ltd'
-            ).select_related('liquor_data').prefetch_related('utilizations', 'arrivals')
+            # Get ALL brand warehouse entries - frontend will filter by distillery
+            queryset = BrandWarehouse.objects.all().select_related('liquor_data').prefetch_related('utilizations', 'arrivals')
             
             # Apply any filters from query parameters
             distillery_name = self.request.query_params.get('distillery_name', None)
@@ -94,8 +84,8 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
             if status_filter:
                 queryset = queryset.filter(status=status_filter)
             
-            # Order by brand name and pack size
-            queryset = queryset.order_by('brand_details', 'capacity_size')
+            # Order by distillery, then brand name and pack size
+            queryset = queryset.order_by('distillery_name', 'brand_details', 'capacity_size')
             
             # Paginate if needed
             page = self.paginate_queryset(queryset)
@@ -127,7 +117,10 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         Test endpoint to verify brands are visible
         """
         try:
-            # Get all Sikkim brands
+            # Get all brands (not just Sikkim)
+            all_brands = BrandWarehouse.objects.all()
+            
+            # Get Sikkim brands specifically
             sikkim_brands = BrandWarehouse.objects.filter(
                 distillery_name__icontains='sikkim'
             )
@@ -135,8 +128,20 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
             return Response({
                 'success': True,
                 'message': 'Test endpoint working',
+                'total_all_brands': all_brands.count(),
                 'total_sikkim_brands': sikkim_brands.count(),
-                'sample_brands': [
+                'sample_all_brands': [
+                    {
+                        'id': brand.id,
+                        'brand_name': brand.brand_details,
+                        'distillery': brand.distillery_name,
+                        'pack_size': f"{brand.capacity_size}ml",
+                        'current_stock': brand.current_stock,
+                        'status': brand.status
+                    }
+                    for brand in all_brands[:5]
+                ],
+                'sample_sikkim_brands': [
                     {
                         'id': brand.id,
                         'brand_name': brand.brand_details,
@@ -486,6 +491,106 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
                 'success': False,
                 'error': str(e),
                 'message': 'Error during production stock sync'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        Override destroy to prevent accidental deletion
+        Require confirmation and use soft delete
+        """
+        instance = self.get_object()
+        
+        # Check for confirmation parameter
+        confirm_delete = request.data.get('confirm_delete', False)
+        if not confirm_delete:
+            return Response({
+                'success': False,
+                'error': 'Deletion requires confirmation',
+                'message': 'Brand warehouse deletion requires explicit confirmation to prevent accidental data loss.',
+                'required_parameter': 'confirm_delete: true',
+                'warning': 'This action will soft delete the brand warehouse entry. Stock data will be preserved.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get user information
+        deleted_by = getattr(request.user, 'username', 'anonymous') if hasattr(request, 'user') else 'system'
+        
+        try:
+            # Perform soft delete instead of hard delete
+            instance.soft_delete(deleted_by=deleted_by)
+            
+            return Response({
+                'success': True,
+                'message': f'Brand warehouse "{instance.brand_details}" has been soft deleted',
+                'deleted_at': instance.deleted_at,
+                'deleted_by': instance.deleted_by,
+                'note': 'This entry can be restored if needed. Contact administrator for restoration.'
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e),
+                'message': 'Error during soft deletion'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'], url_path='restore')
+    def restore_deleted(self, request, pk=None):
+        """
+        Restore a soft deleted brand warehouse entry
+        """
+        try:
+            # Get the instance including soft deleted ones
+            instance = BrandWarehouse.objects.all_with_deleted().get(pk=pk)
+            
+            if not instance.is_deleted:
+                return Response({
+                    'success': False,
+                    'message': 'This brand warehouse entry is not deleted'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Restore the entry
+            instance.restore()
+            
+            return Response({
+                'success': True,
+                'message': f'Brand warehouse "{instance.brand_details}" has been restored',
+                'restored_at': timezone.now()
+            }, status=status.HTTP_200_OK)
+            
+        except BrandWarehouse.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Brand warehouse entry not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e),
+                'message': 'Error during restoration'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['get'], url_path='deleted-entries')
+    def get_deleted_entries(self, request):
+        """
+        Get all soft deleted brand warehouse entries
+        """
+        try:
+            deleted_entries = BrandWarehouse.objects.deleted_only().order_by('-deleted_at')
+            
+            # Serialize the deleted entries
+            serializer = BrandWarehouseSerializer(deleted_entries, many=True)
+            
+            return Response({
+                'success': True,
+                'deleted_entries': serializer.data,
+                'total_count': deleted_entries.count(),
+                'message': 'These entries can be restored if needed'
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

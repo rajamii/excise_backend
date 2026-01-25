@@ -16,6 +16,7 @@ def update_brand_warehouse_stock_on_save(sender, instance, created, **kwargs):
     1. Daily Hologram Register entry is marked as fixed (is_fixed=True)
     2. Entry has issued quantity > 0 (actual production happened)
     3. Entry belongs to Sikkim Distillery (manufacturing unit)
+    4. Stock has not been updated yet (stock_updated=False)
     
     NOTE: This signal is designed to work alongside ProductionBatch entries.
     If a ProductionBatch already exists for the same production, we skip the stock update
@@ -24,6 +25,11 @@ def update_brand_warehouse_stock_on_save(sender, instance, created, **kwargs):
     try:
         # Only process if entry is fixed (saved/locked) and has production
         if not instance.is_fixed or instance.issued_qty <= 0:
+            return
+        
+        # CRITICAL: Check if stock has already been updated for this entry
+        if instance.stock_updated:
+            logger.info(f"⚠️ Skipping stock update for {instance.reference_no} - stock already updated")
             return
         
         # Check if this is for Sikkim Distilleries Ltd (not other Sikkim-based companies)
@@ -50,12 +56,19 @@ def update_brand_warehouse_stock_on_save(sender, instance, created, **kwargs):
             logger.info(f"   This prevents double-counting of production stock")
             return
         
-        # Check if we've already processed this entry (to avoid duplicate updates)
-        # We can use a simple check - if this is an update and the entry was already fixed
-        if not created:
-            # For updates, we need to be careful not to double-count
-            # You might want to add a field to track if stock was already updated
-            logger.info(f"Daily register {instance.reference_no} updated - checking if stock update needed")
+        # Check for duplicate entries with same reference number and brand
+        duplicate_entries = DailyHologramRegister.objects.filter(
+            reference_no=instance.reference_no,
+            brand_details=instance.brand_details,
+            bottle_size=instance.bottle_size,
+            issued_qty=instance.issued_qty,
+            stock_updated=True
+        ).exclude(id=instance.id)
+        
+        if duplicate_entries.exists():
+            logger.info(f"⚠️ Skipping stock update for {instance.reference_no} - duplicate entry already processed")
+            logger.info(f"   Found {duplicate_entries.count()} duplicate entries with stock already updated")
+            return
         
         logger.info(f"🔄 Processing Brand Warehouse stock update for Monthly Statement: {instance.reference_no}")
         logger.info(f"   Distillery: {distillery_name}")
@@ -68,12 +81,17 @@ def update_brand_warehouse_stock_on_save(sender, instance, created, **kwargs):
         success = BrandWarehouseStockService.update_stock_from_hologram_register(instance)
         
         if success:
+            # Mark this entry as having its stock updated
+            DailyHologramRegister.objects.filter(id=instance.id).update(stock_updated=True)
             logger.info(f"✅ Successfully updated Brand Warehouse stock for {instance.reference_no}")
+            logger.info(f"   Entry marked as stock_updated=True to prevent duplicate updates")
         else:
             logger.warning(f"⚠️ Failed to update Brand Warehouse stock for {instance.reference_no}")
             
     except Exception as e:
         logger.error(f"❌ Error in Brand Warehouse stock update signal for {instance.reference_no}: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 
 @receiver(post_save, sender=DailyHologramRegister)

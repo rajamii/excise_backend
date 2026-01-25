@@ -312,6 +312,9 @@ class DailyHologramRegister(models.Model):
     # Status
     is_fixed = models.BooleanField(default=False)  # True indicates the entry is saved/locked
     
+    # Brand Warehouse Integration
+    stock_updated = models.BooleanField(default=False, help_text='Tracks if brand warehouse stock has been updated for this entry')
+    
     # Approval tracking
     approval_status = models.CharField(max_length=20, choices=APPROVAL_STATUS_CHOICES, default=APPROVAL_STATUS_PENDING)
     approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='approved_daily_registers')

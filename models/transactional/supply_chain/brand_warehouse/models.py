@@ -5,6 +5,23 @@ from django.utils import timezone
 from .production_models import ProductionBatch
 
 
+class BrandWarehouseManager(models.Manager):
+    """
+    Custom manager for BrandWarehouse to handle soft deletes
+    """
+    def get_queryset(self):
+        """Return only non-deleted records by default"""
+        return super().get_queryset().filter(is_deleted=False)
+    
+    def all_with_deleted(self):
+        """Return all records including soft deleted ones"""
+        return super().get_queryset()
+    
+    def deleted_only(self):
+        """Return only soft deleted records"""
+        return super().get_queryset().filter(is_deleted=True)
+
+
 class BrandWarehouse(models.Model):
     """
     Model to store brand warehouse information including stock levels and capacity
@@ -87,6 +104,26 @@ class BrandWarehouse(models.Model):
         help_text='Average daily usage in units'
     )
 
+    # Soft Delete Protection
+    is_deleted = models.BooleanField(
+        default=False,
+        db_column='is_deleted',
+        help_text='Soft delete flag to prevent accidental data loss'
+    )
+    deleted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_column='deleted_at',
+        help_text='Timestamp when the record was soft deleted'
+    )
+    deleted_by = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        db_column='deleted_by',
+        help_text='User who performed the soft delete'
+    )
+
     # Timestamps
     created_at = models.DateTimeField(
         auto_now_add=True,
@@ -96,6 +133,9 @@ class BrandWarehouse(models.Model):
         auto_now=True,
         db_column='updated_at'
     )
+
+    # Custom manager
+    objects = BrandWarehouseManager()
 
     class Meta:
         db_table = 'brand_warehouse'
@@ -167,6 +207,36 @@ class BrandWarehouse(models.Model):
         )
         
         return self.current_stock
+
+    def soft_delete(self, deleted_by=None):
+        """
+        Soft delete the brand warehouse entry
+        
+        Args:
+            deleted_by: Username or identifier of who performed the deletion
+        """
+        self.is_deleted = True
+        self.deleted_at = timezone.now()
+        self.deleted_by = deleted_by or 'system'
+        self.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by', 'updated_at'])
+    
+    def restore(self):
+        """
+        Restore a soft deleted brand warehouse entry
+        """
+        self.is_deleted = False
+        self.deleted_at = None
+        self.deleted_by = None
+        self.save(update_fields=['is_deleted', 'deleted_at', 'deleted_by', 'updated_at'])
+    
+    def delete(self, using=None, keep_parents=False):
+        """
+        Override delete to prevent hard deletion - use soft delete instead
+        """
+        raise Exception(
+            "Hard deletion is not allowed for Brand Warehouse entries. "
+            "Use soft_delete() method instead to prevent accidental data loss."
+        )
 
 
 class BrandWarehouseArrival(models.Model):
