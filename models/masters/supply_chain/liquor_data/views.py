@@ -11,18 +11,22 @@ logger = logging.getLogger(__name__)
 class BrandSizeListView(APIView):
     def get(self, request):
         try:
-            # First, get all unique brand names
+            # Get distillery filter from query params (defaults to Sikkim Distilleries Ltd)
+            distillery_filter = request.GET.get('distillery', 'Sikkim Distilleries Ltd')
+            
+            # First, get all unique brand names from Sikkim Distilleries Ltd only
             with connection.cursor() as cursor:
                 cursor.execute("""
                     SELECT DISTINCT brand_name 
                     FROM liquor_data_details 
                     WHERE brand_name IS NOT NULL
-                """)
+                    AND manufacturing_unit_name ILIKE %s
+                """, [f'%{distillery_filter}%'])
                 brand_names = [row[0] for row in cursor.fetchall()]
             
             result = []
             
-            # For each brand, get its sizes
+            # For each brand, get its sizes (only from Sikkim Distilleries Ltd)
             for brand_name in brand_names:
                 if not brand_name:
                     continue
@@ -32,23 +36,29 @@ class BrandSizeListView(APIView):
                         SELECT DISTINCT pack_size_ml 
                         FROM liquor_data_details 
                         WHERE brand_name = %s 
+                        AND manufacturing_unit_name ILIKE %s
                         AND pack_size_ml IS NOT NULL
                         ORDER BY pack_size_ml
-                    """, [brand_name])
+                    """, [brand_name, f'%{distillery_filter}%'])
                     sizes = [row[0] for row in cursor.fetchall()]
                 
                 if sizes:
                     result.append({
                         'brandName': brand_name,
-                        'sizes': sizes
+                        'sizes': sizes,
+                        'manufacturingUnit': distillery_filter
                     })
             
             # Sort by brand name
             result.sort(key=lambda x: x['brandName'])
             
+            logger.info(f"BrandSizeListView: Returning {len(result)} brands for distillery: {distillery_filter}")
+            
             return Response({
                 'success': True,
-                'data': result
+                'data': result,
+                'distillery': distillery_filter,
+                'total_brands': len(result)
             })
             
         except Exception as e:
