@@ -16,6 +16,7 @@ class ProductionBatchSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'batch_reference',
+            'source_reference',
             'production_date',
             'production_time',
             'production_datetime',
@@ -70,6 +71,7 @@ class CreateProductionBatchSerializer(serializers.ModelSerializer):
         fields = [
             'brand_warehouse_id',
             'batch_reference',
+            'source_reference',
             'production_date',
             'production_time',
             'quantity_produced',

@@ -280,7 +280,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         Get production history for a specific brand warehouse
         """
         brand_warehouse = self.get_object()
-        ProductionBatch = apps.get_model('brand_warehouse', 'ProductionBatch')
+        from .production_models import ProductionBatch
         
         # Get query parameters
         limit = int(request.query_params.get('limit', 20))
@@ -304,17 +304,17 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         
         return Response({
             'success': True,
-            'production_history': serializer.data,
+            'productionHistory': serializer.data,
             'summary': {
-                'total_quantity': total_production['total_quantity'] or 0,
-                'total_batches': total_production['total_batches'] or 0,
-                'average_batch_size': float(total_production['avg_batch_size'] or 0),
-                'period_days': days
+                'totalQuantity': total_production['total_quantity'] or 0,
+                'totalBatches': total_production['total_batches'] or 0,
+                'averageBatchSize': float(total_production['avg_batch_size'] or 0),
+                'periodDays': days
             },
-            'brand_info': {
-                'brand_name': brand_warehouse.brand_details,
-                'pack_size': f"{brand_warehouse.capacity_size}ml",
-                'current_stock': brand_warehouse.current_stock
+            'brandInfo': {
+                'brandName': brand_warehouse.brand_details,
+                'packSize': f"{brand_warehouse.capacity_size}ml",
+                'currentStock': brand_warehouse.current_stock
             }
         }, status=status.HTTP_200_OK)
 
@@ -324,7 +324,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         Add a new production batch for a brand warehouse
         """
         brand_warehouse = self.get_object()
-        ProductionBatch = apps.get_model('brand_warehouse', 'ProductionBatch')
+        from .production_models import ProductionBatch
         
         # Prepare data
         data = request.data.copy()
@@ -369,7 +369,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         """
         Get overall production summary for all Sikkim brands
         """
-        ProductionBatch = apps.get_model('brand_warehouse', 'ProductionBatch')
+        from .production_models import ProductionBatch
         
         # Get date range
         days = int(request.query_params.get('days', 30))
@@ -627,7 +627,7 @@ class ProductionBatchViewSet(viewsets.ModelViewSet):
     permission_classes = [AllowAny]
 
     def get_queryset(self):
-        ProductionBatch = apps.get_model('brand_warehouse', 'ProductionBatch')
+        from .production_models import ProductionBatch
         return ProductionBatch.objects.all().select_related('brand_warehouse')
 
     def get_serializer_class(self):
@@ -674,7 +674,7 @@ class ProductionBatchViewSet(viewsets.ModelViewSet):
         """
         Get daily production summary
         """
-        ProductionBatch = apps.get_model('brand_warehouse', 'ProductionBatch')
+        from .production_models import ProductionBatch
         
         # Get date parameter or default to today
         date_str = request.query_params.get('date', timezone.now().date().isoformat())
@@ -728,7 +728,7 @@ class ProductionBatchViewSet(viewsets.ModelViewSet):
         """
         Get production data for a specific brand
         """
-        ProductionBatch = apps.get_model('brand_warehouse', 'ProductionBatch')
+        from .production_models import ProductionBatch
         
         brand_warehouse_id = request.query_params.get('brand_warehouse_id')
         if not brand_warehouse_id:
@@ -764,17 +764,17 @@ class ProductionBatchViewSet(viewsets.ModelViewSet):
         
         return Response({
             'success': True,
-            'brand_info': {
+            'brandInfo': {
                 'id': brand_warehouse.id,
-                'brand_name': brand_warehouse.brand_details,
-                'pack_size': f"{brand_warehouse.capacity_size}ml",
-                'current_stock': brand_warehouse.current_stock
+                'brandName': brand_warehouse.brand_details,
+                'packSize': f"{brand_warehouse.capacity_size}ml",
+                'currentStock': brand_warehouse.current_stock
             },
             'summary': {
-                'total_quantity': summary_data['total_quantity'] or 0,
-                'total_batches': summary_data['total_batches'] or 0,
-                'average_batch_size': float(summary_data['avg_batch_size'] or 0),
-                'period_days': days
+                'totalQuantity': summary_data['total_quantity'] or 0,
+                'totalBatches': summary_data['total_batches'] or 0,
+                'averageBatchSize': float(summary_data['avg_batch_size'] or 0),
+                'periodDays': days
             },
-            'production_history': ProductionBatchSerializer(production_batches, many=True).data
+            'productionHistory': ProductionBatchSerializer(production_batches, many=True).data
         }, status=status.HTTP_200_OK)

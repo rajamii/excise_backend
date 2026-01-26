@@ -164,7 +164,7 @@ class BrandWarehouseStockService:
                 brand_warehouse.update_status()
                 
                 # Create arrival record for tracking
-                BrandWarehouseArrival.objects.create(
+                arrival = BrandWarehouseArrival.objects.create(
                     brand_warehouse=brand_warehouse,
                     reference_no=reference_no,
                     source_type='HOLOGRAM_REGISTER',
@@ -175,9 +175,36 @@ class BrandWarehouseStockService:
                     notes=f"Monthly Statement: {brand_name} ({bottle_size}) - {daily_register_entry.usage_date}"
                 )
                 
+                # Also create a production batch record for production tracking
+                # Note: We create this AFTER updating stock to avoid double-counting
+                from .production_models import ProductionBatch
+                import datetime
+                
+                # Generate batch reference
+                today = timezone.now().date()
+                batch_ref = f"PROD-{today.strftime('%Y%m%d')}-{brand_warehouse.id}-{ProductionBatch.objects.filter(production_date=today).count() + 1:03d}"
+                
+                # Create production batch with stock already updated (set pk to bypass save logic)
+                production_batch = ProductionBatch(
+                    brand_warehouse=brand_warehouse,
+                    batch_reference=batch_ref,
+                    source_reference=reference_no,  # Store the hologram register reference
+                    production_date=daily_register_entry.usage_date or today,
+                    production_time=timezone.now().time(),
+                    quantity_produced=issued_qty,
+                    stock_before=previous_stock,
+                    stock_after=brand_warehouse.current_stock,
+                    production_manager='System',
+                    status='COMPLETED',
+                    notes=f"Auto-generated from hologram utilization: {reference_no}"
+                )
+                # Save without triggering stock update (stock already updated above)
+                super(ProductionBatch, production_batch).save()
+                
                 logger.info(f"✅ Updated Brand Warehouse stock: {distillery_name} - {brand_name} ({bottle_size})")
                 logger.info(f"   Previous stock: {previous_stock}, Added: {issued_qty}, New stock: {brand_warehouse.current_stock}")
                 logger.info(f"   Reference: {reference_no}, Status: {brand_warehouse.status}")
+                logger.info(f"   Production batch created: {batch_ref}")
                 
                 return True
                 

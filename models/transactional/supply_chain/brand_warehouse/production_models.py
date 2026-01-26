@@ -29,6 +29,16 @@ class ProductionBatch(models.Model):
         db_column='batch_reference',
         help_text='Production batch reference number (e.g., PROD-2024-001)'
     )
+    
+    # Source Reference (Request Register Entry)
+    source_reference = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        db_column='source_reference',
+        help_text='Source reference number from Request Register Entry or Hologram Register'
+    )
+    
     production_date = models.DateField(
         default=timezone.now,
         db_column='production_date',

@@ -4,6 +4,7 @@ from django.urls import reverse
 from django.http import HttpResponseRedirect
 from django.contrib import messages
 from .models import BrandWarehouse, BrandWarehouseArrival, BrandWarehouseUtilization
+from .production_models import ProductionBatch
 
 
 @admin.register(BrandWarehouse)
@@ -182,3 +183,43 @@ class BrandWarehouseUtilizationAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
+
+
+
+@admin.register(ProductionBatch)
+class ProductionBatchAdmin(admin.ModelAdmin):
+    """
+    Admin interface for Production Batches
+    """
+    list_display = [
+        'batch_reference', 'brand_warehouse', 'production_date', 
+        'quantity_produced', 'production_manager', 'status'
+    ]
+    list_filter = ['status', 'production_date', 'brand_warehouse__distillery_name']
+    search_fields = ['batch_reference', 'brand_warehouse__brand_details', 'production_manager']
+    readonly_fields = ['stock_before', 'stock_after', 'created_at', 'updated_at']
+    
+    fieldsets = (
+        ('Batch Information', {
+            'fields': ('batch_reference', 'brand_warehouse', 'production_date', 'production_time')
+        }),
+        ('Production Details', {
+            'fields': ('quantity_produced', 'stock_before', 'stock_after')
+        }),
+        ('Personnel', {
+            'fields': ('production_manager', 'approved_by')
+        }),
+        ('Status and Notes', {
+            'fields': ('status', 'notes')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def get_readonly_fields(self, request, obj=None):
+        """Make batch_reference readonly after creation"""
+        if obj:  # Editing an existing object
+            return self.readonly_fields + ('batch_reference', 'brand_warehouse', 'production_date')
+        return self.readonly_fields
