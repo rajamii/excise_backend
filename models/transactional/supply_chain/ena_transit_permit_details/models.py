@@ -11,7 +11,10 @@ class EnaTransitPermitDetail(models.Model):
     cases = models.IntegerField(default=0)
     vehicle_number = models.CharField(max_length=20, default='', blank=True)
     licensee_id = models.CharField(max_length=50, blank=True, null=True)
-    licensee_id = models.CharField(max_length=50, blank=True, null=True)
+
+    
+    # New Field
+    bottle_type = models.CharField(max_length=100, default='', blank=True)
     
     # New fields for pricing and product details
     brand_owner = models.CharField(max_length=255, default='', blank=True)

@@ -70,6 +70,7 @@ class TransitPermitProductSerializer(serializers.Serializer):
     size = serializers.CharField() # Input 'size'
     size = serializers.CharField() # Input 'size'
     cases = serializers.IntegerField()
+    bottle_type = serializers.CharField(required=False, allow_blank=True) # New field
     # New fields
     brand_owner = serializers.CharField(required=False, allow_blank=True)
     liquor_type = serializers.CharField(required=False, allow_blank=True)

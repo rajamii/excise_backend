@@ -48,6 +48,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                         brand=product.get('brand'),
                         size_ml=product.get('size'), 
                         cases=product.get('cases'),
+                        bottle_type=product.get('bottle_type', ''), # Save bottle_type
 
                         # New fields
                         brand_owner=product.get('brand_owner', ''),

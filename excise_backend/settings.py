@@ -74,6 +74,7 @@ INSTALLED_APPS = [
     'models.masters.supply_chain.liquor_data',
     'models.masters.supply_chain.ena_distillery_details',
     'models.masters.supply_chain.profile',
+    'models.masters.supply_chain.transit_permit',
     # 'models.masters.supply_chain.vehicles',
     # 'models.masters.supply_chain.status_master',
 
@@ -153,7 +154,7 @@ DATABASES = {
         'USER': 'postgres',         # Your PostgreSQL username
         'PASSWORD': 'sameer123',  # Your PostgreSQL password 
         'HOST': 'localhost',        # Default host
-        'PORT': '5432',             # Default PostgreSQL port
+        'PORT': '5433',             # Default PostgreSQL port
     }
 }
 
