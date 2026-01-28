@@ -82,7 +82,7 @@ class LicenseDetailSerializer(serializers.ModelSerializer):
         elif obj.source_type == 'license_application':
             # Use the actual field names from your LicenseApplication model
             return {
-                "establishment_name": source.establishment_name,
+                # "establishment_name": source.establishment_name,
                 "licensee_name": source.establishment_name,  # often same
                 "mobile_number": source.mobile_number,
                 "email": source.email,

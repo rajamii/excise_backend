@@ -265,10 +265,10 @@ class WorkflowService:
         )
 
         # --- 6. Determine the original non-objection stage to return to ---
-        original_txn = application.transactions.filter(
-            stage__name__contains='_objection'
-        ).exclude(stage=application.current_stage).order_by('-id').first()
-
+        recent_txns = application.transactions.order_by('-timestamp')[:2]
+        if len(recent_txns) < 2:
+            raise ValidationError("Insufficient transaction history")
+        original_txn = recent_txns[1]
         if not original_txn:
             original_txn = application.transactions.exclude(
                 stage__name__contains='_objection'
