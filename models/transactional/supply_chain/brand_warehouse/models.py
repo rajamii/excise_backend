@@ -454,4 +454,5 @@ class BrandWarehouseUtilization(models.Model):
             
             if stock_change != 0:
                 self.brand_warehouse.current_stock = max(0, self.brand_warehouse.current_stock - stock_change)
+                self.brand_warehouse.save() # Ensure stock change is persisted
                 self.brand_warehouse.update_status()

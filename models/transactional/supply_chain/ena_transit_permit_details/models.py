@@ -46,5 +46,34 @@ class EnaTransitPermitDetail(models.Model):
         db_table = 'transit_permit_details'
         ordering = ['-created_at']
 
+
+from django.conf import settings
+
+class Wallet(models.Model):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='wallet')
+    excise_balance = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    additional_excise_balance = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    education_cess_balance = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'wallet_details'
+    
     def __str__(self):
-        return f"Transit Permit {self.bill_no}"
+        return f"Wallet ({self.user.username})"
+
+class WalletTransaction(models.Model):
+    wallet = models.ForeignKey(Wallet, on_delete=models.CASCADE, related_name='transactions')
+    transaction_type = models.CharField(max_length=50) # 'DEBIT', 'CREDIT'
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    head = models.CharField(max_length=50) # 'EXCISE', 'ADDITIONAL_EXCISE', 'EDUCATION_CESS'
+    reference_no = models.CharField(max_length=100, null=True, blank=True)
+    description = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'wallet_transaction_details'
+
+    def __str__(self):
+        return f"{self.transaction_type} - {self.amount} ({self.created_at})"

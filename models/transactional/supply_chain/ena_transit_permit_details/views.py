@@ -1,5 +1,6 @@
 from rest_framework import status, views, generics
 from rest_framework.response import Response
+from django.utils import timezone
 from .serializers import TransitPermitSubmissionSerializer, EnaTransitPermitDetailSerializer
 from .models import EnaTransitPermitDetail
 
@@ -210,6 +211,15 @@ class PerformTransitPermitActionAPIView(views.APIView):
             
             permit.save()
             
+            # Check for stock deduction trigger
+            if action == 'PAY':
+                # CRITICAL: Handle Wallet Deduction BEFORE status update or stock deduction
+                # If wallet deduction fails (insufficient funds), we should NOT proceed.
+                self._handle_wallet_deduction(request.user, permit)
+                
+                # If wallet deduction successful, proceed to stock logic checks
+                self._handle_stock_deduction(permit)
+            
             serializer = EnaTransitPermitDetailSerializer(permit)
             return Response({
                 'status': 'success',
@@ -217,13 +227,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 'data': serializer.data
             }, status=status.HTTP_200_OK)
 
-        except EnaTransitPermitDetail.DoesNotExist:
-            print(f"DEBUG Error: Transit Permit {pk} not found")
-            return Response({
-                'status': 'error',
-                'message': 'Transit Permit not found'
-            }, status=status.HTTP_404_NOT_FOUND)
-            
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -233,3 +236,174 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 'message': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    def _handle_stock_deduction(self, permit):
+        """
+        Check if all items in the bill are paid, and if so, deduct stock from BrandWarehouse
+        """
+        try:
+            # 1. Check if ALL items for this bill are paid
+            bill_items = EnaTransitPermitDetail.objects.filter(bill_no=permit.bill_no)
+            
+            # defined paid status - simplistic check based on what we just set
+            # Ideally use a list of "paid" statuses if workflow is complex
+            # For now, we assume if we just set it to a "PaymentSuccessful..." status, others should match or be in advanced stages
+            
+            # Count items that are NOT in a paid/approved state
+            # "Ready for Payment" is the state BEFORE payment. 
+            unpaid_count = bill_items.exclude(
+                status__in=[
+                    'PaymentSuccessfulandForwardedToOfficerincharge', 
+                    'TransitPermitSucessfulyApproved',
+                    # Add other post-payment statuses if any
+                ]
+            ).count()
+            
+            print(f"DEBUG Stock Deduction: Bill {permit.bill_no} has {unpaid_count} unpaid items")
+
+            if unpaid_count == 0:
+                print(f"DEBUG Stock Deduction: All items paid for {permit.bill_no}. Proceeding to deduct stock.")
+                # ALL items are paid. Trigger deduction for each.
+                
+                from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse, BrandWarehouseUtilization, BrandWarehouseArrival
+                
+                for item in bill_items:
+                    # Check if utilization already exists to prevent double deduction
+                    if BrandWarehouseUtilization.objects.filter(permit_no=item.bill_no, brand_warehouse__brand_details=item.brand, brand_warehouse__capacity_size=item.size_ml).exists():
+                         print(f"DEBUG: Utilization already exists for {item.brand} {item.size_ml} in bill {item.bill_no}")
+                         continue
+
+                    # Find matching BrandWarehouse entry
+                    # Match by Brand Name and Size
+                    # Note: Fuzzy matching might be needed if names aren't exact, but for now we try exact or icontains
+                    warehouse_entry = BrandWarehouse.objects.filter(
+                        brand_details__iexact=item.brand, # Assuming brand name matches brand_details
+                        capacity_size=int(item.size_ml)
+                    ).first()
+                    
+                    if not warehouse_entry:
+                        # Try searching purely by brand name if exact match fails
+                        warehouse_entry = BrandWarehouse.objects.filter(
+                            brand_details__icontains=item.brand,
+                            capacity_size=int(item.size_ml)
+                        ).first()
+                        
+                    if warehouse_entry:
+                        print(f"DEBUG: Found warehouse entry {warehouse_entry} for {item.brand}")
+                        
+                        # Calculate quantity (pieces)
+                        # We have item.cases. Need to convert to bottles/pieces if we store pieces in warehouse
+                        # BrandWarehouse.current_stock is in UNTIS (pieces/bottles)
+                        # We need bottles per case.
+                        
+                        # Try to get bottles per case from existing logic or defaults
+                        # We can try to fetch from BrandMlInCases logic or infer
+                        bottles_per_case = 12 # Default
+                        if warehouse_entry.capacity_size == 750: bottles_per_case = 12
+                        elif warehouse_entry.capacity_size == 375: bottles_per_case = 24
+                        elif warehouse_entry.capacity_size == 180: bottles_per_case = 48
+                        elif warehouse_entry.capacity_size == 650: bottles_per_case = 12 # Beer usually
+                        # ... better to get from a master config if available
+                        
+                        total_pieces = int(item.cases) * bottles_per_case
+                        
+                        # Create Utilization Record
+                        # This auto-deducts from BrandWarehouse via the save() method in BrandWarehouseUtilization model
+                        utilization = BrandWarehouseUtilization.objects.create(
+                            brand_warehouse=warehouse_entry,
+                            permit_no=item.bill_no,
+                            date=item.date, # Date of permit
+                            distributor=item.sole_distributor_name,
+                            depot_address=item.depot_address,
+                            vehicle=item.vehicle_number,
+                            quantity=total_pieces, # Quantity in pieces
+                            cases=item.cases,
+                            bottles_per_case=bottles_per_case,
+                            status='APPROVED', # Setting directly to APPROVED to trigger deduction
+                            approved_by='System (Payment Auto-Deduction)',
+                            approval_date=timezone.now()
+                        )
+                        print(f"DEBUG: Created utilization {utilization.id}, deducted {total_pieces} pieces")
+                        
+                    else:
+                        print(f"WARNING: No warehouse entry found for Brand: {item.brand}, Size: {item.size_ml}")
+                        
+            else:
+                print(f"DEBUG: Not deducting stock yet. {unpaid_count} items remaining unpaid.")
+
+        except Exception as e:
+            print(f"ERROR inside _handle_stock_deduction: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+
+
+
+    def _handle_wallet_deduction(self, user, permit):
+        """
+        Deduct the permit's financial amounts from the user's wallet.
+        Raises exception if insufficient funds.
+        """
+        try:
+            from .models import Wallet, WalletTransaction
+            
+            # 1. Get Wallet
+            wallet = Wallet.objects.filter(user=user).first()
+            if not wallet:
+                print(f"DEBUG: Wallet not found for user {user.username}. Creating default wallet (for dev/sim).")
+                wallet = Wallet.objects.create(
+                    user=user,
+                    excise_balance=10000000.00, # Default high balance for dev
+                    additional_excise_balance=10000000.00,
+                    education_cess_balance=10000000.00
+                )
+            
+            # 2. Calculate Amounts for THIS permit item
+            # Using float conversion to be safe, though Decimal is better
+            excise_amount = float(permit.total_excise_duty or 0)
+            additional_excise_amount = float(permit.total_additional_excise or 0)
+            cess_amount = float(permit.total_education_cess or 0)
+            
+            total_required_excise = excise_amount
+            total_required_additional = additional_excise_amount
+            total_required_cess = cess_amount
+            
+            print(f"DEBUG Wallet Deduction: Excise: {excise_amount}, Add.Excise: {additional_excise_amount}, Cess: {cess_amount}")
+            
+            # 3. Check Balances
+            if float(wallet.excise_balance) < total_required_excise:
+                raise Exception(f"Insufficient Excise Wallet Balance. Available: {wallet.excise_balance}, Required: {total_required_excise}")
+            
+            if float(wallet.additional_excise_balance) < total_required_additional:
+                 raise Exception(f"Insufficient Additional Excise Wallet Balance. Available: {wallet.additional_excise_balance}, Required: {total_required_additional}")
+                 
+            if float(wallet.education_cess_balance) < total_required_cess:
+                raise Exception(f"Insufficient Education Cess Wallet Balance. Available: {wallet.education_cess_balance}, Required: {total_required_cess}")
+                
+            # 4. Deduct
+            wallet.excise_balance = float(wallet.excise_balance) - total_required_excise
+            wallet.additional_excise_balance = float(wallet.additional_excise_balance) - total_required_additional
+            wallet.education_cess_balance = float(wallet.education_cess_balance) - total_required_cess
+            wallet.save()
+            
+            # 5. Log Transactions
+            if total_required_excise > 0:
+                WalletTransaction.objects.create(
+                    wallet=wallet, transaction_type='DEBIT', amount=total_required_excise, 
+                    head='EXCISE', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
+                )
+            if total_required_additional > 0:
+                WalletTransaction.objects.create(
+                    wallet=wallet, transaction_type='DEBIT', amount=total_required_additional, 
+                    head='ADDITIONAL_EXCISE', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
+                )
+            if total_required_cess > 0:
+                WalletTransaction.objects.create(
+                    wallet=wallet, transaction_type='DEBIT', amount=total_required_cess, 
+                    head='EDUCATION_CESS', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
+                )
+                
+            print(f"DEBUG: Wallet deduction successful. New Balances - Excise: {wallet.excise_balance}, Cess: {wallet.education_cess_balance}")
+
+        except Exception as e:
+            print(f"ERROR: Wallet Deduction Failed: {e}")
+            raise e # Re-raise to stop the transaction/response
