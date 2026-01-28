@@ -55,27 +55,26 @@ def license_detail(request, license_id):
 @api_view(['GET'])
 def active_licensees(request):
     
-    licensees = License.objects.filter(is_active=True).select_related(
-        'excise_district', 'license_type'
-    ).values(
-        'license_id',
-        'establishment_name',
-        'licensee_name',
-        'excise_district__district',
-        'excise_district__district_code',
-        'license_type__license_type',
+    licenses = License.objects.filter(is_active=True).select_related(
+        'excise_district', 'license_category'
     )
 
-    data = [
-        {
-            "id": l['license_id'],
-            "licensee_id": l['license_id'],
-            "establishment_name": l['establishment_name'],
-            "license_category": l['license_type__license_type'],
-            "district": l['excise_district__district'],
-            "district_code": l['excise_district__district_code'],
+    district_code = request.query_params.get('district_code')
+    if district_code:
+        licenses = licenses.filter(excise_district__district_code=district_code)
+
+    serializer = LicenseDetailSerializer(licenses, many=True)
+
+    data = []
+    for item in serializer.data:
+        app_data = item.get('application_data', {})
+        data.append({
+            "id": item['license_id'],
+            "license_id": item['license_id'],
+            "establishment_name": app_data.get('establishment_name', ''),
+            "license_category": item['license_category_name'],
+            "district": item['excise_district_name'],
             "status": "Active"
-        }
-        for l in licensees
-    ]
+        })
+
     return Response(data)
