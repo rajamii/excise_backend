@@ -59,6 +59,11 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         status_filter = self.request.query_params.get('status', None)
         if status_filter:
             queryset = queryset.filter(status=status_filter)
+
+        # distinct brand_name filter for specific brand lookups
+        brand_name = self.request.query_params.get('brand_name', None)
+        if brand_name:
+            queryset = queryset.filter(brand_details__icontains=brand_name)
             
         return queryset.order_by('distillery_name', 'brand_details', 'capacity_size')
 
@@ -83,6 +88,10 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
             status_filter = self.request.query_params.get('status', None)
             if status_filter:
                 queryset = queryset.filter(status=status_filter)
+
+            brand_name = self.request.query_params.get('brand_name', None)
+            if brand_name:
+                queryset = queryset.filter(brand_details__icontains=brand_name)
             
             # Order by distillery, then brand name and pack size
             queryset = queryset.order_by('distillery_name', 'brand_details', 'capacity_size')
