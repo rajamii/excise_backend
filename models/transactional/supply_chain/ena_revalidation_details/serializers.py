@@ -47,39 +47,27 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
             print(f"❌ Role not determined for '{user_role_name}'")
             return []
 
-        # Query Workflow Rules using status_name
-        from models.masters.supply_chain.status_master.models import WorkflowRule, StatusMaster
-        
-        # Get status_obj using status_code if available (preferred)
-        status_obj = None
-        if hasattr(obj, 'status_code') and obj.status_code:
-            status_obj = StatusMaster.objects.filter(status_code=obj.status_code).first()
-            if status_obj:
-                print(f"Status lookup by code ({obj.status_code}) successful: {status_obj.status_name}")
-        
-        # Fallback to name lookup
-        if not status_obj:
-            print(f"Status lookup by code failed or missing. Trying name: '{obj.status}'")
-            status_obj = StatusMaster.objects.filter(status_name=obj.status).first()
-            
-        print(f"Status obj: {status_obj}")
-        if status_obj:
-            print(f"Status code: {status_obj.status_code}")
-        
-        if not status_obj:
-            print(f"❌ No status found for status: {obj.status}")
+        if not role:
             return []
+
+        # Query Workflow Transitions (New Logic)
+        from auth.workflow.models import WorkflowTransition, WorkflowStage
         
-        # Query workflow rules using status_code (like requisition does)
-        rules = WorkflowRule.objects.filter(
-            current_status__status_code=status_obj.status_code,
-            allowed_role=role
-        )
-        print(f"Query: current_status__status_code={status_obj.status_code}, allowed_role={role}")
-        print(f"Rules found: {rules.count()}")
-        for rule in rules:
-            print(f"  - {rule.action}: {rule.current_status.status_code} -> {rule.next_status.status_code}")
+        current_stage = obj.current_stage
+        if not current_stage:
+            # Fallback
+            try:
+                current_stage = WorkflowStage.objects.get(workflow__name='ENA Revalidation', name=obj.status)
+            except WorkflowStage.DoesNotExist:
+                return []
+
+        transitions = WorkflowTransition.objects.filter(from_stage=current_stage)
+        actions = []
+        for t in transitions:
+            cond = t.condition or {}
+            if cond.get('role') == role:
+                action = cond.get('action')
+                if action:
+                    actions.append(action)
         
-        actions = list(rules.values_list('action', flat=True))
-        print(f"✓ Returning actions: {actions}\n")
-        return actions
+        return list(set(actions))

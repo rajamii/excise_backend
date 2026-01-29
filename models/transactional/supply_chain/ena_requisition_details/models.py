@@ -1,5 +1,7 @@
 from django.db import models
 from django.utils import timezone
+from django.contrib.contenttypes.fields import GenericRelation
+from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
 
 
 class EnaRequisitionDetail(models.Model):
@@ -20,8 +22,26 @@ class EnaRequisitionDetail(models.Model):
     lifted_from = models.CharField(max_length=255)
     purpose_name = models.CharField(max_length=255)
     check_post_name = models.CharField(max_length=255)
+    licensee_id = models.CharField(max_length=50, blank=True, null=True)
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
+
+    workflow = models.ForeignKey(Workflow, on_delete=models.PROTECT, related_name='ena_requisitions', null=True, blank=True)
+    current_stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name='ena_requisitions', null=True, blank=True)
+
+    # Polymorphic links
+    transactions = GenericRelation(
+        Transaction,
+        content_type_field='content_type',
+        object_id_field='object_id',
+        related_query_name='ena_requisition_detail'
+    )
+    objections = GenericRelation(
+        Objection,
+        content_type_field='content_type',
+        object_id_field='object_id',
+        related_query_name='ena_requisition_detail'
+    )
 
     class Meta:
         db_table = 'ena_requisition_detail'

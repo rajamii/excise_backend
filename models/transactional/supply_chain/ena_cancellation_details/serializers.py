@@ -32,19 +32,27 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
         if not status_code:
             status_code = 'CN_00'
             
-        from models.masters.supply_chain.status_master.models import WorkflowRule
+        # Query Workflow Transitions (New Logic)
+        from auth.workflow.models import WorkflowTransition, WorkflowStage
         
-        # DEBUG LOGGING
-        print(f"DEBUG: Checking actions for Status: {status_code}, Role: {role}")
+        current_stage = obj.current_stage
+        if not current_stage:
+            # Fallback
+            try:
+                current_stage = WorkflowStage.objects.get(workflow__name='ENA Cancellation', name=obj.status)
+            except WorkflowStage.DoesNotExist:
+                return []
         
-        actions = WorkflowRule.objects.filter(
-            current_status__status_code=status_code,
-            allowed_role=role
-        ).values_list('action', flat=True)
+        transitions = WorkflowTransition.objects.filter(from_stage=current_stage)
+        actions = []
+        for t in transitions:
+            cond = t.condition or {}
+            if cond.get('role') == role:
+                action = cond.get('action')
+                if action:
+                    actions.append(action)
         
-        print(f"DEBUG: Found actions: {list(actions)}")
-        
-        return list(actions)
+        return list(set(actions))
 
 class CancellationCreateSerializer(serializers.Serializer):
     reference_no = serializers.CharField(max_length=100)

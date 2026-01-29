@@ -11,7 +11,7 @@ class RoleSerializer(serializers.ModelSerializer):
     precedence = serializers.IntegerField(
         source='role_precedence',
         min_value=0,
-        max_value=9
+        max_value=100
     )
 
     class Meta:
@@ -21,8 +21,8 @@ class RoleSerializer(serializers.ModelSerializer):
 
     def validate_precedence(self, value):
         # Optional: add validation here
-        if not (0 <= value <= 9):
-            raise ValidationError("Precedence must be between 0 and 9")
+        if not (0 <= value <= 100):
+            raise ValidationError("Precedence must be between 0 and 100")
         return value
 
     def validate(self, attrs):

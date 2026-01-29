@@ -5,6 +5,9 @@ import re
 class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
     can_initiate_cancellation = serializers.SerializerMethodField()
+    
+    current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
+    workflow_name = serializers.CharField(source='workflow.name', read_only=True)
 
     class Meta:
         model = EnaRequisitionDetail
@@ -41,14 +44,29 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         if not role:
             return []
 
-        # Query Workflow Rules
-        from models.masters.supply_chain.status_master.models import WorkflowRule
-        actions = WorkflowRule.objects.filter(
-            current_status__status_code=obj.status_code,
-            allowed_role=role
-        ).values_list('action', flat=True)
+        # Query Workflow Transitions (New Logic)
+        from auth.workflow.models import WorkflowTransition, WorkflowStage
         
-        return list(actions)
+        current_stage = obj.current_stage
+        if not current_stage:
+            # Fallback: infer stage from status name
+            try:
+                # Assuming 'Supply Chain' workflow
+                current_stage = WorkflowStage.objects.get(workflow__name='Supply Chain', name=obj.status)
+            except WorkflowStage.DoesNotExist:
+                return []
+
+        transitions = WorkflowTransition.objects.filter(from_stage=current_stage)
+        actions = []
+        for t in transitions:
+            cond = t.condition or {}
+            # Check if role matches
+            if cond.get('role') == role:
+                action = cond.get('action')
+                if action:
+                    actions.append(action)
+        
+        return list(set(actions)) # Unique actions
 
     def get_can_initiate_cancellation(self, obj):
         request = self.context.get('request')
@@ -65,7 +83,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         return obj.status_code == 'RQ_09'
 
     def create(self, validated_data):
-        from models.masters.supply_chain.status_master.models import StatusMaster
+        # from models.masters.supply_chain.status_master.models import StatusMaster # Removed
         
         # Auto-generate reference number
         existing_refs = EnaRequisitionDetail.objects.values_list('our_ref_no', flat=True)
@@ -88,13 +106,28 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         # Format the reference number
         validated_data['our_ref_no'] = f"IBPS/{next_number:02d}/EXCISE"
         
+        # Auto-populate Licensee ID from Profile
+        request = self.context.get('request')
+        if request and request.user and hasattr(request.user, 'supply_chain_profile'):
+            validated_data['licensee_id'] = request.user.supply_chain_profile.licensee_id
+        
+        # Initialize Workflow and Status
+        from auth.workflow.models import Workflow, WorkflowStage
         try:
-            # Fetch the default status 'RQ_00' (Pending)
-            status_obj = StatusMaster.objects.get(status_code='RQ_00')
-            validated_data['status_code'] = status_obj.status_code
-            validated_data['status'] = status_obj.status_name
-        except StatusMaster.DoesNotExist:
-            # Fallback or error handling if status master data is missing
-            raise serializers.ValidationError("Default status 'RQ_00' not found in StatusMaster.")
+            workflow = Workflow.objects.get(name="Supply Chain")
+            initial_stage = WorkflowStage.objects.get(workflow=workflow, is_initial=True)
+            
+            validated_data['workflow'] = workflow
+            validated_data['current_stage'] = initial_stage
+            
+            # Use stage name for status, and default 'RQ_00' for status_code
+            validated_data['status'] = initial_stage.name
+            validated_data['status_code'] = 'RQ_00'
+            
+        except Exception as e:
+            # Fallback for robustness
+            print(f"Workflow initialization failed: {e}")
+            validated_data['status'] = 'Pending'
+            validated_data['status_code'] = 'RQ_00'
             
         return super().create(validated_data)
