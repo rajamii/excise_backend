@@ -123,6 +123,72 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @action(detail=True, methods=['get'], url_path='generate_final_letter')
+    def generate_final_letter(self, request, pk=None):
+        """
+        Generate final cancellation letter with proper permit numbers and dates
+        """
+        try:
+            cancellation = self.get_object()
+            
+            # Get the original requisition to fetch permit details
+            from models.transactional.supply_chain.ena_requisition_details.models import EnaRequisitionDetail
+            requisition = EnaRequisitionDetail.objects.filter(our_ref_no=cancellation.our_ref_no).first()
+            
+            if not requisition:
+                return Response({'error': 'Original requisition not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+            # Parse cancelled permit numbers
+            cancelled_permits = []
+            if cancellation.cancelled_permit_number:
+                cancelled_permits = [p.strip() for p in cancellation.cancelled_permit_number.split(',') if p.strip()]
+            
+            # Generate letter data
+            letter_data = {
+                'letter_number': f"No.{cancellation.id}/Excise",
+                'letter_date': cancellation.cancellation_date.strftime('%d/%m/%Y') if cancellation.cancellation_date else timezone.now().strftime('%d/%m/%Y'),
+                'addressee': {
+                    'title': 'The Excise Officer-in-Charge,',
+                    'company_name': cancellation.distillery_name,
+                    'address': cancellation.branch_address or 'Address not available'
+                },
+                'subject': {
+                    'permit_numbers': cancelled_permits,
+                    'permit_date': requisition.requisition_date.strftime('%d.%m.%Y') if requisition.requisition_date else 'Date not available'
+                },
+                'reference': {
+                    'letter_date': cancellation.cancellation_each_permit_date.strftime('%d.%m.%Y') if cancellation.cancellation_each_permit_date else requisition.requisition_date.strftime('%d.%m.%Y') if requisition.requisition_date else 'Date not available'
+                },
+                'cancellation_details': {
+                    'reference_no': cancellation.our_ref_no,
+                    'original_permit_numbers': cancelled_permits,
+                    'original_permit_date': requisition.requisition_date.strftime('%d.%m.%Y') if requisition.requisition_date else 'Date not available',
+                    'cancellation_date': cancellation.cancellation_date.strftime('%d.%m.%Y') if cancellation.cancellation_date else timezone.now().strftime('%d.%m.%Y'),
+                    'distillery_name': cancellation.distillery_name,
+                    'quantity': float(cancellation.grain_ena_number) if cancellation.grain_ena_number else 0,
+                    'bulk_spirit_type': cancellation.bulk_spirit_type or 'Not specified',
+                    'strength': cancellation.strength or 'Not specified',
+                    'lifted_from': cancellation.lifted_from or 'Not specified',
+                    'via_route': cancellation.via_route or 'Not specified',
+                    'purpose': cancellation.branch_purpose or 'Not specified',
+                    'number_of_permits': cancellation.requisiton_number_of_permits or 1,
+                    'cancellation_amount': float(cancellation.cancellation_br_amount) if cancellation.cancellation_br_amount else 0,
+                    'total_cancellation_amount': float(cancellation.total_cancellation_amount) if cancellation.total_cancellation_amount else 0,
+                    'refund_amount': float(cancellation.total_cancellation_amount) - float(cancellation.cancellation_br_amount) if cancellation.total_cancellation_amount and cancellation.cancellation_br_amount else 0,
+                    'status': cancellation.status,
+                    'reason_for_cancellation': 'Cancellation requested by licensee',
+                    'requested_by': 'Licensee',
+                    'authorized_by': 'Commissioner of Excise'
+                }
+            }
+            
+            return Response(letter_data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
     @action(detail=True, methods=['post'], url_path='perform_action')
     def perform_action(self, request, pk=None):
         try:
