@@ -258,6 +258,27 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
             }
         }, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['get'], url_path='canceled-permits')
+    def canceled_permits(self, request, pk=None):
+        """
+        Get cancelled permits for a specific brand warehouse
+        """
+        brand_warehouse = self.get_object()
+        from .models import BrandWarehouseTpCancellation
+        from .serializers import BrandWarehouseTpCancellationSerializer
+        
+        cancellations = BrandWarehouseTpCancellation.objects.filter(
+            brand_warehouse=brand_warehouse
+        ).order_by('-cancellation_date')
+        
+        serializer = BrandWarehouseTpCancellationSerializer(cancellations, many=True)
+        
+        return Response({
+            'success': True,
+            'cancellations': serializer.data,
+            'total_count': cancellations.count()
+        }, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=['get'], url_path='arrivals')
     def get_arrivals(self, request, pk=None):
         """

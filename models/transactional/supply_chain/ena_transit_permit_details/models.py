@@ -15,6 +15,7 @@ class EnaTransitPermitDetail(models.Model):
     
     # New Field
     bottle_type = models.CharField(max_length=100, default='', blank=True)
+    bottles_per_case = models.IntegerField(default=12) # Historical record of pieces per case
     
     # New fields for pricing and product details
     brand_owner = models.CharField(max_length=255, default='', blank=True)

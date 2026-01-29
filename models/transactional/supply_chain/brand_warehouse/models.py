@@ -456,3 +456,109 @@ class BrandWarehouseUtilization(models.Model):
                 self.brand_warehouse.current_stock = max(0, self.brand_warehouse.current_stock - stock_change)
                 self.brand_warehouse.save() # Ensure stock change is persisted
                 self.brand_warehouse.update_status()
+
+
+class BrandWarehouseTpCancellation(models.Model):
+    """
+    Model to track cancelled Transit Permits, refunded stock and wallet details.
+    """
+    brand_warehouse = models.ForeignKey(
+        BrandWarehouse,
+        on_delete=models.CASCADE,
+        related_name='cancellations',
+        db_column='brand_warehouse_id',
+        help_text='Related brand warehouse entry'
+    )
+    
+    reference_no = models.CharField(
+        max_length=100,
+        db_column='reference_no',
+        help_text='Reference number of the cancelled transit permit'
+    )
+
+    cancellation_date = models.DateTimeField(
+        auto_now_add=True,
+        db_column='cancellation_date',
+        help_text='Date and time of cancellation'
+    )
+    
+    cancelled_by = models.CharField(
+        max_length=255,
+        db_column='cancelled_by',
+        help_text='User who cancelled the permit (e.g. OIC)'
+    )
+    
+    quantity_cases = models.IntegerField(
+        db_column='quantity_cases',
+        default=0,
+        help_text='Number of cases restored'
+    )
+    
+    quantity_bottles = models.IntegerField(
+        db_column='quantity_bottles',
+        default=0,
+        help_text='Number of bottles restored'
+    )
+    
+    amount_refunded = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        db_column='amount_refunded',
+        help_text='Amount refunded to the licensee wallet'
+    )
+    
+    reason = models.TextField(
+        blank=True,
+        null=True,
+        db_column='reason',
+        help_text='Reason for cancellation'
+    )
+    
+    # Snapshot fields from the original permit/utilization
+    permit_date = models.DateField(
+        null=True,
+        blank=True,
+        db_column='permit_date',
+        help_text='Date of the original permit'
+    )
+    
+    destination = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        db_column='destination',
+        help_text='Destination/Distributor Name'
+    )
+    
+    vehicle_no = models.CharField(
+        max_length=50,
+        null=True,
+        blank=True,
+        db_column='vehicle_no',
+        help_text='Vehicle Number'
+    )
+    
+    depot_address = models.TextField(
+        null=True,
+        blank=True,
+        db_column='depot_address',
+        help_text='Depot/Destination Address'
+    )
+    
+    brand_name = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        db_column='brand_name',
+        help_text='Name of the brand cancelled'
+    )
+
+    class Meta:
+        db_table = 'brand_warehouse_tp_cancellation'
+        ordering = ['-cancellation_date']
+        verbose_name = 'Brand Warehouse TP Cancellation'
+        verbose_name_plural = 'Brand Warehouse TP Cancellations'
+
+    def __str__(self):
+        return f"Cancellation {self.reference_no} - {self.quantity_cases} cases"

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import BrandWarehouse, BrandWarehouseUtilization, BrandWarehouseArrival
+from .models import BrandWarehouse, BrandWarehouseUtilization, BrandWarehouseArrival, BrandWarehouseTpCancellation
 from .services import BrandWarehouseStockService
 from models.masters.supply_chain.liquor_data.models import LiquorData
 
@@ -25,6 +25,15 @@ class BrandWarehouseArrivalSerializer(serializers.ModelSerializer):
             'created_at',
         ]
         read_only_fields = ['id', 'created_at']
+
+
+class BrandWarehouseTpCancellationSerializer(serializers.ModelSerializer):
+    """
+    Serializer for Brand Warehouse TP Cancellation records
+    """
+    class Meta:
+        model = BrandWarehouseTpCancellation
+        fields = '__all__'
 
 
 class BrandWarehouseUtilizationSerializer(serializers.ModelSerializer):

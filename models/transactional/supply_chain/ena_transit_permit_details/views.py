@@ -60,6 +60,9 @@ class SubmitTransitPermitAPIView(views.APIView):
                         education_cess_rs_per_case=product.get('education_cess', 0.00),
                         additional_excise_duty_rs_per_case=product.get('additional_excise', 0.00),
                         
+                        # Save Historical Bottles Per Case
+                        bottles_per_case=self._get_bottles_per_case(product.get('size'), product.get('brand')),
+                        
                         manufacturing_unit_name=product.get('manufacturing_unit_name', ''),
 
                         # Calculated totals
@@ -100,6 +103,30 @@ class SubmitTransitPermitAPIView(views.APIView):
 
         print(f"Validation Errors: {serializer.errors}")
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def _get_bottles_per_case(self, size_ml, brand_name):
+        try:
+            from models.masters.supply_chain.transit_permit.models import BrandMlInCases
+            # Try to find specific configuration for this size
+            if size_ml:
+                ml_config = BrandMlInCases.objects.filter(ml=int(size_ml)).first()
+                if ml_config:
+                    return ml_config.pieces_in_case
+        except Exception as e:
+            print(f"Error fetching bottles per case: {e}")
+        
+        # Fallbacks
+        try:
+            size_ml = int(size_ml)
+            if size_ml == 750: return 12
+            if size_ml == 375: return 24
+            if size_ml == 180: return 48
+            if size_ml == 650: return 12
+            if size_ml == 90: return 96
+        except:
+            pass
+            
+        return 12 # Ultimate default
 
 class GetTransitPermitAPIView(generics.ListAPIView):
     serializer_class = EnaTransitPermitDetailSerializer
@@ -219,6 +246,9 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 
                 # If wallet deduction successful, proceed to stock logic checks
                 self._handle_stock_deduction(permit)
+
+            elif action == 'REJECT':
+                self._handle_rejection(request, permit)
             
             serializer = EnaTransitPermitDetailSerializer(permit)
             return Response({
@@ -235,6 +265,83 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 'status': 'error',
                 'message': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def _handle_rejection(self, request, permit):
+        print(f"DEBUG: Handling Rejection for Permit {permit.bill_no}")
+        try:
+            # 1. Refund Wallet
+            from .models import Wallet, WalletTransaction
+            
+            # Find wallet via licensee_id (assuming user.supply_chain_profile.licensee_id matches)
+            wallet = Wallet.objects.filter(user__supply_chain_profile__licensee_id=permit.licensee_id).first()
+            
+            if wallet:
+                # Calculate refund amounts
+                excise_amt = float(permit.total_excise_duty or 0)
+                add_excise_amt = float(permit.total_additional_excise or 0)
+                cess_amt = float(permit.total_education_cess or 0)
+                
+                # Refund
+                wallet.excise_balance = float(wallet.excise_balance) + excise_amt
+                wallet.additional_excise_balance = float(wallet.additional_excise_balance) + add_excise_amt
+                wallet.education_cess_balance = float(wallet.education_cess_balance) + cess_amt
+                wallet.save()
+                
+                # Log Transactions (CREDIT)
+                if excise_amt > 0:
+                    WalletTransaction.objects.create(wallet=wallet, transaction_type='CREDIT', amount=excise_amt, head='EXCISE', reference_no=permit.bill_no, description=f'Refund for Rejected Permit {permit.bill_no}')
+                if add_excise_amt > 0:
+                    WalletTransaction.objects.create(wallet=wallet, transaction_type='CREDIT', amount=add_excise_amt, head='ADDITIONAL_EXCISE', reference_no=permit.bill_no, description=f'Refund for Rejected Permit {permit.bill_no}')
+                if cess_amt > 0:
+                    WalletTransaction.objects.create(wallet=wallet, transaction_type='CREDIT', amount=cess_amt, head='EDUCATION_CESS', reference_no=permit.bill_no, description=f'Refund for Rejected Permit {permit.bill_no}')
+                
+                print(f"DEBUG: Wallet refunded for {permit.bill_no}")
+            else:
+                print(f"WARNING: No wallet found for licensee_id {permit.licensee_id}, skipping refund")
+
+            # 2. Restore Stock & Log Cancellation
+            from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouseUtilization, BrandWarehouseTpCancellation
+            
+            utilizations = BrandWarehouseUtilization.objects.filter(permit_no=permit.bill_no)
+            if utilizations.exists():
+                for utilization in utilizations:
+                    warehouse = utilization.brand_warehouse
+                    
+                    # Restore stock
+                    warehouse.current_stock += utilization.quantity
+                    warehouse.save()
+                    warehouse.update_status()
+                    
+                    # Update Utilization status
+                    utilization.status = 'CANCELLED'
+                    utilization.save()
+                    
+                    # Create Cancellation Record
+                    BrandWarehouseTpCancellation.objects.create(
+                        brand_warehouse=warehouse,
+                        reference_no=permit.bill_no,
+                        cancelled_by=request.user.username,
+                        quantity_cases=utilization.cases,
+                        quantity_bottles=utilization.total_bottles,
+                        amount_refunded=permit.total_amount, # potentially split this per item if needed, but per permit is okay if fields align
+                        reason=request.data.get('remarks', 'Rejected by OIC'),
+                        
+                        # New fields
+                        permit_date=utilization.date,
+                        destination=utilization.distributor, # Using distributor as destination/customer name
+                        vehicle_no=utilization.vehicle,
+                        depot_address=utilization.depot_address,
+                        brand_name=f"{warehouse.brand_type} ({warehouse.capacity_size}ml)" # Construct brand name
+                    )
+                print(f"DEBUG: Stock restored and cancellation records created for all items in {permit.bill_no}")
+            else:
+                print(f"WARNING: No utilization found for {permit.bill_no}")
+
+
+        except Exception as e:
+            print(f"ERROR Handling Rejection: {e}")
+            # Consider raising if critical
+            pass
 
     def _handle_stock_deduction(self, permit):
         """
