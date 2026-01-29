@@ -307,10 +307,16 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 for utilization in utilizations:
                     warehouse = utilization.brand_warehouse
                     
+                    # Store previous stock
+                    previous_stock = warehouse.current_stock
+                    
                     # Restore stock
                     warehouse.current_stock += utilization.quantity
                     warehouse.save()
                     warehouse.update_status()
+                    
+                    # New stock
+                    new_stock = warehouse.current_stock
                     
                     # Update Utilization status
                     utilization.status = 'CANCELLED'
@@ -325,6 +331,10 @@ class PerformTransitPermitActionAPIView(views.APIView):
                         quantity_bottles=utilization.total_bottles,
                         amount_refunded=permit.total_amount, # potentially split this per item if needed, but per permit is okay if fields align
                         reason=request.data.get('remarks', 'Rejected by OIC'),
+                        
+                        # Stock Snapshots
+                        previous_stock=previous_stock,
+                        new_stock=new_stock,
                         
                         # New fields
                         permit_date=utilization.date,

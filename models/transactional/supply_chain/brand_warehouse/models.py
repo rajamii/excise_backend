@@ -407,6 +407,19 @@ class BrandWarehouseUtilization(models.Model):
         help_text='Date and time of approval'
     )
 
+    # Stock Snapshots
+    previous_stock = models.IntegerField(
+        default=0,
+        db_column='previous_stock',
+        help_text='Stock before deduction'
+    )
+    
+    new_stock = models.IntegerField(
+        default=0,
+        db_column='new_stock',
+        help_text='Stock after deduction'
+    )
+
     # Timestamps
     created_at = models.DateTimeField(
         auto_now_add=True,
@@ -453,9 +466,23 @@ class BrandWarehouseUtilization(models.Model):
             stock_change = new_quantity - old_quantity
             
             if stock_change != 0:
+                # Capture snapshots
+                self.previous_stock = self.brand_warehouse.current_stock
                 self.brand_warehouse.current_stock = max(0, self.brand_warehouse.current_stock - stock_change)
-                self.brand_warehouse.save() # Ensure stock change is persisted
+                self.new_stock = self.brand_warehouse.current_stock
+                
+                # Save both objects
+                self.brand_warehouse.save() 
                 self.brand_warehouse.update_status()
+                
+                # Update snapshots in self without triggering another save if possible, 
+                # but we are already in save(), so we update fields and super().save() was called above.
+                # Actually super().save() was called at line 448.
+                # We need to save self AGAIN to persist snapshots.
+                BrandWarehouseUtilization.objects.filter(pk=self.pk).update(
+                    previous_stock=self.previous_stock,
+                    new_stock=self.new_stock
+                )
 
 
 class BrandWarehouseTpCancellation(models.Model):
@@ -513,6 +540,19 @@ class BrandWarehouseTpCancellation(models.Model):
         null=True,
         db_column='reason',
         help_text='Reason for cancellation'
+    )
+    
+    # Stock Snapshots
+    previous_stock = models.IntegerField(
+        default=0,
+        db_column='previous_stock',
+        help_text='Stock before restoration'
+    )
+    
+    new_stock = models.IntegerField(
+        default=0,
+        db_column='new_stock',
+        help_text='Stock after restoration'
     )
     
     # Snapshot fields from the original permit/utilization
