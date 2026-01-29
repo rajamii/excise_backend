@@ -6,6 +6,6 @@ class TransitPermitBottleTypeViewSet(viewsets.ModelViewSet):
     queryset = TransitPermitBottleType.objects.filter(is_active=True)
     serializer_class = TransitPermitBottleTypeSerializer
 
-class BrandMlInCasesViewSet(viewsets.ReadOnlyModelViewSet):
+class BrandMlInCasesViewSet(viewsets.ModelViewSet):
     queryset = BrandMlInCases.objects.all().order_by('ml')
     serializer_class = BrandMlInCasesSerializer

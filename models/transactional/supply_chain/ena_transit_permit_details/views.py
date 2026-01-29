@@ -295,14 +295,24 @@ class PerformTransitPermitActionAPIView(views.APIView):
                         # BrandWarehouse.current_stock is in UNTIS (pieces/bottles)
                         # We need bottles per case.
                         
-                        # Try to get bottles per case from existing logic or defaults
-                        # We can try to fetch from BrandMlInCases logic or infer
-                        bottles_per_case = 12 # Default
-                        if warehouse_entry.capacity_size == 750: bottles_per_case = 12
-                        elif warehouse_entry.capacity_size == 375: bottles_per_case = 24
-                        elif warehouse_entry.capacity_size == 180: bottles_per_case = 48
-                        elif warehouse_entry.capacity_size == 650: bottles_per_case = 12 # Beer usually
-                        # ... better to get from a master config if available
+                        # Get bottles per case from Master Table (BrandMlInCases)
+                        from models.masters.supply_chain.transit_permit.models import BrandMlInCases
+                        
+                        bottles_per_case = 12 # Default fallback
+                        
+                        # Try to find specific configuration for this size
+                        ml_config = BrandMlInCases.objects.filter(ml=int(warehouse_entry.capacity_size)).first()
+                        if ml_config:
+                            bottles_per_case = ml_config.pieces_in_case
+                            print(f"DEBUG: Found ML configuration for {warehouse_entry.capacity_size}ml: {bottles_per_case} pieces/case")
+                        else:
+                            print(f"WARNING: No ML configuration found for {warehouse_entry.capacity_size}ml. Using default {bottles_per_case}.")
+                            
+                            # Fallback logic if needed (optional, but keeping previous hardcoded values as last resort fallback is valid)
+                            if warehouse_entry.capacity_size == 750: bottles_per_case = 12
+                            elif warehouse_entry.capacity_size == 375: bottles_per_case = 24
+                            elif warehouse_entry.capacity_size == 180: bottles_per_case = 48
+                            elif warehouse_entry.capacity_size == 650: bottles_per_case = 12
                         
                         total_pieces = int(item.cases) * bottles_per_case
                         
