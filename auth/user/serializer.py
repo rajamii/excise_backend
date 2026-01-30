@@ -14,12 +14,13 @@ class UserSerializer(serializers.ModelSerializer):
     middleName = serializers.CharField(source='middle_name', read_only=True)
     lastName = serializers.CharField(source='last_name', read_only=True)
     phoneNumber = serializers.CharField(source='phone_number', read_only=True)
+    hasActiveLicense = serializers.SerializerMethodField()
     
     class Meta:
         model = CustomUser
         fields = ['id', 'email', 'username', 'firstName', 'middleName', 'lastName', 
                  'phoneNumber', 'district', 'subdivision', 'address', 'role',
-                 'created_by'
+                 'created_by', 'hasActiveLicense'
         ]
                  
         extra_kwargs = {
@@ -50,6 +51,15 @@ class UserSerializer(serializers.ModelSerializer):
             'name': subdivision.subdivision,
             'code': subdivision.subdivision_code
         } if subdivision else None
+
+    def get_hasActiveLicense(self, obj):
+        # Check NewLicenseApplication (related_name='license_applications')
+        if obj.license_applications.filter(current_stage__name='approved').exists():
+            return True
+        # Check LicenseApplication (related_name='new_license_applications')
+        if obj.new_license_applications.filter(current_stage__name='approved').exists():
+            return True
+        return False
 
 class UserCreateSerializer(serializers.ModelSerializer):
     class Meta:

@@ -92,6 +92,7 @@ class NewLicenseApplication(models.Model):
     applicant = models.ForeignKey(
         CustomUser,
         on_delete=models.PROTECT,
+        null=True, blank=True,
         related_name='license_applications'
     )
 
