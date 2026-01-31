@@ -1,0 +1,13 @@
+65: CancellationPending
+66: ForwardedCancellationToPermitSection
+68: ForwardedCancellationPaySLipToPermitSection
+69: ForwardedCancellationPaySLipToCommissioner
+70: ApprovedCancellationPaySLipByCommissioner
+72: ApprovedCancellationByCommissioner
+74: CancellationPaymentSuccessfulForwardedToPermitSection
+71: RejectedCancellationPaySlipByCommissioner
+67: ForwardedCancellationToCommissioner
+91: CancellationApproved
+92: CancellationRejected
+73: RejectedCancellationByCommissioner
+95: ApprovedCancellationPaySlipByCommissioner

@@ -62,7 +62,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                 from auth.workflow.models import Workflow, WorkflowStage
                 # from models.masters.supply_chain.status_master.models import StatusMaster # Removed
                 
-                status_name = 'CancellationPending' # Default Initial Status
+                status_name = 'ForwardedCancellationToCommissioner' # Default Initial Status
                 wf_obj = None
                 current_stage = None
                 
@@ -246,7 +246,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                     # check action matches
                     action_match = False
                     if 'action' in t.condition:
-                        if t.condition['action'] == action_type:
+                        if str(t.condition['action']).upper() == str(action_type).upper():
                             action_match = True
                             
                     if role_match and action_match:
@@ -258,11 +258,14 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                         'error': f'Invalid action {action_type} for role {role_mapped} at stage {cancellation.current_stage.name}'
                     }, status=status.HTTP_400_BAD_REQUEST)
 
+                # Use values from the matching transition condition to ensure validation passes
+                context_data = target_transition.condition.copy() if target_transition.condition else {}
+                
                 WorkflowService.advance_stage(
                     application=cancellation,
                     user=user,
                     target_stage=target_transition.to_stage,
-                    context={'role': role_mapped, 'action': action_type},
+                    context=context_data,
                     remarks=remarks
                 )
                 

@@ -22,7 +22,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             pass
         return queryset
 
-    def get_serializer_context(self):
+    def get_serializer_context(self):   
         """Override to ensure request context is passed to serializer"""
         context = super().get_serializer_context()
         context['request'] = self.request
