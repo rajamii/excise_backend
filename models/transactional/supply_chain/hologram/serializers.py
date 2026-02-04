@@ -142,6 +142,21 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
                     actions.append(action)
         return list(set(actions))
 
+    # New Field: Returns Full UI Config for Actions
+    allowed_action_configs = serializers.SerializerMethodField()
+
+    def get_allowed_action_configs(self, obj):
+        actions = self.get_allowed_actions(obj)
+        if not actions:
+            return []
+        
+        from auth.workflow.services import WorkflowService
+        configs = []
+        for action_name in actions:
+            config = WorkflowService.get_action_config(action_name)
+            configs.append(config)
+        return configs
+
 class HologramRequestSerializer(serializers.ModelSerializer):
     licensee_name = serializers.CharField(source='licensee.manufacturing_unit_name', read_only=True)
     status = serializers.CharField(source='current_stage.name', read_only=True)
@@ -153,7 +168,7 @@ class HologramRequestSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = HologramRequest
-        fields = ['id', 'ref_no', 'submission_date', 'usage_date', 'quantity', 'hologram_type', 'issued_assets', 'rolls_assigned', 'licensee', 'licensee_name', 'workflow', 'workflow_name', 'current_stage', 'status', 'stage_id', 'allowed_actions', 'available_cartons']
+        fields = ['id', 'ref_no', 'submission_date', 'usage_date', 'quantity', 'hologram_type', 'issued_assets', 'rolls_assigned', 'licensee', 'licensee_name', 'workflow', 'workflow_name', 'current_stage', 'status', 'stage_id', 'allowed_actions', 'allowed_action_configs', 'available_cartons']
         read_only_fields = ('ref_no', 'submission_date', 'workflow', 'current_stage', 'licensee')
     
     def to_representation(self, instance):
@@ -306,6 +321,21 @@ class HologramRequestSerializer(serializers.ModelSerializer):
                 if action:
                     actions.append(action)
         return list(set(actions))
+
+    # New Field: Returns Full UI Config for Actions
+    allowed_action_configs = serializers.SerializerMethodField()
+
+    def get_allowed_action_configs(self, obj):
+        actions = self.get_allowed_actions(obj)
+        if not actions:
+            return []
+        
+        from auth.workflow.services import WorkflowService
+        configs = []
+        for action_name in actions:
+            config = WorkflowService.get_action_config(action_name)
+            configs.append(config)
+        return configs
 
 class TransactionSerializer(serializers.ModelSerializer):
     performed_by_name = serializers.CharField(source='performed_by.username', read_only=True)

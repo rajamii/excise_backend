@@ -54,6 +54,21 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
         
         return list(set(actions))
 
+    # New Field: Returns Full UI Config for Actions
+    allowed_action_configs = serializers.SerializerMethodField()
+
+    def get_allowed_action_configs(self, obj):
+        actions = self.get_allowed_actions(obj)
+        if not actions:
+            return []
+        
+        from auth.workflow.services import WorkflowService
+        configs = []
+        for action_name in actions:
+            config = WorkflowService.get_action_config(action_name)
+            configs.append(config)
+        return configs
+
 class CancellationCreateSerializer(serializers.Serializer):
     reference_no = serializers.CharField(max_length=100)
     permit_numbers = serializers.ListField(child=serializers.CharField(max_length=100))

@@ -34,6 +34,15 @@ class EnaTransitPermitDetail(models.Model):
     total_additional_excise = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
     total_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
 
+    # Route and Transport fields (added via migration 0004)
+    to_location = models.CharField(max_length=255, default='', blank=True)
+    via_route = models.CharField(max_length=255, default='', blank=True)
+    checkpost_entry_name = models.CharField(max_length=255, default='', blank=True)
+    checkpost_exit_name = models.CharField(max_length=255, default='', blank=True)
+    driver_name = models.CharField(max_length=255, default='', blank=True)
+    driver_license_no = models.CharField(max_length=255, default='', blank=True)
+    transporter_name = models.CharField(max_length=255, default='', blank=True)
+
     # Workflow Status
     workflow = models.ForeignKey('workflow.Workflow', on_delete=models.SET_NULL, null=True, blank=True, related_name='transit_permits')
     status = models.CharField(max_length=100, default='Ready for Payment', blank=True)

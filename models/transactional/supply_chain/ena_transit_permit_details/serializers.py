@@ -61,6 +61,22 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
                     actions.append(action)
         
         return list(set(actions))  # Unique actions
+    
+    # New Field: Returns Full UI Config for Actions
+    allowed_action_configs = serializers.SerializerMethodField()
+
+    def get_allowed_action_configs(self, obj):
+        actions = self.get_allowed_actions(obj)
+        if not actions:
+            return []
+        
+        from auth.workflow.services import WorkflowService
+        configs = []
+        for action_name in actions:
+            config = WorkflowService.get_action_config(action_name)
+            configs.append(config)
+        
+        return configs
 
 class TransitPermitProductSerializer(serializers.Serializer):
     """

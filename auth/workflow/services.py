@@ -9,6 +9,97 @@ from .models import (
     Transaction, Objection
 )
 
+# UI Configuration for Workflow Actions (Moved from Frontend)
+ACTION_CONFIGS = {
+    'APPROVE': {
+        'label': 'Approve',
+        'icon': 'check_circle',
+        'color': 'accent',
+        'tooltip': 'Approve Application',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to approve this application?'
+    },
+    'REJECT': {
+        'label': 'Reject',
+        'icon': 'cancel',
+        'color': 'warn',
+        'tooltip': 'Reject Application',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to reject this application?'
+    },
+    'FORWARD': {
+        'label': 'Forward',
+        'icon': 'forward',
+        'color': 'primary',
+        'tooltip': 'Forward to Next Stage',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to forward this application?'
+    },
+    'RETURN': {
+        'label': 'Return',
+        'icon': 'undo',
+        'color': 'warning',
+        'tooltip': 'Return to Previous Stage',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to return this application?'
+    },
+    'VERIFY': {
+        'label': 'Verify',
+        'icon': 'verified',
+        'color': 'info',
+        'tooltip': 'Verify Application',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to verify this application?'
+    },
+    'ISSUE': {
+        'label': 'Issue',
+        'icon': 'assignment_turned_in',
+        'color': 'success',
+        'tooltip': 'Issue Permit/Certificate',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to issue this permit?'
+    },
+    'PAY': {
+        'label': 'Submit Payment',
+        'icon': 'payment',
+        'color': 'primary',
+        'tooltip': 'Submit Payment',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to submit payment?'
+    },
+    'TERMINATE': {
+        'label': 'Terminate',
+        'icon': 'block',
+        'color': 'danger',
+        'tooltip': 'Terminate Application',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to terminate this application?'
+    },
+    'VIEW': {
+        'label': 'View',
+        'icon': 'visibility',
+        'color': 'primary',
+        'tooltip': 'View Details'
+    },
+    'REQUEST_CANCELLATION': {
+        'label': 'Request Cancellation',
+        'icon': 'cancel',
+        'color': 'warn',
+        'tooltip': 'Request Cancellation of Approved Application',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to request cancellation of this approved application?'
+    },
+    # Default fallback
+    'DEFAULT': {
+        'label': 'Action',
+        'icon': 'touch_app',
+        'color': 'primary',
+        'tooltip': 'Perform Action',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure?'
+    }
+}
+
 # Mapping: (app_label, model_name) -> Serializer class
 SERIALIZER_MAPPING = {
     # (app_label, model_name_lower): 'full.import.path.to.Serializer'
@@ -21,6 +112,25 @@ SERIALIZER_MAPPING = {
 }
 
 class WorkflowService:
+
+    @staticmethod
+    def get_action_config(action_name):
+        """
+        Returns the UI configuration (label, icon, color, etc.) for a given action name.
+        """
+        if not action_name:
+            return ACTION_CONFIGS['DEFAULT']
+        
+        config = ACTION_CONFIGS.get(action_name.upper())
+        if not config:
+            # Create a default config for unknown actions
+            config = {
+                **ACTION_CONFIGS['DEFAULT'],
+                'label': action_name.replace('_', ' ').title(),
+            }
+        
+        # Ensure 'action' key is always present in the returned object
+        return {**config, 'action': action_name}
 
     @staticmethod
     @transaction.atomic
