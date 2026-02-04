@@ -41,8 +41,8 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             from auth.workflow.models import Workflow, WorkflowStage
             
             # HARDCODED INITIAL STATE (StatusMaster module is deprecated/removed)
-            status_name = 'RevalidationPending'
-            status_code = 'RV_00'
+            status_name = 'ForwardedRevalidationToCommissioner'
+            status_code = 'RV_02' # Assuming 01 was Pending, 02 might be Forwarded - this is just a string code
             
             # Sync to fields
             revalidation.status = status_name

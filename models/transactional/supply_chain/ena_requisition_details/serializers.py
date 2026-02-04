@@ -30,26 +30,32 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         if not user_role_name:
             return []
         
+        # Normalize role name
+        user_role_name = str(user_role_name).strip()
+        cleaned_role_name = user_role_name.lower()
+        
         # Determine Role (Matching Frontend Logic)
         role = None
-        commissioner_roles = ['level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'Site-Admin', 'site_admin', 'commissioner', 'Commissioner']
         
-        if user_role_name in commissioner_roles:
+        # Commissioner roles (add more aliases if needed)
+        if cleaned_role_name in ['commissioner', 'level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'site_admin', 'site-admin']:
             role = 'commissioner'
-        elif user_role_name in ['permit-section', 'Permit-Section', 'Permit Section']:
+        # Permit Section roles
+        elif cleaned_role_name in ['permit-section', 'permit section', 'permit_section']:
             role = 'permit-section'
-        elif user_role_name in ['licensee', 'Licensee']:
+        # Licensee roles
+        elif cleaned_role_name in ['licensee', 'license user', 'license_user']:
             role = 'licensee'
         
         if not role:
-            return []
-
-        # Query Workflow Transitions (New Logic)
+            # Fallback for simple exact matches if not caught above
+            role = cleaned_role_name
+        
+        # Query Workflow Transitions
         from auth.workflow.models import WorkflowTransition, WorkflowStage
         
         current_stage = obj.current_stage
         if not current_stage:
-            # Fallback: infer stage from status name
             try:
                 # Assuming 'Supply Chain' workflow
                 current_stage = WorkflowStage.objects.get(workflow__name='Supply Chain', name=obj.status)
@@ -60,11 +66,14 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         actions = []
         for t in transitions:
             cond = t.condition or {}
-            # Check if role matches
-            if cond.get('role') == role:
+            # Check if role matches (condition role should be compared case-insensitively or normalized)
+            cond_role = str(cond.get('role', '')).lower()
+            
+            if cond_role == role.lower():
                 action = cond.get('action')
                 if action:
-                    actions.append(action)
+                    # Frontend expects UPPERCASE actions
+                    actions.append(str(action).upper())
         
         return list(set(actions)) # Unique actions
 
