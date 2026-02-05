@@ -138,6 +138,11 @@ class GetTransitPermitAPIView(generics.ListAPIView):
             queryset = queryset.filter(bill_no=bill_no)
         return queryset
 
+class GetTransitPermitDetailAPIView(generics.RetrieveAPIView):
+    queryset = EnaTransitPermitDetail.objects.all()
+    serializer_class = EnaTransitPermitDetailSerializer
+
+
 
 class PerformTransitPermitActionAPIView(views.APIView):
     """
