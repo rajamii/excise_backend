@@ -13,7 +13,7 @@ class HasStagePermission(permissions.BasePermission):
 
         # 1. Allow licensee to submit new applications
         if request.method == 'POST' and any(path in request.path for path in ['/apply/', '/create/']):
-            return user.role.name == 'licensee'
+            return getattr(user.role, 'id', None) == 2
 
         # 2. For advance, raise-objection, resolve-objection, etc.
         if request.method in ['POST', 'PUT', 'PATCH']:

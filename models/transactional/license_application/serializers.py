@@ -8,10 +8,10 @@ from models.masters.core.models import District, Subdivision, PoliceStation, Lic
 from utils.fields import CodeRelatedField
 
 class UserShortSerializer(serializers.ModelSerializer):
-    role_name = serializers.CharField(source='role.name', read_only=True)
+    role_id = serializers.IntegerField(source='role.id', read_only=True)
     class Meta:
         model = CustomUser
-        fields = ['id', 'username', 'role', 'role_name']
+        fields = ['id', 'username', 'role', 'role_id']
 
 class RoleSerializer(serializers.ModelSerializer):
     class Meta:

@@ -31,12 +31,11 @@ class UserSerializer(serializers.ModelSerializer):
     def get_role(self, obj):
         role = obj.role
         return {
-            'id': role.id,
-            'name': role.name
+            'id': role.id
         } if role else None
     
     def get_created_by(self, obj):
-        return obj.created_by.role.name if obj.created_by else None
+        return obj.created_by.role.id if obj.created_by and obj.created_by.role else None
     
     def get_district(self, obj):
         district = obj.district
