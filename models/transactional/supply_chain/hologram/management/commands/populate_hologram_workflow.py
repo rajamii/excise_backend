@@ -1,5 +1,6 @@
 from django.core.management.base import BaseCommand
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition, Role
+from auth.workflow.constants import WORKFLOW_IDS
 
 class Command(BaseCommand):
     help = 'Populates the database with initial Hologram workflows, stages, and transitions'
@@ -7,8 +8,11 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         # 1. Hologram Procurement Workflow
         proc_workflow, created = Workflow.objects.get_or_create(
-            name='Hologram Procurement',
-            defaults={'description': 'Workflow for procuring hologram rolls from printing press'}
+            id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'],
+            defaults={
+                'name': 'Hologram Procurement',
+                'description': 'Workflow for procuring hologram rolls from printing press'
+            }
         )
         if created:
             self.stdout.write(self.style.SUCCESS('Created Workflow: Hologram Procurement'))
@@ -66,8 +70,11 @@ class Command(BaseCommand):
 
         # 2. Hologram Request Workflow
         req_workflow, created = Workflow.objects.get_or_create(
-            name='Hologram Request',
-            defaults={'description': 'Workflow for requesting hologram usage for bottling'}
+            id=WORKFLOW_IDS['HOLOGRAM_REQUEST'],
+            defaults={
+                'name': 'Hologram Request',
+                'description': 'Workflow for requesting hologram usage for bottling'
+            }
         )
         if created:
             self.stdout.write(self.style.SUCCESS('\nCreated Workflow: Hologram Request'))

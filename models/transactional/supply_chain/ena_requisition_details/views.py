@@ -5,6 +5,7 @@ from rest_framework import status
 import re
 from .models import EnaRequisitionDetail
 from .serializers import EnaRequisitionDetailSerializer
+from auth.workflow.constants import WORKFLOW_IDS
 
 
 class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
@@ -139,7 +140,13 @@ class PerformRequisitionActionAPIView(APIView):
             # Ensure current_stage is set (if missing for some reason)
             if not requisition.current_stage:
                  try:
-                     current_stage = WorkflowStage.objects.get(workflow__name='Supply Chain', name=requisition.status)
+                     if requisition.workflow_id:
+                         current_stage = WorkflowStage.objects.get(workflow_id=requisition.workflow_id, name=requisition.status)
+                     else:
+                         current_stage = WorkflowStage.objects.get(
+                             workflow_id=WORKFLOW_IDS['ENA_REQUISITION'],
+                             name=requisition.status
+                         )
                      requisition.current_stage = current_stage
                      requisition.save()
                  except WorkflowStage.DoesNotExist:

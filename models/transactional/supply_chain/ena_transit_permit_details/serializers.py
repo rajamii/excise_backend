@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import EnaTransitPermitDetail
+from auth.workflow.constants import WORKFLOW_IDS
 
 class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
@@ -45,7 +46,10 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
         if not current_stage:
             # Fallback: infer stage from status name
             try:
-                current_stage = WorkflowStage.objects.get(workflow__name='Transit Permit', name=obj.status)
+                current_stage = WorkflowStage.objects.get(
+                    workflow_id=WORKFLOW_IDS['TRANSIT_PERMIT'],
+                    name=obj.status
+                )
             except WorkflowStage.DoesNotExist:
                 return []
 

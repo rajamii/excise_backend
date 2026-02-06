@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import EnaCancellationDetail
+from auth.workflow.constants import WORKFLOW_IDS
 
 class EnaCancellationDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
@@ -39,7 +40,10 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
         if not current_stage:
             # Fallback
             try:
-                current_stage = WorkflowStage.objects.get(workflow__name='ENA Cancellation', name=obj.status)
+                current_stage = WorkflowStage.objects.get(
+                    workflow_id=WORKFLOW_IDS['ENA_CANCELLATION'],
+                    name=obj.status
+                )
             except WorkflowStage.DoesNotExist:
                 return []
         

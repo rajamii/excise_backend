@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from django.utils import timezone
 from .serializers import TransitPermitSubmissionSerializer, EnaTransitPermitDetailSerializer
 from .models import EnaTransitPermitDetail
+from auth.workflow.constants import WORKFLOW_IDS
 
 
 class SubmitTransitPermitAPIView(views.APIView):
@@ -177,7 +178,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                  try:
                      # Try to find by name if stage ID missing
                      from auth.workflow.models import Workflow
-                     workflow_obj = Workflow.objects.get(name='Transit Permit')
+                     workflow_obj = Workflow.objects.get(id=WORKFLOW_IDS['TRANSIT_PERMIT'])
                      permit.workflow = workflow_obj
                      
                      current_stage = WorkflowStage.objects.get(workflow=workflow_obj, name=permit.status)

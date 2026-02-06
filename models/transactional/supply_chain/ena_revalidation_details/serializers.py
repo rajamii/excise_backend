@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import EnaRevalidationDetail
+from auth.workflow.constants import WORKFLOW_IDS
 
 class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
@@ -57,7 +58,10 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
         if not current_stage:
             # Fallback
             try:
-                current_stage = WorkflowStage.objects.get(workflow__name='ENA Revalidation', name=obj.status)
+                current_stage = WorkflowStage.objects.get(
+                    workflow_id=WORKFLOW_IDS['ENA_REVALIDATION'],
+                    name=obj.status
+                )
             except WorkflowStage.DoesNotExist:
                 return []
 

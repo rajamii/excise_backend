@@ -9,6 +9,7 @@ from auth.roles.permissions import HasAppPermission
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
 from auth.workflow.models import Workflow, StagePermission
+from auth.workflow.constants import WORKFLOW_IDS
 from .models import NewLicenseApplication
 from models.masters.license.models import License
 from .serializers import NewLicenseApplicationSerializer, ObjectionSerializer, ResolveObjectionSerializer
@@ -17,7 +18,7 @@ from django.core.exceptions import ValidationError, PermissionDenied
 from django.utils import timezone
 
 
-def _create_application(request, workflow_name: str, serializer_cls):
+def _create_application(request, workflow_id: int, serializer_cls):
    
     serializer = serializer_cls(data=request.data)
     if not serializer.is_valid():
@@ -25,7 +26,7 @@ def _create_application(request, workflow_name: str, serializer_cls):
 
     with transaction.atomic():
         
-        workflow = get_object_or_404(Workflow, name=workflow_name)
+        workflow = get_object_or_404(Workflow, id=workflow_id)
         
         try:
             initial_stage = workflow.stages.get(is_initial=True)
@@ -79,7 +80,7 @@ def _create_application(request, workflow_name: str, serializer_cls):
 @parser_classes([MultiPartParser, FormParser, JSONParser])
 @permission_classes([HasStagePermission])
 def create_new_license_application(request):
-    return _create_application(request, "License Approval", NewLicenseApplicationSerializer)
+    return _create_application(request, WORKFLOW_IDS['LICENSE_APPROVAL'], NewLicenseApplicationSerializer)
 
 
 @api_view(['POST'])
@@ -150,7 +151,7 @@ def initiate_renewal(request, license_id):
         new_number = str(last_number + 1).zfill(4)
         new_application_id = f"{prefix}/{new_number}"
 
-        workflow = get_object_or_404(Workflow, name="License Approval")  # Adjust workflow name if different
+        workflow = get_object_or_404(Workflow, id=WORKFLOW_IDS['LICENSE_APPROVAL'])
         initial_stage = workflow.stages.get(is_initial=True)
 
         new_application = NewLicenseApplication.objects.create(
@@ -242,7 +243,7 @@ def dashboard_counts(request):
     counts = {}
 
     if role in ['level_1', 'level_2', 'level_3', 'level_4', 'level_5']:
-        stage = WorkflowStage.objects.get(name=role, workflow__name="License Approval")
+        stage = WorkflowStage.objects.get(name=role, workflow_id=WORKFLOW_IDS['LICENSE_APPROVAL'])
         counts = {
             "pending": NewLicenseApplication.objects.filter(current_stage=stage).count(),
             "approved": NewLicenseApplication.objects.filter(

@@ -7,6 +7,7 @@ from django.db import transaction as db_transaction
 from .models import HologramProcurement, HologramRequest, HologramRollsDetails
 from .serializers import HologramProcurementSerializer, HologramRequestSerializer
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition, Transaction
+from auth.workflow.constants import WORKFLOW_IDS
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile
 import uuid
 
@@ -64,7 +65,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         
         # Get initial workflow stage
         try:
-            workflow = Workflow.objects.get(name='Hologram Procurement')
+            workflow = Workflow.objects.get(id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'])
             initial_stage = WorkflowStage.objects.get(workflow=workflow, is_initial=True)
         except Workflow.DoesNotExist:
              # Fallback or error - Should be populated via command
@@ -525,7 +526,7 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         ref_no = f"HRQ/{timezone.now().year}/{uuid.uuid4().hex[:6].upper()}"
         
         try:
-            workflow = Workflow.objects.get(name='Hologram Request')
+            workflow = Workflow.objects.get(id=WORKFLOW_IDS['HOLOGRAM_REQUEST'])
             initial_stage = WorkflowStage.objects.get(workflow=workflow, is_initial=True)
         except Workflow.DoesNotExist:
              raise serializers.ValidationError("Workflow configuration missing.")

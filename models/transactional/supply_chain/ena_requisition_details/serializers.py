@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import EnaRequisitionDetail
+from auth.workflow.constants import WORKFLOW_IDS
 import re
 
 class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
@@ -92,8 +93,14 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         current_stage = obj.current_stage
         if not current_stage:
             try:
-                # Assuming 'Supply Chain' workflow
-                current_stage = WorkflowStage.objects.get(workflow__name='Supply Chain', name=obj.status)
+                # Prefer explicit workflow on the object; fallback to ENA Requisition workflow id.
+                if obj.workflow_id:
+                    current_stage = WorkflowStage.objects.get(workflow_id=obj.workflow_id, name=obj.status)
+                else:
+                    current_stage = WorkflowStage.objects.get(
+                        workflow_id=WORKFLOW_IDS['ENA_REQUISITION'],
+                        name=obj.status
+                    )
             except WorkflowStage.DoesNotExist:
                 return []
 
@@ -181,7 +188,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         # Initialize Workflow and Status
         from auth.workflow.models import Workflow, WorkflowStage
         try:
-            workflow = Workflow.objects.get(name="Supply Chain")
+            workflow = Workflow.objects.get(id=WORKFLOW_IDS['ENA_REQUISITION'])
             initial_stage = WorkflowStage.objects.get(workflow=workflow, is_initial=True)
             
             validated_data['workflow'] = workflow

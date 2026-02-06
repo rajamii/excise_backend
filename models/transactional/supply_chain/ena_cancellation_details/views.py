@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from django.utils import timezone
 from .models import EnaCancellationDetail
 from .serializers import EnaCancellationDetailSerializer, CancellationCreateSerializer
+from auth.workflow.constants import WORKFLOW_IDS
 
 class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     """
@@ -70,7 +71,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                      # status_obj = StatusMaster.objects.get(status_code='CN_00') # Removed
                      # status_name = status_obj.status_name
                      
-                     workflow = Workflow.objects.get(name='ENA Cancellation')
+                     workflow = Workflow.objects.get(id=WORKFLOW_IDS['ENA_CANCELLATION'])
                      stage = WorkflowStage.objects.get(workflow=workflow, name=status_name)
                      
                      current_stage = stage
@@ -222,7 +223,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             if not cancellation.workflow or not cancellation.current_stage:
                  from auth.workflow.models import Workflow, WorkflowStage
                  try:
-                     wf = Workflow.objects.get(name='ENA Cancellation')
+                     wf = Workflow.objects.get(id=WORKFLOW_IDS['ENA_CANCELLATION'])
                      stage = WorkflowStage.objects.get(workflow=wf, name=cancellation.status)
                      cancellation.workflow = wf
                      cancellation.current_stage = stage

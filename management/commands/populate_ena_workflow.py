@@ -1,10 +1,11 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition
+from auth.workflow.constants import WORKFLOW_IDS
 from models.masters.supply_chain.status_master.models import StatusMaster, WorkflowRule
 
 class Command(BaseCommand):
-    help = 'Populates Workflow tables from existing StatusMaster and WorkflowRule for Supply Chain'
+    help = 'Populates Workflow tables from existing StatusMaster and WorkflowRule for ENA Requisition'
 
     def handle(self, *args, **kwargs):
         self.stdout.write("Starting workflow population...")
@@ -13,8 +14,11 @@ class Command(BaseCommand):
             with transaction.atomic():
                 # 1. Create Workflow
                 workflow, created = Workflow.objects.get_or_create(
-                    name="Supply Chain",
-                    defaults={"description": "Workflow for ENA Requisition and Supply Chain"}
+                    id=WORKFLOW_IDS['ENA_REQUISITION'],
+                    defaults={
+                        "name": "ENA Requisition",
+                        "description": "Workflow for ENA Requisition"
+                    }
                 )
                 if created:
                     self.stdout.write(f"Created Workflow: {workflow.name}")

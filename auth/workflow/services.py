@@ -89,6 +89,38 @@ ACTION_CONFIGS = {
         'requires_confirmation': True,
         'confirmation_message': 'Are you sure you want to request cancellation of this approved application?'
     },
+    'REQUEST_REVALIDATION': {
+        'label': 'Request Revalidation',
+        'icon': 'restore',
+        'color': 'primary',
+        'tooltip': 'Request Revalidation',
+        'requires_confirmation': True,
+        'confirmation_message': 'The permit validity has been extended. Do you want to proceed with revalidation?'
+    },
+    'SUBMITPAYSLIP': {
+        'label': 'Submit Pay Slip',
+        'icon': 'receipt_long',
+        'color': 'primary',
+        'tooltip': 'Submit Payment Slip',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to submit the pay slip?'
+    },
+    'APPROVEPAYSLIP': {
+        'label': 'Approve Pay Slip',
+        'icon': 'check_circle',
+        'color': 'accent',
+        'tooltip': 'Approve Payment Slip',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to approve the pay slip?'
+    },
+    'REJECTPAYSLIP': {
+        'label': 'Reject Pay Slip',
+        'icon': 'cancel',
+        'color': 'warn',
+        'tooltip': 'Reject Payment Slip',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to reject the pay slip?'
+    },
     # Default fallback
     'DEFAULT': {
         'label': 'Action',

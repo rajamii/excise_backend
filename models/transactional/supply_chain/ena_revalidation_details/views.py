@@ -5,6 +5,7 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny
 from .models import EnaRevalidationDetail
 from .serializers import EnaRevalidationDetailSerializer
+from auth.workflow.constants import WORKFLOW_IDS
 # from models.masters.supply_chain.status_master.models import StatusMaster, WorkflowRule # Removed
 
 class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
@@ -50,7 +51,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             
             # Bind to Workflow
             try:
-                workflow = Workflow.objects.get(name='ENA Revalidation')
+                workflow = Workflow.objects.get(id=WORKFLOW_IDS['ENA_REVALIDATION'])
                 stage = WorkflowStage.objects.get(workflow=workflow, name=status_name)
                 
                 revalidation.workflow = workflow
@@ -110,7 +111,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                  # Try to recover state from status_name
                  from auth.workflow.models import Workflow, WorkflowStage
                  try:
-                     wf = Workflow.objects.get(name='ENA Revalidation')
+                     wf = Workflow.objects.get(id=WORKFLOW_IDS['ENA_REVALIDATION'])
                      stage = WorkflowStage.objects.get(workflow=wf, name=revalidation.status)
                      revalidation.workflow = wf
                      revalidation.current_stage = stage

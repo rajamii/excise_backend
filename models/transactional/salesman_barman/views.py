@@ -9,12 +9,13 @@ from rest_framework import status
 from auth.roles.permissions import HasAppPermission
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.models import Workflow, StagePermission, WorkflowStage
+from auth.workflow.constants import WORKFLOW_IDS
 from auth.workflow.services import WorkflowService
 from models.masters.license.models import License
 from .models import SalesmanBarmanModel
 from .serializers import SalesmanBarmanSerializer
 
-def _create_application(request, workflow_name: str, serializer_cls):
+def _create_application(request, workflow_id: int, serializer_cls):
     
     serializer = serializer_cls(data=request.data)
     if not serializer.is_valid():
@@ -23,7 +24,7 @@ def _create_application(request, workflow_name: str, serializer_cls):
     with transaction.atomic():
         
         # 1. Workflow & initial stage
-        workflow = get_object_or_404(Workflow, name=workflow_name)
+        workflow = get_object_or_404(Workflow, id=workflow_id)
         try:
             initial_stage = workflow.stages.get(is_initial=True)
         except WorkflowStage.DoesNotExist:
@@ -80,7 +81,7 @@ def _create_application(request, workflow_name: str, serializer_cls):
 @parser_classes([MultiPartParser, FormParser, JSONParser])
 @permission_classes([HasStagePermission])
 def create_salesman_barman(request):
-    return _create_application(request, "Salesman Barman", SalesmanBarmanSerializer)
+    return _create_application(request, WORKFLOW_IDS['SALESMAN_BARMAN'], SalesmanBarmanSerializer)
 
 
 @api_view(['POST'])
@@ -143,7 +144,7 @@ def initiate_renewal(request, license_id):
         new_application_id = f"{prefix}/{new_number}"
 
         # Get workflow and initial stage
-        workflow = get_object_or_404(Workflow, name="Salesman Barman")
+        workflow = get_object_or_404(Workflow, id=WORKFLOW_IDS['SALESMAN_BARMAN'])
         initial_stage = workflow.stages.get(is_initial=True)
 
         # Create the application instance directly
@@ -213,7 +214,7 @@ def dashboard_counts(request):
     counts = {}
 
     if role in ['level_1', 'level_2', 'level_3', 'level_4', 'level_5']:
-        stage = WorkflowStage.objects.get(name=role, workflow__name="License Approval")
+        stage = WorkflowStage.objects.get(name=role, workflow_id=WORKFLOW_IDS['SALESMAN_BARMAN'])
         counts = {
             "pending": SalesmanBarmanModel.objects.filter(current_stage=stage).count(),
             "approved": SalesmanBarmanModel.objects.filter(

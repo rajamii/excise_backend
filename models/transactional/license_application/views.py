@@ -11,17 +11,18 @@ from models.masters.core.models import LocationFee
 from .serializers import LicenseApplicationSerializer, LocationFeeSerializer
 from rest_framework import status
 from auth.workflow.models import Workflow, StagePermission, WorkflowStage
+from auth.workflow.constants import WORKFLOW_IDS
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
 
-def _create_application(request, workflow_name: str, serializer_cls):
+def _create_application(request, workflow_id: int, serializer_cls):
     
     serializer = serializer_cls(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     with transaction.atomic():
-        workflow = get_object_or_404(Workflow, name=workflow_name)
+        workflow = get_object_or_404(Workflow, id=workflow_id)
         initial_stage = workflow.stages.get(is_initial=True)
         district_code = serializer.validated_data['excise_district'].district_code
 
@@ -64,7 +65,7 @@ def _create_application(request, workflow_name: str, serializer_cls):
 @parser_classes([MultiPartParser, FormParser, JSONParser])
 @permission_classes([HasStagePermission])
 def create_license_application(request):
-    return _create_application(request, "License Approval", LicenseApplicationSerializer)
+    return _create_application(request, WORKFLOW_IDS['LICENSE_APPROVAL'], LicenseApplicationSerializer)
 
 
 @api_view(['POST'])
@@ -149,7 +150,7 @@ def initiate_renewal(request, license_id):
         new_number = str(last_number + 1).zfill(4)
         new_application_id = f"{prefix}/{new_number}"
 
-        workflow = get_object_or_404(Workflow, name="License Approval")
+        workflow = get_object_or_404(Workflow, id=WORKFLOW_IDS['LICENSE_APPROVAL'])
         initial_stage = workflow.stages.get(is_initial=True)
 
         new_application = LicenseApplication.objects.create(
@@ -246,7 +247,7 @@ def dashboard_counts(request):
     counts = {}
 
     if role in ['level_1', 'level_2', 'level_3', 'level_4', 'level_5']:
-        stage = WorkflowStage.objects.get(name=role, workflow__name="License Approval")
+        stage = WorkflowStage.objects.get(name=role, workflow_id=WORKFLOW_IDS['LICENSE_APPROVAL'])
         counts = {
             "pending": LicenseApplication.objects.filter(current_stage=stage).count(),
             "approved": LicenseApplication.objects.filter(
