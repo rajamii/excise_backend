@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from auth.user.models import CustomUser, LicenseeProfile
 from auth.roles.models import Role
+from models.masters.core.models import District, Subdivision
 from captcha.models import CaptchaStore
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
@@ -77,6 +78,70 @@ class UserCreateSerializer(serializers.ModelSerializer):
             validated_data['created_by'] = request.user
 
         return CustomUser.objects.create_user(**validated_data)
+
+
+class UserUpdateSerializer(serializers.ModelSerializer):
+    # Accept frontend camelCase payload keys for updates
+    firstName = serializers.CharField(source='first_name', required=False)
+    middleName = serializers.CharField(source='middle_name', required=False, allow_blank=True)
+    lastName = serializers.CharField(source='last_name', required=False)
+    phoneNumber = serializers.CharField(source='phone_number', required=False)
+    role = serializers.PrimaryKeyRelatedField(
+        queryset=Role.objects.all(),
+        required=False,
+        allow_null=True
+    )
+    district = serializers.SlugRelatedField(
+        slug_field='district_code',
+        queryset=District.objects.all(),
+        required=False
+    )
+    subdivision = serializers.SlugRelatedField(
+        slug_field='subdivision_code',
+        queryset=Subdivision.objects.all(),
+        required=False
+    )
+
+    class Meta:
+        model = CustomUser
+        fields = [
+            'email', 'firstName', 'middleName', 'lastName',
+            'phoneNumber', 'district', 'subdivision', 'address', 'role'
+        ]
+
+    def to_internal_value(self, data):
+        """
+        Accept both primitive and object-shaped values from clients:
+        - role: 2 or {"id": 2}
+        - district: 11 or {"code": 11} or {"districtCode": 11}
+        - subdivision: 101 or {"code": 101} or {"subdivisionCode": 101}
+        Also ignore unsupported keys in update payloads.
+        """
+        allowed_keys = set(self.fields.keys())
+        incoming = dict(data.items()) if hasattr(data, 'items') else dict(data)
+
+        role_value = incoming.get('role')
+        if isinstance(role_value, dict):
+            incoming['role'] = role_value.get('id')
+
+        district_value = incoming.get('district')
+        if isinstance(district_value, dict):
+            incoming['district'] = (
+                district_value.get('code')
+                if district_value.get('code') is not None
+                else district_value.get('districtCode')
+            )
+
+        subdivision_value = incoming.get('subdivision')
+        if isinstance(subdivision_value, dict):
+            incoming['subdivision'] = (
+                subdivision_value.get('code')
+                if subdivision_value.get('code') is not None
+                else subdivision_value.get('subdivisionCode')
+            )
+
+        filtered = {k: v for k, v in incoming.items() if k in allowed_keys}
+        return super().to_internal_value(filtered)
     
 class LoginSerializer(serializers.Serializer):
     username = serializers.CharField(max_length=255)

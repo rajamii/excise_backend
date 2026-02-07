@@ -21,7 +21,7 @@ def get_user_role(user):
 @api_view(['GET'])
 def role_list(request):
     """List all roles"""
-    roles = Role.objects.all()
+    roles = Role.objects.all().order_by('id')
     serializer = RoleSerializer(roles, many=True)
     return Response(serializer.data)
 

@@ -17,6 +17,7 @@ class RoleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Role
         fields = '__all__'
+        read_only_fields = ('id',)
         # Remove extra_kwargs for 'precedence' — it's now mapped
 
     def validate_precedence(self, value):

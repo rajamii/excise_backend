@@ -49,6 +49,46 @@ class CustomUserManager(BaseUserManager):
         user.save(using=self._db)
         return user
 
+    def create_superuser(self, username, first_name, last_name, phone_number,
+                         password=None, **extra_fields):
+        """
+        Creates and saves a superuser with the given required fields.
+        """
+        extra_fields.setdefault('is_staff', True)
+        extra_fields.setdefault('is_superuser', True)
+        extra_fields.setdefault('is_active', True)
+
+        if extra_fields.get('is_staff') is not True:
+            raise ValueError('Superuser must have is_staff=True.')
+        if extra_fields.get('is_superuser') is not True:
+            raise ValueError('Superuser must have is_superuser=True.')
+
+        # Provide defaults for fields not requested by Django's createsuperuser prompt
+        email = extra_fields.pop('email', None) or f'{username}@example.com'
+        address = extra_fields.pop('address', None) or 'Admin Office'
+        district = extra_fields.pop('district', None) or District.objects.first()
+        subdivision = extra_fields.pop('subdivision', None) or Subdivision.objects.first()
+
+        if not district or not subdivision:
+            raise ValueError('District and Subdivision are required. Please create master data first.')
+
+        user = self.create_user(
+            email=email,
+            first_name=first_name,
+            last_name=last_name,
+            phone_number=phone_number,
+            district=district,
+            subdivision=subdivision,
+            address=address,
+            password=password,
+            **extra_fields
+        )
+
+        # Keep CLI-entered username as authoritative for superuser creation
+        user.username = username
+        user.save(using=self._db)
+        return user
+
     def generate_unique_username(self, first_name, last_name, phone_number, district, subdivision):
         initials = f"{first_name[0].upper()}{last_name[0].upper()}"
         district_code = district.district_code

@@ -5,7 +5,7 @@ from rest_framework.views import APIView
 from auth.roles.permissions import make_permission
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from auth.user.models import CustomUser
-from auth.user.serializer import UserSerializer, UserCreateSerializer, LoginSerializer, LicenseeSignupSerializer
+from auth.user.serializer import UserSerializer, UserCreateSerializer, UserUpdateSerializer, LoginSerializer, LicenseeSignupSerializer
 from typing import cast
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from auth.user.otp import get_new_otp, verify_otp, mark_phone_as_verified, clear_phone_verified, is_phone_verified
@@ -209,11 +209,11 @@ class UserUpdateView(generics.UpdateAPIView):
     Logs 'User Profile Update' activity.
     """
     queryset = CustomUser.objects.all()
-    serializer_class = UserSerializer
+    serializer_class = UserUpdateSerializer
     permission_classes = [make_permission('user', 'update')]
 
     def update(self, request, *args, **kwargs):
-        partial = kwargs.pop('partial', False)
+        partial = True
         instance = self.get_object() 
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
