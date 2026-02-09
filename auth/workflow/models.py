@@ -59,7 +59,7 @@ class Transaction(models.Model):
 
     performed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True,
                                      related_name='workflow_performed')
-    forwarded_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True,
+    forwarded_by = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True,
                                      related_name='workflow_forwarded_by')
     forwarded_to = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True)
     stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT)

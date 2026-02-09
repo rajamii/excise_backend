@@ -20,7 +20,7 @@ class RoleSerializer(serializers.ModelSerializer):
 
 class TransactionSerializer(serializers.ModelSerializer):
     performed_by = UserShortSerializer(read_only=True)
-    forwarded_by = UserShortSerializer(read_only=True)
+    forwarded_by = RoleSerializer(read_only=True)
     forwarded_to = RoleSerializer(read_only=True)
     
     class Meta:

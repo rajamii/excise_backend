@@ -176,7 +176,7 @@ class WorkflowService:
             content_type=ContentType.objects.get_for_model(application),
             object_id=str(application.pk),
             performed_by=user,
-            forwarded_by=user,
+            forwarded_by=getattr(user, "role", None),
             forwarded_to=None,
             stage=initial_stage,
             remarks=remarks or "Application submitted by applicant"
@@ -199,8 +199,8 @@ class WorkflowService:
             content_type=ContentType.objects.get_for_model(application),
             object_id=str(application.pk),
             performed_by=user,
-            forwarded_by=user,
-            forwarded_to=perm.role,
+            forwarded_by=perm.role if perm else None,
+            forwarded_to=perm.role if perm else None,
             stage=transition.to_stage,
             remarks="Application forwarded to Level 1 for review"
         )
@@ -282,7 +282,7 @@ class WorkflowService:
             content_type=ContentType.objects.get_for_model(application),
             object_id=str(application.pk),
             performed_by=user,
-            forwarded_by=user,
+            forwarded_by=getattr(user, "role", None),
             forwarded_to=forwarded_to,
             stage=target_stage,
             remarks=remarks or context.get("remarks", "")
@@ -333,7 +333,7 @@ class WorkflowService:
             content_type=ContentType.objects.get_for_model(application),
             object_id=str(application.pk),
             performed_by=user,
-            forwarded_by=user,
+            forwarded_by=getattr(user, "role", None),
             forwarded_to=applicant_role,
             stage=target_stage,
             remarks=remarks or "Objection raised"
@@ -430,7 +430,7 @@ class WorkflowService:
             content_type=ContentType.objects.get_for_model(application),
             object_id=str(application.pk),
             performed_by=user,
-            forwarded_by=user,
+            forwarded_by=getattr(user, "role", None),
             forwarded_to=forward_to,
             stage=original_txn.stage,
             remarks=remarks

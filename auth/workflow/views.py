@@ -195,6 +195,18 @@ def get_next_stages(request, application_id):
             except LicenseApplication.DoesNotExist:
                 return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
         
+    # Enforce stage-level processing permission for action discovery.
+    # Without this, non-processing users can still fetch next actions on GET.
+    if not request.user.is_superuser:
+        if not getattr(request.user, 'role', None):
+            return Response({"detail": "User has no role"}, status=status.HTTP_403_FORBIDDEN)
+        if not StagePermission.objects.filter(
+            stage=application.current_stage,
+            role=request.user.role,
+            can_process=True
+        ).exists():
+            return Response({"detail": "You cannot process this stage."}, status=status.HTTP_403_FORBIDDEN)
+
     current_stage = application.current_stage
     transitions = WorkflowTransition.objects.filter(workflow=application.workflow, from_stage=current_stage)
     allowed_stages = [t.to_stage for t in transitions]
@@ -511,7 +523,7 @@ def pay_license_fee(request, application_id):
         object_id=str(application.pk)
     ).order_by('timestamp').first()
 
-    if not first_transaction or first_transaction.forwarded_by != request.user:
+    if not first_transaction or first_transaction.performed_by != request.user:
         return Response(
             {"error": "You are not the applicant for this license."},
             status=status.HTTP_403_FORBIDDEN

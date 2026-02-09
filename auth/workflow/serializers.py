@@ -33,7 +33,7 @@ class StagePermissionSerializer(serializers.ModelSerializer):
 # shared in workflow/serializers.py
 class WorkflowTransactionSerializer(serializers.ModelSerializer):
     performed_by = UserSerializer(read_only=True)
-    forwarded_by = UserSerializer(read_only=True)
+    forwarded_by = RoleSerializer(read_only=True)
     forwarded_to = RoleSerializer(read_only=True)
     class Meta:
         model = Transaction
