@@ -75,3 +75,23 @@ class Role(models.Model):
 
     def __str__(self) -> str:
         return f"{self.name} (Level {self.role_precedence})"
+
+
+class DashboardRoleConfig(models.Model):
+    role = models.OneToOneField(Role, on_delete=models.CASCADE, related_name='dashboard_config')
+    layout = models.CharField(max_length=64, default='admin')
+    widgets = models.JSONField(default=list, blank=True)
+    navigation = models.JSONField(default=list, blank=True)
+    permissions = models.JSONField(default=list, blank=True)
+    is_active = models.BooleanField(default=True)
+    config_version = models.IntegerField(default=1)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'dashboard_role_config'
+        verbose_name = 'Dashboard Role Config'
+        verbose_name_plural = 'Dashboard Role Configs'
+
+    def __str__(self) -> str:
+        return f"DashboardConfig<{self.role_id}:{self.role.name}>"

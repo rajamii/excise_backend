@@ -6,45 +6,44 @@ from models.masters.supply_chain.profile.models import SupplyChainUserProfile
 def _normalize_role_name(role_name):
     return ''.join(ch for ch in str(role_name or '').lower() if ch.isalnum())
 
-def _workflow_role_candidates(resolved_role):
-    role_map = {
-        'licensee': {'licensee'},
-        'it_cell': {'it_cell', 'it-cell', 'it cell', 'itcell'},
-        'permit_section': {'permit-section', 'permit_section', 'permit section', 'permitsection'},
-        'officer_in_charge': {
-            'officer_in_charge', 'officer-in-charge', 'officer in charge',
-            'officer-incharge', 'officerincharge', 'oic', 'siteinquiryofficer'
-        },
-        'commissioner': {'commissioner', 'jointcommissioner', 'siteadmin', 'level1', 'level2', 'level3', 'level4', 'level5'},
-    }
-    return {_normalize_role_name(v) for v in role_map.get(resolved_role, {resolved_role})}
-
-def _resolve_workflow_role(user_role_name):
-    role_name = _normalize_role_name(user_role_name)
-
-    if role_name == 'licensee':
-        return 'licensee'
-
-    if role_name in {'itcell'} or ('it' in role_name and 'cell' in role_name):
-        return 'it_cell'
-
-    if role_name in {'officerincharge', 'offcierincharge', 'oic', 'siteinquiryofficer'}:
-        return 'officer_in_charge'
-    if (('officer' in role_name) or ('offcier' in role_name)) and ('incharge' in role_name or 'charge' in role_name):
-        return 'officer_in_charge'
-
-    if role_name in {
-        'commissioner', 'jointcommissioner', 'siteadmin',
-        'level1', 'level2', 'level3', 'level4', 'level5'
-    }:
+def _canonical_role_token(role_name):
+    token = _normalize_role_name(role_name)
+    if token in {'offcierincharge', 'officerincharge', 'officercharge', 'oic'}:
+        return 'officerincharge'
+    if token in {'permitsection', 'permit_section', 'permit-section'}:
+        return 'permitsection'
+    if token in {'itcell', 'it_cell', 'it-cell'}:
+        return 'itcell'
+    if token in {'jointcommissioner', 'commissioner'}:
         return 'commissioner'
-    if 'commissioner' in role_name:
-        return 'commissioner'
+    return token
 
-    if role_name == 'permitsection':
-        return 'permit_section'
+def _get_user_role_id(request):
+    user = getattr(request, 'user', None)
+    return getattr(user, 'role_id', None) if user and user.is_authenticated else None
 
-    return None
+def _condition_role_matches(cond, request):
+    user = getattr(request, 'user', None)
+    user_role_id = _get_user_role_id(request)
+    cond_role_id = cond.get('role_id')
+
+    # DB-driven primary matching by role id
+    if cond_role_id is not None:
+        if user_role_id is None:
+            return False
+        try:
+            return int(cond_role_id) == int(user_role_id)
+        except (TypeError, ValueError):
+            return False
+
+    # Backward compatibility fallback for existing rows storing role name
+    cond_role = _canonical_role_token(cond.get('role'))
+    if cond_role:
+        user_role_name = _canonical_role_token(getattr(getattr(user, 'role', None), 'name', ''))
+        return cond_role == user_role_name
+
+    # No role restriction in condition
+    return True
 
 class HologramProcurementSerializer(serializers.ModelSerializer):
     licensee_name = serializers.CharField(source='licensee.manufacturing_unit_name', read_only=True)
@@ -149,15 +148,9 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
             return []
-        
-        user_role_name = request.user.role.name if hasattr(request.user, 'role') and request.user.role else None
-        if not user_role_name:
-            return []
 
-        role = _resolve_workflow_role(user_role_name)
-        if not role:
+        if _get_user_role_id(request) is None and not getattr(request.user, 'role', None):
             return []
-        role_candidates = _workflow_role_candidates(role)
 
         # Find allowed transitions from current stage for this role
         from auth.workflow.models import WorkflowTransition
@@ -168,8 +161,7 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
         actions = []
         for t in transitions:
             cond = t.condition or {}
-            cond_role = _normalize_role_name(cond.get('role'))
-            if cond_role in role_candidates:
+            if _condition_role_matches(cond, request):
                 action = cond.get('action')
                 if action:
                     actions.append(action)
@@ -324,17 +316,9 @@ class HologramRequestSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
             return []
-        
-        user_role_name = request.user.role.name if hasattr(request.user, 'role') and request.user.role else None
-        if not user_role_name:
-            return []
 
-        resolved_role = _resolve_workflow_role(user_role_name)
-        role = 'permit-section' if resolved_role == 'permit_section' else resolved_role
-
-        if not role:
+        if _get_user_role_id(request) is None and not getattr(request.user, 'role', None):
             return []
-        role_candidates = _workflow_role_candidates(resolved_role)
 
         from auth.workflow.models import WorkflowTransition
         if not obj.current_stage:
@@ -344,8 +328,7 @@ class HologramRequestSerializer(serializers.ModelSerializer):
         actions = []
         for t in transitions:
             cond = t.condition or {}
-            cond_role = _normalize_role_name(cond.get('role'))
-            if cond_role in role_candidates:
+            if _condition_role_matches(cond, request):
                 action = cond.get('action')
                 if action:
                     actions.append(action)

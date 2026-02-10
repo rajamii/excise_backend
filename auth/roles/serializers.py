@@ -1,4 +1,4 @@
-from auth.roles.models import Role
+from auth.roles.models import Role, DashboardRoleConfig
 from rest_framework import serializers
 from django.core.exceptions import ValidationError
 
@@ -42,6 +42,25 @@ class RoleSerializer(serializers.ModelSerializer):
                         'precedence': "Requires admin privileges (level 8+) to demote roles"
                     })
         return attrs
+
+
+class DashboardRoleConfigSerializer(serializers.ModelSerializer):
+    roleId = serializers.IntegerField(source='role_id', read_only=True)
+    roleName = serializers.CharField(source='role.name', read_only=True)
+
+    class Meta:
+        model = DashboardRoleConfig
+        fields = (
+            'roleId',
+            'roleName',
+            'layout',
+            'widgets',
+            'navigation',
+            'permissions',
+            'is_active',
+            'config_version',
+            'updated_at',
+        )
 
 # class RoleSerializer(serializers.ModelSerializer):
 #     class Meta:
