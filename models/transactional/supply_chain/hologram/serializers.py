@@ -6,6 +6,19 @@ from models.masters.supply_chain.profile.models import SupplyChainUserProfile
 def _normalize_role_name(role_name):
     return ''.join(ch for ch in str(role_name or '').lower() if ch.isalnum())
 
+def _workflow_role_candidates(resolved_role):
+    role_map = {
+        'licensee': {'licensee'},
+        'it_cell': {'it_cell', 'it-cell', 'it cell', 'itcell'},
+        'permit_section': {'permit-section', 'permit_section', 'permit section', 'permitsection'},
+        'officer_in_charge': {
+            'officer_in_charge', 'officer-in-charge', 'officer in charge',
+            'officer-incharge', 'officerincharge', 'oic', 'siteinquiryofficer'
+        },
+        'commissioner': {'commissioner', 'jointcommissioner', 'siteadmin', 'level1', 'level2', 'level3', 'level4', 'level5'},
+    }
+    return {_normalize_role_name(v) for v in role_map.get(resolved_role, {resolved_role})}
+
 def _resolve_workflow_role(user_role_name):
     role_name = _normalize_role_name(user_role_name)
 
@@ -15,9 +28,9 @@ def _resolve_workflow_role(user_role_name):
     if role_name in {'itcell'} or ('it' in role_name and 'cell' in role_name):
         return 'it_cell'
 
-    if role_name in {'officerincharge', 'oic', 'siteinquiryofficer'}:
+    if role_name in {'officerincharge', 'offcierincharge', 'oic', 'siteinquiryofficer'}:
         return 'officer_in_charge'
-    if 'officer' in role_name and ('incharge' in role_name or 'charge' in role_name):
+    if (('officer' in role_name) or ('offcier' in role_name)) and ('incharge' in role_name or 'charge' in role_name):
         return 'officer_in_charge'
 
     if role_name in {
@@ -144,6 +157,7 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
         role = _resolve_workflow_role(user_role_name)
         if not role:
             return []
+        role_candidates = _workflow_role_candidates(role)
 
         # Find allowed transitions from current stage for this role
         from auth.workflow.models import WorkflowTransition
@@ -154,7 +168,8 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
         actions = []
         for t in transitions:
             cond = t.condition or {}
-            if cond.get('role') == role:
+            cond_role = _normalize_role_name(cond.get('role'))
+            if cond_role in role_candidates:
                 action = cond.get('action')
                 if action:
                     actions.append(action)
@@ -319,6 +334,7 @@ class HologramRequestSerializer(serializers.ModelSerializer):
 
         if not role:
             return []
+        role_candidates = _workflow_role_candidates(resolved_role)
 
         from auth.workflow.models import WorkflowTransition
         if not obj.current_stage:
@@ -328,7 +344,8 @@ class HologramRequestSerializer(serializers.ModelSerializer):
         actions = []
         for t in transitions:
             cond = t.condition or {}
-            if cond.get('role') == role:
+            cond_role = _normalize_role_name(cond.get('role'))
+            if cond_role in role_candidates:
                 action = cond.get('action')
                 if action:
                     actions.append(action)

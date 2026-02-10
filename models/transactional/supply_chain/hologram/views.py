@@ -6,13 +6,70 @@ from django.shortcuts import get_object_or_404
 from django.db import transaction as db_transaction
 from .models import HologramProcurement, HologramRequest, HologramRollsDetails
 from .serializers import HologramProcurementSerializer, HologramRequestSerializer
-from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition, Transaction
+from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition, Transaction, StagePermission
 from auth.workflow.constants import WORKFLOW_IDS
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
 import uuid
 
 def _normalize_role_name(role_name):
     return ''.join(ch for ch in str(role_name or '').lower() if ch.isalnum())
+
+def _workflow_role_candidates(role_bucket):
+    role_map = {
+        'licensee': {'licensee'},
+        'it_cell': {'it_cell', 'it-cell', 'it cell', 'itcell'},
+        'permit_section': {'permit-section', 'permit_section', 'permit section', 'permitsection'},
+        'officer_in_charge': {
+            'officer_in_charge', 'officer-in-charge', 'officer in charge',
+            'officer-incharge', 'officerincharge', 'oic', 'siteinquiryofficer'
+        },
+        'commissioner': {'commissioner', 'jointcommissioner', 'siteadmin', 'level1', 'level2', 'level3', 'level4', 'level5'},
+    }
+    return role_map.get(role_bucket, {role_bucket})
+
+def _collect_role_stage_ids(workflow_id, role_bucket):
+    transitions = WorkflowTransition.objects.filter(workflow_id=workflow_id).select_related('from_stage', 'to_stage')
+    role_candidates = {_normalize_role_name(r) for r in _workflow_role_candidates(role_bucket)}
+
+    # Seed stages where this role can take an action
+    seeds = set()
+    edges = {}
+    for t in transitions:
+        edges.setdefault(t.from_stage_id, set()).add(t.to_stage_id)
+
+        cond = t.condition or {}
+        cond_role = _normalize_role_name(cond.get('role'))
+        if cond_role and cond_role in role_candidates:
+            seeds.add(t.from_stage_id)
+            seeds.add(t.to_stage_id)
+
+    # Include all downstream stages so users retain historical visibility naturally
+    visible = set(seeds)
+    stack = list(seeds)
+    while stack:
+        current = stack.pop()
+        for nxt in edges.get(current, set()):
+            if nxt not in visible:
+                visible.add(nxt)
+                stack.append(nxt)
+
+    return visible
+
+def _get_visible_stage_ids_for_user(user, workflow_id, role_bucket):
+    visible = set()
+
+    # DB stage permission grants immediate visibility to configured stages
+    if hasattr(user, 'role') and user.role:
+        perm_stage_ids = StagePermission.objects.filter(
+            role=user.role,
+            can_process=True,
+            stage__workflow_id=workflow_id
+        ).values_list('stage_id', flat=True)
+        visible.update(perm_stage_ids)
+
+    # Transition-role graph grants workflow-driven visibility including downstream history
+    visible.update(_collect_role_stage_ids(workflow_id, role_bucket))
+    return visible
 
 def _resolve_role_bucket(user):
     raw_role_name = user.role.name if hasattr(user, 'role') and user.role else ''
@@ -27,9 +84,9 @@ def _resolve_role_bucket(user):
     if role_name in {'permitsection'}:
         return 'permit_section'
 
-    if role_name in {'officerincharge', 'oic', 'siteinquiryofficer'}:
+    if role_name in {'officerincharge', 'offcierincharge', 'oic', 'siteinquiryofficer'}:
         return 'officer_in_charge'
-    if 'officer' in role_name and ('incharge' in role_name or 'charge' in role_name):
+    if (('officer' in role_name) or ('offcier' in role_name)) and ('incharge' in role_name or 'charge' in role_name):
         return 'officer_in_charge'
 
     if role_name in {
@@ -84,28 +141,30 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 return queryset.filter(licensee=user.supply_chain_profile)
             return queryset.none()
             
-        elif role_bucket == 'it_cell':
-            # IT Cell sees EVERYTHING (Tracking & Management)
-            return queryset
-            
-        elif role_bucket == 'commissioner':
-            # Commissioner sees ALL stages from Forwarded onwards (complete history)
-            # This ensures approved records remain visible for future reference
-            return queryset.filter(current_stage__name__in=[
-                'Forwarded to Commissioner', 
-                'Approved by Commissioner', 
-                'Rejected by Commissioner',
-                'Payment Completed',
-                'Cartoon Assigned',
-                'ARRIVED'
-            ])
-            
-        elif role_bucket == 'officer_in_charge':
-            # OIC sees Payment Completed (Pending Action) + Assigned (History)
-            return queryset.filter(current_stage__name__in=[
-                'Payment Completed', 
-                'Cartoon Assigned'
-            ])
+        elif role_bucket in ['it_cell', 'commissioner', 'officer_in_charge', 'permit_section']:
+            visible_stage_ids = _get_visible_stage_ids_for_user(
+                user=user,
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'],
+                role_bucket=role_bucket
+            )
+            if visible_stage_ids:
+                return queryset.filter(current_stage_id__in=visible_stage_ids)
+
+            # Safe fallback to preserve current production behavior when DB config is partial
+            if role_bucket == 'it_cell':
+                return queryset
+            if role_bucket == 'commissioner':
+                return queryset.filter(current_stage__name__in=[
+                    'Forwarded to Commissioner',
+                    'Approved by Commissioner',
+                    'Rejected by Commissioner',
+                    'Payment Completed',
+                    'Cartoon Assigned',
+                    'ARRIVED'
+                ])
+            if role_bucket == 'officer_in_charge':
+                return queryset.filter(current_stage__name__in=['Payment Completed', 'Cartoon Assigned'])
+            return queryset.none()
             
         return queryset.none() # Default deny if role unknown
         return queryset.none() # Default deny if role unknown
@@ -158,10 +217,18 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             from_stage=instance.current_stage
         )
         
+        role_bucket = _resolve_role_bucket(request.user)
+        role_candidates = {_normalize_role_name(r) for r in _workflow_role_candidates(role_bucket)}
+
         selected_transition = None
         for t in transitions:
             cond = t.condition or {}
-            if cond.get('action') == action_name:
+            cond_action = str(cond.get('action') or '').lower()
+            cond_role = _normalize_role_name(cond.get('role'))
+
+            role_ok = not cond_role or cond_role in role_candidates
+            action_ok = cond_action == str(action_name).lower()
+            if role_ok and action_ok:
                 selected_transition = t
                 break
                 
@@ -568,14 +635,18 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                 return queryset.filter(licensee=user.supply_chain_profile)
             return queryset.none()
             
-        elif role_bucket == 'permit_section':
-            # Allow Permit Section to see all requests to track status
-            return queryset
-            
-        elif role_bucket == 'officer_in_charge':
-            # OIC sees ALL requests (no workflow filtering)
-            # Production Complete is determined by available quantity in frontend, not workflow stage
-            return queryset
+        elif role_bucket in ['permit_section', 'officer_in_charge', 'it_cell', 'commissioner']:
+            visible_stage_ids = _get_visible_stage_ids_for_user(
+                user=user,
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_REQUEST'],
+                role_bucket=role_bucket
+            )
+            if visible_stage_ids:
+                return queryset.filter(current_stage_id__in=visible_stage_ids)
+            # Preserve previous behavior if DB config is incomplete
+            if role_bucket in ['permit_section', 'officer_in_charge']:
+                return queryset
+            return queryset.none()
             
         return queryset.none()
 
@@ -656,10 +727,16 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         print(f"DEBUG: perform_action. Ref: {instance.ref_no}, Current Stage: {instance.current_stage.name}, Action: {action_name}")
         
         selected_transition = None
+        role_bucket = _resolve_role_bucket(request.user)
+        role_candidates = {_normalize_role_name(r) for r in _workflow_role_candidates(role_bucket)}
         for t in transitions:
             cond = t.condition or {}
             print(f"DEBUG: Checking transition to {t.to_stage.name} with cond {cond}")
-            if cond.get('action') == action_name:
+            cond_action = str(cond.get('action') or '').lower()
+            cond_role = _normalize_role_name(cond.get('role'))
+            role_ok = not cond_role or cond_role in role_candidates
+            action_ok = cond_action == str(action_name).lower()
+            if role_ok and action_ok:
                 selected_transition = t
                 break
         
