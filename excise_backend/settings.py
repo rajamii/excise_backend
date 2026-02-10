@@ -77,9 +77,9 @@ INSTALLED_APPS = [
     'models.masters.supply_chain.status_master',
     
 
-    # transcational models
+    # transactional models
     'models.transactional',
-    'models.transactional.company_registration',
+    'models.transactional.company_registration',      # Company Registration (NEW)
     'models.transactional.license_application',
     'models.transactional.site_enquiry',
     'models.transactional.new_license_application',
@@ -149,9 +149,9 @@ REST_FRAMEWORK = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'eAbkari_db',       # Database name
+        'NAME': 'eAbkari',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'admin',  # Your PostgreSQL password
+        'PASSWORD': 'postgres',  # Your PostgreSQL password
         'HOST': 'localhost',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
     }

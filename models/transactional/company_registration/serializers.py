@@ -1,86 +1,101 @@
 from rest_framework import serializers
-from .models import CompanyModel
-from .helpers import (
-    validate_name,
-    validate_pan,
-    validate_mobile_number,
-    validate_address,
-    validate_email,
-)
+from .models import CompanyRegistration, Transaction, Objection
+from auth.user.models import CustomUser
+from auth.roles.models import Role
+from auth.workflow.serializers import WorkflowTransactionSerializer, WorkflowObjectionSerializer
+from . import helpers
 
-class CompanySerializer(serializers.ModelSerializer):
+
+class UserShortSerializer(serializers.ModelSerializer):
+    role_name = serializers.CharField(source='role.name', read_only=True)
+    
     class Meta:
-        model = CompanyModel
+        model = CustomUser
+        fields = ['id', 'username', 'role', 'role_name']
+
+
+class RoleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Role
+        fields = ['id', 'name']
+
+
+class TransactionSerializer(serializers.ModelSerializer):
+    performed_by = UserShortSerializer(read_only=True)
+    forwarded_by = UserShortSerializer(read_only=True)
+    forwarded_to = RoleSerializer(read_only=True)
+    
+    class Meta:
+        model = Transaction
+        fields = ['company_registration', 'stage', 'remarks', 'timestamp', 'performed_by', 'forwarded_by', 'forwarded_to']
+
+
+class ObjectionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Objection
         fields = '__all__'
-        read_only_fields = (
-            'id',
-            'applicationId',
-            'IsActive'
-        )
-        extra_kwargs = {
-            'undertaking': {'write_only': True},
-        }
 
-    # Correct validation methods for each field
-    def validate_companyName(self, value):
-        validate_name(value)
-        return value
 
-    def validate_memberName(self, value):
-        validate_name(value)
-        return value
+class ResolveObjectionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CompanyRegistration
+        fields = '__all__'
+
+
+class CompanyRegistrationSerializer(serializers.ModelSerializer):
+
+    # Read-only computed fields
+    application_id = serializers.CharField(read_only=True)
+    current_stage = serializers.PrimaryKeyRelatedField(read_only=True)
+    workflow = serializers.PrimaryKeyRelatedField(read_only=True)
+    current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
+    is_approved = serializers.BooleanField(read_only=True)
+    
+    transactions = WorkflowTransactionSerializer(many=True, read_only=True)
+    objections = WorkflowObjectionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = CompanyRegistration
+        fields = '__all__'
+        read_only_fields = ['application_id', 'current_stage_name', 'is_approved', 'applicant', 'workflow']
+
+    def get_latest_transaction(self, obj):
+        transaction = obj.transactions.order_by('-timestamp').first()
+        return WorkflowTransactionSerializer(transaction).data if transaction else None
+
+    def validate_company_name(self, value):
+        return helpers.validate_name(value)
+
+    def validate_member_name(self, value):
+        return helpers.validate_name(value)
 
     def validate_pan(self, value):
-        validate_pan(value)
-        return value
+        return helpers.validate_pan_number(value)
 
-    def validate_officeAddress(self, value):
-        validate_address(value)
-        return value
+    def validate_office_address(self, value):
+        return helpers.validate_address(value)
 
-    def validate_factoryAddress(self, value):
-        validate_address(value)
-        return value
+    def validate_factory_address(self, value):
+        return helpers.validate_address(value)
 
-    def validate_memberAddress(self, value):
-        validate_address(value)
-        return value
+    def validate_member_address(self, value):
+        return helpers.validate_address(value)
 
-    def validate_companyMobileNumber(self, value):
-        validate_mobile_number(value)
-        return value
+    def validate_company_mobile_number(self, value):
+        return helpers.validate_mobile_number(value)
 
-    def validate_memberMobileNumber(self, value):
-        validate_mobile_number(value)
-        return value
+    def validate_member_mobile_number(self, value):
+        return helpers.validate_mobile_number(value)
 
-    def validate_companyEmailId(self, value):
+    def validate_company_email_id(self, value):
         if value:
-            validate_email(value)
+            return helpers.validate_email_field(value)
         return value
 
-    def validate_memberEmailId(self, value):
+    def validate_member_email_id(self, value):
         if value:
-            validate_email(value)
+            return helpers.validate_email_field(value)
         return value
-    
-    def validate_applicationId(self, value):
-        """Ensure application ID is unique"""
-        instance = getattr(self, 'instance', None)
-        if instance:
-            # For updates
-            if CompanyModel.objects.exclude(pk=instance.pk).filter(applicationId=value).exists():
-                raise serializers.ValidationError("Application ID must be unique")
-        else:
-            # For creates
-            if value and CompanyModel.objects.filter(applicationId=value).exists():
-                raise serializers.ValidationError("Application ID must be unique")
-        return value
-    
-    def create(self, validated_data):
-        """Auto-generate application ID if not provided"""
-        if not validated_data.get('applicationId'):
-            # Implement custom ID generation logic
-            # Example: f"COMP-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            pass
-        return super().create(validated_data)
+
+    def validate_pin_code(self, value):
+        return helpers.validate_pin_code(value)

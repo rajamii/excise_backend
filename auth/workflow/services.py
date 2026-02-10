@@ -12,9 +12,14 @@ from .models import (
 # Mapping: (app_label, model_name) -> Serializer class
 SERIALIZER_MAPPING = {
     # (app_label, model_name_lower): 'full.import.path.to.Serializer'
-    ('license_application', 'licenseapplication'): 'models.transactional.license_application.serializers.LicenseApplicationSerializer',
-    ('new_license_application', 'newlicenseapplication'): 'models.transactional.new_license_application.serializers.NewLicenseApplicationSerializer',
-    ('salesman_barman', 'salesmanbarmanmodel'): 'models.transactional.salesman_barman.serializers.SalesmanBarmanSerializer',
+    ('license_application', 'licenseapplication'): 
+        'models.transactional.license_application.serializers.LicenseApplicationSerializer',
+    ('new_license_application', 'newlicenseapplication'): 
+        'models.transactional.new_license_application.serializers.NewLicenseApplicationSerializer',
+    ('salesman_barman', 'salesmanbarmanmodel'): 
+        'models.transactional.salesman_barman.serializers.SalesmanBarmanSerializer',
+    ('company_registration', 'companyregistration'):  # Company Registration (NEW)
+        'models.transactional.company_registration.serializers.CompanyRegistrationSerializer',
 }
 
 class WorkflowService:
@@ -55,7 +60,7 @@ class WorkflowService:
             object_id=str(application.pk),
             performed_by=user,
             forwarded_by=user,
-            forwarded_to=perm.role,
+            forwarded_to=perm.role if perm else None,
             stage=transition.to_stage,
             remarks="Application forwarded to Level 1 for review"
         )
