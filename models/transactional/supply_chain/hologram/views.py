@@ -8,8 +8,59 @@ from .models import HologramProcurement, HologramRequest, HologramRollsDetails
 from .serializers import HologramProcurementSerializer, HologramRequestSerializer
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition, Transaction
 from auth.workflow.constants import WORKFLOW_IDS
-from models.masters.supply_chain.profile.models import SupplyChainUserProfile
+from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
 import uuid
+
+def _normalize_role_name(role_name):
+    return ''.join(ch for ch in str(role_name or '').lower() if ch.isalnum())
+
+def _resolve_role_bucket(user):
+    raw_role_name = user.role.name if hasattr(user, 'role') and user.role else ''
+    role_name = _normalize_role_name(raw_role_name)
+
+    if role_name == 'licensee':
+        return 'licensee'
+
+    if role_name in {'itcell'} or ('it' in role_name and 'cell' in role_name):
+        return 'it_cell'
+
+    if role_name in {'permitsection'}:
+        return 'permit_section'
+
+    if role_name in {'officerincharge', 'oic', 'siteinquiryofficer'}:
+        return 'officer_in_charge'
+    if 'officer' in role_name and ('incharge' in role_name or 'charge' in role_name):
+        return 'officer_in_charge'
+
+    if role_name in {
+        'commissioner', 'jointcommissioner', 'siteadmin',
+        'level1', 'level2', 'level3', 'level4', 'level5'
+    }:
+        return 'commissioner'
+    if 'commissioner' in role_name:
+        return 'commissioner'
+
+    return role_name
+
+def _get_or_create_active_supply_chain_profile(user):
+    profile = SupplyChainUserProfile.objects.filter(user=user).first()
+    if profile:
+        return profile
+
+    latest_unit = UserManufacturingUnit.objects.filter(user=user).order_by('-updated_at', '-id').first()
+    if not latest_unit:
+        return None
+
+    profile, _ = SupplyChainUserProfile.objects.update_or_create(
+        user=user,
+        defaults={
+            'manufacturing_unit_name': latest_unit.manufacturing_unit_name,
+            'licensee_id': latest_unit.licensee_id,
+            'license_type': latest_unit.license_type,
+            'address': latest_unit.address,
+        }
+    )
+    return profile
 
 class HologramProcurementViewSet(viewsets.ModelViewSet):
     queryset = HologramProcurement.objects.all()
@@ -26,18 +77,18 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             return queryset.none()
             
         # Role-based filtering
-        role_name = user.role.name if hasattr(user, 'role') and user.role else ''
+        role_bucket = _resolve_role_bucket(user)
         
-        if role_name in ['licensee', 'Licensee']:
+        if role_bucket == 'licensee':
             if hasattr(user, 'supply_chain_profile'):
                 return queryset.filter(licensee=user.supply_chain_profile)
             return queryset.none()
             
-        elif role_name in ['it_cell', 'IT Cell', 'IT-Cell', 'it-cell']:
+        elif role_bucket == 'it_cell':
             # IT Cell sees EVERYTHING (Tracking & Management)
             return queryset
             
-        elif role_name in ['level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'Site-Admin', 'site_admin', 'commissioner', 'Commissioner']:
+        elif role_bucket == 'commissioner':
             # Commissioner sees ALL stages from Forwarded onwards (complete history)
             # This ensures approved records remain visible for future reference
             return queryset.filter(current_stage__name__in=[
@@ -49,7 +100,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 'ARRIVED'
             ])
             
-        elif role_name in ['officer_in_charge', 'Officer In-Charge', 'OIC', 'officer-incharge']:
+        elif role_bucket == 'officer_in_charge':
             # OIC sees Payment Completed (Pending Action) + Assigned (History)
             return queryset.filter(current_stage__name__in=[
                 'Payment Completed', 
@@ -62,6 +113,11 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         # Auto-generate Ref No
         ref_no = f"YB/6/BREW/{timezone.now().year}/{uuid.uuid4().hex[:6].upper()}"
+        profile = _get_or_create_active_supply_chain_profile(self.request.user)
+        if not profile:
+            raise serializers.ValidationError({
+                'detail': 'No active supply chain profile found. Select your manufacturing unit first.'
+            })
         
         # Get initial workflow stage
         try:
@@ -73,10 +129,10 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
 
         instance = serializer.save(
             ref_no=ref_no,
-            licensee=self.request.user.supply_chain_profile,
+            licensee=profile,
             workflow=workflow,
             current_stage=initial_stage,
-            manufacturing_unit=self.request.user.supply_chain_profile.manufacturing_unit_name
+            manufacturing_unit=profile.manufacturing_unit_name
         )
         
         # Log initial transaction
@@ -504,18 +560,19 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
             return queryset.none()
             
         role_name = user.role.name if hasattr(user, 'role') and user.role else ''
-        print(f"DEBUG: User: {user.username}, Role: '{role_name}'")
+        role_bucket = _resolve_role_bucket(user)
+        print(f"DEBUG: User: {user.username}, Role: '{role_name}', bucket: '{role_bucket}'")
         
-        if role_name in ['licensee', 'Licensee']:
+        if role_bucket == 'licensee':
             if hasattr(user, 'supply_chain_profile'):
                 return queryset.filter(licensee=user.supply_chain_profile)
             return queryset.none()
             
-        elif role_name in ['permit-section', 'Permit-Section', 'Permit Section']:
+        elif role_bucket == 'permit_section':
             # Allow Permit Section to see all requests to track status
             return queryset
             
-        elif role_name in ['officer_in_charge', 'Officer In-Charge', 'OIC', 'officer-in-charge', 'Officer-In-Charge', 'officer-incharge', 'Officer-Incharge', 'Officer In Charge', 'Officer in Charge', 'Officer in charge']:
+        elif role_bucket == 'officer_in_charge':
             # OIC sees ALL requests (no workflow filtering)
             # Production Complete is determined by available quantity in frontend, not workflow stage
             return queryset
@@ -524,6 +581,11 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         ref_no = f"HRQ/{timezone.now().year}/{uuid.uuid4().hex[:6].upper()}"
+        profile = _get_or_create_active_supply_chain_profile(self.request.user)
+        if not profile:
+            raise serializers.ValidationError({
+                'detail': 'No active supply chain profile found. Select your manufacturing unit first.'
+            })
         
         try:
             workflow = Workflow.objects.get(id=WORKFLOW_IDS['HOLOGRAM_REQUEST'])
@@ -533,7 +595,7 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
 
         instance = serializer.save(
             ref_no=ref_no,
-            licensee=self.request.user.supply_chain_profile,
+            licensee=profile,
             workflow=workflow,
             current_stage=initial_stage
         )
@@ -863,20 +925,17 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
         if not user.is_authenticated:
             return DailyHologramRegister.objects.none()
             
-        role_name = user.role.name if hasattr(user, 'role') and user.role else ''
+        role_bucket = _resolve_role_bucket(user)
         
         # OIC / Licensee Access - Return entries for their licensee profile
         # Also support OIC roles which may use fallback profile
-        if role_name in ['licensee', 'Licensee']:
+        if role_bucket == 'licensee':
             if hasattr(user, 'supply_chain_profile'):
                 return DailyHologramRegister.objects.filter(licensee=user.supply_chain_profile)
             return DailyHologramRegister.objects.none()
                 
         # IT Cell / Admin / OIC Access (View All)
-        if role_name in ['it_cell', 'IT Cell', 'IT-Cell', 'Site-Admin', 'site_admin',
-                         'officer_in_charge', 'Officer In-Charge', 'OIC', 
-                         'officer-in-charge', 'Officer-In-Charge', 'officer-incharge', 'Officer-Incharge',
-                         'Officer In Charge', 'Officer in Charge', 'Officer in charge']:
+        if role_bucket in ['it_cell', 'commissioner', 'officer_in_charge']:
              return DailyHologramRegister.objects.all()
              
         return DailyHologramRegister.objects.none()
@@ -1758,15 +1817,15 @@ class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
         if not user.is_authenticated:
             return HologramRollsDetails.objects.none()
             
-        role_name = user.role.name if hasattr(user, 'role') and user.role else ''
+        role_bucket = _resolve_role_bucket(user)
         
         # OIC / Licensee Access
-        if role_name in ['licensee', 'Licensee', 'officer_in_charge', 'Officer In-Charge', 'OIC']:
+        if role_bucket in ['licensee', 'officer_in_charge']:
             if hasattr(user, 'supply_chain_profile'):
                 return HologramRollsDetails.objects.filter(procurement__licensee=user.supply_chain_profile)
                 
         # IT Cell / Admin / Commissioner / OIC Access (View All)
-        if role_name in ['it_cell', 'IT Cell', 'IT-Cell', 'Site-Admin', 'site_admin', 'commissioner', 'Commissioner', 'level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'officer_in_charge', 'Officer In-Charge', 'OIC', 'officer-incharge']:
+        if role_bucket in ['it_cell', 'commissioner', 'officer_in_charge']:
              return HologramRollsDetails.objects.all()
              
         return HologramRollsDetails.objects.none()

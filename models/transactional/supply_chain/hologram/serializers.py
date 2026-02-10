@@ -3,6 +3,36 @@ from .models import HologramProcurement, HologramRequest
 from auth.workflow.models import Transaction, Objection
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile
 
+def _normalize_role_name(role_name):
+    return ''.join(ch for ch in str(role_name or '').lower() if ch.isalnum())
+
+def _resolve_workflow_role(user_role_name):
+    role_name = _normalize_role_name(user_role_name)
+
+    if role_name == 'licensee':
+        return 'licensee'
+
+    if role_name in {'itcell'} or ('it' in role_name and 'cell' in role_name):
+        return 'it_cell'
+
+    if role_name in {'officerincharge', 'oic', 'siteinquiryofficer'}:
+        return 'officer_in_charge'
+    if 'officer' in role_name and ('incharge' in role_name or 'charge' in role_name):
+        return 'officer_in_charge'
+
+    if role_name in {
+        'commissioner', 'jointcommissioner', 'siteadmin',
+        'level1', 'level2', 'level3', 'level4', 'level5'
+    }:
+        return 'commissioner'
+    if 'commissioner' in role_name:
+        return 'commissioner'
+
+    if role_name == 'permitsection':
+        return 'permit_section'
+
+    return None
+
 class HologramProcurementSerializer(serializers.ModelSerializer):
     licensee_name = serializers.CharField(source='licensee.manufacturing_unit_name', read_only=True)
     status = serializers.CharField(source='current_stage.name', read_only=True)
@@ -111,19 +141,7 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
         if not user_role_name:
             return []
 
-        # Map backend roles to workflow roles
-        role = None
-        commissioner_roles = ['level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'Site-Admin', 'site_admin', 'commissioner', 'Commissioner']
-        
-        if user_role_name in commissioner_roles:
-            role = 'commissioner'
-        elif user_role_name in ['it_cell', 'IT Cell', 'IT-Cell']: # Adjust based on actual role name
-            role = 'it_cell'
-        elif user_role_name in ['officer_in_charge', 'Officer In-Charge', 'OIC']:
-            role = 'officer_in_charge'
-        elif user_role_name in ['licensee', 'Licensee']:
-            role = 'licensee'
-            
+        role = _resolve_workflow_role(user_role_name)
         if not role:
             return []
 
@@ -296,14 +314,8 @@ class HologramRequestSerializer(serializers.ModelSerializer):
         if not user_role_name:
             return []
 
-        role = None
-        # Permit Section Logic
-        if user_role_name in ['permit-section', 'Permit-Section', 'Permit Section']:
-            role = 'permit-section'
-        elif user_role_name in ['officer_in_charge', 'Officer In-Charge', 'OIC', 'officer-incharge', 'Officer-Incharge', 'Officer In Charge', 'Officer in Charge', 'Officer in charge']:
-            role = 'officer_in_charge'
-        elif user_role_name in ['licensee', 'Licensee']:
-            role = 'licensee'
+        resolved_role = _resolve_workflow_role(user_role_name)
+        role = 'permit-section' if resolved_role == 'permit_section' else resolved_role
 
         if not role:
             return []
