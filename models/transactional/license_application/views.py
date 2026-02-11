@@ -7,8 +7,8 @@ from rest_framework.response import Response
 from auth.roles.permissions import HasAppPermission
 from .models import LicenseApplication
 from models.masters.license.models import License
-from models.masters.core.models import LocationFee
-from .serializers import LicenseApplicationSerializer, LocationFeeSerializer
+from models.masters.core.models import LicenseFee
+from .serializers import LicenseApplicationSerializer, LicenseFeeSerializer
 from rest_framework import status
 from auth.workflow.models import Workflow, StagePermission, WorkflowStage
 from auth.workflow.permissions import HasStagePermission
@@ -234,8 +234,8 @@ def print_license_view(request, application_id):
 @permission_classes([HasAppPermission('license_application', 'view')])
 @api_view(['GET'])
 def get_location_fees(request):
-    fees = LocationFee.objects.all()
-    serializer = LocationFeeSerializer(fees, many=True)
+    fees = LicenseFee.objects.all()
+    serializer = LicenseFeeSerializer(fees, many=True)
     return Response(serializer.data)
 
 

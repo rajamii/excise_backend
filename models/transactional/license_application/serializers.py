@@ -4,7 +4,7 @@ from auth.user.models import CustomUser
 from auth.roles.models import Role
 from auth.workflow.serializers import WorkflowTransactionSerializer, WorkflowObjectionSerializer
 from . import helpers
-from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseType, LocationFee
+from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseType, LicenseFee
 from utils.fields import CodeRelatedField
 
 class UserShortSerializer(serializers.ModelSerializer):
@@ -136,7 +136,7 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
         return helpers.validate_status(value)
 
 
-class LocationFeeSerializer(serializers.ModelSerializer):
+class LicenseFeeSerializer(serializers.ModelSerializer):
     class Meta:
-        model = LocationFee
-        fields = ['location_name', 'fee_amount']
+        model = LicenseFee
+        fields = ['license_name', 'fee_amount']

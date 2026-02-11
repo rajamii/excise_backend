@@ -1,4 +1,4 @@
- # views.py
+# views.py
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -16,6 +16,7 @@ from .serializers.policestation_serializer import PoliceStationSerializer
 from .serializers.licensesubcategory_serializer import LicenseSubcategorySerializer
 from .serializers.licensetitle_serializer import LicenseTitleSerializer
 from .serializers.road_serializer import RoadSerializer
+from .serializers.location_serializer import LocationSerializer
 
 #################################################
 #           License Category                    #
@@ -541,5 +542,74 @@ def road_delete(request, pk):
     road.delete()
     return Response(
         {'message': f'Road \"{road.road_name}\" deleted successfully.'},
+        status=status.HTTP_200_OK
+    )
+
+#################################################
+#                   Location                    #
+#################################################
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def location_list(request):
+    """
+    List all active locations, optionally filtered by district_code.
+    """
+    queryset = masters_model.Location.objects.filter(is_active=True)
+    district_code = request.query_params.get('district_code')
+    if district_code:
+        queryset = queryset.filter(district_code=district_code)
+
+    serializer = LocationSerializer(queryset, many=True, context={'request': request})
+    return Response(serializer.data)
+
+
+@permission_classes([HasAppPermission('masters', 'create')])
+@api_view(['POST'])
+def location_create(request):
+    """
+    Create a new location.
+    """
+    serializer = LocationSerializer(data=request.data, context={'request': request})
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def location_detail(request, pk):
+    """
+    Retrieve an active location by primary key.
+    """
+    location = get_object_or_404(masters_model.Location, pk=pk, is_active=True)
+    serializer = LocationSerializer(location, context={'request': request})
+    return Response(serializer.data)
+
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PUT', 'PATCH'])
+def location_update(request, pk):
+    """
+    Update a location entry.
+    """
+    location = get_object_or_404(masters_model.Location, pk=pk)
+    serializer = LocationSerializer(instance=location, data=request.data, partial=(request.method == 'PATCH'), context={'request': request})
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+
+
+@permission_classes([HasAppPermission('masters', 'delete')])
+@api_view(['DELETE'])
+def location_delete(request, pk):
+    """
+    Deactivate a location (soft delete).
+    """
+    location = get_object_or_404(masters_model.Location, pk=pk)
+    location.is_active = False
+    location.save()
+    return Response(
+        {'message': f'Location "{location.location_description}" deactivated successfully.'},
         status=status.HTTP_200_OK
     )

@@ -85,6 +85,15 @@ road_patterns = [
     path('<int:pk>/delete/', views.road_delete, name='road-delete'),
 ]
 
+
+# Location URLs
+location_patterns = [
+    path('', views.location_list, name='location-list'),
+    path('create/', views.location_create, name='location-create'),
+    path('<int:pk>/', views.location_detail, name='location-detail'),
+    path('<int:pk>/update/', views.location_update, name='location-update'),
+    path('<int:pk>/delete/', views.location_delete, name='location-delete'),
+]
 urlpatterns = [
     # Grouped patterns
     path('license-categories/', include(license_category_patterns)),
@@ -96,4 +105,5 @@ urlpatterns = [
     path('license-subcategories/', include(license_subcategory_patterns)),
     path('license-titles/', include(license_title_patterns)),
     path('roads/', include(road_patterns)),
+    path('locations/', include(location_patterns)),
 ]

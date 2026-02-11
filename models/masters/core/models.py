@@ -1,4 +1,4 @@
- # models.py
+# models.py
 from django.db import models
 from django.core.exceptions import ValidationError
 from .validators import validate_name, validate_name_extended
@@ -230,13 +230,124 @@ class Road(models.Model):
 
     def __str__(self):
         return f"{self.road_name} ({self.road_type})"
-    
-class LocationFee(models.Model):
-    location_name = models.CharField(max_length=100, unique=True)
-    fee_amount = models.DecimalField(max_digits=10, decimal_places=2)
+
+# Location Model
+class Location(models.Model):
+    location_code = models.IntegerField(
+        unique=True,
+        null=False,
+        blank=False,
+        help_text="Unique location code"
+    )
+    location_description = models.CharField(
+        max_length=200,
+        null=False,
+        blank=False,
+        help_text="Description of the location"
+        # Note: Validation is handled in the serializer to avoid migration issues
+    )
+    district_code = models.ForeignKey(
+        District,
+        to_field='district_code',
+        on_delete=models.CASCADE,
+        related_name='locations',
+        null=False,
+        db_column='district_code'
+    )
+    is_active = models.BooleanField(
+        default=True
+    )
 
     class Meta:
-        db_table = 'location_fee'
+        db_table = 'masters_location'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['district_code', 'location_code'],
+                name='unique_location_code_per_district'
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.location_description} ({self.location_code})"
+
+    def clean(self):
+        """Validate location_description using the validator"""
+        if self.location_description:
+            validate_name_extended(self.location_description)
+            if len(self.location_description.strip()) < 2:
+                raise ValidationError("Location description must be ≥2 characters")
+
+# LicenseFee Model - FINAL VERSION (All fields required)
+class LicenseFee(models.Model):
+    license_category = models.ForeignKey(
+        LicenseCategory,
+        on_delete=models.CASCADE,
+        related_name='license_fees',
+        null=False,
+        help_text="License category"
+    )
+    license_subcategory = models.ForeignKey(
+        LicenseSubcategory,
+        on_delete=models.CASCADE,
+        related_name='license_fees',
+        null=False,
+        help_text="License subcategory"
+    )
+    location_code = models.ForeignKey(
+        Location,
+        to_field='location_code',
+        on_delete=models.CASCADE,
+        related_name='license_fees',
+        null=False,
+        db_column='location_code',
+        help_text="Location code"
+    )
+    license_fee = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2,
+        help_text="License fee amount"
+    )
+    security_amount = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2,
+        help_text="Security deposit amount"
+    )
+    renewal_amount = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2,
+        help_text="Renewal fee amount"
+    )
+    late_fee = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2,
+        default=0.00,
+        help_text="Late fee amount"
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Is this fee structure active?"
+    )
+    created_by = models.ForeignKey(
+        'user.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_license_fees',
+        help_text="User who created this record"
+    )
+    operation_date = models.DateTimeField(
+        auto_now_add=True,
+        help_text="Date when this record was created"
+    )
+
+    class Meta:
+        db_table = 'license_fee'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['license_category', 'license_subcategory', 'location_code'],
+                name='unique_license_fee_combination'
+            )
+        ]
 
     def __str__(self):
-        return f"{self.location_name} - ₹{self.fee_amount}"
+        return f"{self.license_category} - {self.license_subcategory} - Location {self.location_code} - ₹{self.license_fee}"
