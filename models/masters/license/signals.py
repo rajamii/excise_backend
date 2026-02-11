@@ -69,6 +69,7 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
     # Extract required fields — with fallbacks
     try:
         license_category = getattr(application, 'license_category', None)
+        license_sub_category = getattr(application, 'license_sub_category', None)
         excise_district = getattr(application, 'excise_district', None) or getattr(application, 'site_district', None)
         applicant = getattr(application, 'applicant', None)
         
@@ -133,6 +134,7 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
             source_type=source_type,
             applicant=applicant,
             license_category=license_category,
+            license_sub_category=license_sub_category,
             excise_district=excise_district,
             issue_date=issue_date,
             valid_up_to=valid_up_to,
