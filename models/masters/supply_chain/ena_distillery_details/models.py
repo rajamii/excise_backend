@@ -3,6 +3,7 @@ from django.db import models
 class enaDistilleryTypes(models.Model):
     id = models.AutoField(primary_key=True)
     distillery_name = models.CharField(max_length=255)
+    licensee_id = models.CharField(max_length=50, blank=True, null=True)
     distillery_address = models.TextField()
     distillery_state = models.CharField(max_length=100)
     via_route = models.TextField()
@@ -14,7 +15,7 @@ class enaDistilleryTypes(models.Model):
 
     class Meta:
         db_table = 'ena_distillery_details'
-        app_label = 'models.masters.supply_chain.ena_distillery_details'
+        # app_label = 'models.masters.supply_chain.ena_distillery_details'
         verbose_name = 'ENA Distillery'
         verbose_name_plural = 'ENA Distilleries'    
 

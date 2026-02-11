@@ -2,9 +2,6 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.db.models import F, Value, CharField
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
 import logging
 from django.db import connection
 from .models import LiquorData
@@ -14,18 +11,22 @@ logger = logging.getLogger(__name__)
 class BrandSizeListView(APIView):
     def get(self, request):
         try:
-            # First, get all unique brand names
+            # Get distillery filter from query params (defaults to Sikkim Distilleries Ltd)
+            distillery_filter = request.GET.get('distillery', 'Sikkim Distilleries Ltd')
+            
+            # First, get all unique brand names from Sikkim Distilleries Ltd only
             with connection.cursor() as cursor:
                 cursor.execute("""
                     SELECT DISTINCT brand_name 
                     FROM liquor_data_details 
                     WHERE brand_name IS NOT NULL
-                """)
+                    AND manufacturing_unit_name ILIKE %s
+                """, [f'%{distillery_filter}%'])
                 brand_names = [row[0] for row in cursor.fetchall()]
             
             result = []
             
-            # For each brand, get its sizes
+            # For each brand, get its sizes (only from Sikkim Distilleries Ltd)
             for brand_name in brand_names:
                 if not brand_name:
                     continue
@@ -35,23 +36,29 @@ class BrandSizeListView(APIView):
                         SELECT DISTINCT pack_size_ml 
                         FROM liquor_data_details 
                         WHERE brand_name = %s 
+                        AND manufacturing_unit_name ILIKE %s
                         AND pack_size_ml IS NOT NULL
                         ORDER BY pack_size_ml
-                    """, [brand_name])
+                    """, [brand_name, f'%{distillery_filter}%'])
                     sizes = [row[0] for row in cursor.fetchall()]
                 
                 if sizes:
                     result.append({
                         'brandName': brand_name,
-                        'sizes': sizes
+                        'sizes': sizes,
+                        'manufacturingUnit': distillery_filter
                     })
             
             # Sort by brand name
             result.sort(key=lambda x: x['brandName'])
             
+            logger.info(f"BrandSizeListView: Returning {len(result)} brands for distillery: {distillery_filter}")
+            
             return Response({
                 'success': True,
-                'data': result
+                'data': result,
+                'distillery': distillery_filter,
+                'total_brands': len(result)
             })
             
         except Exception as e:
@@ -92,7 +99,11 @@ class LiquorRatesView(APIView):
                         pack_size_ml,
                         education_cess_rs_per_case,  
                         excise_duty_rs_per_case,     
-                        additional_excise_duty_rs_per_case  
+                        additional_excise_duty_rs_per_case,
+                        brand_owner,
+                        liquor_type,
+                        ex_factory_price_rs_per_case,
+                        manufacturing_unit_name
                     FROM liquor_data_details 
                     WHERE brand_name ILIKE %s 
                     AND pack_size_ml = %s
@@ -113,10 +124,16 @@ class LiquorRatesView(APIView):
             response_data = {
                 'brand': row[0],
                 'size': f"{row[1]}ml",
-                'exFactoryPrice': 0,
                 'educationCess': float(row[2] or 0), 
                 'exciseDuty': float(row[3] or 0),
                 'additionalExcise': float(row[4] or 0),
+                
+                # New fields
+                'brandOwner': row[5],
+                'liquorType': row[6],
+                'exFactoryPrice': float(row[7] or 0),
+                'manufacturingUnitName': row[8],
+
                 'additionalExcise12_5': 0,
                 'bottlingFee': 0,
                 'exportFee': 0,
@@ -138,4 +155,58 @@ class LiquorRatesView(APIView):
             return Response({
                 'success': False,
                 'error': f'Internal server error: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class GetUserEntitiesView(APIView):
+    def get(self, request):
+        try:
+            licensee_id = request.query_params.get('licensee_id')
+            
+            # If no licensee_id provided, default to '01202506012' for testing/demo if needed
+            # But the requirement is to use the logged in user's ID
+            if not licensee_id:
+                # Optional: Retrieve from User/Session if not in params
+                # For now error out
+                return Response({
+                    'success': False,
+                    'error': 'licensee_id is required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT 
+                        manufacturing_unit_name, 
+                        licensee_id_no,
+                        MAX(liquor_type) as sample_type
+                    FROM liquor_data_details 
+                    WHERE licensee_id_no = %s
+                    GROUP BY manufacturing_unit_name, licensee_id_no
+                """, [licensee_id])
+                
+                rows = cursor.fetchall()
+                
+            entities = []
+            for row in rows:
+                unit_name = row[0]
+                lic_id = row[1]
+                l_type = row[2] if row[2] else ""
+                
+                entity_type = 'Brewery' if 'beer' in l_type.lower() else 'Distillery'
+                
+                entities.append({
+                    'name': unit_name,
+                    'licenseId': lic_id,
+                    'type': entity_type
+                })
+            
+            return Response({
+                'success': True,
+                'data': entities
+            })
+            
+        except Exception as e:
+            logger.error(f"Error in GetUserEntitiesView: {str(e)}", exc_info=True)
+            return Response({
+                'success': False,
+                'error': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

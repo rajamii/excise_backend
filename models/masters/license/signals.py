@@ -70,6 +70,7 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
     try:
         license_category = getattr(application, 'license_category', None)
         excise_district = getattr(application, 'excise_district', None) or getattr(application, 'site_district', None)
+        applicant = getattr(application, 'applicant', None)
         
         if not license_category or not excise_district:
             logger.warning(f"Application {application.pk} missing license_category or district")
@@ -130,6 +131,7 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
             source_content_type=ct,
             source_object_id=str(application.pk),
             source_type=source_type,
+            applicant=applicant,
             license_category=license_category,
             excise_district=excise_district,
             issue_date=issue_date,

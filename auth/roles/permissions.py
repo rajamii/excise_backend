@@ -25,6 +25,27 @@ class HasAppPermission(permissions.BasePermission):
         """Helper to consistently raise PermissionDenied"""
         raise PermissionDenied(detail=detail, code=code)
 
+    def _normalize_label(self, label: str) -> str:
+        return str(label).strip().lower().replace(' ', '_').replace('-', '_')
+
+    def _label_aliases(self, label: str) -> set[str]:
+        normalized = self._normalize_label(label)
+        aliases = {normalized}
+
+        # Singular/plural compatibility for legacy DB permissions
+        if normalized.endswith('s'):
+            aliases.add(normalized[:-1])
+        else:
+            aliases.add(f"{normalized}s")
+
+        # Common legacy canonical forms
+        if normalized in {'role', 'roles'}:
+            aliases.update({'role', 'roles'})
+        if normalized in {'user', 'users'}:
+            aliases.update({'user', 'users'})
+
+        return aliases
+
     def has_permission(self, request, view) -> bool:  # type: ignore[override]
         # Authentication check
         if not request.user.is_authenticated:
@@ -53,8 +74,15 @@ class HasAppPermission(permissions.BasePermission):
                 "invalid_action"
             )
 
-        # Permission check
-        if self.app_label not in getattr(role, permission_field, []):
+        # Permission check with normalization and legacy aliases
+        allowed_labels = getattr(role, permission_field, []) or []
+        normalized_allowed = set()
+        for label in allowed_labels:
+            normalized_allowed.update(self._label_aliases(label))
+
+        required_labels = self._label_aliases(self.app_label)
+
+        if not (required_labels & normalized_allowed):
             self._raise_denied(
                 f"Cannot {self.action} {self.app_label}",
                 f"cannot_{self.action}"

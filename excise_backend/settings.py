@@ -74,22 +74,26 @@ INSTALLED_APPS = [
     'models.masters.supply_chain.ena_purpose',
     'models.masters.supply_chain.liquor_data',
     'models.masters.supply_chain.ena_distillery_details',
-    'models.masters.supply_chain.status_master',
-    
+    'models.masters.supply_chain.profile',
+    'models.masters.supply_chain.transit_permit',
+    # 'models.masters.supply_chain.vehicles',
+    # 'models.masters.supply_chain.status_master',
 
-    # transactional models
+    # transcational models
     'models.transactional',
-    'models.transactional.company_registration',      # Company Registration (NEW)
+    'models.transactional.company_registration',
     'models.transactional.license_application',
     'models.transactional.site_enquiry',
     'models.transactional.new_license_application',
     'models.transactional.salesman_barman',
     'models.transactional.logs',
-
+    'models.transactional.transactiondata',
     'models.transactional.supply_chain.ena_transit_permit_details',
     'models.transactional.supply_chain.ena_revalidation_details',
+    'models.transactional.supply_chain.ena_requisition_details',  # Added missing app
     'models.transactional.supply_chain.ena_cancellation_details',
-
+    'models.transactional.supply_chain.hologram',
+    'models.transactional.supply_chain.brand_warehouse',
     # auth models 
     'auth.roles',
     'auth.user',
@@ -149,9 +153,9 @@ REST_FRAMEWORK = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'eAbkari',       # Database name
+        'NAME': 'eAbkari_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'postgres',  # Your PostgreSQL password
+        'PASSWORD': 'ishwar@313',  # Your PostgreSQL password 
         'HOST': 'localhost',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
     }

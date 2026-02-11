@@ -1,6 +1,7 @@
 from django.apps import AppConfig
 
 
-class EnaDistilleryDetailsConfig(AppConfig):
+class SupplyChainConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
-    name = 'ena_distillery_details'
+    name = 'models.transactional.supply_chain'
+    label = 'supply_chain'

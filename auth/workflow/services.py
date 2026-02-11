@@ -9,20 +9,160 @@ from .models import (
     Transaction, Objection
 )
 
+# UI Configuration for Workflow Actions (Moved from Frontend)
+ACTION_CONFIGS = {
+    'APPROVE': {
+        'label': 'Approve',
+        'icon': 'check_circle',
+        'color': 'accent',
+        'tooltip': 'Approve Application',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to approve this application?'
+    },
+    'REJECT': {
+        'label': 'Reject',
+        'icon': 'cancel',
+        'color': 'warn',
+        'tooltip': 'Reject Application',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to reject this application?'
+    },
+    'FORWARD': {
+        'label': 'Forward',
+        'icon': 'forward',
+        'color': 'primary',
+        'tooltip': 'Forward to Next Stage',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to forward this application?'
+    },
+    'RETURN': {
+        'label': 'Return',
+        'icon': 'undo',
+        'color': 'warning',
+        'tooltip': 'Return to Previous Stage',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to return this application?'
+    },
+    'VERIFY': {
+        'label': 'Verify',
+        'icon': 'verified',
+        'color': 'info',
+        'tooltip': 'Verify Application',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to verify this application?'
+    },
+    'ISSUE': {
+        'label': 'Issue',
+        'icon': 'assignment_turned_in',
+        'color': 'success',
+        'tooltip': 'Issue Permit/Certificate',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to issue this permit?'
+    },
+    'PAY': {
+        'label': 'Submit Payment',
+        'icon': 'payment',
+        'color': 'primary',
+        'tooltip': 'Submit Payment',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to submit payment?'
+    },
+    'TERMINATE': {
+        'label': 'Terminate',
+        'icon': 'block',
+        'color': 'danger',
+        'tooltip': 'Terminate Application',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to terminate this application?'
+    },
+    'VIEW': {
+        'label': 'View',
+        'icon': 'visibility',
+        'color': 'primary',
+        'tooltip': 'View Details'
+    },
+    'REQUEST_CANCELLATION': {
+        'label': 'Request Cancellation',
+        'icon': 'cancel',
+        'color': 'warn',
+        'tooltip': 'Request Cancellation of Approved Application',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to request cancellation of this approved application?'
+    },
+    'REQUEST_REVALIDATION': {
+        'label': 'Request Revalidation',
+        'icon': 'restore',
+        'color': 'primary',
+        'tooltip': 'Request Revalidation',
+        'requires_confirmation': True,
+        'confirmation_message': 'The permit validity has been extended. Do you want to proceed with revalidation?'
+    },
+    'SUBMITPAYSLIP': {
+        'label': 'Submit Pay Slip',
+        'icon': 'receipt_long',
+        'color': 'primary',
+        'tooltip': 'Submit Payment Slip',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to submit the pay slip?'
+    },
+    'APPROVEPAYSLIP': {
+        'label': 'Approve Pay Slip',
+        'icon': 'check_circle',
+        'color': 'accent',
+        'tooltip': 'Approve Payment Slip',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to approve the pay slip?'
+    },
+    'REJECTPAYSLIP': {
+        'label': 'Reject Pay Slip',
+        'icon': 'cancel',
+        'color': 'warn',
+        'tooltip': 'Reject Payment Slip',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure you want to reject the pay slip?'
+    },
+    # Default fallback
+    'DEFAULT': {
+        'label': 'Action',
+        'icon': 'touch_app',
+        'color': 'primary',
+        'tooltip': 'Perform Action',
+        'requires_confirmation': True,
+        'confirmation_message': 'Are you sure?'
+    }
+}
+
 # Mapping: (app_label, model_name) -> Serializer class
 SERIALIZER_MAPPING = {
     # (app_label, model_name_lower): 'full.import.path.to.Serializer'
-    ('license_application', 'licenseapplication'): 
-        'models.transactional.license_application.serializers.LicenseApplicationSerializer',
-    ('new_license_application', 'newlicenseapplication'): 
-        'models.transactional.new_license_application.serializers.NewLicenseApplicationSerializer',
-    ('salesman_barman', 'salesmanbarmanmodel'): 
-        'models.transactional.salesman_barman.serializers.SalesmanBarmanSerializer',
-    ('company_registration', 'companyregistration'):  # Company Registration (NEW)
-        'models.transactional.company_registration.serializers.CompanyRegistrationSerializer',
+    ('license_application', 'licenseapplication'): 'models.transactional.license_application.serializers.LicenseApplicationSerializer',
+    ('new_license_application', 'newlicenseapplication'): 'models.transactional.new_license_application.serializers.NewLicenseApplicationSerializer',
+    ('salesman_barman', 'salesmanbarmanmodel'): 'models.transactional.salesman_barman.serializers.SalesmanBarmanSerializer',
+    ('ena_requisition_details', 'enarequisitiondetail'): 'models.transactional.supply_chain.ena_requisition_details.serializers.EnaRequisitionDetailSerializer',
+    ('ena_revalidation_details', 'enarevalidationdetail'): 'models.transactional.supply_chain.ena_revalidation_details.serializers.EnaRevalidationDetailSerializer',
+    ('ena_cancellation_details', 'enacancellationdetail'): 'models.transactional.supply_chain.ena_cancellation_details.serializers.EnaCancellationDetailSerializer',
 }
 
 class WorkflowService:
+
+    @staticmethod
+    def get_action_config(action_name):
+        """
+        Returns the UI configuration (label, icon, color, etc.) for a given action name.
+        """
+        if not action_name:
+            return ACTION_CONFIGS['DEFAULT']
+        
+        config = ACTION_CONFIGS.get(action_name.upper())
+        if not config:
+            # Create a default config for unknown actions
+            config = {
+                **ACTION_CONFIGS['DEFAULT'],
+                'label': action_name.replace('_', ' ').title(),
+            }
+        
+        # Ensure 'action' key is always present in the returned object
+        return {**config, 'action': action_name}
 
     @staticmethod
     @transaction.atomic
@@ -36,7 +176,7 @@ class WorkflowService:
             content_type=ContentType.objects.get_for_model(application),
             object_id=str(application.pk),
             performed_by=user,
-            forwarded_by=user,
+            forwarded_by=getattr(user, "role", None),
             forwarded_to=None,
             stage=initial_stage,
             remarks=remarks or "Application submitted by applicant"
@@ -59,7 +199,7 @@ class WorkflowService:
             content_type=ContentType.objects.get_for_model(application),
             object_id=str(application.pk),
             performed_by=user,
-            forwarded_by=user,
+            forwarded_by=perm.role if perm else None,
             forwarded_to=perm.role if perm else None,
             stage=transition.to_stage,
             remarks="Application forwarded to Level 1 for review"
@@ -142,7 +282,7 @@ class WorkflowService:
             content_type=ContentType.objects.get_for_model(application),
             object_id=str(application.pk),
             performed_by=user,
-            forwarded_by=user,
+            forwarded_by=getattr(user, "role", None),
             forwarded_to=forwarded_to,
             stage=target_stage,
             remarks=remarks or context.get("remarks", "")
@@ -193,7 +333,7 @@ class WorkflowService:
             content_type=ContentType.objects.get_for_model(application),
             object_id=str(application.pk),
             performed_by=user,
-            forwarded_by=user,
+            forwarded_by=getattr(user, "role", None),
             forwarded_to=applicant_role,
             stage=target_stage,
             remarks=remarks or "Objection raised"
@@ -290,7 +430,7 @@ class WorkflowService:
             content_type=ContentType.objects.get_for_model(application),
             object_id=str(application.pk),
             performed_by=user,
-            forwarded_by=user,
+            forwarded_by=getattr(user, "role", None),
             forwarded_to=forward_to,
             stage=original_txn.stage,
             remarks=remarks

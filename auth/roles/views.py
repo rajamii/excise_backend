@@ -4,8 +4,8 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 
-from .models import Role
-from .serializers import RoleSerializer
+from .models import Role, DashboardRoleConfig
+from .serializers import RoleSerializer, DashboardRoleConfigSerializer
 from .permissions import HasAppPermission
 from .decorators import has_app_permission
 
@@ -21,7 +21,7 @@ def get_user_role(user):
 @api_view(['GET'])
 def role_list(request):
     """List all roles"""
-    roles = Role.objects.all()
+    roles = Role.objects.all().order_by('id')
     serializer = RoleSerializer(roles, many=True)
     return Response(serializer.data)
 
@@ -82,3 +82,29 @@ def role_delete(request, pk):
     
     role.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@permission_classes([IsAuthenticated])
+@api_view(['GET'])
+def current_dashboard_config(request):
+    user_role = get_user_role(request.user)
+    if not user_role:
+        return Response({"detail": "User role not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    config = DashboardRoleConfig.objects.filter(role=user_role, is_active=True).first()
+    if not config:
+        return Response({"detail": "Dashboard config not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = DashboardRoleConfigSerializer(config)
+    return Response(serializer.data)
+
+
+@permission_classes([HasAppPermission('roles', 'view')])
+@api_view(['GET'])
+def dashboard_config_by_role(request, role_id):
+    config = DashboardRoleConfig.objects.filter(role_id=role_id, is_active=True).first()
+    if not config:
+        return Response({"detail": "Dashboard config not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = DashboardRoleConfigSerializer(config)
+    return Response(serializer.data)

@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import EnaCancellationDetail
+from auth.workflow.constants import WORKFLOW_IDS
 
 class EnaCancellationDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
@@ -32,19 +33,45 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
         if not status_code:
             status_code = 'CN_00'
             
-        from models.masters.supply_chain.status_master.models import WorkflowRule
+        # Query Workflow Transitions (New Logic)
+        from auth.workflow.models import WorkflowTransition, WorkflowStage
         
-        # DEBUG LOGGING
-        print(f"DEBUG: Checking actions for Status: {status_code}, Role: {role}")
+        current_stage = obj.current_stage
+        if not current_stage:
+            # Fallback
+            try:
+                current_stage = WorkflowStage.objects.get(
+                    workflow_id=WORKFLOW_IDS['ENA_CANCELLATION'],
+                    name=obj.status
+                )
+            except WorkflowStage.DoesNotExist:
+                return []
         
-        actions = WorkflowRule.objects.filter(
-            current_status__status_code=status_code,
-            allowed_role=role
-        ).values_list('action', flat=True)
+        transitions = WorkflowTransition.objects.filter(from_stage=current_stage)
+        actions = []
+        for t in transitions:
+            cond = t.condition or {}
+            if cond.get('role') == role:
+                action = cond.get('action')
+                if action:
+                    actions.append(action)
         
-        print(f"DEBUG: Found actions: {list(actions)}")
+        return list(set(actions))
+
+    # New Field: Returns Full UI Config for Actions
+    allowed_action_configs = serializers.SerializerMethodField()
+
+    def get_allowed_action_configs(self, obj):
+        actions = self.get_allowed_actions(obj)
+        if not actions:
+            return []
         
-        return list(actions)
+        from auth.workflow.services import WorkflowService
+        configs = []
+        for action_name in actions:
+            config = WorkflowService.get_action_config(action_name)
+            configs.append(config)
+        return configs
 
 class CancellationCreateSerializer(serializers.Serializer):
     reference_no = serializers.CharField(max_length=100)

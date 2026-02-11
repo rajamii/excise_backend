@@ -16,7 +16,7 @@ class Workflow(models.Model):
 class WorkflowStage(models.Model):
     """A stage in a workflow (e.g., 'Payment Pending')."""
     workflow = models.ForeignKey(Workflow, on_delete=models.CASCADE, related_name="stages")
-    name = models.CharField(max_length=50)  # e.g., "level_1_review"
+    name = models.CharField(max_length=255)  # Increased from 50 to 255 to match StatusMaster
     description = models.CharField(max_length=255, blank=True)
     is_initial = models.BooleanField(default=False)
     is_final = models.BooleanField(default=False)
@@ -59,7 +59,7 @@ class Transaction(models.Model):
 
     performed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True,
                                      related_name='workflow_performed')
-    forwarded_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True,
+    forwarded_by = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True,
                                      related_name='workflow_forwarded_by')
     forwarded_to = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True)
     stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT)

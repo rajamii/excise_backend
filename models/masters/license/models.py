@@ -3,6 +3,7 @@ from django.utils.timezone import now
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from models.masters.core.models import District, LicenseCategory
+from auth.user.models import CustomUser
 
 class License(models.Model):
     SOURCE_TYPES = [
@@ -19,6 +20,13 @@ class License(models.Model):
     source_application = GenericForeignKey('source_content_type', 'source_object_id')
 
     source_type = models.CharField(max_length=30, choices=SOURCE_TYPES)
+    applicant = models.ForeignKey(
+        CustomUser,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name='licenses'
+    )
 
     license_category = models.ForeignKey(
         LicenseCategory,

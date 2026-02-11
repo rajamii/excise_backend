@@ -1,4 +1,4 @@
-from auth.roles.models import Role
+from auth.roles.models import Role, DashboardRoleConfig
 from rest_framework import serializers
 from django.core.exceptions import ValidationError
 
@@ -11,18 +11,19 @@ class RoleSerializer(serializers.ModelSerializer):
     precedence = serializers.IntegerField(
         source='role_precedence',
         min_value=0,
-        max_value=9
+        max_value=100
     )
 
     class Meta:
         model = Role
         fields = '__all__'
+        read_only_fields = ('id',)
         # Remove extra_kwargs for 'precedence' — it's now mapped
 
     def validate_precedence(self, value):
         # Optional: add validation here
-        if not (0 <= value <= 9):
-            raise ValidationError("Precedence must be between 0 and 9")
+        if not (0 <= value <= 100):
+            raise ValidationError("Precedence must be between 0 and 100")
         return value
 
     def validate(self, attrs):
@@ -41,6 +42,25 @@ class RoleSerializer(serializers.ModelSerializer):
                         'precedence': "Requires admin privileges (level 8+) to demote roles"
                     })
         return attrs
+
+
+class DashboardRoleConfigSerializer(serializers.ModelSerializer):
+    roleId = serializers.IntegerField(source='role_id', read_only=True)
+    roleName = serializers.CharField(source='role.name', read_only=True)
+
+    class Meta:
+        model = DashboardRoleConfig
+        fields = (
+            'roleId',
+            'roleName',
+            'layout',
+            'widgets',
+            'navigation',
+            'permissions',
+            'is_active',
+            'config_version',
+            'updated_at',
+        )
 
 # class RoleSerializer(serializers.ModelSerializer):
 #     class Meta:

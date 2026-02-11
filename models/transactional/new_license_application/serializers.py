@@ -9,11 +9,11 @@ from . import helpers
 
 
 class UserShortSerializer(serializers.ModelSerializer):
-    role_name = serializers.CharField(source='role.name', read_only=True)
+    role_id = serializers.IntegerField(source='role.id', read_only=True)
     
     class Meta:
         model = CustomUser
-        fields = ['id', 'username', 'role', 'role_name']
+        fields = ['id', 'username', 'role', 'role_id']
 
 class RoleSerializer(serializers.ModelSerializer):
     class Meta:
@@ -40,7 +40,7 @@ class ResolveObjectionSerializer(serializers.ModelSerializer):
 
 class TransactionSerializer(serializers.ModelSerializer):
     performed_by = UserShortSerializer(read_only=True)
-    forwarded_by = UserShortSerializer(read_only=True)
+    forwarded_by = RoleSerializer(read_only=True)
     forwarded_to = RoleSerializer(source='forwarded_to.name', read_only=True)
     
     class Meta:
@@ -70,6 +70,7 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     site_district_name = serializers.CharField(source='site_district.district', read_only=True)
     site_subdivision_name = serializers.CharField(source='site_subdivision.subdivision', read_only=True)
     police_station_name = serializers.CharField(source='police_station.police_station', read_only=True)
+    current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
 
     renewal_of_license_id = serializers.CharField(source='renewal_of.license_id', read_only=True)
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)

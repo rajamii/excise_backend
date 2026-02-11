@@ -8,10 +8,10 @@ from utils.fields import CodeRelatedField
 from .helpers import validate_email, validate_pan_number, validate_aadhaar_number, validate_phone_number
 
 class UserShortSerializer(serializers.ModelSerializer):
-    role_name = serializers.CharField(source='role.name', read_only=True)
+    role_id = serializers.IntegerField(source='role.id', read_only=True)
     class Meta:
         model = CustomUser
-        fields = ['id', 'username', 'role', 'role_name']
+        fields = ['id', 'username', 'role', 'role_id']
 
 class RoleSerializer(serializers.ModelSerializer):
     class Meta:
@@ -20,7 +20,7 @@ class RoleSerializer(serializers.ModelSerializer):
 
 class TransactionSerializer(serializers.ModelSerializer):
     performed_by = UserShortSerializer(read_only=True)
-    forwarded_by = UserShortSerializer(read_only=True)
+    forwarded_by = RoleSerializer(read_only=True)
     forwarded_to = serializers.CharField(source='forwarded_to.name', read_only=True)
     class Meta:
         model = Transaction
