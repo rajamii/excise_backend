@@ -17,6 +17,8 @@ from .serializers.licensesubcategory_serializer import LicenseSubcategorySeriali
 from .serializers.licensetitle_serializer import LicenseTitleSerializer
 from .serializers.road_serializer import RoadSerializer
 from .serializers.location_serializer import LocationSerializer
+from .serializers.licensefee_serializer import LicenseFeeSerializer
+from .serializers.licenseeprofile_serializer import LicenseeProfileSerializer
 
 #################################################
 #           License Category                    #
@@ -611,5 +613,152 @@ def location_delete(request, pk):
     location.save()
     return Response(
         {'message': f'Location "{location.location_description}" deactivated successfully.'},
+        status=status.HTTP_200_OK
+    )
+
+#################################################
+#               License Fee                     #
+#################################################
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def license_fee_list(request):
+    """
+    List all active license fees, optionally filtered by category, subcategory, or location.
+    """
+    queryset = masters_model.LicenseFee.objects.filter(is_active=True)
+    
+    # Optional filters
+    category_id = request.query_params.get('license_category')
+    subcategory_id = request.query_params.get('license_subcategory')
+    location_code = request.query_params.get('location_code')
+    
+    if category_id:
+        queryset = queryset.filter(license_category_id=category_id)
+    if subcategory_id:
+        queryset = queryset.filter(license_subcategory_id=subcategory_id)
+    if location_code:
+        queryset = queryset.filter(location_code=location_code)
+    
+    serializer = LicenseFeeSerializer(queryset, many=True, context={'request': request})
+    return Response(serializer.data)
+
+
+@permission_classes([HasAppPermission('masters', 'create')])
+@api_view(['POST'])
+def license_fee_create(request):
+    """
+    Create a new license fee entry.
+    """
+    serializer = LicenseFeeSerializer(data=request.data, context={'request': request})
+    serializer.is_valid(raise_exception=True)
+    serializer.save(created_by=request.user)
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def license_fee_detail(request, pk):
+    """
+    Retrieve an active license fee by primary key.
+    """
+    license_fee = get_object_or_404(masters_model.LicenseFee, pk=pk, is_active=True)
+    serializer = LicenseFeeSerializer(license_fee, context={'request': request})
+    return Response(serializer.data)
+
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PUT', 'PATCH'])
+def license_fee_update(request, pk):
+    """
+    Update a license fee entry.
+    """
+    license_fee = get_object_or_404(masters_model.LicenseFee, pk=pk)
+    serializer = LicenseFeeSerializer(
+        instance=license_fee, 
+        data=request.data, 
+        partial=(request.method == 'PATCH'), 
+        context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+
+
+@permission_classes([HasAppPermission('masters', 'delete')])
+@api_view(['DELETE'])
+def license_fee_delete(request, pk):
+    """
+    Deactivate a license fee (soft delete).
+    """
+    license_fee = get_object_or_404(masters_model.LicenseFee, pk=pk)
+    license_fee.is_active = False
+    license_fee.save()
+    return Response(
+        {'message': f'License Fee (ID: {license_fee.id}) deactivated successfully.'},
+        status=status.HTTP_200_OK
+    )
+
+
+#################################################
+#           Licensee Profile                    #
+#################################################
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def licenseeprofile_list(request):
+    """List all licensee profiles."""
+    queryset = masters_model.LicenseeProfile.objects.select_related('created_by').all()
+    serializer = LicenseeProfileSerializer(queryset, many=True, context={'request': request})
+    return Response(serializer.data)
+
+
+@permission_classes([HasAppPermission('masters', 'create')])
+@api_view(['POST'])
+def licenseeprofile_create(request):
+    """Create a new licensee profile."""
+    serializer = LicenseeProfileSerializer(data=request.data, context={'request': request})
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def licenseeprofile_detail(request, pk):
+    """Retrieve a licensee profile instance."""
+    profile = get_object_or_404(masters_model.LicenseeProfile, pk=pk)
+    serializer = LicenseeProfileSerializer(profile, context={'request': request})
+    return Response(serializer.data)
+
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PUT', 'PATCH'])
+def licenseeprofile_update(request, pk):
+    """
+    Update a licensee profile instance.
+    Immutable fields (father_name, dob, gender, nationality) cannot be changed —
+    any attempt to send a different value will return HTTP 400.
+    """
+    profile = get_object_or_404(masters_model.LicenseeProfile, pk=pk)
+    serializer = LicenseeProfileSerializer(
+        instance=profile,
+        data=request.data,
+        partial=request.method == 'PATCH',
+        context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+
+
+@permission_classes([HasAppPermission('masters', 'delete')])
+@api_view(['DELETE'])
+def licenseeprofile_delete(request, pk):
+    """Delete a licensee profile (hard delete)."""
+    profile = get_object_or_404(masters_model.LicenseeProfile, pk=pk)
+    profile.delete()
+    return Response(
+        {'message': f'Licensee Profile (ID: {profile.id}) deleted successfully.'},
         status=status.HTTP_200_OK
     )

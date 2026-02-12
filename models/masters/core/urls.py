@@ -94,6 +94,24 @@ location_patterns = [
     path('<int:pk>/update/', views.location_update, name='location-update'),
     path('<int:pk>/delete/', views.location_delete, name='location-delete'),
 ]
+
+# License Fee URLs
+license_fee_patterns = [
+    path('', views.license_fee_list, name='license-fee-list'),
+    path('create/', views.license_fee_create, name='license-fee-create'),
+    path('<int:pk>/', views.license_fee_detail, name='license-fee-detail'),
+    path('<int:pk>/update/', views.license_fee_update, name='license-fee-update'),
+    path('<int:pk>/delete/', views.license_fee_delete, name='license-fee-delete'),
+]
+
+# Licensee Profile URLs
+licenseeprofile_patterns = [
+    path('', views.licenseeprofile_list, name='licenseeprofile-list'),
+    path('create/', views.licenseeprofile_create, name='licenseeprofile-create'),
+    path('<int:pk>/', views.licenseeprofile_detail, name='licenseeprofile-detail'),
+    path('<int:pk>/update/', views.licenseeprofile_update, name='licenseeprofile-update'),
+    path('<int:pk>/delete/', views.licenseeprofile_delete, name='licenseeprofile-delete'),
+]
 urlpatterns = [
     # Grouped patterns
     path('license-categories/', include(license_category_patterns)),
@@ -106,4 +124,6 @@ urlpatterns = [
     path('license-titles/', include(license_title_patterns)),
     path('roads/', include(road_patterns)),
     path('locations/', include(location_patterns)),
+    path('license-fees/', include(license_fee_patterns)),
+    path('licensee-profiles/', include(licenseeprofile_patterns)),
 ]

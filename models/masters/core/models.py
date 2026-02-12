@@ -3,7 +3,7 @@ from django.db import models
 from django.core.exceptions import ValidationError
 from .validators import validate_name, validate_name_extended
 from typing import TYPE_CHECKING
-from .helper import ROAD_TYPE_CHOICES
+from .helper import ROAD_TYPE_CHOICES, GENDER_CHOICES, MARITAL_STATUS_CHOICES, RESIDENTIAL_STATUS_CHOICES
 
 if TYPE_CHECKING:
     # Type checking only imports to prevent circular imports
@@ -351,3 +351,83 @@ class LicenseFee(models.Model):
 
     def __str__(self):
         return f"{self.license_category} - {self.license_subcategory} - Location {self.location_code} - ₹{self.license_fee}"
+
+# LicenseeProfile
+class LicenseeProfile(models.Model):
+    """
+    Personal profile details for a licensee.
+
+    Immutable (set once on creation, cannot be changed):
+        father_name, dob, gender, nationality
+
+    Mutable (can be updated at any time):
+        marital_status, residential_status
+    """
+
+    # ── Immutable fields ──────────────────────────────────────────
+    father_name = models.CharField(
+        max_length=100,
+        null=False,
+        blank=False,
+        validators=[validate_name],
+        help_text="Father's full name — cannot be changed after creation"
+    )
+    dob = models.DateField(
+        null=False,
+        blank=False,
+        help_text="Date of birth — cannot be changed after creation"
+    )
+    gender = models.CharField(
+        max_length=10,
+        choices=GENDER_CHOICES,
+        null=False,
+        blank=False,
+        help_text="Gender — cannot be changed after creation"
+    )
+    nationality = models.CharField(
+        max_length=50,
+        null=False,
+        blank=False,
+        default='Indian',
+        help_text="Nationality — cannot be changed after creation"
+    )
+
+    # ── Mutable fields ────────────────────────────────────────────
+    marital_status = models.CharField(
+        max_length=20,
+        choices=MARITAL_STATUS_CHOICES,
+        null=False,
+        blank=False,
+        help_text="Marital status — can be updated"
+    )
+    residential_status = models.CharField(
+        max_length=20,
+        choices=RESIDENTIAL_STATUS_CHOICES,
+        null=False,
+        blank=False,
+        help_text="Residential status — can be updated"
+    )
+
+    # ── Audit ─────────────────────────────────────────────────────
+    created_by = models.ForeignKey(
+        'user.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_licensee_profiles',
+        help_text="User who created this record"
+    )
+    operation_date = models.DateTimeField(
+        auto_now_add=True,
+        help_text="Record creation timestamp"
+    )
+
+    class Meta:
+        db_table = 'masters_licensee_profile'
+        verbose_name = 'Licensee Profile'
+        verbose_name_plural = 'Licensee Profiles'
+
+    def __str__(self) -> str:
+        return (
+            f"{self.father_name} | {self.dob} | {self.get_gender_display()}"
+        )
