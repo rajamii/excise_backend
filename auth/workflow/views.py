@@ -9,8 +9,8 @@ from rest_framework.response import Response
 from rest_framework import status
 from importlib import import_module
 from django.contrib.contenttypes.models import ContentType
-from .models import Workflow, WorkflowStage, WorkflowTransition, StagePermission, Objection, Transaction
-from .serializers import WorkflowSerializer, WorkflowStageSerializer, WorkflowTransitionSerializer, WorkflowObjectionSerializer, StagePermissionSerializer
+from .models import Workflow, WorkflowStage, WorkflowTransition, StagePermission, Objection, Transaction, Rejection
+from .serializers import WorkflowSerializer, WorkflowStageSerializer, WorkflowTransitionSerializer, WorkflowObjectionSerializer, WorkflowRejectionSerializer, StagePermissionSerializer
 from auth.roles.permissions import HasAppPermission
 from .permissions import HasStagePermission
 from .services import WorkflowService
@@ -338,7 +338,65 @@ def resolve_objections(request, application_id):
     return _serialize_application(application)
 
 
-# ---------- REUSABLE: Dashboard Counts ----------
+# ---------- REUSABLE: Reject Application ----------
+@api_view(['POST'])
+@permission_classes([HasStagePermission])
+def reject_application(request, application_id):
+    application = _get_application_by_id(application_id)
+    if not application:
+        return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    target_stage_id = request.data.get("target_stage_id")
+    remarks = request.data.get("remarks", "").strip()
+
+    if not target_stage_id:
+        return Response({"detail": "target_stage_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+    if not remarks:
+        return Response({"detail": "remarks are required when rejecting an application"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        target_stage = WorkflowStage.objects.get(id=target_stage_id)
+    except WorkflowStage.DoesNotExist:
+        return Response({"detail": "Invalid target stage ID"}, status=status.HTTP_400_BAD_REQUEST)
+
+    if target_stage.workflow != application.workflow:
+        return Response({"detail": "Target stage does not belong to this application's workflow"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        with transaction.atomic():
+            WorkflowService.reject_application(
+                application=application,
+                user=request.user,
+                target_stage=target_stage,
+                remarks=remarks,
+            )
+        return Response({
+            "detail": "Application rejected successfully",
+            "application_id": application.application_id,
+            "current_stage": target_stage.name,
+            "current_stage_id": target_stage.id,
+        }, status=status.HTTP_200_OK)
+    except ValidationError as e:
+        return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({"detail": f"Server error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ---------- REUSABLE: Get Rejections ----------
+@api_view(['GET'])
+@permission_classes([HasStagePermission])
+def get_rejections(request, application_id):
+    application = _get_application_by_id(application_id)
+    if not application:
+        return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    rejections = Rejection.objects.filter(
+        content_type__model=application.__class__.__name__.lower(),
+        object_id=str(application.pk),
+    ).order_by('-rejected_on')
+
+    serializer = WorkflowRejectionSerializer(rejections, many=True)
+    return Response(serializer.data)
 @api_view(['GET'])
 @permission_classes([HasStagePermission])
 def dashboard_counts(request):

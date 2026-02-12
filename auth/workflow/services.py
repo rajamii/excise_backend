@@ -6,7 +6,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.apps import apps
 from .models import (
     WorkflowTransition, StagePermission,
-    Transaction, Objection
+    Transaction, Objection, Rejection
 )
 
 # UI Configuration for Workflow Actions (Moved from Frontend)
@@ -434,4 +434,43 @@ class WorkflowService:
             forwarded_to=forward_to,
             stage=original_txn.stage,
             remarks=remarks
+        )
+
+    @staticmethod
+    @transaction.atomic
+    def reject_application(application, user, target_stage, remarks=None):
+        """
+        Rejects an application by:
+          1. Validating the transition to the rejection stage.
+          2. Creating a Rejection record.
+          3. Advancing the application to the rejection stage.
+          4. Logging a Transaction.
+        """
+        if not remarks:
+            raise ValidationError("A remark is required when rejecting an application.")
+
+        WorkflowService.validate_transition(application, target_stage, {})
+
+        # Create the rejection record
+        Rejection.objects.create(
+            content_type=ContentType.objects.get_for_model(application),
+            object_id=str(application.pk),
+            remarks=remarks,
+            rejected_by=user,
+            stage=target_stage,
+        )
+
+        # Advance to the rejection stage
+        application.current_stage = target_stage
+        application.save(update_fields=['current_stage'])
+
+        # Log the transaction
+        Transaction.objects.create(
+            content_type=ContentType.objects.get_for_model(application),
+            object_id=str(application.pk),
+            performed_by=user,
+            forwarded_by=getattr(user, "role", None),
+            forwarded_to=None,
+            stage=target_stage,
+            remarks=remarks,
         )

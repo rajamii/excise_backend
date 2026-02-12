@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Workflow, WorkflowStage, WorkflowTransition, StagePermission, Transaction, Objection
+from .models import Workflow, WorkflowStage, WorkflowTransition, StagePermission, Transaction, Objection, Rejection
 from auth.roles.models import Role
 from auth.user.serializer import UserSerializer
 from auth.roles.serializers import RoleSerializer
@@ -43,3 +43,11 @@ class WorkflowObjectionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Objection
         fields = '__all__'
+
+class WorkflowRejectionSerializer(serializers.ModelSerializer):
+    rejected_by = UserSerializer(read_only=True)
+    stage = WorkflowStageSerializer(read_only=True)
+
+    class Meta:
+        model = Rejection
+        fields = ['id', 'content_type', 'object_id', 'remarks', 'rejected_by', 'stage', 'rejected_on']
