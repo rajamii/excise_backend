@@ -2,26 +2,30 @@ from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import IsAuthenticated
 from .models import EnaRevalidationDetail
 from .serializers import EnaRevalidationDetailSerializer
 from auth.workflow.constants import WORKFLOW_IDS
+from models.transactional.supply_chain.access_control import (
+    has_workflow_access,
+    scope_by_profile_or_workflow,
+    transition_matches,
+)
 # from models.masters.supply_chain.status_master.models import StatusMaster, WorkflowRule # Removed
 
 class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
     queryset = EnaRevalidationDetail.objects.all().order_by('-created_at')
     serializer_class = EnaRevalidationDetailSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         queryset = EnaRevalidationDetail.objects.all().order_by('-created_at')
-        try:
-            if hasattr(self.request.user, 'supply_chain_profile'):
-                 profile = self.request.user.supply_chain_profile
-                 queryset = queryset.filter(licensee_id=profile.licensee_id)
-        except Exception:
-            pass
-        return queryset
+        return scope_by_profile_or_workflow(
+            self.request.user,
+            queryset,
+            WORKFLOW_IDS['ENA_REVALIDATION'],
+            licensee_field='licensee_id'
+        )
 
     def get_serializer_context(self):   
         """Override to ensure request context is passed to serializer"""
@@ -87,21 +91,8 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
 
             # Determine Role
             user = request.user
-            user_role_name = user.role.name if hasattr(user, 'role') and user.role else None
-            role = user_role_name # Simple pass-through or use mapping if needed
-            
-            # Use Mapping (Consistent with Requisition)
-            role_mapped = None
-            commissioner_roles = ['level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'Site-Admin', 'site_admin', 'commissioner', 'Commissioner']
-            
-            if user_role_name in commissioner_roles:
-                role_mapped = 'commissioner'
-            elif user_role_name in ['permit-section', 'Permit-Section', 'Permit Section']:
-                role_mapped = 'permit-section'
-            elif user_role_name in ['licensee', 'Licensee']:
-                role_mapped = 'licensee'
-            else:
-                role_mapped = user_role_name # Fallback
+            if not has_workflow_access(user, WORKFLOW_IDS['ENA_REVALIDATION']) and not hasattr(user, 'supply_chain_profile'):
+                return Response({'error': 'Unauthorized role for this workflow'}, status=status.HTTP_403_FORBIDDEN)
 
             # Use Workflow Service
             from auth.workflow.services import WorkflowService
@@ -124,15 +115,13 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             target_transition = None
             
             for t in transitions:
-                cond = t.condition or {}
-                # Match Logic
-                if cond.get('role') == role_mapped and cond.get('action') == action_type:
+                if transition_matches(t, user, action_type):
                     target_transition = t
                     break
             
             if not target_transition:
                 return Response({
-                    'error': f'Invalid action {action_type} for role {role_mapped} at stage {revalidation.current_stage.name}'
+                    'error': f'Invalid action {action_type} at stage {revalidation.current_stage.name}'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
             # Advance Stage
@@ -141,7 +130,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                     application=revalidation,
                     user=user,
                     target_stage=target_transition.to_stage,
-                    context={'role': role_mapped, 'action': action_type},
+                    context={'action': action_type},
                     remarks=remarks
                 )
                 

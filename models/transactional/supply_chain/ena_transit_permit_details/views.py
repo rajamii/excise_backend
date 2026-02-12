@@ -1,12 +1,20 @@
 from rest_framework import status, views, generics
 from rest_framework.response import Response
+from rest_framework.exceptions import PermissionDenied
+from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from .serializers import TransitPermitSubmissionSerializer, EnaTransitPermitDetailSerializer
 from .models import EnaTransitPermitDetail
 from auth.workflow.constants import WORKFLOW_IDS
+from models.transactional.supply_chain.access_control import (
+    has_workflow_access,
+    scope_by_profile_or_workflow,
+    transition_matches,
+)
 
 
 class SubmitTransitPermitAPIView(views.APIView):
+    permission_classes = [IsAuthenticated]
     def post(self, request):
         print(f"DEBUG: Raw Request Data keys: {list(request.data.keys())}")
         print(f"DEBUG: Full Request Data: {request.data}")
@@ -131,17 +139,35 @@ class SubmitTransitPermitAPIView(views.APIView):
 
 class GetTransitPermitAPIView(generics.ListAPIView):
     serializer_class = EnaTransitPermitDetailSerializer
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         queryset = EnaTransitPermitDetail.objects.all().order_by('-id') # Order by newest first
+
+        queryset = scope_by_profile_or_workflow(
+            self.request.user,
+            queryset,
+            WORKFLOW_IDS['TRANSIT_PERMIT'],
+            licensee_field='licensee_id'
+        )
+
         bill_no = self.request.query_params.get('bill_no')
         if bill_no:
             queryset = queryset.filter(bill_no=bill_no)
         return queryset
 
 class GetTransitPermitDetailAPIView(generics.RetrieveAPIView):
-    queryset = EnaTransitPermitDetail.objects.all()
     serializer_class = EnaTransitPermitDetailSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = EnaTransitPermitDetail.objects.all()
+        return scope_by_profile_or_workflow(
+            self.request.user,
+            queryset,
+            WORKFLOW_IDS['TRANSIT_PERMIT'],
+            licensee_field='licensee_id'
+        )
 
 
 
@@ -151,6 +177,8 @@ class PerformTransitPermitActionAPIView(views.APIView):
     Dynamically determines the next status based on the current status and the action
     by querying the WorkflowTransition table.
     """
+    permission_classes = [IsAuthenticated]
+
     def post(self, request, pk):
         try:
             action = request.data.get('action')
@@ -162,6 +190,14 @@ class PerformTransitPermitActionAPIView(views.APIView):
 
             # Get the transit permit
             permit = EnaTransitPermitDetail.objects.get(pk=pk)
+
+            # Ownership/permission check (dynamic, DB-driven).
+            if hasattr(request.user, 'supply_chain_profile'):
+                user_licensee_id = request.user.supply_chain_profile.licensee_id
+                if str(permit.licensee_id) != str(user_licensee_id):
+                    raise PermissionDenied("You are not allowed to modify this transit permit.")
+            elif not has_workflow_access(request.user, WORKFLOW_IDS['TRANSIT_PERMIT']):
+                raise PermissionDenied("You are not allowed to modify this transit permit.")
             
             # Determine User Role
             # Simplified logic: In real app, check request.user.role.name
@@ -212,10 +248,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
             target_transition = None
             
             for t in transitions:
-                cond = t.condition or {}
-                # Match logic: condition role/action must match request context (or be loose)
-                # For this implementation, we check if the action matches. Role check optional or manual.
-                if cond.get('action') == action: # Strict role check: and cond.get('role') == role:
+                if transition_matches(t, request.user, action):
                     target_transition = t
                     break
             

@@ -83,6 +83,27 @@ def _get_role_stage_names(user, workflow_id: int):
     )
 
 
+def _collect_reachable_stage_names(workflow_id: int, start_stage_names: set[str]):
+    if not start_stage_names:
+        return set()
+
+    edges = {}
+    for from_name, to_name in WorkflowTransition.objects.filter(workflow_id=workflow_id).values_list(
+        'from_stage__name', 'to_stage__name'
+    ):
+        edges.setdefault(from_name, set()).add(to_name)
+
+    visited = set(start_stage_names)
+    stack = list(start_stage_names)
+    while stack:
+        current = stack.pop()
+        for nxt in edges.get(current, set()):
+            if nxt not in visited:
+                visited.add(nxt)
+                stack.append(nxt)
+    return visited
+
+
 def _create_application(request, workflow_id: int, serializer_cls):
    
     serializer = serializer_cls(data=request.data)
@@ -304,25 +325,54 @@ def dashboard_counts(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['LICENSE_APPROVAL']
     stage_sets = _get_stage_sets(workflow_id)
-    base_qs = (
-        NewLicenseApplication.objects.filter(applicant=request.user)
-        if role == 'licensee'
-        else NewLicenseApplication.objects.all()
-    )
+    all_qs = NewLicenseApplication.objects.all()
 
-    approved_stages = set(stage_sets['approved'])
-    rejected_stages = set(stage_sets['rejected'])
-    objection_stages = set(stage_sets['objection'])
-    pending_stages = set(stage_sets['payment'])
+    if role == 'licensee':
+        base_qs = NewLicenseApplication.objects.filter(applicant=request.user)
+        applied_stages = set(stage_sets['initial'])
+        objection_stages = set(stage_sets['objection'])
+        approved_stages = set(stage_sets['approved'])
+        rejected_stages = set(stage_sets['rejected'])
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
 
-    classified_stages = approved_stages | rejected_stages | objection_stages | pending_stages
+        return Response({
+            "applied": base_qs.filter(current_stage__name__in=applied_stages).count(),
+            "pending": base_qs.filter(current_stage__name__in=pending_stages).count(),
+            "objection": base_qs.filter(current_stage__name__in=objection_stages).count(),
+            "approved": base_qs.filter(current_stage__name__in=approved_stages).count(),
+            "rejected": base_qs.filter(current_stage__name__in=rejected_stages).count(),
+        })
+
+    if role in ['site_admin', 'single_window']:
+        applied_stages = set(stage_sets['initial'])
+        objection_stages = set(stage_sets['objection'])
+        approved_stages = set(stage_sets['approved'])
+        rejected_stages = set(stage_sets['rejected'])
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
+
+        return Response({
+            "applied": all_qs.filter(current_stage__name__in=applied_stages).count(),
+            "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
+            "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
+            "approved": all_qs.filter(current_stage__name__in=approved_stages).count(),
+            "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
+        })
+
+    role_stage_names = _get_role_stage_names(request.user, workflow_id)
+    if not role_stage_names:
+        return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
+
+    role_objection_stages = set(stage_sets['objection'])
+    pending_stages = set(role_stage_names) | role_objection_stages
+
+    reachable_from_role = _collect_reachable_stage_names(workflow_id, set(role_stage_names))
+    role_rejected_stages = set(stage_sets['rejected'])
+    forward_stages = set(reachable_from_role) - pending_stages - role_rejected_stages
 
     return Response({
-        "applied": base_qs.exclude(current_stage__name__in=classified_stages).count(),
-        "pending": base_qs.filter(current_stage__name__in=pending_stages).count(),
-        "objection": base_qs.filter(current_stage__name__in=objection_stages).count(),
-        "approved": base_qs.filter(current_stage__name__in=approved_stages).count(),
-        "rejected": base_qs.filter(current_stage__name__in=rejected_stages).count(),
+        "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
+        "approved": all_qs.filter(current_stage__name__in=forward_stages).count(),
+        "rejected": all_qs.filter(current_stage__name__in=role_rejected_stages).count(),
     })
 
 # Application Grouping
@@ -333,32 +383,81 @@ def application_group(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['LICENSE_APPROVAL']
     stage_sets = _get_stage_sets(workflow_id)
-    base_qs = (
-        NewLicenseApplication.objects.filter(applicant=request.user)
-        if role == 'licensee'
-        else NewLicenseApplication.objects.all()
-    )
+    all_qs = NewLicenseApplication.objects.all()
 
-    approved_stages = set(stage_sets['approved'])
-    rejected_stages = set(stage_sets['rejected'])
-    objection_stages = set(stage_sets['objection'])
-    pending_stages = set(stage_sets['payment'])
-    classified_stages = approved_stages | rejected_stages | objection_stages | pending_stages
+    if role == 'licensee':
+        base_qs = NewLicenseApplication.objects.filter(applicant=request.user)
+        applied_stages = set(stage_sets['initial'])
+        objection_stages = set(stage_sets['objection'])
+        approved_stages = set(stage_sets['approved'])
+        rejected_stages = set(stage_sets['rejected'])
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
 
-    return Response({
-        "applied": NewLicenseApplicationSerializer(
-            base_qs.exclude(current_stage__name__in=classified_stages), many=True
-        ).data,
-        "pending": NewLicenseApplicationSerializer(
-            base_qs.filter(current_stage__name__in=pending_stages), many=True
-        ).data,
-        "objection": NewLicenseApplicationSerializer(
-            base_qs.filter(current_stage__name__in=objection_stages), many=True
-        ).data,
-        "approved": NewLicenseApplicationSerializer(
-            base_qs.filter(current_stage__name__in=approved_stages), many=True
-        ).data,
-        "rejected": NewLicenseApplicationSerializer(
-            base_qs.filter(current_stage__name__in=rejected_stages), many=True
-        ).data,
-    })
+        return Response({
+            "applied": NewLicenseApplicationSerializer(
+                base_qs.filter(current_stage__name__in=applied_stages), many=True
+            ).data,
+            "pending": NewLicenseApplicationSerializer(
+                base_qs.filter(current_stage__name__in=pending_stages), many=True
+            ).data,
+            "objection": NewLicenseApplicationSerializer(
+                base_qs.filter(current_stage__name__in=objection_stages), many=True
+            ).data,
+            "approved": NewLicenseApplicationSerializer(
+                base_qs.filter(current_stage__name__in=approved_stages), many=True
+            ).data,
+            "rejected": NewLicenseApplicationSerializer(
+                base_qs.filter(current_stage__name__in=rejected_stages), many=True
+            ).data
+        })
+
+    if role in ['site_admin', 'single_window']:
+        applied_stages = set(stage_sets['initial'])
+        objection_stages = set(stage_sets['objection'])
+        approved_stages = set(stage_sets['approved'])
+        rejected_stages = set(stage_sets['rejected'])
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
+
+        return Response({
+            "applied": NewLicenseApplicationSerializer(
+                all_qs.filter(current_stage__name__in=applied_stages), many=True
+            ).data,
+            "pending": NewLicenseApplicationSerializer(
+                all_qs.filter(current_stage__name__in=pending_stages), many=True
+            ).data,
+            "objection": NewLicenseApplicationSerializer(
+                all_qs.filter(current_stage__name__in=objection_stages), many=True
+            ).data,
+            "approved": NewLicenseApplicationSerializer(
+                all_qs.filter(current_stage__name__in=approved_stages), many=True
+            ).data,
+            "rejected": NewLicenseApplicationSerializer(
+                all_qs.filter(current_stage__name__in=rejected_stages), many=True
+            ).data
+        })
+
+    role_stage_names = _get_role_stage_names(request.user, workflow_id)
+    if role_stage_names:
+        role_objection_stages = set(stage_sets['objection'])
+        pending_stages = set(role_stage_names) | role_objection_stages
+        reachable_from_role = _collect_reachable_stage_names(workflow_id, set(role_stage_names))
+        role_rejected_stages = set(stage_sets['rejected'])
+        forward_stages = set(reachable_from_role) - pending_stages - role_rejected_stages
+
+        return Response({
+            "applied": [],
+            "pending": NewLicenseApplicationSerializer(
+                all_qs.filter(current_stage__name__in=pending_stages), many=True
+            ).data,
+            "objection": NewLicenseApplicationSerializer(
+                all_qs.filter(current_stage__name__in=role_objection_stages), many=True
+            ).data,
+            "approved": NewLicenseApplicationSerializer(
+                all_qs.filter(current_stage__name__in=forward_stages), many=True
+            ).data,
+            "rejected": NewLicenseApplicationSerializer(
+                all_qs.filter(current_stage__name__in=role_rejected_stages), many=True
+            ).data
+        })
+
+    return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)

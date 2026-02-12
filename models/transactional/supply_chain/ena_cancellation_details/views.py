@@ -5,6 +5,11 @@ from django.utils import timezone
 from .models import EnaCancellationDetail
 from .serializers import EnaCancellationDetailSerializer, CancellationCreateSerializer
 from auth.workflow.constants import WORKFLOW_IDS
+from models.transactional.supply_chain.access_control import (
+    has_workflow_access,
+    scope_by_profile_or_workflow,
+    transition_matches,
+)
 
 class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     """
@@ -20,13 +25,12 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         query parameters in the URL and the current user's licensee profile.
         """
         queryset = EnaCancellationDetail.objects.all().order_by('-created_at')
-        
-        try:
-            if hasattr(self.request.user, 'supply_chain_profile'):
-                 profile = self.request.user.supply_chain_profile
-                 queryset = queryset.filter(licensee_id=profile.licensee_id)
-        except Exception:
-            pass
+        queryset = scope_by_profile_or_workflow(
+            self.request.user,
+            queryset,
+            WORKFLOW_IDS['ENA_CANCELLATION'],
+            licensee_field='licensee_id'
+        )
 
         our_ref_no = self.request.query_params.get('our_ref_no', None)
         status_param = self.request.query_params.get('status', None)
@@ -45,7 +49,11 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         if serializer.is_valid():
             ref_no = serializer.validated_data['reference_no']
             permit_numbers = serializer.validated_data['permit_numbers']
-            licensee_id = serializer.validated_data['licensee_id']
+            # Never trust client-provided licensee_id for authenticated licensee users.
+            if hasattr(request.user, 'supply_chain_profile'):
+                licensee_id = request.user.supply_chain_profile.licensee_id
+            else:
+                licensee_id = serializer.validated_data['licensee_id']
 
             try:
                 # Fetch Requisition Data
@@ -203,19 +211,8 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             if not action_type:
                 return Response({'error': 'Action is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-             # Determine Role
-            user_role_name = user.role.name if hasattr(user, 'role') and user.role else None
-            role_mapped = None
-            commissioner_roles = ['level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'Site-Admin', 'site_admin', 'commissioner', 'Commissioner']
-            
-            if user_role_name in commissioner_roles:
-                role_mapped = 'commissioner'
-            elif user_role_name in ['permit-section', 'Permit-Section', 'Permit Section']:
-                role_mapped = 'permit-section'
-            elif user_role_name in ['licensee', 'Licensee']:
-                role_mapped = 'licensee'
-            else:
-                role_mapped = user_role_name
+            if not has_workflow_access(user, WORKFLOW_IDS['ENA_CANCELLATION']) and not hasattr(user, 'supply_chain_profile'):
+                return Response({'error': 'Unauthorized role for this workflow'}, status=status.HTTP_403_FORBIDDEN)
             
             from auth.workflow.services import WorkflowService
             
@@ -238,25 +235,13 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                 transitions = WorkflowService.get_next_stages(cancellation)
                 
                 for t in transitions:
-                    # check role matches
-                    role_match = False
-                    if 'role' in t.condition:
-                        if t.condition['role'] == role_mapped:
-                            role_match = True
-                    
-                    # check action matches
-                    action_match = False
-                    if 'action' in t.condition:
-                        if str(t.condition['action']).upper() == str(action_type).upper():
-                            action_match = True
-                            
-                    if role_match and action_match:
+                    if transition_matches(t, user, action_type):
                         target_transition = t
                         break
                 
                 if not target_transition:
                     return Response({
-                        'error': f'Invalid action {action_type} for role {role_mapped} at stage {cancellation.current_stage.name}'
+                        'error': f'Invalid action {action_type} at stage {cancellation.current_stage.name}'
                     }, status=status.HTTP_400_BAD_REQUEST)
 
                 # Use values from the matching transition condition to ensure validation passes
