@@ -124,8 +124,21 @@ class MyLicensesListView(generics.ListAPIView):
         user_app_ids = NewLicenseApplication.objects.filter(
             applicant=user
         ).values_list('application_id', flat=True)
-        
-        return License.objects.filter(
+
+        # Primary match: direct applicant linkage on License.
+        qs_by_applicant = License.objects.filter(
+            applicant=user,
+            source_content_type=new_app_ct
+        )
+
+        # Compatibility fallback: match by source_object_id from user's applications.
+        qs_by_source_object = License.objects.filter(
             source_content_type=new_app_ct,
             source_object_id__in=user_app_ids
-        ).select_related('license_category', 'excise_district')
+        )
+
+        return (qs_by_applicant | qs_by_source_object).distinct().select_related(
+            'license_category',
+            'license_sub_category',
+            'excise_district'
+        )

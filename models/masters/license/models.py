@@ -2,7 +2,7 @@ from django.db import models
 from django.utils.timezone import now
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
-from models.masters.core.models import District, LicenseCategory
+from models.masters.core.models import District, LicenseCategory, LicenseSubcategory
 from auth.user.models import CustomUser
 
 class License(models.Model):
@@ -32,6 +32,12 @@ class License(models.Model):
         LicenseCategory,
         on_delete=models.PROTECT
     )
+    license_sub_category = models.ForeignKey(
+        LicenseSubcategory,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True
+    )
 
     # establishment_name = models.CharField(max_length=255)
     # licensee_name = models.CharField(max_length=100)
@@ -58,6 +64,7 @@ class License(models.Model):
             models.Index(fields=['license_id']),
             models.Index(fields=['source_type']),
             models.Index(fields=['license_category']),
+            models.Index(fields=['license_sub_category']),
             models.Index(fields=['is_active']),
             models.Index(fields=['valid_up_to']),
         ]

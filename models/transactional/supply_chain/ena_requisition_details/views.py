@@ -2,10 +2,16 @@ from rest_framework import generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.exceptions import PermissionDenied
 import re
 from .models import EnaRequisitionDetail
 from .serializers import EnaRequisitionDetailSerializer
 from auth.workflow.constants import WORKFLOW_IDS
+from models.transactional.supply_chain.access_control import (
+    has_workflow_access,
+    scope_by_profile_or_workflow,
+    transition_matches,
+)
 
 
 class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
@@ -14,14 +20,12 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         queryset = EnaRequisitionDetail.objects.all()
-        
-        # Filter by Licensee ID if user has a profile
-        try:
-            if hasattr(self.request.user, 'supply_chain_profile'):
-                 profile = self.request.user.supply_chain_profile
-                 queryset = queryset.filter(licensee_id=profile.licensee_id)
-        except Exception:
-            pass # Or handle specific roles if needed
+        queryset = scope_by_profile_or_workflow(
+            self.request.user,
+            queryset,
+            WORKFLOW_IDS['ENA_REQUISITION'],
+            licensee_field='licensee_id'
+        )
 
         our_ref_no = self.request.query_params.get('our_ref_no', None)
         if our_ref_no is not None:
@@ -30,8 +34,17 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
 
 
 class EnaRequisitionDetailRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = EnaRequisitionDetail.objects.all()
     serializer_class = EnaRequisitionDetailSerializer
+
+    def get_queryset(self):
+        queryset = EnaRequisitionDetail.objects.all()
+        queryset = scope_by_profile_or_workflow(
+            self.request.user,
+            queryset,
+            WORKFLOW_IDS['ENA_REQUISITION'],
+            licensee_field='licensee_id'
+        )
+        return queryset
 
 
 class GetNextRefNumberAPIView(APIView):
@@ -100,38 +113,17 @@ class PerformRequisitionActionAPIView(APIView):
 
             # Get the requisition
             requisition = EnaRequisitionDetail.objects.get(pk=pk)
-            current_status_code = requisition.status_code
-            
-            # Determine User Role
-            user_role_name = request.user.role.name if hasattr(request.user, 'role') and request.user.role else None
-            
-            if not user_role_name:
+
+            # Licensee users can only act on their own requisitions.
+            if hasattr(request.user, 'supply_chain_profile'):
+                user_licensee_id = request.user.supply_chain_profile.licensee_id
+                if str(requisition.licensee_id) != str(user_licensee_id):
+                    raise PermissionDenied("You are not allowed to modify this requisition.")
+            if not has_workflow_access(request.user, WORKFLOW_IDS['ENA_REQUISITION']) and not hasattr(request.user, 'supply_chain_profile'):
                 return Response({
                     'status': 'error',
-                    'message': 'User role not found'
+                    'message': 'Unauthorized role for this workflow'
                 }, status=status.HTTP_403_FORBIDDEN)
-
-            role = None
-            commissioner_roles = ['level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'Site-Admin', 'site_admin', 'commissioner', 'Commissioner']
-            
-            if user_role_name in commissioner_roles:
-                role = 'commissioner'
-            elif user_role_name in ['permit-section', 'Permit-Section', 'Permit Section']:
-                role = 'permit-section'
-            elif user_role_name in ['licensee', 'Licensee']:
-                role = 'licensee'
-            
-            if not role:
-                 return Response({
-                    'status': 'error',
-                    'message': f'Unauthorized role: {user_role_name}'
-                }, status=status.HTTP_403_FORBIDDEN)
-
-            # Determine User Role
-            user_role_name = request.user.role.name if hasattr(request.user, 'role') and request.user.role else None
-            
-            if not user_role_name:
-                return Response({'status': 'error', 'message': 'User role not found'}, status=status.HTTP_403_FORBIDDEN)
 
             # --- Use WorkflowService to advance stage ---
             from auth.workflow.services import WorkflowService
@@ -154,7 +146,6 @@ class PerformRequisitionActionAPIView(APIView):
             
             # Context for validation (if rules use condition)
             context = {
-                "role": role,  # role determined above
                 "action": action
             }
 
@@ -171,16 +162,14 @@ class PerformRequisitionActionAPIView(APIView):
             target_transition = None
             
             for t in transitions:
-                cond = t.condition or {}
-                # Match logic: condition role/action must match request
-                if cond.get('role') == role and cond.get('action') == action:
+                if transition_matches(t, request.user, action):
                     target_transition = t
                     break
             
             if not target_transition:
                 return Response({
                     'status': 'error',
-                    'message': f'No valid transition for Action: {action} on Stage: {requisition.current_stage.name} for Role: {role}'
+                    'message': f'No valid transition for Action: {action} on Stage: {requisition.current_stage.name}'
                 }, status=status.HTTP_400_BAD_REQUEST)
                 
             try:
