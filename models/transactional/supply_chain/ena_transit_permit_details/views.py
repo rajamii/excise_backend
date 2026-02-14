@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
+import re
 from .serializers import TransitPermitSubmissionSerializer, EnaTransitPermitDetailSerializer
 from .models import EnaTransitPermitDetail
 from auth.workflow.constants import WORKFLOW_IDS
@@ -15,13 +16,27 @@ from models.transactional.supply_chain.access_control import (
 
 class SubmitTransitPermitAPIView(views.APIView):
     permission_classes = [IsAuthenticated]
+
+    def _generate_transit_ref(self) -> str:
+        existing_refs = EnaTransitPermitDetail.objects.values_list('bill_no', flat=True)
+        pattern = r'TRN/(\d+)/EXCISE'
+        numbers = []
+
+        for ref in existing_refs:
+            match = re.match(pattern, str(ref or ''))
+            if match:
+                numbers.append(int(match.group(1)))
+
+        next_number = (max(numbers) + 1) if numbers else 1
+        return f"TRN/{next_number:02d}/EXCISE"
+
     def post(self, request):
         print(f"DEBUG: Raw Request Data keys: {list(request.data.keys())}")
         print(f"DEBUG: Full Request Data: {request.data}")
         serializer = TransitPermitSubmissionSerializer(data=request.data)
         if serializer.is_valid():
             data = serializer.validated_data
-            bill_no = data['bill_no']
+            bill_no = self._generate_transit_ref()
             
             # 1. Uniqueness Check (Application Level)
             if EnaTransitPermitDetail.objects.filter(bill_no=bill_no).exists():

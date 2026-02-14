@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import EnaCancellationDetail
 from auth.workflow.constants import WORKFLOW_IDS
+import re
 
 class EnaCancellationDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
@@ -8,6 +9,9 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = EnaCancellationDetail
         fields = '__all__'
+        extra_kwargs = {
+            'our_ref_no': {'required': False},
+        }
 
     def get_allowed_actions(self, obj):
         request = self.context.get('request')
@@ -72,6 +76,20 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
             config = WorkflowService.get_action_config(action_name)
             configs.append(config)
         return configs
+
+    def create(self, validated_data):
+        existing_refs = EnaCancellationDetail.objects.values_list('our_ref_no', flat=True)
+        pattern = r'CAN/(\d+)/EXCISE'
+        numbers = []
+
+        for ref in existing_refs:
+            match = re.match(pattern, str(ref or ''))
+            if match:
+                numbers.append(int(match.group(1)))
+
+        next_number = (max(numbers) + 1) if numbers else 1
+        validated_data['our_ref_no'] = f"CAN/{next_number:02d}/EXCISE"
+        return super().create(validated_data)
 
 class CancellationCreateSerializer(serializers.Serializer):
     reference_no = serializers.CharField(max_length=100)

@@ -3,6 +3,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
+from django.core.exceptions import ValidationError as DjangoValidationError
 import re
 from .models import EnaRequisitionDetail
 from .serializers import EnaRequisitionDetailSerializer
@@ -50,7 +52,7 @@ class EnaRequisitionDetailRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDe
 class GetNextRefNumberAPIView(APIView):
     """
     API endpoint to generate the next unique reference number.
-    Format: IBPS/{number:02d}/EXCISE
+    Format: REQ/{number:02d}/EXCISE
     
     Logic:
     - Queries all existing our_ref_no values
@@ -65,12 +67,15 @@ class GetNextRefNumberAPIView(APIView):
             
             # Extract numeric parts from reference numbers
             numbers = []
-            pattern = r'IBPS/(\d+)/EXCISE'
+            patterns = [r'REQ/(\d+)/EXCISE', r'IBPS/(\d+)/EXCISE']
             
             for ref in existing_refs:
-                match = re.match(pattern, ref)
-                if match:
-                    numbers.append(int(match.group(1)))
+                ref_text = str(ref or '')
+                for pattern in patterns:
+                    match = re.match(pattern, ref_text)
+                    if match:
+                        numbers.append(int(match.group(1)))
+                        break
             
             # Determine next number
             if numbers:
@@ -79,7 +84,7 @@ class GetNextRefNumberAPIView(APIView):
                 next_number = 1
             
             # Format the reference number
-            ref_number = f"IBPS/{next_number:02d}/EXCISE"
+            ref_number = f"REQ/{next_number:02d}/EXCISE"
             
             return Response({
                 'status': 'success',
@@ -200,6 +205,16 @@ class PerformRequisitionActionAPIView(APIView):
                     'data': serializer.data
                 }, status=status.HTTP_200_OK)
 
+            except (PermissionDenied, DjangoPermissionDenied) as e:
+                return Response({
+                    'status': 'error',
+                    'message': str(e)
+                }, status=status.HTTP_403_FORBIDDEN)
+            except DjangoValidationError as e:
+                return Response({
+                    'status': 'error',
+                    'message': str(e)
+                }, status=status.HTTP_400_BAD_REQUEST)
             except Exception as e:
                  return Response({
                     'status': 'error',
@@ -211,6 +226,16 @@ class PerformRequisitionActionAPIView(APIView):
                 'status': 'error',
                 'message': 'Requisition not found'
             }, status=status.HTTP_404_NOT_FOUND)
+        except (PermissionDenied, DjangoPermissionDenied) as e:
+            return Response({
+                'status': 'error',
+                'message': str(e)
+            }, status=status.HTTP_403_FORBIDDEN)
+        except DjangoValidationError as e:
+            return Response({
+                'status': 'error',
+                'message': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
             
         except Exception as e:
             return Response({

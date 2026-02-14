@@ -2,6 +2,7 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils import timezone
+import re
 from .models import EnaCancellationDetail
 from .serializers import EnaCancellationDetailSerializer, CancellationCreateSerializer
 from auth.workflow.constants import WORKFLOW_IDS
@@ -18,6 +19,19 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     queryset = EnaCancellationDetail.objects.all().order_by('-created_at')
     serializer_class = EnaCancellationDetailSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def _generate_cancellation_ref(self) -> str:
+        existing_refs = EnaCancellationDetail.objects.values_list('our_ref_no', flat=True)
+        pattern = r'CAN/(\d+)/EXCISE'
+        numbers = []
+
+        for ref in existing_refs:
+            match = re.match(pattern, str(ref or ''))
+            if match:
+                numbers.append(int(match.group(1)))
+
+        next_number = (max(numbers) + 1) if numbers else 1
+        return f"CAN/{next_number:02d}/EXCISE"
 
     def get_queryset(self):
         """
@@ -90,7 +104,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
                 # Prepare Cancellation Data
                 cancellation = EnaCancellationDetail(
-                    our_ref_no=req.our_ref_no,
+                    our_ref_no=self._generate_cancellation_ref(),
                     requisition_date=req.requisition_date,
                     grain_ena_number=req.grain_ena_number,         
                     bulk_spirit_type=req.bulk_spirit_type, 
@@ -140,13 +154,6 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         try:
             cancellation = self.get_object()
             
-            # Get the original requisition to fetch permit details
-            from models.transactional.supply_chain.ena_requisition_details.models import EnaRequisitionDetail
-            requisition = EnaRequisitionDetail.objects.filter(our_ref_no=cancellation.our_ref_no).first()
-            
-            if not requisition:
-                return Response({'error': 'Original requisition not found'}, status=status.HTTP_404_NOT_FOUND)
-            
             # Parse cancelled permit numbers
             cancelled_permits = []
             if cancellation.cancelled_permit_number:
@@ -163,15 +170,15 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                 },
                 'subject': {
                     'permit_numbers': cancelled_permits,
-                    'permit_date': requisition.requisition_date.strftime('%d.%m.%Y') if requisition.requisition_date else 'Date not available'
+                    'permit_date': cancellation.requisition_date.strftime('%d.%m.%Y') if cancellation.requisition_date else 'Date not available'
                 },
                 'reference': {
-                    'letter_date': cancellation.cancellation_each_permit_date.strftime('%d.%m.%Y') if cancellation.cancellation_each_permit_date else requisition.requisition_date.strftime('%d.%m.%Y') if requisition.requisition_date else 'Date not available'
+                    'letter_date': cancellation.cancellation_each_permit_date.strftime('%d.%m.%Y') if cancellation.cancellation_each_permit_date else cancellation.requisition_date.strftime('%d.%m.%Y') if cancellation.requisition_date else 'Date not available'
                 },
                 'cancellation_details': {
                     'reference_no': cancellation.our_ref_no,
                     'original_permit_numbers': cancelled_permits,
-                    'original_permit_date': requisition.requisition_date.strftime('%d.%m.%Y') if requisition.requisition_date else 'Date not available',
+                    'original_permit_date': cancellation.requisition_date.strftime('%d.%m.%Y') if cancellation.requisition_date else 'Date not available',
                     'cancellation_date': cancellation.cancellation_date.strftime('%d.%m.%Y') if cancellation.cancellation_date else timezone.now().strftime('%d.%m.%Y'),
                     'distillery_name': cancellation.distillery_name,
                     'quantity': float(cancellation.grain_ena_number) if cancellation.grain_ena_number else 0,

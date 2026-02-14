@@ -14,7 +14,7 @@ ACTION_CONFIGS = {
     'APPROVE': {
         'label': 'Approve',
         'icon': 'check_circle',
-        'color': 'accent',
+        'color': 'primary',
         'tooltip': 'Approve Application',
         'requires_confirmation': True,
         'confirmation_message': 'Are you sure you want to approve this application?'
@@ -46,7 +46,7 @@ ACTION_CONFIGS = {
     'VERIFY': {
         'label': 'Verify',
         'icon': 'verified',
-        'color': 'info',
+        'color': 'primary',
         'tooltip': 'Verify Application',
         'requires_confirmation': True,
         'confirmation_message': 'Are you sure you want to verify this application?'
@@ -92,7 +92,7 @@ ACTION_CONFIGS = {
     'REQUEST_REVALIDATION': {
         'label': 'Request Revalidation',
         'icon': 'restore',
-        'color': 'primary',
+        'color': 'warn',
         'tooltip': 'Request Revalidation',
         'requires_confirmation': True,
         'confirmation_message': 'The permit validity has been extended. Do you want to proceed with revalidation?'

@@ -106,7 +106,7 @@ class TransitPermitSubmissionSerializer(serializers.Serializer):
     Serializer to validate the full submission payload.
     CamelCaseJSONParser will convert incoming camelCase keys to snake_case.
     """
-    bill_no = serializers.CharField()
+    bill_no = serializers.CharField(required=False, allow_blank=True)
     sole_distributor = serializers.CharField() # maps from soleDistributor
     date = serializers.DateField()
     depot_address = serializers.CharField()

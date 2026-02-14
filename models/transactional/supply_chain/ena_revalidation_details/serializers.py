@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import EnaRevalidationDetail
 from auth.workflow.constants import WORKFLOW_IDS
+import re
 
 class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
@@ -8,6 +9,9 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = EnaRevalidationDetail
         fields = '__all__'
+        extra_kwargs = {
+            'our_ref_no': {'required': False},
+        }
 
     def get_allowed_actions(self, obj):
         request = self.context.get('request')
@@ -90,3 +94,36 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
             config = WorkflowService.get_action_config(action_name)
             configs.append(config)
         return configs
+
+    def create(self, validated_data):
+        existing_refs = EnaRevalidationDetail.objects.values_list('our_ref_no', flat=True)
+        pattern = r'REV/(\d+)/EXCISE'
+        numbers = []
+
+        for ref in existing_refs:
+            match = re.match(pattern, str(ref or ''))
+            if match:
+                numbers.append(int(match.group(1)))
+
+        next_number = (max(numbers) + 1) if numbers else 1
+        validated_data['our_ref_no'] = f"REV/{next_number:02d}/EXCISE"
+
+        request = self.context.get('request')
+        if request:
+            requested_licensee_id = request.data.get('licensee_id') or request.data.get('licenseeId')
+            if requested_licensee_id:
+                validated_data['licensee_id'] = requested_licensee_id
+
+        if not validated_data.get('licensee_id') and request and hasattr(request.user, 'supply_chain_profile'):
+            validated_data['licensee_id'] = request.user.supply_chain_profile.licensee_id
+        elif not validated_data.get('licensee_id') and request and hasattr(request.user, 'manufacturing_units'):
+            unit = request.user.manufacturing_units.exclude(licensee_id__isnull=True).exclude(licensee_id='').first()
+            if unit:
+                validated_data['licensee_id'] = unit.licensee_id
+
+        if not validated_data.get('licensee_id'):
+            raise serializers.ValidationError({
+                'licensee_id': 'Unable to determine licensee mapping. Please set your active supply-chain profile and try again.'
+            })
+
+        return super().create(validated_data)

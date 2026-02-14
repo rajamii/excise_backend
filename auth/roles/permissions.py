@@ -26,7 +26,17 @@ class HasAppPermission(permissions.BasePermission):
         raise PermissionDenied(detail=detail, code=code)
 
     def _normalize_label(self, label: str) -> str:
-        return str(label).strip().lower().replace(' ', '_').replace('-', '_')
+        normalized = (
+            str(label)
+            .strip()
+            .lower()
+            .replace(' ', '_')
+            .replace('-', '_')
+            .replace('/', '_')
+        )
+        while '__' in normalized:
+            normalized = normalized.replace('__', '_')
+        return normalized.strip('_')
 
     def _label_aliases(self, label: str) -> set[str]:
         normalized = self._normalize_label(label)
@@ -83,6 +93,18 @@ class HasAppPermission(permissions.BasePermission):
         required_labels = self._label_aliases(self.app_label)
 
         if not (required_labels & normalized_allowed):
+            # Backward compatibility:
+            # Some existing roles (e.g., Licensee) were configured with
+            # company_registration in can_view but not in can_add.
+            # Allow create for this one app when view permission exists.
+            if self.action == 'create' and self._normalize_label(self.app_label) == 'company_registration':
+                view_labels = getattr(role, 'can_view', []) or []
+                normalized_view = set()
+                for label in view_labels:
+                    normalized_view.update(self._label_aliases(label))
+                if required_labels & normalized_view:
+                    return True
+
             self._raise_denied(
                 f"Cannot {self.action} {self.app_label}",
                 f"cannot_{self.action}"

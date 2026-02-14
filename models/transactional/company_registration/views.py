@@ -12,7 +12,7 @@ from .serializers import CompanySerializer
 #           Company Registration                #
 #################################################
 
-@has_app_permission('masters', 'view')
+@has_app_permission('company_registration', 'view')
 @api_view(['GET'])
 def company_list(request):
     """List active company registrations with filters"""
@@ -39,7 +39,7 @@ def company_list(request):
         'results': serializer.data
     })
 
-@has_app_permission('masters', 'create')
+@has_app_permission('company_registration', 'create')
 @api_view(['POST'])
 @parser_classes([MultiPartParser, FormParser])
 def company_create(request):
@@ -50,7 +50,7 @@ def company_create(request):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-@has_app_permission('masters', 'view')
+@has_app_permission('company_registration', 'view')
 @api_view(['GET'])
 def company_detail(request, pk):
     """Retrieve active company registration by PK"""
@@ -58,7 +58,7 @@ def company_detail(request, pk):
     serializer = CompanySerializer(company)
     return Response(serializer.data)
 
-@has_app_permission('masters', 'view')
+@has_app_permission('company_registration', 'view')
 @api_view(['GET'])
 def company_detail_by_appid(request, application_id):
     """Retrieve active company registration by application ID"""
@@ -70,7 +70,7 @@ def company_detail_by_appid(request, application_id):
     serializer = CompanySerializer(company)
     return Response(serializer.data)
 
-@has_app_permission('masters', 'update')
+@has_app_permission('company_registration', 'update')
 @api_view(['PUT', 'PATCH'])
 @parser_classes([MultiPartParser, FormParser])
 def company_update(request, pk):
@@ -87,7 +87,7 @@ def company_update(request, pk):
         return Response(serializer.data)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-@has_app_permission('masters', 'update')
+@has_app_permission('company_registration', 'update')
 @api_view(['PUT', 'PATCH'])
 @parser_classes([MultiPartParser, FormParser])
 def company_update_by_appid(request, application_id):
@@ -107,7 +107,7 @@ def company_update_by_appid(request, application_id):
         return Response(serializer.data)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-@has_app_permission('masters', 'delete')
+@has_app_permission('company_registration', 'delete')
 @api_view(['DELETE'])
 def company_delete(request, pk):
     """Soft delete company registration by PK"""
@@ -119,7 +119,7 @@ def company_delete(request, pk):
         status=status.HTTP_200_OK
     )
 
-@has_app_permission('masters', 'delete')
+@has_app_permission('company_registration', 'delete')
 @api_view(['DELETE'])
 def company_delete_by_appid(request, application_id):
     """Soft delete company registration by application ID"""

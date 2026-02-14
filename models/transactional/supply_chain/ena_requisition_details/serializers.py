@@ -164,12 +164,15 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         
         # Extract numeric parts from reference numbers
         numbers = []
-        pattern = r'IBPS/(\d+)/EXCISE'
+        patterns = [r'REQ/(\d+)/EXCISE', r'IBPS/(\d+)/EXCISE']
         
         for ref in existing_refs:
-            match = re.match(pattern, ref)
-            if match:
-                numbers.append(int(match.group(1)))
+            ref_text = str(ref or '')
+            for pattern in patterns:
+                match = re.match(pattern, ref_text)
+                if match:
+                    numbers.append(int(match.group(1)))
+                    break
         
         # Determine next number
         if numbers:
@@ -178,12 +181,28 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             next_number = 1
         
         # Format the reference number
-        validated_data['our_ref_no'] = f"IBPS/{next_number:02d}/EXCISE"
+        validated_data['our_ref_no'] = f"REQ/{next_number:02d}/EXCISE"
         
-        # Auto-populate Licensee ID from Profile
+        # Prefer explicit request value (license format like NA/....)
         request = self.context.get('request')
-        if request and request.user and hasattr(request.user, 'supply_chain_profile'):
+        if request:
+            requested_licensee_id = request.data.get('licensee_id') or request.data.get('licenseeId')
+            if requested_licensee_id:
+                validated_data['licensee_id'] = requested_licensee_id
+
+        # Fallback: Auto-populate Licensee ID from Profile
+        if not validated_data.get('licensee_id') and request and request.user and hasattr(request.user, 'supply_chain_profile'):
             validated_data['licensee_id'] = request.user.supply_chain_profile.licensee_id
+        elif request and request.user and hasattr(request.user, 'manufacturing_units'):
+            # Fallback to first mapped unit if active profile is not set.
+            unit = request.user.manufacturing_units.exclude(licensee_id__isnull=True).exclude(licensee_id='').first()
+            if unit:
+                validated_data['licensee_id'] = unit.licensee_id
+
+        if not validated_data.get('licensee_id'):
+            raise serializers.ValidationError({
+                'licensee_id': 'Unable to determine licensee mapping. Please set your active supply-chain profile and try again.'
+            })
         
         # Initialize Workflow and Status
         from auth.workflow.models import Workflow, WorkflowStage
