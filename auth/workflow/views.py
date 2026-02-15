@@ -17,6 +17,7 @@ from .services import WorkflowService
 from models.transactional.license_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
 from models.transactional.salesman_barman.models import SalesmanBarmanModel
+from models.transactional.company_registration.models import CompanyModel
 import logging
 
 # Workflow views (from previous response)
@@ -184,37 +185,47 @@ def stage_permission_delete(request, pk):
 @api_view(['GET'])
 @permission_classes([HasStagePermission])
 def get_next_stages(request, application_id):
-    try:
-        application = NewLicenseApplication.objects.get(application_id = application_id)
-    except NewLicenseApplication.DoesNotExist:
-        try:
-            application = LicenseApplication.objects.get(application_id = application_id)
-        except LicenseApplication.DoesNotExist:
-            try:
-                application = SalesmanBarmanModel.objects.get(application_id = application_id)
-            except LicenseApplication.DoesNotExist:
-                return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+    application = _get_application_by_id(application_id)
+    if not application:
+        return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
         
     # Enforce stage-level processing permission for action discovery.
     # Without this, non-processing users can still fetch next actions on GET.
     if not request.user.is_superuser:
         if not getattr(request.user, 'role', None):
-            return Response({"detail": "User has no role"}, status=status.HTTP_403_FORBIDDEN)
+            return Response([], status=status.HTTP_200_OK)
         if not StagePermission.objects.filter(
             stage=application.current_stage,
             role=request.user.role,
             can_process=True
         ).exists():
-            return Response({"detail": "You cannot process this stage."}, status=status.HTTP_403_FORBIDDEN)
+            # For users who can view but not process this stage, return no actions
+            # instead of 403 so frontend can render gracefully.
+            return Response([], status=status.HTTP_200_OK)
 
     current_stage = application.current_stage
-    transitions = WorkflowTransition.objects.filter(workflow=application.workflow, from_stage=current_stage)
-    allowed_stages = [t.to_stage for t in transitions]
-    data = [{
-            'id': stage.id,
-            'name': stage.name,
-            'description': stage.description or ""
-        } for stage in allowed_stages]
+    transitions = WorkflowTransition.objects.filter(
+        workflow=application.workflow,
+        from_stage=current_stage
+    ).select_related('to_stage')
+
+    # Filter transitions by transition-level role condition when present.
+    filtered_transitions = []
+    for t in transitions:
+        condition = t.condition or {}
+        if WorkflowService._condition_role_matches(condition, request.user):
+            filtered_transitions.append(t)
+
+    data = []
+    for t in filtered_transitions:
+        action = str((t.condition or {}).get('action') or '').strip().upper()
+        data.append({
+            'id': t.to_stage.id,
+            'name': t.to_stage.name,
+            'description': t.to_stage.description or "",
+            'action': action or None,
+            'transition_id': t.id,
+        })
     return Response(data)
 
 @api_view(['POST'])
@@ -343,7 +354,8 @@ def resolve_objections(request, application_id):
 @permission_classes([HasStagePermission])
 def dashboard_counts(request):
     models = [_get_model("license_application", "LicenseApplication"),
-              _get_model("new_license_application", "NewLicenseApplication")]
+              _get_model("new_license_application", "NewLicenseApplication"),
+              _get_model("company_registration", "CompanyModel")]
 
     total = approved = pending = rejected = objection = 0
 
@@ -375,7 +387,8 @@ def application_group(request):
         return Response({"detail": "User has no role"}, status=400)
 
     models = [_get_model("license_application", "LicenseApplication"),
-              _get_model("new_license_application", "NewLicenseApplication")]
+              _get_model("new_license_application", "NewLicenseApplication"),
+              _get_model("company_registration", "CompanyModel")]
 
     result = {"pending": [], "approved": [], "rejected": [], "objection": []}
 
@@ -436,20 +449,29 @@ def _get_application_by_id(application_id):
         ("license_application", "LicenseApplication"),
         ("new_license_application", "NewLicenseApplication"),
         ("salesman_barman", "SalesmanBarmanModel"),
+        ("company_registration", "CompanyModel"),
     ]
 
     for app_label, model_name in model_configs:
         try:
             Model = apps.get_model(app_label=app_label, model_name=model_name)
-            # This will raise DoesNotExist if not found → we catch it
-            return Model.objects.select_related('current_stage', 'workflow').get(
-                application_id=application_id
-            )
-        except (LookupError, Model.DoesNotExist):
-            continue  # Try next model
+            field_names = {f.name for f in Model._meta.get_fields()}
+            if 'application_id' in field_names:
+                return Model.objects.select_related('current_stage', 'workflow').get(
+                    application_id=application_id
+                )
+            if 'applicationId' in field_names:
+                return Model.objects.select_related('current_stage', 'workflow').get(
+                    applicationId=application_id
+                )
+        except LookupError:
+            continue
+        except Model.DoesNotExist:
+            continue
+        except Exception:
+            continue
 
     return None
-
 
 def _get_model(app_label, model_name):
     try:
@@ -556,3 +578,4 @@ def pay_license_fee(request, application_id):
         "application_id": application_id,
         "stage": "approved"
     }, status=status.HTTP_200_OK)
+

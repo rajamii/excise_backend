@@ -1,4 +1,7 @@
 from django.db import models
+from django.utils.timezone import now
+from auth.user.models import CustomUser
+from auth.workflow.models import Workflow, WorkflowStage
 from .helpers import (
     validate_name,
     validate_pan,
@@ -21,6 +24,27 @@ class CompanyModel(models.Model):
         db_column='application_id',
         blank=True,
         null=True
+    )
+    workflow = models.ForeignKey(
+        Workflow,
+        on_delete=models.PROTECT,
+        related_name='company_registrations',
+        null=True,
+        blank=True,
+    )
+    current_stage = models.ForeignKey(
+        WorkflowStage,
+        on_delete=models.PROTECT,
+        related_name='company_registrations',
+        null=True,
+        blank=True,
+    )
+    applicant = models.ForeignKey(
+        CustomUser,
+        on_delete=models.PROTECT,
+        related_name='company_registrations',
+        null=True,
+        blank=True,
     )
     
     companyName = models.CharField(max_length=255, validators=[validate_name], db_column='company_name')
@@ -76,3 +100,16 @@ class CompanyModel(models.Model):
 
     def __str__(self):
         return f"{self.companyName} ({self.applicationYear})"
+
+    @property
+    def application_id(self):
+        # Compatibility with common workflow utilities that expect snake_case.
+        return self.applicationId
+
+    @staticmethod
+    def generate_fin_year():
+        today = now().date()
+        year = today.year
+        if today.month >= 4:
+            return f"{year}-{str(year + 1)[2:]}"
+        return f"{year - 1}-{str(year)[2:]}"

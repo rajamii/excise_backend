@@ -9,17 +9,30 @@ from .helpers import (
 )
 
 class CompanySerializer(serializers.ModelSerializer):
+    current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
+    current_stage_id = serializers.IntegerField(source='current_stage.id', read_only=True)
+    workflow_id = serializers.IntegerField(source='workflow.id', read_only=True)
+    status = serializers.SerializerMethodField()
+
     class Meta:
         model = CompanyModel
         fields = '__all__'
         read_only_fields = (
             'id',
             'applicationId',
-            'IsActive'
+            'IsActive',
+            'workflow',
+            'current_stage',
+            'applicant',
         )
         extra_kwargs = {
             'undertaking': {'write_only': True},
         }
+
+    def get_status(self, obj):
+        if getattr(obj, 'current_stage', None) and getattr(obj.current_stage, 'name', None):
+            return obj.current_stage.name
+        return 'pending'
 
     # Correct validation methods for each field
     def validate_companyName(self, value):

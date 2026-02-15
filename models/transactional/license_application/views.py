@@ -10,7 +10,7 @@ from models.masters.license.models import License
 from models.masters.core.models import LocationFee
 from .serializers import LicenseApplicationSerializer, LocationFeeSerializer
 from rest_framework import status
-from auth.workflow.models import Workflow, StagePermission, WorkflowStage
+from auth.workflow.models import Workflow, WorkflowStage
 from auth.workflow.constants import WORKFLOW_IDS
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
@@ -108,13 +108,6 @@ def _create_application(request, workflow_id: int, serializer_cls):
             application_id=new_application_id,
             applicant=request.user
         )
-
-        sp = StagePermission.objects.filter(stage=initial_stage, can_process=True).first()
-        if not sp or not sp.role:
-            return Response(
-                {"detail": "No role assigned to process the initial stage."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
 
         WorkflowService.submit_application(
             application=application,

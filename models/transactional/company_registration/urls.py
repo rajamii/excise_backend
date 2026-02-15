@@ -12,4 +12,6 @@ urlpatterns = [
     path('appid/<str:application_id>/', views.company_detail_by_appid, name='detail-by-appid'),
     path('appid/<str:application_id>/update/', views.company_update_by_appid, name='update-by-appid'),
     path('appid/<str:application_id>/delete/', views.company_delete_by_appid, name='delete-by-appid'),
+    path('dashboard-counts/', views.dashboard_counts, name='company-dashboard-counts'),
+    path('list-by-status/', views.application_group, name='company-applications-by-status'),
 ]

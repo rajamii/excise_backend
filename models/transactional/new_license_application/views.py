@@ -8,7 +8,7 @@ from rest_framework import status
 from auth.roles.permissions import HasAppPermission
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
-from auth.workflow.models import Workflow, StagePermission
+from auth.workflow.models import Workflow
 from auth.workflow.constants import WORKFLOW_IDS
 from .models import NewLicenseApplication
 from models.masters.license.models import License
@@ -140,17 +140,6 @@ def _create_application(request, workflow_id: int, serializer_cls):
             applicant=request.user
         )   
        
-        sp = StagePermission.objects.filter(stage=initial_stage, can_process=True).first()
-
-        if not sp or not sp.role:
-            return Response(
-                {"detail": "No role assigned to process the initial stage."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-        forwarded_to_role = sp.role
-        if not forwarded_to_role:
-            raise ValidationError("No role configured for the initial stage.")
- 
         WorkflowService.submit_application(
             application=application,
             user=request.user,
