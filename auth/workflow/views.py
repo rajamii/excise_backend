@@ -207,7 +207,7 @@ def get_next_stages(request, application_id):
     transitions = WorkflowTransition.objects.filter(
         workflow=application.workflow,
         from_stage=current_stage
-    ).select_related('to_stage')
+    ).select_related('to_stage').order_by('id')
 
     # Filter transitions by transition-level role condition when present.
     filtered_transitions = []
@@ -216,15 +216,29 @@ def get_next_stages(request, application_id):
         if WorkflowService._condition_role_matches(condition, request.user):
             filtered_transitions.append(t)
 
+    def _normalized_action(condition: dict) -> str | None:
+        action = str((condition or {}).get('action') or '').strip().upper()
+        if action:
+            return action
+        if (condition or {}).get('has_objections') is True:
+            return 'RAISE_OBJECTION'
+        if (condition or {}).get('objections_resolved') is True:
+            return 'RESOLVE_OBJECTION'
+        if (condition or {}).get('is_reverted') is True:
+            return 'REVERT'
+        return None
+
     data = []
     for t in filtered_transitions:
-        action = str((t.condition or {}).get('action') or '').strip().upper()
+        condition = t.condition or {}
+        action = _normalized_action(condition)
         data.append({
             'id': t.to_stage.id,
             'name': t.to_stage.name,
             'description': t.to_stage.description or "",
             'action': action or None,
             'transition_id': t.id,
+            'condition': condition,
         })
     return Response(data)
 

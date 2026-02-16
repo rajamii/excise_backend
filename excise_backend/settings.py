@@ -87,7 +87,7 @@ INSTALLED_APPS = [
     'models.transactional.new_license_application',
     'models.transactional.salesman_barman',
     'models.transactional.logs',
-    'models.transactional.transactiondata',
+    'models.transactional.payment',
     'models.transactional.supply_chain.ena_transit_permit_details',
     'models.transactional.supply_chain.ena_revalidation_details',
     'models.transactional.supply_chain.ena_requisition_details',  # Added missing app

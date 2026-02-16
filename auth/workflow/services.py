@@ -300,44 +300,59 @@ class WorkflowService:
 
     @staticmethod
     def validate_transition(application, to_stage, context=None, user=None):
-        transition = WorkflowTransition.objects.filter(
+        transitions = WorkflowTransition.objects.filter(
             workflow=application.workflow,
             from_stage=application.current_stage,
             to_stage=to_stage
-        ).first()
+        ).order_by('id')
 
-        if not transition:
+        if not transitions.exists():
             raise ValidationError(
                 f"Invalid transition from {application.current_stage.name} "
                 f"to {to_stage.name} in workflow {application.workflow.name}"
             )
 
-        if transition.condition:
-            context = context or {}
-            for key, expected in transition.condition.items():
-                # role / role_id are validated against authenticated user's role
-                if key in {"role", "role_id"}:
-                    if user is None:
-                        raise ValidationError(f"Condition failed: {key} cannot be validated without user")
-                    if not WorkflowService._condition_role_matches({key: expected}, user):
-                        raise ValidationError(f"Condition failed: {key} must be {expected}")
-                    continue
+        context = context or {}
+        first_error = None
 
-                # action may be omitted by callers that only send target stage.
-                # in that case, do not fail; transition target itself is already explicit.
-                if key == "action":
-                    actual_action = context.get("action")
-                    if actual_action is None:
+        for transition in transitions:
+            condition_failed = False
+            if transition.condition:
+                for key, expected in transition.condition.items():
+                    # role / role_id are validated against authenticated user's role
+                    if key in {"role", "role_id"}:
+                        if user is None:
+                            first_error = first_error or f"Condition failed: {key} cannot be validated without user"
+                            condition_failed = True
+                            break
+                        if not WorkflowService._condition_role_matches({key: expected}, user):
+                            first_error = first_error or f"Condition failed: {key} must be {expected}"
+                            condition_failed = True
+                            break
                         continue
-                    if str(actual_action).strip().lower() != str(expected).strip().lower():
-                        raise ValidationError(f"Condition failed: {key} must be {expected}")
-                    continue
 
-                actual = context.get(key)
-                if actual != expected:
-                    raise ValidationError(f"Condition failed: {key} must be {expected}")
+                    # action may be omitted by callers that only send target stage.
+                    # in that case, do not fail; transition target itself is already explicit.
+                    if key == "action":
+                        actual_action = context.get("action")
+                        if actual_action is None:
+                            continue
+                        if str(actual_action).strip().lower() != str(expected).strip().lower():
+                            first_error = first_error or f"Condition failed: {key} must be {expected}"
+                            condition_failed = True
+                            break
+                        continue
 
-        return transition
+                    actual = context.get(key)
+                    if actual != expected:
+                        first_error = first_error or f"Condition failed: {key} must be {expected}"
+                        condition_failed = True
+                        break
+
+            if not condition_failed:
+                return transition
+
+        raise ValidationError(first_error or "No transition matched the provided context.")
 
     @staticmethod
     @transaction.atomic
