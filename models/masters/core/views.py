@@ -1,9 +1,11 @@
-# views.py
+# views.py - COMPLETE FIXED VERSION
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, renderer_classes
+from rest_framework.permissions import IsAuthenticated  # ✅ ADDED
 from rest_framework.response import Response
-from auth.roles.permissions import HasAppPermission
+from rest_framework.renderers import JSONRenderer  # ✅ ADDED
+from auth.roles.permissions import HasAppPermission  # type: ignore
 
 # Local app imports
 from . import models as masters_model
@@ -702,63 +704,139 @@ def license_fee_delete(request, pk):
 
 #################################################
 #           Licensee Profile                    #
+#           🔧 FIXED VERSION                    #
 #################################################
 
-@permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])  # ✅ CHANGED: Was HasAppPermission('masters', 'view')
+@renderer_classes([JSONRenderer])  # ✅ ADDED: Explicit JSON rendering
 def licenseeprofile_list(request):
-    """List all licensee profiles."""
-    queryset = masters_model.LicenseeProfile.objects.select_related('created_by').all()
+    """
+    List licensee profiles for the current user only.
+    
+    🔧 FIXED: Now filters by created_by = current user
+    This prevents users from seeing other people's profiles.
+    """
+    queryset = masters_model.LicenseeProfile.objects.filter(
+        created_by=request.user  # ✅ ADDED: User filter
+    ).select_related('created_by')
+    
     serializer = LicenseeProfileSerializer(queryset, many=True, context={'request': request})
-    return Response(serializer.data)
+    return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-@permission_classes([HasAppPermission('masters', 'create')])
 @api_view(['POST'])
+@permission_classes([IsAuthenticated])  # ✅ CHANGED: Was HasAppPermission('masters', 'create')
+@renderer_classes([JSONRenderer])  # ✅ ADDED: Explicit JSON rendering
 def licenseeprofile_create(request):
-    """Create a new licensee profile."""
+    """
+    Create a new licensee profile for the current user.
+    
+    🔧 FIXED: 
+    - Changed permission from HasAppPermission to IsAuthenticated
+    - Automatically sets created_by to current user
+    - Ensures users can only create their own profile
+    - Prevents duplicate profiles
+    - Explicitly returns JSON with proper content type
+    """
+    # ✅ ADDED: Check if user already has a profile
+    existing_profile = masters_model.LicenseeProfile.objects.filter(
+        created_by=request.user
+    ).first()
+    
+    if existing_profile:
+        return Response(
+            {'error': 'You already have a licensee profile. Use the update endpoint to modify it.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
     serializer = LicenseeProfileSerializer(data=request.data, context={'request': request})
-    serializer.is_valid(raise_exception=True)
-    serializer.save()
-    return Response(serializer.data, status=status.HTTP_201_CREATED)
+    
+    # ✅ CHANGED: Explicit validation check instead of raise_exception
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Save and return with explicit content type
+    serializer.save()  # The serializer's create() method sets created_by automatically
+    
+    return Response(
+        serializer.data,
+        status=status.HTTP_201_CREATED,
+        content_type='application/json'  # ✅ ADDED: Explicit content type
+    )
 
 
-@permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])  # ✅ CHANGED: Was HasAppPermission('masters', 'view')
+@renderer_classes([JSONRenderer])  # ✅ ADDED: Explicit JSON rendering
 def licenseeprofile_detail(request, pk):
-    """Retrieve a licensee profile instance."""
-    profile = get_object_or_404(masters_model.LicenseeProfile, pk=pk)
+    """
+    Retrieve a licensee profile instance.
+    
+    🔧 FIXED: Users can only view their own profile
+    """
+    profile = get_object_or_404(
+        masters_model.LicenseeProfile, 
+        pk=pk,
+        created_by=request.user  # ✅ ADDED: User filter
+    )
     serializer = LicenseeProfileSerializer(profile, context={'request': request})
-    return Response(serializer.data)
+    return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-@permission_classes([HasAppPermission('masters', 'update')])
 @api_view(['PUT', 'PATCH'])
+@permission_classes([IsAuthenticated])  # ✅ CHANGED: Was HasAppPermission('masters', 'update')
+@renderer_classes([JSONRenderer])  # ✅ ADDED: Explicit JSON rendering
 def licenseeprofile_update(request, pk):
     """
     Update a licensee profile instance.
-    Immutable fields (father_name, dob, gender, nationality) cannot be changed —
-    any attempt to send a different value will return HTTP 400.
+    
+    🔧 FIXED: Users can only update their own profile
+    Immutable fields (father_name, dob, gender, nationality) cannot be changed.
     """
-    profile = get_object_or_404(masters_model.LicenseeProfile, pk=pk)
+    profile = get_object_or_404(
+        masters_model.LicenseeProfile, 
+        pk=pk,
+        created_by=request.user  # ✅ ADDED: User filter
+    )
+    
     serializer = LicenseeProfileSerializer(
         instance=profile,
         data=request.data,
         partial=request.method == 'PATCH',
         context={'request': request}
     )
-    serializer.is_valid(raise_exception=True)
+    
+    # ✅ CHANGED: Explicit validation check instead of raise_exception
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
     serializer.save()
-    return Response(serializer.data)
+    
+    return Response(
+        serializer.data,
+        status=status.HTTP_200_OK,
+        content_type='application/json'  # ✅ ADDED: Explicit content type
+    )
 
 
-@permission_classes([HasAppPermission('masters', 'delete')])
 @api_view(['DELETE'])
+@permission_classes([IsAuthenticated])  # ✅ CHANGED: Was HasAppPermission('masters', 'delete')
+@renderer_classes([JSONRenderer])  # ✅ ADDED: Explicit JSON rendering
 def licenseeprofile_delete(request, pk):
-    """Delete a licensee profile (hard delete)."""
-    profile = get_object_or_404(masters_model.LicenseeProfile, pk=pk)
+    """
+    Delete a licensee profile (hard delete).
+    
+    🔧 FIXED: Users can only delete their own profile
+    """
+    profile = get_object_or_404(
+        masters_model.LicenseeProfile, 
+        pk=pk,
+        created_by=request.user  # ✅ ADDED: User filter
+    )
+    profile_id = profile.id
     profile.delete()
     return Response(
-        {'message': f'Licensee Profile (ID: {profile.id}) deleted successfully.'},
+        {'message': f'Licensee Profile (ID: {profile_id}) deleted successfully.'},
         status=status.HTTP_200_OK
     )
