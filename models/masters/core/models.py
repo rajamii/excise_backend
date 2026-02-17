@@ -231,7 +231,112 @@ class Road(models.Model):
     def __str__(self):
         return f"{self.road_name} ({self.road_type})"
 
-# Location Model
+
+# ============================================================================
+# NEW MODELS: LocationCategory, LocationSubcategory, Ward
+# ============================================================================
+
+class LocationCategory(models.Model):
+    """
+    Master table for location categories (e.g., Urban, Rural, Hill Station, etc.)
+    """
+    category_name = models.CharField(
+        max_length=100,
+        unique=True,
+        null=False,
+        blank=False,
+        validators=[validate_name_extended],
+        help_text="Name of the location category"
+    )
+    description = models.TextField(
+        null=True,
+        blank=True,
+        help_text="Detailed description of the category"
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Is this category active?"
+    )
+    created_by = models.ForeignKey(
+        'user.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_location_categories',
+        help_text="User who created this record"
+    )
+    operation_date = models.DateTimeField(
+        auto_now_add=True,
+        help_text="Date when this record was created"
+    )
+
+    class Meta:
+        db_table = 'masters_locationcategory'
+        verbose_name = 'Location Category'
+        verbose_name_plural = 'Location Categories'
+        ordering = ['category_name']
+
+    def __str__(self) -> str:
+        return self.category_name
+
+
+class LocationSubcategory(models.Model):
+    """
+    Subcategories under location categories (e.g., Municipality, Panchayat under Urban/Rural)
+    """
+    subcategory_name = models.CharField(
+        max_length=100,
+        null=False,
+        blank=False,
+        validators=[validate_name_extended],
+        help_text="Name of the location subcategory"
+    )
+    category = models.ForeignKey(
+        LocationCategory,
+        on_delete=models.CASCADE,
+        related_name='subcategories',
+        null=False,
+        help_text="Parent location category"
+    )
+    description = models.TextField(
+        null=True,
+        blank=True,
+        help_text="Detailed description of the subcategory"
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Is this subcategory active?"
+    )
+    created_by = models.ForeignKey(
+        'user.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_location_subcategories',
+        help_text="User who created this record"
+    )
+    operation_date = models.DateTimeField(
+        auto_now_add=True,
+        help_text="Date when this record was created"
+    )
+
+    class Meta:
+        db_table = 'masters_locationsubcategory'
+        verbose_name = 'Location Subcategory'
+        verbose_name_plural = 'Location Subcategories'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['category', 'subcategory_name'],
+                name='unique_subcategory_per_category'
+            )
+        ]
+        ordering = ['category', 'subcategory_name']
+
+    def __str__(self) -> str:
+        return f"{self.subcategory_name} ({self.category.category_name})"
+
+
+# Location Model (Updated to work with new Ward model)
 class Location(models.Model):
     location_code = models.IntegerField(
         unique=True,
@@ -276,6 +381,86 @@ class Location(models.Model):
             validate_name_extended(self.location_description)
             if len(self.location_description.strip()) < 2:
                 raise ValidationError("Location description must be ≥2 characters")
+
+
+class Ward(models.Model):
+    """
+    Ward/Zone subdivision within a location (typically for municipalities/urban areas)
+    """
+    ward_name = models.CharField(
+        max_length=100,
+        null=False,
+        blank=False,
+        validators=[validate_name_extended],
+        help_text="Name of the ward"
+    )
+    ward_number = models.IntegerField(
+        null=False,
+        blank=False,
+        help_text="Ward number"
+    )
+    location_code = models.ForeignKey(
+        Location,
+        to_field='location_code',
+        on_delete=models.CASCADE,
+        related_name='wards',
+        null=False,
+        db_column='location_code',
+        help_text="Location this ward belongs to"
+    )
+    population = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Approximate population of the ward"
+    )
+    area_sq_km = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Area of the ward in square kilometers"
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Is this ward active?"
+    )
+    created_by = models.ForeignKey(
+        'user.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_wards',
+        help_text="User who created this record"
+    )
+    operation_date = models.DateTimeField(
+        auto_now_add=True,
+        help_text="Date when this record was created"
+    )
+
+    class Meta:
+        db_table = 'masters_ward'
+        verbose_name = 'Ward'
+        verbose_name_plural = 'Wards'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['location_code', 'ward_number'],
+                name='unique_ward_number_per_location'
+            )
+        ]
+        ordering = ['location_code', 'ward_number']
+
+    def __str__(self) -> str:
+        return f"Ward {self.ward_number} - {self.ward_name}"
+
+    def clean(self):
+        """Validate ward data"""
+        if self.ward_number <= 0:
+            raise ValidationError("Ward number must be positive")
+        if self.population is not None and self.population < 0:
+            raise ValidationError("Population cannot be negative")
+        if self.area_sq_km is not None and self.area_sq_km <= 0:
+            raise ValidationError("Area must be positive")
+
 
 # LicenseFee Model - FINAL VERSION (All fields required)
 class LicenseFee(models.Model):
@@ -364,51 +549,51 @@ class LicenseeProfile(models.Model):
         marital_status, residential_status
     """
 
-    # ── Immutable fields ──────────────────────────────────────────
+    # ── Immutable fields ──────────────────────────────────────────────────
     father_name = models.CharField(
         max_length=100,
         null=False,
         blank=False,
         validators=[validate_name],
-        help_text="Father's full name — cannot be changed after creation"
+        help_text="Father's full name – cannot be changed after creation"
     )
     dob = models.DateField(
         null=False,
         blank=False,
-        help_text="Date of birth — cannot be changed after creation"
+        help_text="Date of birth – cannot be changed after creation"
     )
     gender = models.CharField(
         max_length=10,
         choices=GENDER_CHOICES,
         null=False,
         blank=False,
-        help_text="Gender — cannot be changed after creation"
+        help_text="Gender – cannot be changed after creation"
     )
     nationality = models.CharField(
         max_length=50,
         null=False,
         blank=False,
         default='Indian',
-        help_text="Nationality — cannot be changed after creation"
+        help_text="Nationality – cannot be changed after creation"
     )
 
-    # ── Mutable fields ────────────────────────────────────────────
+    # ── Mutable fields ────────────────────────────────────────────────────
     marital_status = models.CharField(
         max_length=20,
         choices=MARITAL_STATUS_CHOICES,
         null=False,
         blank=False,
-        help_text="Marital status — can be updated"
+        help_text="Marital status – can be updated"
     )
     residential_status = models.CharField(
         max_length=20,
         choices=RESIDENTIAL_STATUS_CHOICES,
         null=False,
         blank=False,
-        help_text="Residential status — can be updated"
+        help_text="Residential status – can be updated"
     )
 
-    # ── Audit ─────────────────────────────────────────────────────
+    # ── Audit ─────────────────────────────────────────────────────────────
     created_by = models.ForeignKey(
         'user.CustomUser',
         on_delete=models.SET_NULL,

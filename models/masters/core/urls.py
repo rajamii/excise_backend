@@ -112,8 +112,40 @@ licenseeprofile_patterns = [
     path('<int:pk>/update/', views.licenseeprofile_update, name='licenseeprofile-update'),
     path('<int:pk>/delete/', views.licenseeprofile_delete, name='licenseeprofile-delete'),
 ]
+
+#################################################
+# NEW URL PATTERNS: Location Category, Location Subcategory, Ward
+#################################################
+
+# Location Category URLs
+locationcategory_patterns = [
+    path('', views.locationcategory_list, name='locationcategory-list'),
+    path('create/', views.locationcategory_create, name='locationcategory-create'),
+    path('<int:pk>/', views.locationcategory_detail, name='locationcategory-detail'),
+    path('<int:pk>/update/', views.locationcategory_update, name='locationcategory-update'),
+    path('<int:pk>/delete/', views.locationcategory_delete, name='locationcategory-delete'),
+]
+
+# Location Subcategory URLs
+locationsubcategory_patterns = [
+    path('', views.locationsubcategory_list, name='locationsubcategory-list'),
+    path('create/', views.locationsubcategory_create, name='locationsubcategory-create'),
+    path('<int:pk>/', views.locationsubcategory_detail, name='locationsubcategory-detail'),
+    path('<int:pk>/update/', views.locationsubcategory_update, name='locationsubcategory-update'),
+    path('<int:pk>/delete/', views.locationsubcategory_delete, name='locationsubcategory-delete'),
+]
+
+# Ward URLs
+ward_patterns = [
+    path('', views.ward_list, name='ward-list'),
+    path('create/', views.ward_create, name='ward-create'),
+    path('<int:pk>/', views.ward_detail, name='ward-detail'),
+    path('<int:pk>/update/', views.ward_update, name='ward-update'),
+    path('<int:pk>/delete/', views.ward_delete, name='ward-delete'),
+]
+
 urlpatterns = [
-    # Grouped patterns
+    # Existing patterns
     path('license-categories/', include(license_category_patterns)),
     path('license-types/', include(license_type_patterns)),
     path('states/', include(state_patterns)),
@@ -126,4 +158,9 @@ urlpatterns = [
     path('locations/', include(location_patterns)),
     path('license-fees/', include(license_fee_patterns)),
     path('licensee-profiles/', include(licenseeprofile_patterns)),
+    
+    # NEW: Three new model patterns
+    path('location-categories/', include(locationcategory_patterns)),
+    path('location-subcategories/', include(locationsubcategory_patterns)),
+    path('wards/', include(ward_patterns)),
 ]

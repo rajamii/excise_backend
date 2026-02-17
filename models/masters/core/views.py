@@ -21,6 +21,9 @@ from .serializers.road_serializer import RoadSerializer
 from .serializers.location_serializer import LocationSerializer
 from .serializers.licensefee_serializer import LicenseFeeSerializer
 from .serializers.licenseeprofile_serializer import LicenseeProfileSerializer
+from .serializers.locationcategory_serializer import LocationCategorySerializer
+from .serializers.locationsubcategory_serializer import LocationSubcategorySerializer
+from .serializers.ward_serializer import WardSerializer
 
 #################################################
 #           License Category                    #
@@ -838,5 +841,187 @@ def licenseeprofile_delete(request, pk):
     profile.delete()
     return Response(
         {'message': f'Licensee Profile (ID: {profile_id}) deleted successfully.'},
+        status=status.HTTP_200_OK
+    )
+
+#################################################
+#           Location Category                   #
+#################################################
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def locationcategory_list(request):
+    """List all active location categories."""
+    queryset = masters_model.LocationCategory.objects.filter(is_active=True)
+    serializer = LocationCategorySerializer(queryset, many=True, context={'request': request})
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'create')])
+@api_view(['POST'])
+def locationcategory_create(request):
+    """Create a new location category."""
+    serializer = LocationCategorySerializer(data=request.data, context={'request': request})
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def locationcategory_detail(request, pk):
+    """Retrieve a location category instance."""
+    category = get_object_or_404(masters_model.LocationCategory, pk=pk, is_active=True)
+    serializer = LocationCategorySerializer(category, context={'request': request})
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PUT', 'PATCH'])
+def locationcategory_update(request, pk):
+    """Update a location category instance."""
+    category = get_object_or_404(masters_model.LocationCategory, pk=pk)
+    serializer = LocationCategorySerializer(
+        instance=category, 
+        data=request.data, 
+        partial=request.method == 'PATCH',
+        context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'delete')])
+@api_view(['DELETE'])
+def locationcategory_delete(request, pk):
+    """Deactivate a location category (soft delete)."""
+    category = get_object_or_404(masters_model.LocationCategory, pk=pk)
+    category.is_active = False
+    category.save()
+    return Response(
+        {'message': f'Location Category "{category.category_name}" deactivated successfully.'},
+        status=status.HTTP_200_OK
+    )
+
+
+#################################################
+#           Location Subcategory                #
+#################################################
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def locationsubcategory_list(request):
+    """List all active location subcategories, optionally filtered by category."""
+    queryset = masters_model.LocationSubcategory.objects.filter(is_active=True)
+    
+    # Optional filter by category
+    category_id = request.query_params.get('category_id')
+    if category_id:
+        queryset = queryset.filter(category_id=category_id)
+    
+    serializer = LocationSubcategorySerializer(queryset, many=True, context={'request': request})
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'create')])
+@api_view(['POST'])
+def locationsubcategory_create(request):
+    """Create a new location subcategory."""
+    serializer = LocationSubcategorySerializer(data=request.data, context={'request': request})
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def locationsubcategory_detail(request, pk):
+    """Retrieve a location subcategory instance."""
+    subcategory = get_object_or_404(masters_model.LocationSubcategory, pk=pk, is_active=True)
+    serializer = LocationSubcategorySerializer(subcategory, context={'request': request})
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PUT', 'PATCH'])
+def locationsubcategory_update(request, pk):
+    """Update a location subcategory instance."""
+    subcategory = get_object_or_404(masters_model.LocationSubcategory, pk=pk)
+    serializer = LocationSubcategorySerializer(
+        instance=subcategory, 
+        data=request.data, 
+        partial=request.method == 'PATCH',
+        context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'delete')])
+@api_view(['DELETE'])
+def locationsubcategory_delete(request, pk):
+    """Deactivate a location subcategory (soft delete)."""
+    subcategory = get_object_or_404(masters_model.LocationSubcategory, pk=pk)
+    subcategory.is_active = False
+    subcategory.save()
+    return Response(
+        {'message': f'Location Subcategory "{subcategory.subcategory_name}" deactivated successfully.'},
+        status=status.HTTP_200_OK
+    )
+
+
+#################################################
+#           Ward                                #
+#################################################
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def ward_list(request):
+    """List all active wards, optionally filtered by location_code."""
+    queryset = masters_model.Ward.objects.filter(is_active=True)
+    
+    # Optional filter by location
+    location_code = request.query_params.get('location_code')
+    if location_code:
+        queryset = queryset.filter(location_code=location_code)
+    
+    serializer = WardSerializer(queryset, many=True, context={'request': request})
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'create')])
+@api_view(['POST'])
+def ward_create(request):
+    """Create a new ward."""
+    serializer = WardSerializer(data=request.data, context={'request': request})
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def ward_detail(request, pk):
+    """Retrieve a ward instance."""
+    ward = get_object_or_404(masters_model.Ward, pk=pk, is_active=True)
+    serializer = WardSerializer(ward, context={'request': request})
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PUT', 'PATCH'])
+def ward_update(request, pk):
+    """Update a ward instance."""
+    ward = get_object_or_404(masters_model.Ward, pk=pk)
+    serializer = WardSerializer(
+        instance=ward, 
+        data=request.data, 
+        partial=request.method == 'PATCH',
+        context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'delete')])
+@api_view(['DELETE'])
+def ward_delete(request, pk):
+    """Deactivate a ward (soft delete)."""
+    ward = get_object_or_404(masters_model.Ward, pk=pk)
+    ward.is_active = False
+    ward.save()
+    return Response(
+        {'message': f'Ward {ward.ward_number} - "{ward.ward_name}" deactivated successfully.'},
         status=status.HTTP_200_OK
     )
