@@ -17,6 +17,8 @@ from .models import (
     PaymentModule,
     PaymentModuleHoa,
     PaymentWalletMaster,
+    WalletBalance,
+    WalletTransaction,
 )
 from .serializers import (
     PaymentBilldeskTransactionSerializer,
@@ -27,6 +29,8 @@ from .serializers import (
     PaymentModuleSerializer,
     PaymentStatusUpdateSerializer,
     PaymentWalletMasterSerializer,
+    WalletBalanceSerializer,
+    WalletTransactionSerializer,
 )
 
 
@@ -40,6 +44,18 @@ def _generate_unique_utr() -> str:
         if not PaymentBilldeskTransaction.objects.filter(pk=utr).exists():
             return utr
     raise RuntimeError("Unable to generate unique UTR")
+
+
+def _safe_limit(raw_limit=None, default: int = 100, max_limit: int = 1000) -> int:
+    try:
+        if raw_limit is None:
+            return default
+        parsed = int(raw_limit)
+        if parsed < 1:
+            return default
+        return min(parsed, max_limit)
+    except (TypeError, ValueError):
+        return default
 
 
 @api_view(["GET"])
@@ -104,6 +120,85 @@ def payment_wallet_balance(request, licensee_id):
             "total_wallet_amount": total,
             "count": qs.count(),
             "results": PaymentWalletMasterSerializer(qs, many=True).data,
+        }
+    )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def wallet_summary(request, licensee_id):
+    module_type = request.query_params.get("module_type")
+    qs = WalletBalance.objects.filter(licensee_id=licensee_id).order_by("wallet_type", "head_of_account")
+    if module_type:
+        qs = qs.filter(module_type__iexact=module_type)
+
+    total = sum((row.current_balance for row in qs), Decimal("0.00"))
+    return Response(
+        {
+            "licensee_id": licensee_id,
+            "total_wallet_amount": total,
+            "count": qs.count(),
+            "results": WalletBalanceSerializer(qs, many=True).data,
+        }
+    )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def wallet_recharge_list(request, licensee_id):
+    qs = (
+        WalletTransaction.objects.filter(
+            licensee_id=licensee_id,
+            transaction_type__iexact="recharge",
+        )
+        .order_by("-created_at")
+    )
+
+    wallet_type = request.query_params.get("wallet_type")
+    if wallet_type:
+        qs = qs.filter(wallet_type__iexact=wallet_type)
+
+    head_of_account = request.query_params.get("head_of_account")
+    if head_of_account:
+        qs = qs.filter(head_of_account=head_of_account)
+
+    limit = _safe_limit(request.query_params.get("limit"), default=200)
+    qs = qs[:limit]
+
+    return Response(
+        {
+            "licensee_id": licensee_id,
+            "count": len(qs),
+            "results": WalletTransactionSerializer(qs, many=True).data,
+        }
+    )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def wallet_history_list(request, licensee_id):
+    qs = WalletTransaction.objects.filter(licensee_id=licensee_id).order_by("-created_at")
+
+    wallet_type = request.query_params.get("wallet_type")
+    if wallet_type:
+        qs = qs.filter(wallet_type__iexact=wallet_type)
+
+    head_of_account = request.query_params.get("head_of_account")
+    if head_of_account:
+        qs = qs.filter(head_of_account=head_of_account)
+
+    entry_type = request.query_params.get("entry_type")
+    if entry_type:
+        qs = qs.filter(entry_type__iexact=entry_type)
+
+    limit = _safe_limit(request.query_params.get("limit"), default=500)
+    qs = qs[:limit]
+
+    return Response(
+        {
+            "licensee_id": licensee_id,
+            "count": len(qs),
+            "results": WalletTransactionSerializer(qs, many=True).data,
         }
     )
 

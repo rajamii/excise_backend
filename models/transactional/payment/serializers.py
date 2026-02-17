@@ -9,6 +9,8 @@ from .models import (
     PaymentModule,
     PaymentModuleHoa,
     PaymentWalletMaster,
+    WalletBalance,
+    WalletTransaction,
 )
 
 
@@ -60,6 +62,18 @@ class PaymentWalletMasterSerializer(serializers.ModelSerializer):
 class PaymentBilldeskTransactionSerializer(serializers.ModelSerializer):
     class Meta:
         model = PaymentBilldeskTransaction
+        fields = "__all__"
+
+
+class WalletBalanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WalletBalance
+        fields = "__all__"
+
+
+class WalletTransactionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WalletTransaction
         fields = "__all__"
 
 

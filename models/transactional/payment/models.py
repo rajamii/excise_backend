@@ -256,3 +256,54 @@ class PaymentWalletTransactionHistory(models.Model):
     class Meta:
         managed = False
         db_table = "wallet_transaction_history"
+
+
+class WalletBalance(models.Model):
+    wallet_balance_id = models.BigAutoField(primary_key=True)
+    licensee_id = models.CharField(max_length=50)
+    licensee_name = models.CharField(max_length=150, null=True, blank=True)
+    user_id = models.CharField(max_length=50, null=True, blank=True)
+    module_type = models.CharField(max_length=20)
+    wallet_type = models.CharField(max_length=30)
+    head_of_account = models.CharField(max_length=50)
+    opening_balance = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    total_credit = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    total_debit = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    current_balance = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    last_updated_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        managed = False
+        db_table = "wallet_balances"
+
+
+class WalletTransaction(models.Model):
+    wallet_transaction_id = models.BigAutoField(primary_key=True)
+    wallet_balance = models.ForeignKey(
+        WalletBalance,
+        on_delete=models.RESTRICT,
+        db_column="wallet_balance_id",
+        to_field="wallet_balance_id",
+    )
+    transaction_id = models.CharField(max_length=100)
+    licensee_id = models.CharField(max_length=50)
+    licensee_name = models.CharField(max_length=150, null=True, blank=True)
+    user_id = models.CharField(max_length=50, null=True, blank=True)
+    module_type = models.CharField(max_length=20)
+    wallet_type = models.CharField(max_length=30)
+    head_of_account = models.CharField(max_length=50)
+    entry_type = models.CharField(max_length=10)
+    transaction_type = models.CharField(max_length=20)
+    amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    balance_before = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    balance_after = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    reference_no = models.CharField(max_length=100, null=True, blank=True)
+    source_module = models.CharField(max_length=50)
+    payment_status = models.CharField(max_length=20)
+    remarks = models.CharField(max_length=300, null=True, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        managed = False
+        db_table = "wallet_transactions"

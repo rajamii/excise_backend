@@ -127,7 +127,7 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
     new_license_id = f"{base_prefix}/{str(seq).zfill(4)}"
 
     try:
-        License.objects.create(
+        created_license = License.objects.create(
             license_id=new_license_id,
             source_content_type=ct,
             source_object_id=str(application.pk),
@@ -141,6 +141,20 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
             is_active=True
         )
         logger.info(f"License created for application {application.pk}")
+
+        # Initialize module wallets for newly issued license.
+        try:
+            from models.transactional.payment.wallet_initializer import (
+                initialize_wallet_balances_for_license,
+            )
+
+            initialize_wallet_balances_for_license(created_license)
+        except Exception as wallet_error:
+            logger.error(
+                "License created but wallet initialization failed for license_id=%s: %s",
+                created_license.license_id,
+                wallet_error,
+            )
 
         # === NEW: If this is a renewal, deactivate the old license ===
         if hasattr(application, 'renewal_of') and application.renewal_of:
