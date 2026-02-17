@@ -262,6 +262,7 @@ class WalletBalance(models.Model):
     wallet_balance_id = models.BigAutoField(primary_key=True)
     licensee_id = models.CharField(max_length=50)
     licensee_name = models.CharField(max_length=150, null=True, blank=True)
+    manufacturing_unit = models.CharField(max_length=150, null=True, blank=True)
     user_id = models.CharField(max_length=50, null=True, blank=True)
     module_type = models.CharField(max_length=20)
     wallet_type = models.CharField(max_length=30)

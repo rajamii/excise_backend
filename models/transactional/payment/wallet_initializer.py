@@ -11,10 +11,10 @@ logger = logging.getLogger(__name__)
 
 # Runtime classification requested by business:
 # value comes from the selected license subcategory at application time.
-# 1 -> distillery, 2 -> brewery.
+# 2 -> distillery, 1 -> brewery.
 SUBCATEGORY_TO_MODULE_TYPE = {
-    1: "distillery",
-    2: "brewery",
+    1: "brewery",
+    2: "distillery",
 }
 
 COMMON_EDUCATION_CESS_HOA = "0045-00-112-45-03"
@@ -45,21 +45,25 @@ WALLET_LABELS = {
 
 def _resolve_module_type(license_obj) -> str:
     sub_category_id = getattr(license_obj, "license_sub_category_id", None)
-    module_type = SUBCATEGORY_TO_MODULE_TYPE.get(sub_category_id)
-    if module_type:
-        return module_type
-
-    # Secondary fallback: infer from selected subcategory/typology text.
+    # Prefer text-based inference first to avoid relying on environment-specific PKs.
     sub_category = getattr(license_obj, "license_sub_category", None)
     sub_desc = str(getattr(sub_category, "description", "") or "").strip().lower()
+    if "distill" in sub_desc:
+        return "distillery"
     if "brew" in sub_desc or "beer" in sub_desc:
         return "brewery"
     if sub_desc:
         return "distillery"
 
+    module_type = SUBCATEGORY_TO_MODULE_TYPE.get(sub_category_id)
+    if module_type:
+        return module_type
+
     source = getattr(license_obj, "source_application", None)
     license_type = getattr(source, "license_type", None) if source is not None else None
     type_name = str(getattr(license_type, "license_type", "") or "").strip().lower()
+    if "distill" in type_name:
+        return "distillery"
     if "brew" in type_name or "beer" in type_name:
         return "brewery"
     if type_name:
@@ -107,16 +111,66 @@ def _resolve_hoa_code(module_type: str, wallet_type: str) -> str:
     return candidates[0]
 
 
-def _build_licensee_name(license_obj) -> str:
+def _build_person_name(license_obj) -> str:
+    source = getattr(license_obj, "source_application", None)
+    if source is not None:
+        applicant_name = getattr(source, "applicant_name", None)
+        if applicant_name:
+            return str(applicant_name).strip()
+
+        member_name = getattr(source, "member_name", None)
+        if member_name:
+            return str(member_name).strip()
+
+        first_name = str(getattr(source, "firstName", "") or "").strip()
+        middle_name = str(getattr(source, "middleName", "") or "").strip()
+        last_name = str(getattr(source, "lastName", "") or "").strip()
+        full_name = " ".join([part for part in [first_name, middle_name, last_name] if part]).strip()
+        if full_name:
+            return full_name
+
+    applicant = getattr(license_obj, "applicant", None)
+    if applicant is not None:
+        full_name = " ".join(
+            [
+                str(getattr(applicant, "first_name", "") or "").strip(),
+                str(getattr(applicant, "middle_name", "") or "").strip(),
+                str(getattr(applicant, "last_name", "") or "").strip(),
+            ]
+        ).strip()
+        if full_name:
+            return full_name
+        if getattr(applicant, "username", None):
+            return str(applicant.username).strip()
+
+    return ""
+
+
+def _build_manufacturing_unit_name(license_obj) -> str:
     source = getattr(license_obj, "source_application", None)
     if source is not None:
         establishment_name = getattr(source, "establishment_name", None)
         if establishment_name:
             return str(establishment_name).strip()
 
+        company_name = getattr(source, "company_name", None)
+        if company_name:
+            return str(company_name).strip()
+
         applicant_name = getattr(source, "applicant_name", None)
         if applicant_name:
             return str(applicant_name).strip()
+
+        member_name = getattr(source, "member_name", None)
+        if member_name:
+            return str(member_name).strip()
+
+        first_name = str(getattr(source, "firstName", "") or "").strip()
+        middle_name = str(getattr(source, "middleName", "") or "").strip()
+        last_name = str(getattr(source, "lastName", "") or "").strip()
+        full_name = " ".join([part for part in [first_name, middle_name, last_name] if part]).strip()
+        if full_name:
+            return full_name
 
     applicant = getattr(license_obj, "applicant", None)
     if applicant is not None:
@@ -157,7 +211,8 @@ def initialize_wallet_balances_for_license(license_obj) -> None:
         return
 
     module_type = _resolve_module_type(license_obj)
-    licensee_name = _build_licensee_name(license_obj)
+    person_name = _build_person_name(license_obj)
+    manufacturing_unit = _build_manufacturing_unit_name(license_obj)
     user_id = _build_user_id(license_obj)
     now = timezone.now()
 
@@ -176,7 +231,8 @@ def initialize_wallet_balances_for_license(license_obj) -> None:
             )
             if existing_qs.exists():
                 existing_qs.update(
-                    licensee_name=licensee_name,
+                    licensee_name=person_name,
+                    manufacturing_unit=manufacturing_unit,
                     user_id=user_id,
                     module_type=module_type,
                     head_of_account=hoa_code,
@@ -186,7 +242,8 @@ def initialize_wallet_balances_for_license(license_obj) -> None:
 
             WalletBalance.objects.create(
                 licensee_id=licensee_id,
-                licensee_name=licensee_name,
+                licensee_name=person_name,
+                manufacturing_unit=manufacturing_unit,
                 user_id=user_id,
                 module_type=module_type,
                 wallet_type=wallet_type,
