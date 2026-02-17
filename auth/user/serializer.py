@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from auth.user.models import CustomUser, LicenseeProfile
+from auth.user.models import CustomUser, LicenseeProfile, OICOfficerAssignment
 from auth.roles.models import Role
 from models.masters.core.models import District, Subdivision
 from captcha.models import CaptchaStore
@@ -240,5 +240,64 @@ class LicenseeSignupSerializer(serializers.ModelSerializer):
         )
 
         return user
+
+
+class OICApprovedEstablishmentSerializer(serializers.Serializer):
+    applicationId = serializers.CharField()
+    establishmentName = serializers.CharField()
+    licenseId = serializers.CharField()
+    licenseeId = serializers.CharField()
+    districtCode = serializers.CharField(allow_blank=True)
+    subdivisionCode = serializers.CharField(allow_blank=True)
+
+
+class OICOfficerCreateSerializer(serializers.Serializer):
+    # Incoming JSON is camelCase from frontend, but CamelCaseJSONParser
+    # converts request keys to snake_case before serializer validation.
+    approved_application_id = serializers.CharField()
+    name = serializers.CharField(max_length=150)
+    email = serializers.EmailField()
+    phone_number = serializers.CharField(max_length=10)
+
+    def validate_email(self, value):
+        if CustomUser.objects.filter(email=value).exists():
+            raise serializers.ValidationError("This email is already registered.")
+        return value
+
+    def validate_phone_number(self, value):
+        if CustomUser.objects.filter(phone_number=value).exists():
+            raise serializers.ValidationError("This phone number is already registered.")
+        return value
+
+
+class OICOfficerAssignmentSerializer(serializers.ModelSerializer):
+    officerId = serializers.IntegerField(source='officer.id', read_only=True)
+    username = serializers.CharField(source='officer.username', read_only=True)
+    name = serializers.SerializerMethodField()
+    email = serializers.CharField(source='officer.email', read_only=True)
+    phoneNumber = serializers.CharField(source='officer.phone_number', read_only=True)
+    applicationId = serializers.CharField(source='approved_application.application_id', read_only=True)
+    licenseId = serializers.CharField(source='license.license_id', read_only=True)
+
+    class Meta:
+        model = OICOfficerAssignment
+        fields = [
+            'id',
+            'officerId',
+            'username',
+            'name',
+            'email',
+            'phoneNumber',
+            'applicationId',
+            'licenseId',
+            'licensee_id',
+            'establishment_name',
+            'created_at',
+        ]
+
+    def get_name(self, obj):
+        first_name = str(getattr(obj.officer, 'first_name', '') or '').strip()
+        last_name = str(getattr(obj.officer, 'last_name', '') or '').strip()
+        return f"{first_name} {last_name}".strip()
 
        

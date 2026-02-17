@@ -1,7 +1,7 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import IsAuthenticated
 from django.db.models import Q, Sum, Count, Avg
 from django.utils import timezone
 from django.apps import apps
@@ -24,13 +24,27 @@ from .services import BrandWarehouseStockService
 from models.masters.supply_chain.liquor_data.models import LiquorData
 
 
+def _normalize_role_token(role_name: str) -> str:
+    return ''.join(ch for ch in str(role_name or '').lower() if ch.isalnum())
+
+
+def _should_scope_to_unit(user) -> bool:
+    role_name = _normalize_role_token(getattr(getattr(user, 'role', None), 'name', ''))
+    return role_name in {'licensee', 'officerincharge', 'offcierincharge', 'oic'}
+
+
+def _get_active_unit_name(user) -> str:
+    profile = getattr(user, 'supply_chain_profile', None)
+    return str(getattr(profile, 'manufacturing_unit_name', '') or '').strip()
+
+
 class BrandWarehouseViewSet(viewsets.ModelViewSet):
     """
     ViewSet for Brand Warehouse CRUD operations and custom actions
     Ensures ALL Sikkim brands are always shown (no brands go missing)
     """
     queryset = BrandWarehouse.objects.all().select_related('liquor_data').prefetch_related('utilizations', 'arrivals')
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get_serializer_class(self):
         """Return appropriate serializer based on action"""
@@ -46,6 +60,12 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         """
         # Return ALL Brand Warehouse entries - frontend will filter by distillery
         queryset = BrandWarehouse.objects.all().select_related('liquor_data').prefetch_related('utilizations', 'arrivals')
+
+        if _should_scope_to_unit(self.request.user):
+            unit_name = _get_active_unit_name(self.request.user)
+            if not unit_name:
+                return queryset.none()
+            queryset = queryset.filter(distillery_name__icontains=unit_name)
         
         # Apply filters from query parameters
         distillery_name = self.request.query_params.get('distillery_name', None)
@@ -73,28 +93,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         Frontend filtering will handle showing only relevant brands for each distillery
         """
         try:
-            # Get ALL brand warehouse entries - frontend will filter by distillery
-            queryset = BrandWarehouse.objects.all().select_related('liquor_data').prefetch_related('utilizations', 'arrivals')
-            
-            # Apply any filters from query parameters
-            distillery_name = self.request.query_params.get('distillery_name', None)
-            if distillery_name:
-                queryset = queryset.filter(distillery_name__icontains=distillery_name)
-                
-            brand_type = self.request.query_params.get('brand_type', None)
-            if brand_type:
-                queryset = queryset.filter(brand_type=brand_type)
-                
-            status_filter = self.request.query_params.get('status', None)
-            if status_filter:
-                queryset = queryset.filter(status=status_filter)
-
-            brand_name = self.request.query_params.get('brand_name', None)
-            if brand_name:
-                queryset = queryset.filter(brand_details__icontains=brand_name)
-            
-            # Order by distillery, then brand name and pack size
-            queryset = queryset.order_by('distillery_name', 'brand_details', 'capacity_size')
+            queryset = self.get_queryset()
             
             # Paginate if needed
             page = self.paginate_queryset(queryset)
@@ -630,11 +629,17 @@ class BrandWarehouseUtilizationViewSet(viewsets.ModelViewSet):
     """
     queryset = BrandWarehouseUtilization.objects.all().select_related('brand_warehouse')
     serializer_class = BrandWarehouseUtilizationSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         """Filter queryset based on query parameters"""
         queryset = BrandWarehouseUtilization.objects.all().select_related('brand_warehouse')
+
+        if _should_scope_to_unit(self.request.user):
+            unit_name = _get_active_unit_name(self.request.user)
+            if not unit_name:
+                return queryset.none()
+            queryset = queryset.filter(brand_warehouse__distillery_name__icontains=unit_name)
         
         # Filter by brand warehouse
         brand_warehouse_id = self.request.query_params.get('brand_warehouse', None)
@@ -654,11 +659,17 @@ class ProductionBatchViewSet(viewsets.ModelViewSet):
     ViewSet for Production Batch CRUD operations
     """
     serializer_class = ProductionBatchSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         from .production_models import ProductionBatch
-        return ProductionBatch.objects.all().select_related('brand_warehouse')
+        queryset = ProductionBatch.objects.all().select_related('brand_warehouse')
+        if _should_scope_to_unit(self.request.user):
+            unit_name = _get_active_unit_name(self.request.user)
+            if not unit_name:
+                return queryset.none()
+            queryset = queryset.filter(brand_warehouse__distillery_name__icontains=unit_name)
+        return queryset
 
     def get_serializer_class(self):
         """Return appropriate serializer based on action"""

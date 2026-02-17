@@ -26,6 +26,10 @@ def _canonical_role_token(role_name):
         return 'commissioner'
     return token
 
+
+def _is_scoped_officer_or_licensee(role_name_token):
+    return role_name_token in {'licensee', 'officerincharge', 'offcierincharge', 'oic'}
+
 def _get_user_role_id(user):
     return getattr(user, 'role_id', None) if user and user.is_authenticated else None
 
@@ -129,7 +133,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             
         user_role_name = _normalize_role_name(getattr(getattr(user, 'role', None), 'name', ''))
 
-        if user_role_name == 'licensee':
+        if _is_scoped_officer_or_licensee(user_role_name):
             if hasattr(user, 'supply_chain_profile'):
                 return queryset.filter(licensee=user.supply_chain_profile)
             return queryset.none()
@@ -141,7 +145,6 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         if visible_stage_ids:
             return queryset.filter(current_stage_id__in=visible_stage_ids)
             
-        return queryset.none() # Default deny if role unknown
         return queryset.none() # Default deny if role unknown
 
     def perform_create(self, serializer):
@@ -599,7 +602,7 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         role_name = _normalize_role_name(getattr(getattr(user, 'role', None), 'name', ''))
         print(f"DEBUG: User: {user.username}, Role: '{role_name}'")
 
-        if role_name == 'licensee':
+        if _is_scoped_officer_or_licensee(role_name):
             if hasattr(user, 'supply_chain_profile'):
                 return queryset.filter(licensee=user.supply_chain_profile)
             return queryset.none()
@@ -966,7 +969,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
         
         # OIC / Licensee Access - Return entries for their licensee profile
         # Also support OIC roles which may use fallback profile
-        if role_name == 'licensee':
+        if _is_scoped_officer_or_licensee(role_name):
             if hasattr(user, 'supply_chain_profile'):
                 return DailyHologramRegister.objects.filter(licensee=user.supply_chain_profile)
             return DailyHologramRegister.objects.none()
@@ -1861,9 +1864,10 @@ class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
         role_name = _normalize_role_name(getattr(getattr(user, 'role', None), 'name', ''))
         
         # OIC / Licensee Access
-        if role_name == 'licensee':
+        if _is_scoped_officer_or_licensee(role_name):
             if hasattr(user, 'supply_chain_profile'):
                 return HologramRollsDetails.objects.filter(procurement__licensee=user.supply_chain_profile)
+            return HologramRollsDetails.objects.none()
                 
         # IT Cell / Admin / Commissioner / OIC Access (View All)
         if _get_user_role_id(user) and StagePermission.objects.filter(
