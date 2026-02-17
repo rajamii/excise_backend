@@ -1,13 +1,9 @@
-# views.py - COMPLETE FIXED VERSION
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes, renderer_classes
-from rest_framework.permissions import IsAuthenticated  # ✅ ADDED
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework.renderers import JSONRenderer  # ✅ ADDED
 from auth.roles.permissions import HasAppPermission  # type: ignore
 
-# Local app imports
 from . import models as masters_model
 from .serializers.licensecategory_serializer import LicenseCategorySerializer
 from .serializers.licensetype_serializer import LicenseTypeSerializer
@@ -20,10 +16,13 @@ from .serializers.licensetitle_serializer import LicenseTitleSerializer
 from .serializers.road_serializer import RoadSerializer
 from .serializers.location_serializer import LocationSerializer
 from .serializers.licensefee_serializer import LicenseFeeSerializer
-from .serializers.licenseeprofile_serializer import LicenseeProfileSerializer
 from .serializers.locationcategory_serializer import LocationCategorySerializer
 from .serializers.locationsubcategory_serializer import LocationSubcategorySerializer
 from .serializers.ward_serializer import WardSerializer
+
+# NOTE: LicenseeProfile views have been moved to auth.user.views.
+# Endpoints are now served under /api/users/licensee-profiles/
+
 
 #################################################
 #           License Category                    #
@@ -59,7 +58,9 @@ def license_category_detail(request, pk):
 def license_category_update(request, pk):
     """Update a license category instance."""
     category = get_object_or_404(masters_model.LicenseCategory, pk=pk)
-    serializer = LicenseCategorySerializer(category, data=request.data, partial=request.method == 'PATCH')
+    serializer = LicenseCategorySerializer(
+        category, data=request.data, partial=request.method == 'PATCH'
+    )
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
@@ -107,7 +108,9 @@ def license_type_detail(request, pk):
 def license_type_update(request, pk):
     """Update a license type instance."""
     license_type = get_object_or_404(masters_model.LicenseType, pk=pk)
-    serializer = LicenseTypeSerializer(license_type, data=request.data, partial=request.method == 'PATCH')
+    serializer = LicenseTypeSerializer(
+        license_type, data=request.data, partial=request.method == 'PATCH'
+    )
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
@@ -155,7 +158,10 @@ def state_detail(request, pk):
 def state_update(request, pk):
     """Update a state instance."""
     state = get_object_or_404(masters_model.State, pk=pk)
-    serializer = StateSerializer(instance=state, data=request.data, partial=request.method == 'PATCH', context={'request': request})
+    serializer = StateSerializer(
+        instance=state, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
+    )
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
@@ -168,7 +174,7 @@ def state_delete(request, pk):
     state.is_active = False
     state.save()
     return Response(
-        {'message': f'State {state.State} deactivated successfully.'},
+        {'message': f'State {state.state} deactivated successfully.'},
         status=status.HTTP_200_OK
     )
 
@@ -185,7 +191,6 @@ def district_list(request):
     state_code = request.query_params.get('state_code')
     if state_code:
         queryset = queryset.filter(state_code=state_code)
-
     serializer = DistrictSerializer(queryset, many=True, context={'request': request})
     return Response(serializer.data)
 
@@ -193,11 +198,9 @@ def district_list(request):
 @api_view(['POST'])
 def district_create(request):
     """Create a new district."""
-
     data = request.data.copy()
-    data['state_code'] = 11  # Set default state code for Sikkim
-
-    serializer = DistrictSerializer(data=request.data, context={'request': request})
+    data['state_code'] = 11  # Default state code for Sikkim
+    serializer = DistrictSerializer(data=data, context={'request': request})
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -215,7 +218,10 @@ def district_detail(request, pk):
 def district_update(request, pk):
     """Update a district instance."""
     district = get_object_or_404(masters_model.District, pk=pk)
-    serializer = DistrictSerializer(instance=district, data=request.data, partial=request.method == 'PATCH', context={'request': request})
+    serializer = DistrictSerializer(
+        instance=district, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
+    )
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
@@ -250,7 +256,6 @@ def subdivision_list(request):
     district_code = request.query_params.get('district_code')
     if district_code:
         queryset = queryset.filter(district_code=district_code)
-
     serializer = SubdivisionSerializer(queryset, many=True, context={'request': request})
     return Response(serializer.data)
 
@@ -276,7 +281,10 @@ def subdivision_detail(request, pk):
 def subdivision_update(request, pk):
     """Update a subdivision instance."""
     subdivision = get_object_or_404(masters_model.Subdivision, pk=pk)
-    serializer = SubdivisionSerializer(instance=subdivision, data=request.data, partial=request.method == 'PATCH', context={'request': request})
+    serializer = SubdivisionSerializer(
+        instance=subdivision, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
+    )
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
@@ -311,7 +319,6 @@ def policestation_list(request):
     subdivision_code = request.query_params.get('subdivision_code')
     if subdivision_code:
         queryset = queryset.filter(subdivision_code=subdivision_code)
-
     serializer = PoliceStationSerializer(queryset, many=True, context={'request': request})
     return Response(serializer.data)
 
@@ -337,7 +344,10 @@ def policestation_detail(request, pk):
 def policestation_update(request, pk):
     """Update a police station instance."""
     station = get_object_or_404(masters_model.PoliceStation, pk=pk)
-    serializer = PoliceStationSerializer(instance=station, data=request.data, partial=request.method == 'PATCH', context={'request': request})
+    serializer = PoliceStationSerializer(
+        instance=station, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
+    )
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
@@ -362,18 +372,13 @@ def policestation_delete(request, pk):
 @permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
 def license_subcategory_list(request):
-    """
-    List all license subcategories.
-    Optionally filter by license category using ?category_id=
-    """
+    """List all license subcategories, optionally filtered by ?category_id="""
     queryset = masters_model.LicenseSubcategory.objects.all()
     category_id = request.query_params.get('category_id')
     if category_id:
         queryset = queryset.filter(category_id=category_id)
-
     serializer = LicenseSubcategorySerializer(queryset, many=True, context={'request': request})
     return Response(serializer.data)
-
 
 @permission_classes([HasAppPermission('masters', 'create')])
 @api_view(['POST'])
@@ -384,7 +389,6 @@ def license_subcategory_create(request):
     serializer.save()
     return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-
 @permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
 def license_subcategory_detail(request, pk):
@@ -393,17 +397,18 @@ def license_subcategory_detail(request, pk):
     serializer = LicenseSubcategorySerializer(subcategory, context={'request': request})
     return Response(serializer.data)
 
-
 @permission_classes([HasAppPermission('masters', 'update')])
 @api_view(['PUT', 'PATCH'])
 def license_subcategory_update(request, pk):
     """Update an existing license subcategory."""
     subcategory = get_object_or_404(masters_model.LicenseSubcategory, pk=pk)
-    serializer = LicenseSubcategorySerializer(instance=subcategory, data=request.data, partial=(request.method == 'PATCH'), context={'request': request})
+    serializer = LicenseSubcategorySerializer(
+        instance=subcategory, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
+    )
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
-
 
 @permission_classes([HasAppPermission('masters', 'delete')])
 @api_view(['DELETE'])
@@ -424,62 +429,52 @@ def license_subcategory_delete(request, pk):
 @permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
 def license_title_list(request):
-    """
-    List all license titles.
-    """
+    """List all license titles."""
     queryset = masters_model.LicenseTitle.objects.all()
     serializer = LicenseTitleSerializer(queryset, many=True, context={'request': request})
     return Response(serializer.data)
 
-
 @permission_classes([HasAppPermission('masters', 'create')])
 @api_view(['POST'])
 def license_title_create(request):
-    """
-    Create a new license title.
-    """
+    """Create a new license title."""
     serializer = LicenseTitleSerializer(data=request.data, context={'request': request})
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-
 @permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
 def license_title_detail(request, pk):
-    """
-    Retrieve a license title by primary key.
-    """
+    """Retrieve a license title by primary key."""
     title = get_object_or_404(masters_model.LicenseTitle, pk=pk)
     serializer = LicenseTitleSerializer(title, context={'request': request})
     return Response(serializer.data)
 
-
 @permission_classes([HasAppPermission('masters', 'update')])
 @api_view(['PUT', 'PATCH'])
 def license_title_update(request, pk):
-    """
-    Update a license title.
-    """
+    """Update a license title."""
     title = get_object_or_404(masters_model.LicenseTitle, pk=pk)
-    serializer = LicenseTitleSerializer(instance=title, data=request.data, partial=(request.method == 'PATCH'), context={'request': request})
+    serializer = LicenseTitleSerializer(
+        instance=title, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
+    )
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
 
-
 @permission_classes([HasAppPermission('masters', 'delete')])
 @api_view(['DELETE'])
 def license_title_delete(request, pk):
-    """
-    Delete a license title (hard delete).
-    """
+    """Delete a license title (hard delete)."""
     title = get_object_or_404(masters_model.LicenseTitle, pk=pk)
     title.delete()
     return Response(
         {'message': f'License Title "{title.description}" deleted successfully.'},
         status=status.HTTP_200_OK
     )
+
 
 #################################################
 #                   Road                        #
@@ -488,69 +483,56 @@ def license_title_delete(request, pk):
 @permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
 def road_list(request):
-    """
-    List all roads, optionally filtered by district_code.
-    """
+    """List all roads, optionally filtered by district_code."""
     queryset = masters_model.Road.objects.all()
     district_code = request.query_params.get('district_code')
     if district_code:
         queryset = queryset.filter(district_id=district_code)
-
     serializer = RoadSerializer(queryset, many=True, context={'request': request})
     return Response(serializer.data)
-
 
 @permission_classes([HasAppPermission('masters', 'create')])
 @api_view(['POST'])
 def road_create(request):
-    """
-    Create a new road entry.
-    """
+    """Create a new road entry."""
     serializer = RoadSerializer(data=request.data, context={'request': request})
     if not serializer.is_valid():
-        print(serializer.errors)
-        return Response(serializer.errors, status=400)
-    serializer.is_valid(raise_exception=True)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     serializer.save()
     return Response(serializer.data, status=status.HTTP_201_CREATED)
-
 
 @permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
 def road_detail(request, pk):
-    """
-    Retrieve a road by primary key.
-    """
+    """Retrieve a road by primary key."""
     road = get_object_or_404(masters_model.Road, pk=pk)
     serializer = RoadSerializer(road, context={'request': request})
     return Response(serializer.data)
 
-
 @permission_classes([HasAppPermission('masters', 'update')])
 @api_view(['PUT', 'PATCH'])
 def road_update(request, pk):
-    """
-    Update a road entry.
-    """
+    """Update a road entry."""
     road = get_object_or_404(masters_model.Road, pk=pk)
-    serializer = RoadSerializer(instance=road, data=request.data, partial=(request.method == 'PATCH'), context={'request': request})
+    serializer = RoadSerializer(
+        instance=road, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
+    )
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
 
-
 @permission_classes([HasAppPermission('masters', 'delete')])
 @api_view(['DELETE'])
 def road_delete(request, pk):
-    """
-    Delete a road entry.
-    """
+    """Delete a road entry."""
     road = get_object_or_404(masters_model.Road, pk=pk)
     road.delete()
     return Response(
-        {'message': f'Road \"{road.road_name}\" deleted successfully.'},
+        {'message': f'Road "{road.road_name}" deleted successfully.'},
         status=status.HTTP_200_OK
     )
+
 
 #################################################
 #                   Location                    #
@@ -559,60 +541,48 @@ def road_delete(request, pk):
 @permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
 def location_list(request):
-    """
-    List all active locations, optionally filtered by district_code.
-    """
+    """List all active locations, optionally filtered by district_code."""
     queryset = masters_model.Location.objects.filter(is_active=True)
     district_code = request.query_params.get('district_code')
     if district_code:
         queryset = queryset.filter(district_code=district_code)
-
     serializer = LocationSerializer(queryset, many=True, context={'request': request})
     return Response(serializer.data)
-
 
 @permission_classes([HasAppPermission('masters', 'create')])
 @api_view(['POST'])
 def location_create(request):
-    """
-    Create a new location.
-    """
+    """Create a new location."""
     serializer = LocationSerializer(data=request.data, context={'request': request})
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-
 @permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
 def location_detail(request, pk):
-    """
-    Retrieve an active location by primary key.
-    """
+    """Retrieve an active location by primary key."""
     location = get_object_or_404(masters_model.Location, pk=pk, is_active=True)
     serializer = LocationSerializer(location, context={'request': request})
     return Response(serializer.data)
 
-
 @permission_classes([HasAppPermission('masters', 'update')])
 @api_view(['PUT', 'PATCH'])
 def location_update(request, pk):
-    """
-    Update a location entry.
-    """
+    """Update a location entry."""
     location = get_object_or_404(masters_model.Location, pk=pk)
-    serializer = LocationSerializer(instance=location, data=request.data, partial=(request.method == 'PATCH'), context={'request': request})
+    serializer = LocationSerializer(
+        instance=location, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
+    )
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
 
-
 @permission_classes([HasAppPermission('masters', 'delete')])
 @api_view(['DELETE'])
 def location_delete(request, pk):
-    """
-    Deactivate a location (soft delete).
-    """
+    """Deactivate a location (soft delete)."""
     location = get_object_or_404(masters_model.Location, pk=pk)
     location.is_active = False
     location.save()
@@ -621,6 +591,7 @@ def location_delete(request, pk):
         status=status.HTTP_200_OK
     )
 
+
 #################################################
 #               License Fee                     #
 #################################################
@@ -628,74 +599,54 @@ def location_delete(request, pk):
 @permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
 def license_fee_list(request):
-    """
-    List all active license fees, optionally filtered by category, subcategory, or location.
-    """
+    """List all active license fees, optionally filtered by category, subcategory, or location."""
     queryset = masters_model.LicenseFee.objects.filter(is_active=True)
-    
-    # Optional filters
     category_id = request.query_params.get('license_category')
     subcategory_id = request.query_params.get('license_subcategory')
     location_code = request.query_params.get('location_code')
-    
     if category_id:
         queryset = queryset.filter(license_category_id=category_id)
     if subcategory_id:
         queryset = queryset.filter(license_subcategory_id=subcategory_id)
     if location_code:
         queryset = queryset.filter(location_code=location_code)
-    
     serializer = LicenseFeeSerializer(queryset, many=True, context={'request': request})
     return Response(serializer.data)
-
 
 @permission_classes([HasAppPermission('masters', 'create')])
 @api_view(['POST'])
 def license_fee_create(request):
-    """
-    Create a new license fee entry.
-    """
+    """Create a new license fee entry."""
     serializer = LicenseFeeSerializer(data=request.data, context={'request': request})
     serializer.is_valid(raise_exception=True)
     serializer.save(created_by=request.user)
     return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-
 @permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
 def license_fee_detail(request, pk):
-    """
-    Retrieve an active license fee by primary key.
-    """
+    """Retrieve an active license fee by primary key."""
     license_fee = get_object_or_404(masters_model.LicenseFee, pk=pk, is_active=True)
     serializer = LicenseFeeSerializer(license_fee, context={'request': request})
     return Response(serializer.data)
 
-
 @permission_classes([HasAppPermission('masters', 'update')])
 @api_view(['PUT', 'PATCH'])
 def license_fee_update(request, pk):
-    """
-    Update a license fee entry.
-    """
+    """Update a license fee entry."""
     license_fee = get_object_or_404(masters_model.LicenseFee, pk=pk)
     serializer = LicenseFeeSerializer(
-        instance=license_fee, 
-        data=request.data, 
-        partial=(request.method == 'PATCH'), 
-        context={'request': request}
+        instance=license_fee, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
     )
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
 
-
 @permission_classes([HasAppPermission('masters', 'delete')])
 @api_view(['DELETE'])
 def license_fee_delete(request, pk):
-    """
-    Deactivate a license fee (soft delete).
-    """
+    """Deactivate a license fee (soft delete)."""
     license_fee = get_object_or_404(masters_model.LicenseFee, pk=pk)
     license_fee.is_active = False
     license_fee.save()
@@ -704,145 +655,6 @@ def license_fee_delete(request, pk):
         status=status.HTTP_200_OK
     )
 
-
-#################################################
-#           Licensee Profile                    #
-#           🔧 FIXED VERSION                    #
-#################################################
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])  # ✅ CHANGED: Was HasAppPermission('masters', 'view')
-@renderer_classes([JSONRenderer])  # ✅ ADDED: Explicit JSON rendering
-def licenseeprofile_list(request):
-    """
-    List licensee profiles for the current user only.
-    
-    🔧 FIXED: Now filters by created_by = current user
-    This prevents users from seeing other people's profiles.
-    """
-    queryset = masters_model.LicenseeProfile.objects.filter(
-        created_by=request.user  # ✅ ADDED: User filter
-    ).select_related('created_by')
-    
-    serializer = LicenseeProfileSerializer(queryset, many=True, context={'request': request})
-    return Response(serializer.data, status=status.HTTP_200_OK)
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])  # ✅ CHANGED: Was HasAppPermission('masters', 'create')
-@renderer_classes([JSONRenderer])  # ✅ ADDED: Explicit JSON rendering
-def licenseeprofile_create(request):
-    """
-    Create a new licensee profile for the current user.
-    
-    🔧 FIXED: 
-    - Changed permission from HasAppPermission to IsAuthenticated
-    - Automatically sets created_by to current user
-    - Ensures users can only create their own profile
-    - Prevents duplicate profiles
-    - Explicitly returns JSON with proper content type
-    """
-    # ✅ ADDED: Check if user already has a profile
-    existing_profile = masters_model.LicenseeProfile.objects.filter(
-        created_by=request.user
-    ).first()
-    
-    if existing_profile:
-        return Response(
-            {'error': 'You already have a licensee profile. Use the update endpoint to modify it.'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    
-    serializer = LicenseeProfileSerializer(data=request.data, context={'request': request})
-    
-    # ✅ CHANGED: Explicit validation check instead of raise_exception
-    if not serializer.is_valid():
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
-    # Save and return with explicit content type
-    serializer.save()  # The serializer's create() method sets created_by automatically
-    
-    return Response(
-        serializer.data,
-        status=status.HTTP_201_CREATED,
-        content_type='application/json'  # ✅ ADDED: Explicit content type
-    )
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])  # ✅ CHANGED: Was HasAppPermission('masters', 'view')
-@renderer_classes([JSONRenderer])  # ✅ ADDED: Explicit JSON rendering
-def licenseeprofile_detail(request, pk):
-    """
-    Retrieve a licensee profile instance.
-    
-    🔧 FIXED: Users can only view their own profile
-    """
-    profile = get_object_or_404(
-        masters_model.LicenseeProfile, 
-        pk=pk,
-        created_by=request.user  # ✅ ADDED: User filter
-    )
-    serializer = LicenseeProfileSerializer(profile, context={'request': request})
-    return Response(serializer.data, status=status.HTTP_200_OK)
-
-
-@api_view(['PUT', 'PATCH'])
-@permission_classes([IsAuthenticated])  # ✅ CHANGED: Was HasAppPermission('masters', 'update')
-@renderer_classes([JSONRenderer])  # ✅ ADDED: Explicit JSON rendering
-def licenseeprofile_update(request, pk):
-    """
-    Update a licensee profile instance.
-    
-    🔧 FIXED: Users can only update their own profile
-    Immutable fields (father_name, dob, gender, nationality) cannot be changed.
-    """
-    profile = get_object_or_404(
-        masters_model.LicenseeProfile, 
-        pk=pk,
-        created_by=request.user  # ✅ ADDED: User filter
-    )
-    
-    serializer = LicenseeProfileSerializer(
-        instance=profile,
-        data=request.data,
-        partial=request.method == 'PATCH',
-        context={'request': request}
-    )
-    
-    # ✅ CHANGED: Explicit validation check instead of raise_exception
-    if not serializer.is_valid():
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
-    serializer.save()
-    
-    return Response(
-        serializer.data,
-        status=status.HTTP_200_OK,
-        content_type='application/json'  # ✅ ADDED: Explicit content type
-    )
-
-
-@api_view(['DELETE'])
-@permission_classes([IsAuthenticated])  # ✅ CHANGED: Was HasAppPermission('masters', 'delete')
-@renderer_classes([JSONRenderer])  # ✅ ADDED: Explicit JSON rendering
-def licenseeprofile_delete(request, pk):
-    """
-    Delete a licensee profile (hard delete).
-    
-    🔧 FIXED: Users can only delete their own profile
-    """
-    profile = get_object_or_404(
-        masters_model.LicenseeProfile, 
-        pk=pk,
-        created_by=request.user  # ✅ ADDED: User filter
-    )
-    profile_id = profile.id
-    profile.delete()
-    return Response(
-        {'message': f'Licensee Profile (ID: {profile_id}) deleted successfully.'},
-        status=status.HTTP_200_OK
-    )
 
 #################################################
 #           Location Category                   #
@@ -879,10 +691,8 @@ def locationcategory_update(request, pk):
     """Update a location category instance."""
     category = get_object_or_404(masters_model.LocationCategory, pk=pk)
     serializer = LocationCategorySerializer(
-        instance=category, 
-        data=request.data, 
-        partial=request.method == 'PATCH',
-        context={'request': request}
+        instance=category, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
     )
     serializer.is_valid(raise_exception=True)
     serializer.save()
@@ -910,12 +720,9 @@ def locationcategory_delete(request, pk):
 def locationsubcategory_list(request):
     """List all active location subcategories, optionally filtered by category."""
     queryset = masters_model.LocationSubcategory.objects.filter(is_active=True)
-    
-    # Optional filter by category
     category_id = request.query_params.get('category_id')
     if category_id:
         queryset = queryset.filter(category_id=category_id)
-    
     serializer = LocationSubcategorySerializer(queryset, many=True, context={'request': request})
     return Response(serializer.data)
 
@@ -942,10 +749,8 @@ def locationsubcategory_update(request, pk):
     """Update a location subcategory instance."""
     subcategory = get_object_or_404(masters_model.LocationSubcategory, pk=pk)
     serializer = LocationSubcategorySerializer(
-        instance=subcategory, 
-        data=request.data, 
-        partial=request.method == 'PATCH',
-        context={'request': request}
+        instance=subcategory, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
     )
     serializer.is_valid(raise_exception=True)
     serializer.save()
@@ -973,12 +778,9 @@ def locationsubcategory_delete(request, pk):
 def ward_list(request):
     """List all active wards, optionally filtered by location_code."""
     queryset = masters_model.Ward.objects.filter(is_active=True)
-    
-    # Optional filter by location
     location_code = request.query_params.get('location_code')
     if location_code:
         queryset = queryset.filter(location_code=location_code)
-    
     serializer = WardSerializer(queryset, many=True, context={'request': request})
     return Response(serializer.data)
 
@@ -1005,10 +807,8 @@ def ward_update(request, pk):
     """Update a ward instance."""
     ward = get_object_or_404(masters_model.Ward, pk=pk)
     serializer = WardSerializer(
-        instance=ward, 
-        data=request.data, 
-        partial=request.method == 'PATCH',
-        context={'request': request}
+        instance=ward, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
     )
     serializer.is_valid(raise_exception=True)
     serializer.save()

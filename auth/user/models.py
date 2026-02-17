@@ -5,6 +5,7 @@ from django.conf import settings
 from auth.user.validators import validate_name, validate_phone_number
 from auth.roles.models import Role
 from models.masters.core.models import District, Subdivision
+from models.masters.core.helper import GENDER_CHOICES, MARITAL_STATUS_CHOICES, RESIDENTIAL_STATUS_CHOICES
 from django.utils import timezone
 import uuid
 import random
@@ -14,7 +15,7 @@ class CustomUserManager(BaseUserManager):
     def create_user(self, email, first_name, last_name, phone_number,
                    district, subdivision, address, password=None, **extra_fields):
         """
-        Creates and saves a User with the given required fields
+        Creates and saves a User with the given required fields.
         """
         if not email:
             raise ValueError('The Email must be set')
@@ -33,7 +34,7 @@ class CustomUserManager(BaseUserManager):
             district=district,
             subdivision=subdivision
         )
-        
+
         user = self.model(
             email=email,
             username=username,
@@ -63,7 +64,6 @@ class CustomUserManager(BaseUserManager):
         if extra_fields.get('is_superuser') is not True:
             raise ValueError('Superuser must have is_superuser=True.')
 
-        # Provide defaults for fields not requested by Django's createsuperuser prompt
         email = extra_fields.pop('email', None) or f'{username}@example.com'
         address = extra_fields.pop('address', None) or 'Admin Office'
         district = extra_fields.pop('district', None) or District.objects.first()
@@ -84,7 +84,6 @@ class CustomUserManager(BaseUserManager):
             **extra_fields
         )
 
-        # Keep CLI-entered username as authoritative for superuser creation
         user.username = username
         user.save(using=self._db)
         return user
@@ -95,30 +94,27 @@ class CustomUserManager(BaseUserManager):
         subdivision_code = subdivision.subdivision_code
         base = f"{initials}{phone_number[-4:]}{district_code}{subdivision_code}"
         username = base[:10]
-        
+
         while self.model.objects.filter(username=username).exists():
             username = f"{base[:7]}{random.randint(100, 999)}"
         return username
+
 
 class CustomUser(AbstractBaseUser):
     email = models.EmailField(
         unique=True,
         validators=[validate_email],
-        error_messages={
-            'unique': "A user with that email already exists.",
-        }
+        error_messages={'unique': "A user with that email already exists."}
     )
     username = models.CharField(
-        max_length=30, # Adjust max_length
+        max_length=30,
         unique=True,
-        blank=True  
-    ) # Will be auto-generated
+        blank=True  # Auto-generated
+    )
     first_name = models.CharField(
         max_length=50,
         validators=[validate_name],
-        error_messages={
-            'blank': "First name cannot be blank.",
-        }
+        error_messages={'blank': "First name cannot be blank."}
     )
     middle_name = models.CharField(
         max_length=50,
@@ -128,17 +124,13 @@ class CustomUser(AbstractBaseUser):
     last_name = models.CharField(
         max_length=50,
         validators=[validate_name],
-        error_messages={
-            'blank': "Last name cannot be blank.",
-        }
+        error_messages={'blank': "Last name cannot be blank."}
     )
     phone_number = models.CharField(
         max_length=10,
         unique=True,
         validators=[validate_phone_number],
-        error_messages={
-            'unique': "A user with that phone number already exists.",
-        }
+        error_messages={'unique': "A user with that phone number already exists."}
     )
     district = models.ForeignKey(
         District,
@@ -146,7 +138,6 @@ class CustomUser(AbstractBaseUser):
         on_delete=models.CASCADE,
         db_column='district'
     )
-
     subdivision = models.ForeignKey(
         Subdivision,
         to_field='subdivision_code',
@@ -165,7 +156,8 @@ class CustomUser(AbstractBaseUser):
     is_staff = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     date_joined = models.DateTimeField(auto_now_add=True)
-    created_by = models.ForeignKey('self',
+    created_by = models.ForeignKey(
+        'self',
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
@@ -182,7 +174,6 @@ class CustomUser(AbstractBaseUser):
         verbose_name = 'user'
         verbose_name_plural = 'users'
         ordering = ['-date_joined']
-
 
     def __str__(self):
         return self.username or self.email
@@ -201,26 +192,69 @@ class OTP(models.Model):
 
     def is_expired(self):
         return (timezone.now() - self.created_at).total_seconds() > 600  # 10 minutes
-    
+
+    @staticmethod
     def clean_expired_otps():
-        OTP.objects.filter(used=False, created_at__lt=timezone.now() - timezone.timedelta(minutes=10)).delete()
+        OTP.objects.filter(
+            used=False,
+            created_at__lt=timezone.now() - timezone.timedelta(minutes=10)
+        ).delete()
 
     def __str__(self):
-        return f"{self.phone_number} - {self.otp}"   
+        return f"{self.phone_number} - {self.otp}"
 
 
 class LicenseeProfile(models.Model):
+    """
+    Extended profile for licensee users.
+    Consolidated from the former core.LicenseeProfile — all personal/demographic
+    details now live here alongside the user link and PAN number.
+    """
+
+    # ── Link to user ──────────────────────────────────────────────
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='licensee_profile'
     )
 
-    pan_number = models.CharField(max_length=10, unique=True)
-    
+    # ── Identity / KYC ───────────────────────────────────────────
+    # null=True, blank=True so the migration can run against existing rows.
+    # The serializer enforces these as required on create.
+    pan_number = models.CharField(max_length=10, unique=True, null=True, blank=True)
+    father_name = models.CharField(max_length=100, null=True, blank=True)
+    dob = models.DateField(verbose_name='Date of Birth', null=True, blank=True)
+    gender = models.CharField(max_length=1, choices=GENDER_CHOICES, null=True, blank=True)
+    nationality = models.CharField(max_length=50, null=True, blank=True)
+
+    # ── Personal status ───────────────────────────────────────────
+    marital_status = models.CharField(
+        max_length=10,
+        choices=MARITAL_STATUS_CHOICES,
+        null=True,
+        blank=True,
+    )
+    residential_status = models.CharField(
+        max_length=20,
+        choices=RESIDENTIAL_STATUS_CHOICES,
+        null=True,
+        blank=True,
+    )
+
+    # ── Audit ─────────────────────────────────────────────────────
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='created_licensee_profiles'
+    )
+    operation_date = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'licensee_profile'
         verbose_name = 'Licensee Profile'
         verbose_name_plural = 'Licensee Profiles'
- 
+
+    def __str__(self):
+        return f"LicenseeProfile({self.user})"

@@ -1,14 +1,13 @@
-# models.py
 from django.db import models
 from django.core.exceptions import ValidationError
 from .validators import validate_name, validate_name_extended
 from typing import TYPE_CHECKING
-from .helper import ROAD_TYPE_CHOICES, GENDER_CHOICES, MARITAL_STATUS_CHOICES, RESIDENTIAL_STATUS_CHOICES
+from .helper import ROAD_TYPE_CHOICES
 
 if TYPE_CHECKING:
-    # Type checking only imports to prevent circular imports
     from django.db.models.manager import Manager
     from .models import District, PoliceStation, Subdivision
+
 
 class LicenseCategory(models.Model):
     license_category = models.CharField(
@@ -25,6 +24,7 @@ class LicenseCategory(models.Model):
     def __str__(self) -> str:
         return self.license_category
 
+
 class LicenseType(models.Model):
     license_type = models.CharField(
         max_length=200,
@@ -39,22 +39,12 @@ class LicenseType(models.Model):
     def __str__(self) -> str:
         return self.license_type
 
-class State(models.Model):
-    state = models.CharField(
-        max_length=50,
-        default='Sikkim',
-        null=False,
-        blank=False
-    )
-    state_code = models.IntegerField(
-        unique=True,
-        default=11
-    )
-    is_active = models.BooleanField(
-        default=True
-    )
 
-    # Type hint for the reverse relationship from the District model
+class State(models.Model):
+    state = models.CharField(max_length=50, default='Sikkim', null=False, blank=False)
+    state_code = models.IntegerField(unique=True, default=11)
+    is_active = models.BooleanField(default=True)
+
     if TYPE_CHECKING:
         districts: 'Manager[District]'
 
@@ -74,6 +64,7 @@ class State(models.Model):
         if not 10 <= self.state_code <= 99:
             raise ValidationError("State code must be between 10-99")
 
+
 class District(models.Model):
     district = models.CharField(
         max_length=30,
@@ -81,13 +72,8 @@ class District(models.Model):
         null=False,
         blank=False
     )
-    district_code = models.IntegerField(
-        unique=True,
-        default=225
-    )
-    is_active = models.BooleanField(
-        default=True
-    )
+    district_code = models.IntegerField(unique=True, default=225)
+    is_active = models.BooleanField(default=True)
     state_code = models.ForeignKey(
         State,
         to_field='state_code',
@@ -97,7 +83,6 @@ class District(models.Model):
         db_column='state_code'
     )
 
-    # Type hint for the reverse relationship from the Subdivision model
     if TYPE_CHECKING:
         subdivisions: 'Manager[Subdivision]'
 
@@ -113,6 +98,7 @@ class District(models.Model):
     def __str__(self) -> str:
         return f"{self.district} ({self.district_code})"
 
+
 class Subdivision(models.Model):
     subdivision = models.CharField(
         max_length=30,
@@ -120,13 +106,8 @@ class Subdivision(models.Model):
         null=True,
         blank=True
     )
-    subdivision_code = models.IntegerField(
-        unique=True,
-        default=1553
-    )
-    is_active = models.BooleanField(
-        default=True
-    )
+    subdivision_code = models.IntegerField(unique=True, default=1553)
+    is_active = models.BooleanField(default=True)
     district_code = models.ForeignKey(
         District,
         to_field='district_code',
@@ -136,7 +117,6 @@ class Subdivision(models.Model):
         db_column='district_code'
     )
 
-    # Type hint for the reverse relationship from the PoliceStation model
     if TYPE_CHECKING:
         police_stations: 'Manager[PoliceStation]'
 
@@ -160,6 +140,7 @@ class Subdivision(models.Model):
     def active_police_stations(self) -> 'models.QuerySet[PoliceStation]':
         return self.police_stations.filter(is_active=True)
 
+
 class PoliceStation(models.Model):
     police_station = models.CharField(
         max_length=30,
@@ -167,13 +148,8 @@ class PoliceStation(models.Model):
         null=True,
         blank=True
     )
-    police_station_code = models.IntegerField(
-        unique=True,
-        default=11999
-    )
-    is_active = models.BooleanField(
-        default=True
-    )
+    police_station_code = models.IntegerField(unique=True, default=11999)
+    is_active = models.BooleanField(default=True)
     subdivision_code = models.ForeignKey(
         Subdivision,
         to_field='subdivision_code',
@@ -188,8 +164,8 @@ class PoliceStation(models.Model):
 
     def __str__(self) -> str:
         return f"{self.police_station} ({self.police_station_code})"
-    
-# LicenseTitle
+
+
 class LicenseTitle(models.Model):
     description = models.CharField(max_length=200, default=None, null=False)
 
@@ -199,9 +175,14 @@ class LicenseTitle(models.Model):
     def __str__(self):
         return self.description
 
-# LicenseSubcategory
+
 class LicenseSubcategory(models.Model):
-    description = models.CharField(max_length=200, default=None, null=False, validators=[validate_name_extended])
+    description = models.CharField(
+        max_length=200,
+        default=None,
+        null=False,
+        validators=[validate_name_extended]
+    )
     category = models.ForeignKey(
         LicenseCategory,
         on_delete=models.CASCADE,
@@ -214,7 +195,7 @@ class LicenseSubcategory(models.Model):
     def __str__(self):
         return self.description
 
-# Location Road
+
 class Road(models.Model):
     road_name = models.CharField(max_length=100, validators=[validate_name_extended])
     district = models.ForeignKey(
@@ -232,14 +213,11 @@ class Road(models.Model):
         return f"{self.road_name} ({self.road_type})"
 
 
-# ============================================================================
-# NEW MODELS: LocationCategory, LocationSubcategory, Ward
-# ============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# Location models
+# ─────────────────────────────────────────────────────────────────────────────
 
 class LocationCategory(models.Model):
-    """
-    Master table for location categories (e.g., Urban, Rural, Hill Station, etc.)
-    """
     category_name = models.CharField(
         max_length=100,
         unique=True,
@@ -248,27 +226,16 @@ class LocationCategory(models.Model):
         validators=[validate_name_extended],
         help_text="Name of the location category"
     )
-    description = models.TextField(
-        null=True,
-        blank=True,
-        help_text="Detailed description of the category"
-    )
-    is_active = models.BooleanField(
-        default=True,
-        help_text="Is this category active?"
-    )
+    description = models.TextField(null=True, blank=True, help_text="Detailed description")
+    is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(
         'user.CustomUser',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='created_location_categories',
-        help_text="User who created this record"
+        related_name='created_location_categories'
     )
-    operation_date = models.DateTimeField(
-        auto_now_add=True,
-        help_text="Date when this record was created"
-    )
+    operation_date = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'masters_locationcategory'
@@ -281,9 +248,6 @@ class LocationCategory(models.Model):
 
 
 class LocationSubcategory(models.Model):
-    """
-    Subcategories under location categories (e.g., Municipality, Panchayat under Urban/Rural)
-    """
     subcategory_name = models.CharField(
         max_length=100,
         null=False,
@@ -295,30 +259,18 @@ class LocationSubcategory(models.Model):
         LocationCategory,
         on_delete=models.CASCADE,
         related_name='subcategories',
-        null=False,
-        help_text="Parent location category"
+        null=False
     )
-    description = models.TextField(
-        null=True,
-        blank=True,
-        help_text="Detailed description of the subcategory"
-    )
-    is_active = models.BooleanField(
-        default=True,
-        help_text="Is this subcategory active?"
-    )
+    description = models.TextField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(
         'user.CustomUser',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='created_location_subcategories',
-        help_text="User who created this record"
+        related_name='created_location_subcategories'
     )
-    operation_date = models.DateTimeField(
-        auto_now_add=True,
-        help_text="Date when this record was created"
-    )
+    operation_date = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'masters_locationsubcategory'
@@ -336,7 +288,6 @@ class LocationSubcategory(models.Model):
         return f"{self.subcategory_name} ({self.category.category_name})"
 
 
-# Location Model (Updated to work with new Ward model)
 class Location(models.Model):
     location_code = models.IntegerField(
         unique=True,
@@ -349,7 +300,6 @@ class Location(models.Model):
         null=False,
         blank=False,
         help_text="Description of the location"
-        # Note: Validation is handled in the serializer to avoid migration issues
     )
     district_code = models.ForeignKey(
         District,
@@ -359,9 +309,7 @@ class Location(models.Model):
         null=False,
         db_column='district_code'
     )
-    is_active = models.BooleanField(
-        default=True
-    )
+    is_active = models.BooleanField(default=True)
 
     class Meta:
         db_table = 'masters_location'
@@ -376,7 +324,6 @@ class Location(models.Model):
         return f"{self.location_description} ({self.location_code})"
 
     def clean(self):
-        """Validate location_description using the validator"""
         if self.location_description:
             validate_name_extended(self.location_description)
             if len(self.location_description.strip()) < 2:
@@ -384,58 +331,32 @@ class Location(models.Model):
 
 
 class Ward(models.Model):
-    """
-    Ward/Zone subdivision within a location (typically for municipalities/urban areas)
-    """
     ward_name = models.CharField(
         max_length=100,
         null=False,
         blank=False,
-        validators=[validate_name_extended],
-        help_text="Name of the ward"
+        validators=[validate_name_extended]
     )
-    ward_number = models.IntegerField(
-        null=False,
-        blank=False,
-        help_text="Ward number"
-    )
+    ward_number = models.IntegerField(null=False, blank=False)
     location_code = models.ForeignKey(
         Location,
         to_field='location_code',
         on_delete=models.CASCADE,
         related_name='wards',
         null=False,
-        db_column='location_code',
-        help_text="Location this ward belongs to"
+        db_column='location_code'
     )
-    population = models.IntegerField(
-        null=True,
-        blank=True,
-        help_text="Approximate population of the ward"
-    )
-    area_sq_km = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        help_text="Area of the ward in square kilometers"
-    )
-    is_active = models.BooleanField(
-        default=True,
-        help_text="Is this ward active?"
-    )
+    population = models.IntegerField(null=True, blank=True)
+    area_sq_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(
         'user.CustomUser',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='created_wards',
-        help_text="User who created this record"
+        related_name='created_wards'
     )
-    operation_date = models.DateTimeField(
-        auto_now_add=True,
-        help_text="Date when this record was created"
-    )
+    operation_date = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'masters_ward'
@@ -453,7 +374,6 @@ class Ward(models.Model):
         return f"Ward {self.ward_number} - {self.ward_name}"
 
     def clean(self):
-        """Validate ward data"""
         if self.ward_number <= 0:
             raise ValidationError("Ward number must be positive")
         if self.population is not None and self.population < 0:
@@ -462,21 +382,22 @@ class Ward(models.Model):
             raise ValidationError("Area must be positive")
 
 
-# LicenseFee Model - FINAL VERSION (All fields required)
+# ─────────────────────────────────────────────────────────────────────────────
+# License Fee
+# ─────────────────────────────────────────────────────────────────────────────
+
 class LicenseFee(models.Model):
     license_category = models.ForeignKey(
         LicenseCategory,
         on_delete=models.CASCADE,
         related_name='license_fees',
-        null=False,
-        help_text="License category"
+        null=False
     )
     license_subcategory = models.ForeignKey(
         LicenseSubcategory,
         on_delete=models.CASCADE,
         related_name='license_fees',
-        null=False,
-        help_text="License subcategory"
+        null=False
     )
     location_code = models.ForeignKey(
         Location,
@@ -484,46 +405,21 @@ class LicenseFee(models.Model):
         on_delete=models.CASCADE,
         related_name='license_fees',
         null=False,
-        db_column='location_code',
-        help_text="Location code"
+        db_column='location_code'
     )
-    license_fee = models.DecimalField(
-        max_digits=10, 
-        decimal_places=2,
-        help_text="License fee amount"
-    )
-    security_amount = models.DecimalField(
-        max_digits=10, 
-        decimal_places=2,
-        help_text="Security deposit amount"
-    )
-    renewal_amount = models.DecimalField(
-        max_digits=10, 
-        decimal_places=2,
-        help_text="Renewal fee amount"
-    )
-    late_fee = models.DecimalField(
-        max_digits=10, 
-        decimal_places=2,
-        default=0.00,
-        help_text="Late fee amount"
-    )
-    is_active = models.BooleanField(
-        default=True,
-        help_text="Is this fee structure active?"
-    )
+    license_fee = models.DecimalField(max_digits=10, decimal_places=2)
+    security_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    renewal_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    late_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(
         'user.CustomUser',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='created_license_fees',
-        help_text="User who created this record"
+        related_name='created_license_fees'
     )
-    operation_date = models.DateTimeField(
-        auto_now_add=True,
-        help_text="Date when this record was created"
-    )
+    operation_date = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'license_fee'
@@ -535,84 +431,9 @@ class LicenseFee(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.license_category} - {self.license_subcategory} - Location {self.location_code} - ₹{self.license_fee}"
-
-# LicenseeProfile
-class LicenseeProfile(models.Model):
-    """
-    Personal profile details for a licensee.
-
-    Immutable (set once on creation, cannot be changed):
-        father_name, dob, gender, nationality
-
-    Mutable (can be updated at any time):
-        marital_status, residential_status
-    """
-
-    # ── Immutable fields ──────────────────────────────────────────────────
-    father_name = models.CharField(
-        max_length=100,
-        null=False,
-        blank=False,
-        validators=[validate_name],
-        help_text="Father's full name – cannot be changed after creation"
-    )
-    dob = models.DateField(
-        null=False,
-        blank=False,
-        help_text="Date of birth – cannot be changed after creation"
-    )
-    gender = models.CharField(
-        max_length=10,
-        choices=GENDER_CHOICES,
-        null=False,
-        blank=False,
-        help_text="Gender – cannot be changed after creation"
-    )
-    nationality = models.CharField(
-        max_length=50,
-        null=False,
-        blank=False,
-        default='Indian',
-        help_text="Nationality – cannot be changed after creation"
-    )
-
-    # ── Mutable fields ────────────────────────────────────────────────────
-    marital_status = models.CharField(
-        max_length=20,
-        choices=MARITAL_STATUS_CHOICES,
-        null=False,
-        blank=False,
-        help_text="Marital status – can be updated"
-    )
-    residential_status = models.CharField(
-        max_length=20,
-        choices=RESIDENTIAL_STATUS_CHOICES,
-        null=False,
-        blank=False,
-        help_text="Residential status – can be updated"
-    )
-
-    # ── Audit ─────────────────────────────────────────────────────────────
-    created_by = models.ForeignKey(
-        'user.CustomUser',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='created_licensee_profiles',
-        help_text="User who created this record"
-    )
-    operation_date = models.DateTimeField(
-        auto_now_add=True,
-        help_text="Record creation timestamp"
-    )
-
-    class Meta:
-        db_table = 'masters_licensee_profile'
-        verbose_name = 'Licensee Profile'
-        verbose_name_plural = 'Licensee Profiles'
-
-    def __str__(self) -> str:
         return (
-            f"{self.father_name} | {self.dob} | {self.get_gender_display()}"
+            f"{self.license_category} - {self.license_subcategory} "
+            f"- Location {self.location_code} - ₹{self.license_fee}"
         )
+
+
