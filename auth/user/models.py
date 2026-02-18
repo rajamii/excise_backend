@@ -255,7 +255,7 @@ class OICOfficerAssignment(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = 'oic_officer_assignment'
+        db_table = 'oic_officers_mapping'
         ordering = ['-created_at']
 
     def __str__(self):

@@ -39,6 +39,13 @@ class BrandWarehouse(models.Model):
         db_column='distillery_name',
         help_text='Name of the distillery/manufacturing unit'
     )
+    license_id = models.CharField(
+        max_length=100,
+        db_column='license_id',
+        null=True,
+        blank=True,
+        help_text='Stable licensee identifier used to scope stock per establishment'
+    )
     brand_type = models.CharField(
         max_length=100,
         db_column='brand_type',
@@ -143,6 +150,7 @@ class BrandWarehouse(models.Model):
         verbose_name = 'Brand Warehouse'
         verbose_name_plural = 'Brand Warehouses'
         indexes = [
+            models.Index(fields=['license_id']),
             models.Index(fields=['distillery_name']),
             models.Index(fields=['brand_type']),
             models.Index(fields=['status']),

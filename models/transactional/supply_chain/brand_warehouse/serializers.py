@@ -120,6 +120,7 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
         model = BrandWarehouse
         fields = [
             'id',
+            'license_id',
             'distillery_name',
             'brand_type',
             'brand_details',
@@ -242,6 +243,7 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
         model = BrandWarehouse
         fields = [
             'id',
+            'license_id',
             'distillery_name',
             'brand_type',
             'brand_details',

@@ -175,19 +175,16 @@ def _ensure_site_admin(request):
 
 
 def _derive_licensee_id(application, license_obj):
-    if getattr(application, 'applicant_id', None):
-        profile = SupplyChainUserProfile.objects.filter(user=application.applicant).first()
-        if profile and profile.licensee_id:
-            return str(profile.licensee_id).strip()
-        unit = (
-            UserManufacturingUnit.objects.filter(user=application.applicant)
-            .exclude(licensee_id__isnull=True)
-            .exclude(licensee_id='')
-            .order_by('-updated_at', '-id')
-            .first()
-        )
-        if unit and unit.licensee_id:
-            return str(unit.licensee_id).strip()
+    # Primary mapping key across supply-chain stock modules:
+    # use approved application id (NLI/...) instead of profile generated ids.
+    application_id = str(getattr(application, 'application_id', '') or '').strip()
+    if application_id:
+        return application_id
+
+    source_object_id = str(getattr(license_obj, 'source_object_id', '') or '').strip()
+    if source_object_id:
+        return source_object_id
+
     return str(getattr(license_obj, 'license_id', '') or '').strip()
 
 

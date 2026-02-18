@@ -2,12 +2,11 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from django.db.models import Q, Sum, Count, Avg
+from django.db.models import Sum, Count, Avg
 from django.utils import timezone
-from django.apps import apps
 from datetime import datetime, timedelta
 
-from .models import BrandWarehouse, BrandWarehouseUtilization, BrandWarehouseArrival
+from .models import BrandWarehouse, BrandWarehouseUtilization, BrandWarehouseTpCancellation
 from .serializers import (
     BrandWarehouseSerializer,
     BrandWarehouseSummarySerializer,
@@ -20,22 +19,193 @@ from .production_serializers import (
     ProductionBatchSerializer,
     CreateProductionBatchSerializer
 )
+from .production_models import ProductionBatch
 from .services import BrandWarehouseStockService
-from models.masters.supply_chain.liquor_data.models import LiquorData
 
 
 def _normalize_role_token(role_name: str) -> str:
     return ''.join(ch for ch in str(role_name or '').lower() if ch.isalnum())
 
 
-def _should_scope_to_unit(user) -> bool:
+def _is_unscoped_admin(user) -> bool:
+    # Keep global inventory visibility only for explicit admin-level identities.
+    # `is_staff` is too broad in this project and can include scoped business users.
+    if bool(getattr(user, 'is_superuser', False)):
+        return True
+
     role_name = _normalize_role_token(getattr(getattr(user, 'role', None), 'name', ''))
-    return role_name in {'licensee', 'officerincharge', 'offcierincharge', 'oic'}
+    # Roles that should retain cross-license visibility.
+    return role_name in {
+        'siteadmin',
+        'singlewindow',
+        'commissioner',
+        'jointcommissioner',
+        'secretary',
+        'permitsection',
+        'itcell',
+        'districtuser',
+        'subenquiryofficer',
+    }
 
 
-def _get_active_unit_name(user) -> str:
+def _get_oic_assignment(user):
+    try:
+        return getattr(user, 'oic_assignment', None)
+    except Exception:
+        return None
+
+
+def _should_scope_to_unit(user) -> bool:
+    if _is_unscoped_admin(user):
+        return False
+
+    role_name = _normalize_role_token(getattr(getattr(user, 'role', None), 'name', ''))
+    if role_name in {'licensee', 'officerincharge', 'offcierincharge', 'oic'}:
+        return True
+    if bool(getattr(user, 'is_oic_managed', False)):
+        return True
+    if _get_oic_assignment(user) is not None:
+        return True
+
+    # Non-admin users with an active mapped license should always be scoped.
+    if _get_active_license_id(user):
+        return True
+
+    # Secure default: authenticated non-admin users should not see cross-license inventory.
+    return True
+
+
+def _get_active_license_id(user) -> str:
+    assignment = _get_oic_assignment(user)
+    assignment_application_id = str(
+        getattr(getattr(assignment, 'approved_application', None), 'application_id', '') or ''
+    ).strip()
+    if assignment_application_id:
+        return assignment_application_id
+
+    assignment_license_fk = str(
+        getattr(getattr(assignment, 'license', None), 'license_id', '') or ''
+    ).strip()
+    if assignment_license_fk:
+        return assignment_license_fk
+
+    assignment_license = str(
+        getattr(assignment, 'licensee_id', '') or getattr(assignment, 'license_id', '') or ''
+    ).strip()
+    if assignment_license:
+        return assignment_license
+
+    # Prefer real issued license IDs (e.g. NLI/...) for applicant users.
+    licenses = getattr(user, 'licenses', None)
+    if licenses is not None:
+        today = timezone.now().date()
+        # Preferred: applicant/new-license application id (e.g. NLI/...) from License.source_object_id.
+        active_application_license = (
+            licenses.filter(
+                source_type='new_license_application',
+                is_active=True,
+                valid_up_to__gte=today
+            )
+            .exclude(source_object_id__isnull=True)
+            .exclude(source_object_id='')
+            .order_by('-issue_date')
+            .first()
+        )
+        if active_application_license and active_application_license.source_object_id:
+            return str(active_application_license.source_object_id).strip()
+
+        latest_application_license = (
+            licenses.filter(source_type='new_license_application')
+            .exclude(source_object_id__isnull=True)
+            .exclude(source_object_id='')
+            .order_by('-issue_date')
+            .first()
+        )
+        if latest_application_license and latest_application_license.source_object_id:
+            return str(latest_application_license.source_object_id).strip()
+
+        active_license = (
+            licenses.filter(is_active=True, valid_up_to__gte=today)
+            .order_by('-issue_date')
+            .first()
+        )
+        if active_license and active_license.license_id:
+            return str(active_license.license_id).strip()
+
+        latest_license = licenses.order_by('-issue_date').first()
+        if latest_license and latest_license.license_id:
+            return str(latest_license.license_id).strip()
+
     profile = getattr(user, 'supply_chain_profile', None)
-    return str(getattr(profile, 'manufacturing_unit_name', '') or '').strip()
+    profile_license = str(getattr(profile, 'licensee_id', '') or '').strip()
+    if profile_license:
+        return profile_license
+
+    units = getattr(user, 'manufacturing_units', None)
+    if units is not None:
+        latest = (
+            units.exclude(licensee_id__isnull=True)
+            .exclude(licensee_id='')
+            .order_by('-updated_at', '-id')
+            .first()
+        )
+        if latest and latest.licensee_id:
+            return str(latest.licensee_id).strip()
+
+    return ''
+
+
+def _scope_queryset_by_active_license(queryset, user, field_name: str):
+    active_license_id = _get_active_license_id(user)
+    if not active_license_id:
+        return queryset.none()
+    return queryset.filter(**{field_name: active_license_id})
+
+
+def _apply_license_query_filter(queryset, request, field_name: str, scoped_to_unit: bool, active_license_id: str):
+    requested_license_id = str(request.query_params.get('license_id', '') or '').strip()
+    if not requested_license_id:
+        return queryset
+
+    # For scoped users, never trust client license_id unless it matches active mapping.
+    if scoped_to_unit:
+        if active_license_id and requested_license_id == active_license_id:
+            return queryset.filter(**{field_name: active_license_id})
+        return queryset
+
+    return queryset.filter(**{field_name: requested_license_id})
+
+
+def _get_scope_context(user):
+    scoped_to_unit = _should_scope_to_unit(user)
+    active_license_id = _get_active_license_id(user) if scoped_to_unit else ''
+    return scoped_to_unit, active_license_id
+
+
+def _parse_int_param(raw_value, param_name: str, default: int, min_value: int = None):
+    if raw_value in (None, ''):
+        return default, None
+
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        return None, f'Invalid "{param_name}" value. It must be an integer.'
+
+    if min_value is not None and value < min_value:
+        return None, f'Invalid "{param_name}" value. It must be >= {min_value}.'
+
+    return value, None
+
+
+def _to_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return value != 0
+
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
 
 
 class BrandWarehouseViewSet(viewsets.ModelViewSet):
@@ -56,18 +226,23 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """
-        Get queryset - returns ALL brands, frontend filtering handles distillery-specific display
+        Return brand warehouse queryset with server-side license scoping.
         """
-        # Return ALL Brand Warehouse entries - frontend will filter by distillery
         queryset = BrandWarehouse.objects.all().select_related('liquor_data').prefetch_related('utilizations', 'arrivals')
 
-        if _should_scope_to_unit(self.request.user):
-            unit_name = _get_active_unit_name(self.request.user)
-            if not unit_name:
-                return queryset.none()
-            queryset = queryset.filter(distillery_name__icontains=unit_name)
-        
+        scoped_to_unit, active_license_id = _get_scope_context(self.request.user)
+        if scoped_to_unit:
+            queryset = _scope_queryset_by_active_license(queryset, self.request.user, 'license_id')
+
         # Apply filters from query parameters
+        queryset = _apply_license_query_filter(
+            queryset,
+            self.request,
+            field_name='license_id',
+            scoped_to_unit=scoped_to_unit,
+            active_license_id=active_license_id
+        )
+
         distillery_name = self.request.query_params.get('distillery_name', None)
         if distillery_name:
             queryset = queryset.filter(distillery_name__icontains=distillery_name)
@@ -89,8 +264,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         """
-        List all brands with NEW tags
-        Frontend filtering will handle showing only relevant brands for each distillery
+        List brand warehouse entries.
         """
         try:
             queryset = self.get_queryset()
@@ -103,13 +277,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
             
             # Serialize all brands
             serializer = self.get_serializer(queryset, many=True)
-            
-            # Add summary information
-            total_brands = queryset.count()
-            new_brands_count = sum(1 for brand in queryset if BrandWarehouseStockService.check_if_brand_is_new(brand))
-            total_stock = sum(brand.current_stock for brand in queryset)
-            
-            # Return in the format expected by frontend
+
             return Response(serializer.data, status=status.HTTP_200_OK)
             
         except Exception as e:
@@ -117,54 +285,6 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
                 'success': False,
                 'error': str(e),
                 'message': 'Error loading brands'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    @action(detail=False, methods=['get'], url_path='test-brands')
-    def test_brands(self, request):
-        """
-        Test endpoint to verify brands are visible
-        """
-        try:
-            # Get all brands (not just Sikkim)
-            all_brands = BrandWarehouse.objects.all()
-            
-            # Get Sikkim brands specifically
-            sikkim_brands = BrandWarehouse.objects.filter(
-                distillery_name__icontains='sikkim'
-            )
-            
-            return Response({
-                'success': True,
-                'message': 'Test endpoint working',
-                'total_all_brands': all_brands.count(),
-                'total_sikkim_brands': sikkim_brands.count(),
-                'sample_all_brands': [
-                    {
-                        'id': brand.id,
-                        'brand_name': brand.brand_details,
-                        'distillery': brand.distillery_name,
-                        'pack_size': f"{brand.capacity_size}ml",
-                        'current_stock': brand.current_stock,
-                        'status': brand.status
-                    }
-                    for brand in all_brands[:5]
-                ],
-                'sample_sikkim_brands': [
-                    {
-                        'id': brand.id,
-                        'brand_name': brand.brand_details,
-                        'pack_size': f"{brand.capacity_size}ml",
-                        'current_stock': brand.current_stock,
-                        'status': brand.status
-                    }
-                    for brand in sikkim_brands[:5]
-                ]
-            }, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            return Response({
-                'success': False,
-                'error': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['get'], url_path='all-sikkim-brands')
@@ -263,7 +383,6 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         Get cancelled permits for a specific brand warehouse
         """
         brand_warehouse = self.get_object()
-        from .models import BrandWarehouseTpCancellation
         from .serializers import BrandWarehouseTpCancellationSerializer
         
         cancellations = BrandWarehouseTpCancellation.objects.filter(
@@ -286,8 +405,23 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         brand_warehouse = self.get_object()
         
         # Get query parameters
-        limit = int(request.query_params.get('limit', 50))
-        days = int(request.query_params.get('days', 30))
+        limit, limit_error = _parse_int_param(
+            request.query_params.get('limit'),
+            param_name='limit',
+            default=50,
+            min_value=1
+        )
+        if limit_error:
+            return Response({'success': False, 'error': limit_error}, status=status.HTTP_400_BAD_REQUEST)
+
+        days, days_error = _parse_int_param(
+            request.query_params.get('days'),
+            param_name='days',
+            default=30,
+            min_value=1
+        )
+        if days_error:
+            return Response({'success': False, 'error': days_error}, status=status.HTTP_400_BAD_REQUEST)
         
         # Get arrivals
         arrivals = BrandWarehouseStockService.get_arrival_history(brand_warehouse.id, limit)
@@ -309,11 +443,25 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         Get production history for a specific brand warehouse
         """
         brand_warehouse = self.get_object()
-        from .production_models import ProductionBatch
         
         # Get query parameters
-        limit = int(request.query_params.get('limit', 20))
-        days = int(request.query_params.get('days', 30))
+        limit, limit_error = _parse_int_param(
+            request.query_params.get('limit'),
+            param_name='limit',
+            default=20,
+            min_value=1
+        )
+        if limit_error:
+            return Response({'success': False, 'error': limit_error}, status=status.HTTP_400_BAD_REQUEST)
+
+        days, days_error = _parse_int_param(
+            request.query_params.get('days'),
+            param_name='days',
+            default=30,
+            min_value=1
+        )
+        if days_error:
+            return Response({'success': False, 'error': days_error}, status=status.HTTP_400_BAD_REQUEST)
         
         # Get production batches
         production_batches = ProductionBatch.objects.filter(
@@ -353,7 +501,6 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         Add a new production batch for a brand warehouse
         """
         brand_warehouse = self.get_object()
-        from .production_models import ProductionBatch
         
         # Prepare data
         data = request.data.copy()
@@ -396,22 +543,40 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='production-summary')
     def get_production_summary(self, request):
         """
-        Get overall production summary for all Sikkim brands
+        Get overall production summary for the current scoped inventory.
         """
-        from .production_models import ProductionBatch
-        
         # Get date range
-        days = int(request.query_params.get('days', 30))
+        days, days_error = _parse_int_param(
+            request.query_params.get('days'),
+            param_name='days',
+            default=30,
+            min_value=1
+        )
+        if days_error:
+            return Response({'success': False, 'error': days_error}, status=status.HTTP_400_BAD_REQUEST)
         start_date = timezone.now().date() - timedelta(days=days)
         
-        # Get Sikkim brand warehouses
-        sikkim_warehouses = BrandWarehouse.objects.filter(
-            distillery_name__icontains='sikkim'
+        # Build warehouse scope dynamically by active license mapping.
+        scoped_to_unit, active_license_id = _get_scope_context(request.user)
+        warehouse_queryset = BrandWarehouse.objects.all()
+        if scoped_to_unit:
+            warehouse_queryset = _scope_queryset_by_active_license(
+                warehouse_queryset,
+                request.user,
+                'license_id'
+            )
+
+        warehouse_queryset = _apply_license_query_filter(
+            warehouse_queryset,
+            request,
+            field_name='license_id',
+            scoped_to_unit=scoped_to_unit,
+            active_license_id=active_license_id
         )
         
         # Get production data
         production_data = ProductionBatch.objects.filter(
-            brand_warehouse__in=sikkim_warehouses,
+            brand_warehouse__in=warehouse_queryset,
             production_date__gte=start_date
         ).aggregate(
             total_batches=Count('id'),
@@ -421,7 +586,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         
         # Get today's production
         today_production = ProductionBatch.objects.filter(
-            brand_warehouse__in=sikkim_warehouses,
+            brand_warehouse__in=warehouse_queryset,
             production_date=timezone.now().date()
         ).aggregate(
             today_quantity=Sum('quantity_produced'),
@@ -431,7 +596,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         # Get this week's production
         week_start = timezone.now().date() - timedelta(days=timezone.now().weekday())
         week_production = ProductionBatch.objects.filter(
-            brand_warehouse__in=sikkim_warehouses,
+            brand_warehouse__in=warehouse_queryset,
             production_date__gte=week_start
         ).aggregate(
             week_quantity=Sum('quantity_produced'),
@@ -441,7 +606,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         # Get this month's production
         month_start = timezone.now().date().replace(day=1)
         month_production = ProductionBatch.objects.filter(
-            brand_warehouse__in=sikkim_warehouses,
+            brand_warehouse__in=warehouse_queryset,
             production_date__gte=month_start
         ).aggregate(
             month_quantity=Sum('quantity_produced'),
@@ -450,7 +615,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         
         # Get last production date
         last_production = ProductionBatch.objects.filter(
-            brand_warehouse__in=sikkim_warehouses
+            brand_warehouse__in=warehouse_queryset
         ).order_by('-production_date', '-production_time').first()
         
         return Response({
@@ -473,11 +638,30 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], url_path='initialize-all-brands')
     def initialize_all_brands(self, request):
         """
-        Initialize ALL Sikkim brands from LiquorData
-        This ensures no brands go missing
+        Initialize/refresh stock inventory context.
+        Scoped users are constrained to their active mapped license_id.
         """
         try:
-            # Get all Sikkim brands and create warehouse entries
+            if _should_scope_to_unit(request.user):
+                active_license_id = _get_active_license_id(request.user)
+                if not active_license_id:
+                    return Response({
+                        'success': False,
+                        'message': 'No active license mapping found for this user.'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+                all_brands = BrandWarehouse.objects.filter(
+                    license_id=active_license_id
+                ).select_related('liquor_data').prefetch_related('arrivals', 'utilizations')
+
+                return Response({
+                    'success': True,
+                    'message': f'Loaded {all_brands.count()} brands for license {active_license_id}',
+                    'total_brands': all_brands.count(),
+                    'license_id': active_license_id
+                }, status=status.HTTP_200_OK)
+
+            # Non-scoped/admin fallback retains existing global behavior.
             all_brands = BrandWarehouseStockService.get_all_sikkim_brands_with_stock()
             
             return Response({
@@ -501,7 +685,14 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         try:
             # Get parameters
             brand_id = request.data.get('brand_id')
-            days = int(request.data.get('days', 30))
+            days, days_error = _parse_int_param(
+                request.data.get('days'),
+                param_name='days',
+                default=30,
+                min_value=1
+            )
+            if days_error:
+                return Response({'success': False, 'error': days_error}, status=status.HTTP_400_BAD_REQUEST)
             
             # Perform sync
             sync_results = BrandWarehouseStockService.sync_production_with_stock(
@@ -530,8 +721,11 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
         
         # Check for confirmation parameter
-        confirm_delete = request.data.get('confirm_delete', False)
-        if not confirm_delete:
+        confirm_delete = request.data.get('confirm_delete')
+        if confirm_delete is None:
+            confirm_delete = request.query_params.get('confirm_delete')
+
+        if not _to_bool(confirm_delete):
             return Response({
                 'success': False,
                 'error': 'Deletion requires confirmation',
@@ -635,11 +829,21 @@ class BrandWarehouseUtilizationViewSet(viewsets.ModelViewSet):
         """Filter queryset based on query parameters"""
         queryset = BrandWarehouseUtilization.objects.all().select_related('brand_warehouse')
 
-        if _should_scope_to_unit(self.request.user):
-            unit_name = _get_active_unit_name(self.request.user)
-            if not unit_name:
-                return queryset.none()
-            queryset = queryset.filter(brand_warehouse__distillery_name__icontains=unit_name)
+        scoped_to_unit, active_license_id = _get_scope_context(self.request.user)
+        if scoped_to_unit:
+            queryset = _scope_queryset_by_active_license(
+                queryset,
+                self.request.user,
+                'brand_warehouse__license_id'
+            )
+
+        queryset = _apply_license_query_filter(
+            queryset,
+            self.request,
+            field_name='brand_warehouse__license_id',
+            scoped_to_unit=scoped_to_unit,
+            active_license_id=active_license_id
+        )
         
         # Filter by brand warehouse
         brand_warehouse_id = self.request.query_params.get('brand_warehouse', None)
@@ -662,13 +866,13 @@ class ProductionBatchViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        from .production_models import ProductionBatch
         queryset = ProductionBatch.objects.all().select_related('brand_warehouse')
         if _should_scope_to_unit(self.request.user):
-            unit_name = _get_active_unit_name(self.request.user)
-            if not unit_name:
-                return queryset.none()
-            queryset = queryset.filter(brand_warehouse__distillery_name__icontains=unit_name)
+            queryset = _scope_queryset_by_active_license(
+                queryset,
+                self.request.user,
+                'brand_warehouse__license_id'
+            )
         return queryset
 
     def get_serializer_class(self):
@@ -679,6 +883,15 @@ class ProductionBatchViewSet(viewsets.ModelViewSet):
 
     def filter_queryset(self, queryset):
         """Filter queryset based on query parameters"""
+        scoped_to_unit, active_license_id = _get_scope_context(self.request.user)
+        queryset = _apply_license_query_filter(
+            queryset,
+            self.request,
+            field_name='brand_warehouse__license_id',
+            scoped_to_unit=scoped_to_unit,
+            active_license_id=active_license_id
+        )
+
         # Filter by brand warehouse
         brand_warehouse_id = self.request.query_params.get('brand_warehouse', None)
         if brand_warehouse_id:
@@ -715,8 +928,6 @@ class ProductionBatchViewSet(viewsets.ModelViewSet):
         """
         Get daily production summary
         """
-        from .production_models import ProductionBatch
-        
         # Get date parameter or default to today
         date_str = request.query_params.get('date', timezone.now().date().isoformat())
         try:
@@ -731,6 +942,12 @@ class ProductionBatchViewSet(viewsets.ModelViewSet):
         daily_batches = ProductionBatch.objects.filter(
             production_date=target_date
         ).select_related('brand_warehouse')
+        if _should_scope_to_unit(request.user):
+            daily_batches = _scope_queryset_by_active_license(
+                daily_batches,
+                request.user,
+                'brand_warehouse__license_id'
+            )
         
         # Calculate summary
         summary_data = daily_batches.aggregate(
@@ -769,8 +986,6 @@ class ProductionBatchViewSet(viewsets.ModelViewSet):
         """
         Get production data for a specific brand
         """
-        from .production_models import ProductionBatch
-        
         brand_warehouse_id = request.query_params.get('brand_warehouse_id')
         if not brand_warehouse_id:
             return Response({
@@ -785,9 +1000,28 @@ class ProductionBatchViewSet(viewsets.ModelViewSet):
                 'success': False,
                 'error': 'Brand warehouse not found'
             }, status=status.HTTP_404_NOT_FOUND)
+
+        if _should_scope_to_unit(request.user):
+            allowed = _scope_queryset_by_active_license(
+                BrandWarehouse.objects.filter(id=brand_warehouse.id),
+                request.user,
+                'license_id'
+            ).exists()
+            if not allowed:
+                return Response({
+                    'success': False,
+                    'error': 'You are not allowed to access this brand warehouse.'
+                }, status=status.HTTP_403_FORBIDDEN)
         
         # Get date range
-        days = int(request.query_params.get('days', 30))
+        days, days_error = _parse_int_param(
+            request.query_params.get('days'),
+            param_name='days',
+            default=30,
+            min_value=1
+        )
+        if days_error:
+            return Response({'success': False, 'error': days_error}, status=status.HTTP_400_BAD_REQUEST)
         start_date = timezone.now().date() - timedelta(days=days)
         
         # Get production batches
