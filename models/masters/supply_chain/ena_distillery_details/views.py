@@ -2,6 +2,7 @@ import logging
 import logging
 import traceback
 import re
+from difflib import SequenceMatcher
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -176,9 +177,56 @@ class enaDistilleryTypesListAPIView(APIView):
         text = re.sub(r'\bltd\.?\b', ' ', text)
         text = re.sub(r'\blimited\b', ' ', text)
         text = re.sub(r'\bindustries\b', ' ', text)
+        # Common human typos seen in establishment names.
+        text = re.sub(r'\bdsitillery\b', ' distillery ', text)
+        text = re.sub(r'\bdistilery\b', ' distillery ', text)
+        text = re.sub(r'\bdistllery\b', ' distillery ', text)
         text = re.sub(r'\bdistilleries\b', ' distillery ', text)
         text = re.sub(r'[^a-z0-9]+', ' ', text)
         return re.sub(r'\s+', ' ', text).strip()
+
+    def _tokenize_name(self, normalized_name):
+        ignore_tokens = {
+            'distillery',
+            'distilleries',
+            'unit',
+            'manufacturing',
+            'company',
+        }
+        return {
+            token
+            for token in str(normalized_name or '').split()
+            if token and token not in ignore_tokens
+        }
+
+    def _is_probable_name_match(self, distillery_name, target_name):
+        if not distillery_name or not target_name:
+            return False
+
+        # Keep exact/substring behavior first.
+        if distillery_name in target_name or target_name in distillery_name:
+            return True
+
+        distillery_tokens = self._tokenize_name(distillery_name)
+        target_tokens = self._tokenize_name(target_name)
+
+        # Prefer token overlap so one typo doesn't break the match.
+        if distillery_tokens and target_tokens:
+            overlap = distillery_tokens.intersection(target_tokens)
+            if overlap:
+                shorter_len = min(len(distillery_tokens), len(target_tokens))
+                overlap_ratio = len(overlap) / max(shorter_len, 1)
+                if overlap_ratio >= 0.6:
+                    return True
+                # One strong shared token can still be enough (e.g. "sikkim").
+                if any(len(token) >= 5 for token in overlap):
+                    return True
+
+        # Final fuzzy fallback on normalized text.
+        if SequenceMatcher(None, distillery_name, target_name).ratio() >= 0.88:
+            return True
+
+        return False
 
     def _filter_by_establishment_names(self, rows, establishment_names):
         normalized_targets = [self._normalize_name(v) for v in establishment_names if v]
@@ -193,7 +241,7 @@ class enaDistilleryTypesListAPIView(APIView):
                 continue
 
             for target in normalized_targets:
-                if distillery_name in target or target in distillery_name:
+                if self._is_probable_name_match(distillery_name, target):
                     filtered.append(row)
                     break
 

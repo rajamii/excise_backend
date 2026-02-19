@@ -175,17 +175,17 @@ def _ensure_site_admin(request):
 
 
 def _derive_licensee_id(application, license_obj):
-    # Primary mapping key across supply-chain stock modules:
-    # use approved application id (NLI/...) instead of profile generated ids.
-    application_id = str(getattr(application, 'application_id', '') or '').strip()
-    if application_id:
-        return application_id
+    # Always map to issued/approved license id (e.g. NA/...).
+    approved_license_id = str(getattr(license_obj, 'license_id', '') or '').strip()
+    if approved_license_id:
+        return approved_license_id
 
+    # Hard fallback only if license row is malformed.
     source_object_id = str(getattr(license_obj, 'source_object_id', '') or '').strip()
     if source_object_id:
         return source_object_id
 
-    return str(getattr(license_obj, 'license_id', '') or '').strip()
+    return str(getattr(application, 'application_id', '') or '').strip()
 
 
 def _split_full_name(full_name: str):

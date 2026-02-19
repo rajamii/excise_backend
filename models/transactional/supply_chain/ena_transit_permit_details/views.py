@@ -435,31 +435,42 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 print(f"DEBUG Stock Deduction: All items paid for {permit.bill_no}. Proceeding to deduct stock.")
                 # ALL items are paid. Trigger deduction for each.
                 
-                from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse, BrandWarehouseUtilization, BrandWarehouseArrival
+                from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse, BrandWarehouseUtilization
                 
                 for item in bill_items:
+                    item_license_id = str(item.licensee_id or '').strip()
+
                     # Check if utilization already exists to prevent double deduction
-                    if BrandWarehouseUtilization.objects.filter(permit_no=item.bill_no, brand_warehouse__brand_details=item.brand, brand_warehouse__capacity_size=item.size_ml).exists():
+                    utilization_qs = BrandWarehouseUtilization.objects.filter(
+                        permit_no=item.bill_no,
+                        brand_warehouse__brand_details__iexact=item.brand,
+                        brand_warehouse__capacity_size=item.size_ml
+                    )
+                    if item_license_id:
+                        utilization_qs = utilization_qs.filter(brand_warehouse__license_id=item_license_id)
+                    if utilization_qs.exists():
                          print(f"DEBUG: Utilization already exists for {item.brand} {item.size_ml} in bill {item.bill_no}")
                          continue
 
                     # Find matching BrandWarehouse entry
-                    # Match by Brand Name and Size
-                    # Note: Fuzzy matching might be needed if names aren't exact, but for now we try exact or icontains
-                    warehouse_entry = BrandWarehouse.objects.filter(
-                        brand_details__iexact=item.brand, # Assuming brand name matches brand_details
-                        capacity_size=int(item.size_ml)
+                    warehouse_qs = BrandWarehouse.objects.filter(capacity_size=int(item.size_ml))
+                    if item_license_id:
+                        warehouse_qs = warehouse_qs.filter(license_id=item_license_id)
+
+                    warehouse_entry = warehouse_qs.filter(
+                        brand_details__iexact=item.brand
                     ).first()
                     
                     if not warehouse_entry:
-                        # Try searching purely by brand name if exact match fails
-                        warehouse_entry = BrandWarehouse.objects.filter(
+                        warehouse_entry = warehouse_qs.filter(
                             brand_details__icontains=item.brand,
-                            capacity_size=int(item.size_ml)
                         ).first()
                         
                     if warehouse_entry:
-                        print(f"DEBUG: Found warehouse entry {warehouse_entry} for {item.brand}")
+                        print(
+                            f"DEBUG: Found warehouse entry {warehouse_entry} for {item.brand} "
+                            f"(license_id={item_license_id or 'N/A'})"
+                        )
                         
                         # Calculate quantity (pieces)
                         # We have item.cases. Need to convert to bottles/pieces if we store pieces in warehouse
@@ -506,7 +517,10 @@ class PerformTransitPermitActionAPIView(views.APIView):
                         print(f"DEBUG: Created utilization {utilization.id}, deducted {total_pieces} pieces")
                         
                     else:
-                        print(f"WARNING: No warehouse entry found for Brand: {item.brand}, Size: {item.size_ml}")
+                        print(
+                            f"WARNING: No warehouse entry found for Brand: {item.brand}, "
+                            f"Size: {item.size_ml}, license_id={item_license_id or 'N/A'}"
+                        )
                         
             else:
                 print(f"DEBUG: Not deducting stock yet. {unpaid_count} items remaining unpaid.")

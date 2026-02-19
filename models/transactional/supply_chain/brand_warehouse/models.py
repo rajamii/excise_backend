@@ -81,15 +81,51 @@ class BrandWarehouse(models.Model):
         help_text='Current stock status'
     )
 
-    # Link to Liquor Data (for Sikkim brands)
-    liquor_data = models.ForeignKey(
-        'liquor_data.LiquorData',
-        on_delete=models.SET_NULL,
+    # Legacy source reference kept as plain identifier for backward compatibility.
+    # This is no longer used as a runtime FK after shifting reads to brand_warehouse.
+    liquor_data_id = models.IntegerField(
+        db_column='liquor_data_id',
         null=True,
         blank=True,
-        related_name='warehouse_entries',
-        db_column='liquor_data_id',
-        help_text='Link to liquor data details (for Sikkim brands)'
+        help_text='Legacy reference id from liquor_data_details'
+    )
+
+    # Rate/tax fields migrated from liquor_data_details
+    ex_factory_price_rs_per_case = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=0,
+        db_column='ex_factory_price_rs_per_case'
+    )
+    excise_duty_rs_per_case = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=0,
+        db_column='excise_duty_rs_per_case'
+    )
+    education_cess_rs_per_case = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=0,
+        db_column='education_cess_rs_per_case'
+    )
+    additional_excise_duty_rs_per_case = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=0,
+        db_column='additional_excise_duty_rs_per_case'
+    )
+    additional_excise_duty_12_5_percent_rs_per_case = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=0,
+        db_column='additional_excise_duty_12_5_percent_rs_per_case'
+    )
+    mrp_rs_per_bottle = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=0,
+        db_column='mrp_rs_per_bottle'
     )
 
     # Additional fields

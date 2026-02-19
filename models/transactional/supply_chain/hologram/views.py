@@ -9,7 +9,9 @@ from .serializers import HologramProcurementSerializer, HologramRequestSerialize
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition, Transaction, StagePermission
 from auth.workflow.constants import WORKFLOW_IDS
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
-import uuid
+
+HOLOGRAM_REF_PREFIX = 'NHP'
+HOLOGRAM_REF_DISTRICT_CODE = '1101'
 
 def _normalize_role_name(role_name):
     return ''.join(ch for ch in str(role_name or '').lower() if ch.isalnum())
@@ -117,6 +119,30 @@ def _get_or_create_active_supply_chain_profile(user):
     )
     return profile
 
+def _generate_financial_year(now_dt=None):
+    dt = timezone.localtime(now_dt) if now_dt else timezone.localtime()
+    year = dt.year
+    if dt.month >= 4:
+        return f"{year}-{str(year + 1)[2:]}"
+    return f"{year - 1}-{str(year)[2:]}"
+
+def _generate_hologram_ref_no(model_cls):
+    financial_year = _generate_financial_year()
+    prefix = f"{HOLOGRAM_REF_PREFIX}/{HOLOGRAM_REF_DISTRICT_CODE}/{financial_year}"
+
+    last_obj = model_cls.objects.filter(
+        ref_no__startswith=prefix
+    ).select_for_update().order_by('-ref_no').first()
+
+    last_number = 0
+    if last_obj and getattr(last_obj, 'ref_no', None):
+        try:
+            last_number = int(str(last_obj.ref_no).split('/')[-1])
+        except (TypeError, ValueError):
+            last_number = 0
+
+    return f"{prefix}/{str(last_number + 1).zfill(4)}"
+
 class HologramProcurementViewSet(viewsets.ModelViewSet):
     queryset = HologramProcurement.objects.all()
     serializer_class = HologramProcurementSerializer
@@ -148,37 +174,38 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         return queryset.none() # Default deny if role unknown
 
     def perform_create(self, serializer):
-        # Auto-generate Ref No
-        ref_no = f"YB/6/BREW/{timezone.now().year}/{uuid.uuid4().hex[:6].upper()}"
         profile = _get_or_create_active_supply_chain_profile(self.request.user)
         if not profile:
             raise serializers.ValidationError({
                 'detail': 'No active supply chain profile found. Select your manufacturing unit first.'
             })
         
-        # Get initial workflow stage
-        try:
-            workflow = Workflow.objects.get(id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'])
-            initial_stage = WorkflowStage.objects.get(workflow=workflow, is_initial=True)
-        except Workflow.DoesNotExist:
-             # Fallback or error - Should be populated via command
-             raise serializers.ValidationError("Workflow configuration missing.")
+        with db_transaction.atomic():
+            ref_no = _generate_hologram_ref_no(HologramProcurement)
 
-        instance = serializer.save(
-            ref_no=ref_no,
-            licensee=profile,
-            workflow=workflow,
-            current_stage=initial_stage,
-            manufacturing_unit=profile.manufacturing_unit_name
-        )
-        
-        # Log initial transaction
-        Transaction.objects.create(
-            application=instance,
-            stage=initial_stage,
-            performed_by=self.request.user,
-            remarks='Hologram Procurement Application Submitted'
-        )
+            # Get initial workflow stage
+            try:
+                workflow = Workflow.objects.get(id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'])
+                initial_stage = WorkflowStage.objects.get(workflow=workflow, is_initial=True)
+            except Workflow.DoesNotExist:
+                # Fallback or error - Should be populated via command
+                raise serializers.ValidationError("Workflow configuration missing.")
+
+            instance = serializer.save(
+                ref_no=ref_no,
+                licensee=profile,
+                workflow=workflow,
+                current_stage=initial_stage,
+                manufacturing_unit=profile.manufacturing_unit_name
+            )
+            
+            # Log initial transaction
+            Transaction.objects.create(
+                application=instance,
+                stage=initial_stage,
+                performed_by=self.request.user,
+                remarks='Hologram Procurement Application Submitted'
+            )
 
     @action(detail=True, methods=['post'])
     def perform_action(self, request, pk=None):
@@ -617,32 +644,34 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         return queryset.none()
 
     def perform_create(self, serializer):
-        ref_no = f"HRQ/{timezone.now().year}/{uuid.uuid4().hex[:6].upper()}"
         profile = _get_or_create_active_supply_chain_profile(self.request.user)
         if not profile:
             raise serializers.ValidationError({
                 'detail': 'No active supply chain profile found. Select your manufacturing unit first.'
             })
         
-        try:
-            workflow = Workflow.objects.get(id=WORKFLOW_IDS['HOLOGRAM_REQUEST'])
-            initial_stage = WorkflowStage.objects.get(workflow=workflow, is_initial=True)
-        except Workflow.DoesNotExist:
-             raise serializers.ValidationError("Workflow configuration missing.")
+        with db_transaction.atomic():
+            ref_no = _generate_hologram_ref_no(HologramRequest)
 
-        instance = serializer.save(
-            ref_no=ref_no,
-            licensee=profile,
-            workflow=workflow,
-            current_stage=initial_stage
-        )
+            try:
+                workflow = Workflow.objects.get(id=WORKFLOW_IDS['HOLOGRAM_REQUEST'])
+                initial_stage = WorkflowStage.objects.get(workflow=workflow, is_initial=True)
+            except Workflow.DoesNotExist:
+                raise serializers.ValidationError("Workflow configuration missing.")
 
-        Transaction.objects.create(
-            application=instance,
-            stage=initial_stage,
-            performed_by=self.request.user,
-            remarks='Hologram Production Request Submitted'
-        )
+            instance = serializer.save(
+                ref_no=ref_no,
+                licensee=profile,
+                workflow=workflow,
+                current_stage=initial_stage
+            )
+
+            Transaction.objects.create(
+                application=instance,
+                stage=initial_stage,
+                performed_by=self.request.user,
+                remarks='Hologram Production Request Submitted'
+            )
 
     @action(detail=True, methods=['post'])
     def perform_action(self, request, pk=None):

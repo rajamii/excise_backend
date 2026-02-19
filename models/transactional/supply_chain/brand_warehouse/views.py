@@ -55,6 +55,93 @@ def _get_oic_assignment(user):
         return None
 
 
+def _expand_license_aliases(license_id: str):
+    normalized = str(license_id or '').strip()
+    if not normalized:
+        return []
+
+    aliases = [normalized]
+    if normalized.startswith('NLI/'):
+        aliases.append(f"NA/{normalized[4:]}")
+    elif normalized.startswith('NA/'):
+        aliases.append(f"NLI/{normalized[3:]}")
+    return aliases
+
+
+def _collect_user_license_ids(user):
+    """
+    Collect all license identifiers that can scope this user in brand_warehouse.
+    Includes profile/history IDs, issued license IDs, and NA/NLI aliases.
+    """
+    scoped_ids = []
+    seen = set()
+
+    def _append(value):
+        for alias in _expand_license_aliases(value):
+            if alias and alias not in seen:
+                seen.add(alias)
+                scoped_ids.append(alias)
+
+    assignment = _get_oic_assignment(user)
+    _append(getattr(getattr(assignment, 'approved_application', None), 'application_id', ''))
+    _append(getattr(getattr(assignment, 'license', None), 'license_id', ''))
+    _append(getattr(assignment, 'licensee_id', '') or getattr(assignment, 'license_id', ''))
+
+    profile = getattr(user, 'supply_chain_profile', None)
+    _append(getattr(profile, 'licensee_id', ''))
+
+    units = getattr(user, 'manufacturing_units', None)
+    if units is not None:
+        for unit_licensee_id in (
+            units.exclude(licensee_id__isnull=True)
+            .exclude(licensee_id='')
+            .order_by('-updated_at', '-id')
+            .values_list('licensee_id', flat=True)
+        ):
+            _append(unit_licensee_id)
+
+    licenses = getattr(user, 'licenses', None)
+    if licenses is not None:
+        today = timezone.now().date()
+
+        for source_object_id in (
+            licenses.filter(source_type='new_license_application', is_active=True, valid_up_to__gte=today)
+            .exclude(source_object_id__isnull=True)
+            .exclude(source_object_id='')
+            .order_by('-issue_date')
+            .values_list('source_object_id', flat=True)
+        ):
+            _append(source_object_id)
+
+        for issued_license_id in (
+            licenses.filter(is_active=True, valid_up_to__gte=today)
+            .exclude(license_id__isnull=True)
+            .exclude(license_id='')
+            .order_by('-issue_date')
+            .values_list('license_id', flat=True)
+        ):
+            _append(issued_license_id)
+
+        for source_object_id in (
+            licenses.filter(source_type='new_license_application')
+            .exclude(source_object_id__isnull=True)
+            .exclude(source_object_id='')
+            .order_by('-issue_date')
+            .values_list('source_object_id', flat=True)
+        ):
+            _append(source_object_id)
+
+        for issued_license_id in (
+            licenses.exclude(license_id__isnull=True)
+            .exclude(license_id='')
+            .order_by('-issue_date')
+            .values_list('license_id', flat=True)
+        ):
+            _append(issued_license_id)
+
+    return scoped_ids
+
+
 def _should_scope_to_unit(user) -> bool:
     if _is_unscoped_admin(user):
         return False
@@ -76,90 +163,75 @@ def _should_scope_to_unit(user) -> bool:
 
 
 def _get_active_license_id(user) -> str:
-    assignment = _get_oic_assignment(user)
-    assignment_application_id = str(
-        getattr(getattr(assignment, 'approved_application', None), 'application_id', '') or ''
-    ).strip()
-    if assignment_application_id:
-        return assignment_application_id
+    scoped_ids = _collect_user_license_ids(user)
+    if not scoped_ids:
+        return ''
 
-    assignment_license_fk = str(
-        getattr(getattr(assignment, 'license', None), 'license_id', '') or ''
-    ).strip()
-    if assignment_license_fk:
-        return assignment_license_fk
+    matched_ids = set(
+        BrandWarehouse.objects.filter(license_id__in=scoped_ids)
+        .exclude(license_id__isnull=True)
+        .exclude(license_id='')
+        .values_list('license_id', flat=True)
+    )
+    for scoped_id in scoped_ids:
+        if scoped_id in matched_ids:
+            return scoped_id
 
-    assignment_license = str(
-        getattr(assignment, 'licensee_id', '') or getattr(assignment, 'license_id', '') or ''
-    ).strip()
-    if assignment_license:
-        return assignment_license
+    return scoped_ids[0]
 
-    # Prefer real issued license IDs (e.g. NLI/...) for applicant users.
-    licenses = getattr(user, 'licenses', None)
-    if licenses is not None:
-        today = timezone.now().date()
-        # Preferred: applicant/new-license application id (e.g. NLI/...) from License.source_object_id.
-        active_application_license = (
-            licenses.filter(
-                source_type='new_license_application',
-                is_active=True,
-                valid_up_to__gte=today
-            )
-            .exclude(source_object_id__isnull=True)
-            .exclude(source_object_id='')
-            .order_by('-issue_date')
-            .first()
-        )
-        if active_application_license and active_application_license.source_object_id:
-            return str(active_application_license.source_object_id).strip()
 
-        latest_application_license = (
-            licenses.filter(source_type='new_license_application')
-            .exclude(source_object_id__isnull=True)
-            .exclude(source_object_id='')
-            .order_by('-issue_date')
-            .first()
-        )
-        if latest_application_license and latest_application_license.source_object_id:
-            return str(latest_application_license.source_object_id).strip()
+def _get_active_establishment_name(user, active_license_id: str = '') -> str:
+    normalized_license_id = str(active_license_id or '').strip()
 
-        active_license = (
-            licenses.filter(is_active=True, valid_up_to__gte=today)
-            .order_by('-issue_date')
-            .first()
-        )
-        if active_license and active_license.license_id:
-            return str(active_license.license_id).strip()
+    if normalized_license_id:
+        try:
+            from models.transactional.new_license_application.models import NewLicenseApplication
+            from models.masters.license.models import License
 
-        latest_license = licenses.order_by('-issue_date').first()
-        if latest_license and latest_license.license_id:
-            return str(latest_license.license_id).strip()
+            app = NewLicenseApplication.objects.filter(
+                application_id=normalized_license_id
+            ).only('establishment_name').first()
+            if app and app.establishment_name:
+                return str(app.establishment_name).strip()
+
+            # If active ID is a generated License ID, resolve linked application.
+            license_row = License.objects.filter(
+                license_id=normalized_license_id,
+                source_type='new_license_application'
+            ).only('source_object_id').first()
+            if license_row and license_row.source_object_id:
+                app = NewLicenseApplication.objects.filter(
+                    application_id=str(license_row.source_object_id).strip()
+                ).only('establishment_name').first()
+                if app and app.establishment_name:
+                    return str(app.establishment_name).strip()
+        except Exception:
+            pass
 
     profile = getattr(user, 'supply_chain_profile', None)
-    profile_license = str(getattr(profile, 'licensee_id', '') or '').strip()
-    if profile_license:
-        return profile_license
+    profile_name = str(getattr(profile, 'manufacturing_unit_name', '') or '').strip()
+    if profile_name:
+        return profile_name
 
     units = getattr(user, 'manufacturing_units', None)
     if units is not None:
         latest = (
-            units.exclude(licensee_id__isnull=True)
-            .exclude(licensee_id='')
+            units.exclude(manufacturing_unit_name__isnull=True)
+            .exclude(manufacturing_unit_name='')
             .order_by('-updated_at', '-id')
             .first()
         )
-        if latest and latest.licensee_id:
-            return str(latest.licensee_id).strip()
+        if latest and latest.manufacturing_unit_name:
+            return str(latest.manufacturing_unit_name).strip()
 
     return ''
 
 
 def _scope_queryset_by_active_license(queryset, user, field_name: str):
-    active_license_id = _get_active_license_id(user)
-    if not active_license_id:
+    scoped_ids = _collect_user_license_ids(user)
+    if not scoped_ids:
         return queryset.none()
-    return queryset.filter(**{field_name: active_license_id})
+    return queryset.filter(**{f'{field_name}__in': scoped_ids})
 
 
 def _apply_license_query_filter(queryset, request, field_name: str, scoped_to_unit: bool, active_license_id: str):
@@ -167,13 +239,18 @@ def _apply_license_query_filter(queryset, request, field_name: str, scoped_to_un
     if not requested_license_id:
         return queryset
 
-    # For scoped users, never trust client license_id unless it matches active mapping.
+    # For scoped users, never trust client license_id unless it belongs to their allowed mappings.
     if scoped_to_unit:
-        if active_license_id and requested_license_id == active_license_id:
-            return queryset.filter(**{field_name: active_license_id})
+        scoped_ids = set(_collect_user_license_ids(request.user))
+        if requested_license_id in scoped_ids:
+            requested_aliases = _expand_license_aliases(requested_license_id)
+            allowed_aliases = [value for value in requested_aliases if value in scoped_ids]
+            if not allowed_aliases:
+                return queryset.none()
+            return queryset.filter(**{f'{field_name}__in': allowed_aliases})
         return queryset
 
-    return queryset.filter(**{field_name: requested_license_id})
+    return queryset.filter(**{f'{field_name}__in': _expand_license_aliases(requested_license_id)})
 
 
 def _get_scope_context(user):
@@ -213,7 +290,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
     ViewSet for Brand Warehouse CRUD operations and custom actions
     Ensures ALL Sikkim brands are always shown (no brands go missing)
     """
-    queryset = BrandWarehouse.objects.all().select_related('liquor_data').prefetch_related('utilizations', 'arrivals')
+    queryset = BrandWarehouse.objects.all().prefetch_related('utilizations', 'arrivals')
     permission_classes = [IsAuthenticated]
 
     def get_serializer_class(self):
@@ -228,9 +305,10 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         """
         Return brand warehouse queryset with server-side license scoping.
         """
-        queryset = BrandWarehouse.objects.all().select_related('liquor_data').prefetch_related('utilizations', 'arrivals')
+        queryset = BrandWarehouse.objects.all().prefetch_related('utilizations', 'arrivals')
 
         scoped_to_unit, active_license_id = _get_scope_context(self.request.user)
+
         if scoped_to_unit:
             queryset = _scope_queryset_by_active_license(queryset, self.request.user, 'license_id')
 
@@ -652,7 +730,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
 
                 all_brands = BrandWarehouse.objects.filter(
                     license_id=active_license_id
-                ).select_related('liquor_data').prefetch_related('arrivals', 'utilizations')
+                ).prefetch_related('arrivals', 'utilizations')
 
                 return Response({
                     'success': True,

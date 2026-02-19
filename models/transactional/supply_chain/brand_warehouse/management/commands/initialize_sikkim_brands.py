@@ -56,20 +56,15 @@ class Command(BaseCommand):
                 
             else:
                 # Dry run - just show what would happen
-                from models.masters.supply_chain.liquor_data.models import LiquorData
-                
-                sikkim_liquor_data = LiquorData.objects.filter(
-                    manufacturing_unit_name__icontains='sikkim'
-                ).values('brand_name', 'manufacturing_unit_name', 'pack_size_ml')
-                
-                self.stdout.write(f"📊 Would process {len(sikkim_liquor_data)} Sikkim liquor entries")
+                all_brands = BrandWarehouseStockService.get_all_sikkim_brands_with_stock()
+                self.stdout.write(f"📊 Would process {all_brands.count()} Sikkim brand_warehouse rows")
                 
                 # Show examples
-                for i, item in enumerate(sikkim_liquor_data[:5]):
-                    self.stdout.write(f"   • {item['brand_name']} ({item['pack_size_ml']}ml) - {item['manufacturing_unit_name']}")
+                for brand in all_brands[:5]:
+                    self.stdout.write(f"   • {brand.brand_details} ({brand.capacity_size}ml) - {brand.distillery_name}")
                 
-                if len(sikkim_liquor_data) > 5:
-                    self.stdout.write(f"   ... and {len(sikkim_liquor_data) - 5} more")
+                if all_brands.count() > 5:
+                    self.stdout.write(f"   ... and {all_brands.count() - 5} more")
             
             self.stdout.write(
                 self.style.SUCCESS('\n✅ All Sikkim brands are now available in Brand Warehouse!')
