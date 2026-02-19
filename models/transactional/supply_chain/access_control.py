@@ -8,6 +8,27 @@ def _normalize_token(value):
     return ''.join(ch for ch in str(value or '').lower() if ch.isalnum())
 
 
+def _expand_license_aliases(value):
+    normalized = str(value or '').strip()
+    if not normalized:
+        return []
+    aliases = [normalized]
+    if normalized.startswith('NLI/'):
+        aliases.append(f"NA/{normalized[4:]}")
+    elif normalized.startswith('NA/'):
+        aliases.append(f"NLI/{normalized[3:]}")
+    return aliases
+
+
+def _is_oic_scoped_user(user):
+    role_token = _normalize_token(getattr(getattr(user, 'role', None), 'name', ''))
+    return (
+        bool(getattr(user, 'is_oic_managed', False))
+        or hasattr(user, 'oic_assignment')
+        or role_token in {'officerincharge', 'offcierincharge', 'oic'}
+    )
+
+
 def has_workflow_access(user, workflow_id):
     if getattr(user, 'is_superuser', False) or getattr(user, 'is_staff', False):
         return True
@@ -52,13 +73,28 @@ def has_workflow_access(user, workflow_id):
 
 
 def scope_by_profile_or_workflow(user, queryset, workflow_id, licensee_field='licensee_id'):
-    # Licensee-style users are scoped to their own licensee_id.
+    # Licensee/OIC-style users are scoped by mapped license identifiers.
     scoped_values = set()
 
-    if hasattr(user, 'supply_chain_profile'):
-        licensee_id = user.supply_chain_profile.licensee_id
-        if licensee_id:
-            scoped_values.add(str(licensee_id))
+    is_oic_user = _is_oic_scoped_user(user)
+
+    # OIC users must be scoped to mapped assignment/license IDs, not their own profile ID.
+    if is_oic_user and hasattr(user, 'oic_assignment'):
+        assignment = getattr(user, 'oic_assignment')
+        mapped_values = [
+            getattr(assignment, 'licensee_id', ''),
+            getattr(getattr(assignment, 'license', None), 'license_id', ''),
+            getattr(getattr(assignment, 'approved_application', None), 'application_id', ''),
+        ]
+        for raw_value in mapped_values:
+            for alias in _expand_license_aliases(raw_value):
+                scoped_values.add(alias)
+    else:
+        if hasattr(user, 'supply_chain_profile'):
+            licensee_id = user.supply_chain_profile.licensee_id
+            if licensee_id:
+                for alias in _expand_license_aliases(licensee_id):
+                    scoped_values.add(alias)
 
     # Fallback: users with mapped manufacturing units but no active supply-chain profile
     # should still see their own records.
@@ -69,7 +105,8 @@ def scope_by_profile_or_workflow(user, queryset, workflow_id, licensee_field='li
             .values_list('licensee_id', flat=True)
         )
         for value in unit_licensee_ids:
-            scoped_values.add(str(value))
+            for alias in _expand_license_aliases(value):
+                scoped_values.add(alias)
 
     # Include formal license IDs (e.g., NA/1101/2025-26/0001) issued to this user.
     qs_by_applicant = License.objects.filter(applicant=user, is_active=True)
@@ -96,10 +133,15 @@ def scope_by_profile_or_workflow(user, queryset, workflow_id, licensee_field='li
         .values_list('license_id', flat=True)
     )
     for value in license_ids:
-        scoped_values.add(str(value))
+        for alias in _expand_license_aliases(value):
+            scoped_values.add(alias)
 
     if scoped_values:
         return queryset.filter(**{f'{licensee_field}__in': list(scoped_values)})
+
+    # OIC users without an assignment should not see cross-license records.
+    if is_oic_user:
+        return queryset.none()
 
     # Workflow roles use DB-configured stage permissions.
     if has_workflow_access(user, workflow_id):

@@ -2,7 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from django.db.models import Sum, Count, Avg
+from django.db.models import Sum, Count, Avg, Q
 from django.utils import timezone
 from datetime import datetime, timedelta
 
@@ -918,10 +918,19 @@ class BrandWarehouseUtilizationViewSet(viewsets.ModelViewSet):
         queryset = _apply_license_query_filter(
             queryset,
             self.request,
-            field_name='brand_warehouse__license_id',
+            field_name='license_id',
             scoped_to_unit=scoped_to_unit,
             active_license_id=active_license_id
         )
+
+        # Backward compatibility for older rows where utilization.license_id may be null.
+        if scoped_to_unit:
+            scoped_ids = _collect_user_license_ids(self.request.user)
+            queryset = queryset.filter(
+                Q(license_id__in=scoped_ids) |
+                (Q(license_id__isnull=True) & Q(brand_warehouse__license_id__in=scoped_ids)) |
+                (Q(license_id='') & Q(brand_warehouse__license_id__in=scoped_ids))
+            )
         
         # Filter by brand warehouse
         brand_warehouse_id = self.request.query_params.get('brand_warehouse', None)

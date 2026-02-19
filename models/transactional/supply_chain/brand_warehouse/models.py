@@ -389,6 +389,13 @@ class BrandWarehouseUtilization(models.Model):
     )
 
     # Transit Permit Information
+    license_id = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        db_column='license_id',
+        help_text='Approved license id (NA/NLI) used for permit scoping'
+    )
     permit_no = models.CharField(
         max_length=100,
         db_column='permit_no',
@@ -480,6 +487,7 @@ class BrandWarehouseUtilization(models.Model):
         verbose_name = 'Brand Warehouse Utilization'
         verbose_name_plural = 'Brand Warehouse Utilizations'
         indexes = [
+            models.Index(fields=['license_id']),
             models.Index(fields=['permit_no']),
             models.Index(fields=['date']),
             models.Index(fields=['status']),

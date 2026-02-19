@@ -60,6 +60,7 @@ class BrandWarehouseUtilizationSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'brand_warehouse',
+            'license_id',
             'permit_no',
             'date',
             'distributor',
