@@ -558,7 +558,12 @@ class PerformTransitPermitActionAPIView(views.APIView):
 
     def post(self, request, pk):
         try:
-            action = request.data.get('action')
+            action = str(request.data.get('action') or '').strip().upper()
+            remarks = str(
+                request.data.get('remarks')
+                or request.data.get('comments')
+                or ''
+            ).strip()
             if not action or action not in ['PAY', 'APPROVE', 'REJECT']:
                 return Response({
                     'status': 'error',
@@ -660,7 +665,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 user=request.user,
                 target_stage=target_transition.to_stage,
                 context=context,
-                remarks=f"Action: {action}"
+                remarks=remarks or f"Action: {action}"
             )
             
             # Sync back to status/status_code
@@ -681,7 +686,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 self._handle_stock_deduction(permit)
 
             elif action == 'REJECT':
-                self._handle_rejection(request, permit)
+                self._handle_rejection(request, permit, remarks=remarks)
             
             serializer = EnaTransitPermitDetailSerializer(permit)
             return Response({
@@ -704,92 +709,147 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 'message': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    def _handle_rejection(self, request, permit):
+    def _handle_rejection(self, request, permit, remarks=''):
         print(f"DEBUG: Handling Rejection for Permit {permit.bill_no}")
+        cancellation_reason = str(
+            remarks
+            or request.data.get('remarks')
+            or request.data.get('comments')
+            or 'Rejected by OIC'
+        ).strip()
+
+        # 1. Refund wallet. This should not block cancellation-log creation.
         try:
-            # 1. Refund Wallet
             from .models import Wallet, WalletTransaction
-            
-            # Find wallet via licensee_id (assuming user.supply_chain_profile.licensee_id matches)
+
             wallet = Wallet.objects.filter(user__supply_chain_profile__licensee_id=permit.licensee_id).first()
-            
+
             if wallet:
-                # Calculate refund amounts
                 excise_amt = float(permit.total_excise_duty or 0)
                 add_excise_amt = float(permit.total_additional_excise or 0)
                 cess_amt = float(permit.total_education_cess or 0)
-                
-                # Refund
+
                 wallet.excise_balance = float(wallet.excise_balance) + excise_amt
                 wallet.additional_excise_balance = float(wallet.additional_excise_balance) + add_excise_amt
                 wallet.education_cess_balance = float(wallet.education_cess_balance) + cess_amt
                 wallet.save()
-                
-                # Log Transactions (CREDIT)
+
                 if excise_amt > 0:
-                    WalletTransaction.objects.create(wallet=wallet, transaction_type='CREDIT', amount=excise_amt, head='EXCISE', reference_no=permit.bill_no, description=f'Refund for Rejected Permit {permit.bill_no}')
+                    WalletTransaction.objects.create(
+                        wallet=wallet,
+                        transaction_type='CREDIT',
+                        amount=excise_amt,
+                        head='EXCISE',
+                        reference_no=permit.bill_no,
+                        description=f'Refund for Rejected Permit {permit.bill_no}'
+                    )
                 if add_excise_amt > 0:
-                    WalletTransaction.objects.create(wallet=wallet, transaction_type='CREDIT', amount=add_excise_amt, head='ADDITIONAL_EXCISE', reference_no=permit.bill_no, description=f'Refund for Rejected Permit {permit.bill_no}')
+                    WalletTransaction.objects.create(
+                        wallet=wallet,
+                        transaction_type='CREDIT',
+                        amount=add_excise_amt,
+                        head='ADDITIONAL_EXCISE',
+                        reference_no=permit.bill_no,
+                        description=f'Refund for Rejected Permit {permit.bill_no}'
+                    )
                 if cess_amt > 0:
-                    WalletTransaction.objects.create(wallet=wallet, transaction_type='CREDIT', amount=cess_amt, head='EDUCATION_CESS', reference_no=permit.bill_no, description=f'Refund for Rejected Permit {permit.bill_no}')
-                
+                    WalletTransaction.objects.create(
+                        wallet=wallet,
+                        transaction_type='CREDIT',
+                        amount=cess_amt,
+                        head='EDUCATION_CESS',
+                        reference_no=permit.bill_no,
+                        description=f'Refund for Rejected Permit {permit.bill_no}'
+                    )
+
                 print(f"DEBUG: Wallet refunded for {permit.bill_no}")
             else:
                 print(f"WARNING: No wallet found for licensee_id {permit.licensee_id}, skipping refund")
+        except Exception as wallet_error:
+            print(f"ERROR wallet refund during rejection for {permit.bill_no}: {wallet_error}")
 
-            # 2. Restore Stock & Log Cancellation
-            from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouseUtilization, BrandWarehouseTpCancellation
-            
+        # 2. Restore stock and insert cancellation rows.
+        try:
+            from models.transactional.supply_chain.brand_warehouse.models import (
+                BrandWarehouse,
+                BrandWarehouseUtilization,
+                BrandWarehouseTpCancellation,
+            )
+
             utilizations = BrandWarehouseUtilization.objects.filter(permit_no=permit.bill_no)
             if utilizations.exists():
                 for utilization in utilizations:
                     warehouse = utilization.brand_warehouse
-                    
-                    # Store previous stock
                     previous_stock = warehouse.current_stock
-                    
-                    # Restore stock
+
                     warehouse.current_stock += utilization.quantity
                     warehouse.save()
                     warehouse.update_status()
-                    
-                    # New stock
                     new_stock = warehouse.current_stock
-                    
-                    # Update Utilization status
+
                     utilization.status = 'CANCELLED'
                     utilization.save()
-                    
-                    # Create Cancellation Record
+
                     BrandWarehouseTpCancellation.objects.create(
                         brand_warehouse=warehouse,
                         reference_no=permit.bill_no,
                         cancelled_by=request.user.username,
                         quantity_cases=utilization.cases,
                         quantity_bottles=utilization.total_bottles,
-                        amount_refunded=permit.total_amount, # potentially split this per item if needed, but per permit is okay if fields align
-                        reason=request.data.get('remarks', 'Rejected by OIC'),
-                        
-                        # Stock Snapshots
+                        amount_refunded=permit.total_amount,
+                        reason=cancellation_reason,
                         previous_stock=previous_stock,
                         new_stock=new_stock,
-                        
-                        # New fields
                         permit_date=utilization.date,
-                        destination=utilization.distributor, # Using distributor as destination/customer name
+                        destination=utilization.distributor,
                         vehicle_no=utilization.vehicle,
                         depot_address=utilization.depot_address,
-                        brand_name=f"{warehouse.brand_type} ({warehouse.capacity_size}ml)" # Construct brand name
+                        brand_name=f"{warehouse.brand_type} ({warehouse.capacity_size}ml)"
                     )
                 print(f"DEBUG: Stock restored and cancellation records created for all items in {permit.bill_no}")
+                return
+
+            # Fallback: create cancellation rows from permit lines even when utilization rows are missing.
+            print(f"WARNING: No utilization found for {permit.bill_no}; creating fallback cancellation entries")
+            bill_items = EnaTransitPermitDetail.objects.filter(bill_no=permit.bill_no)
+            created_count = 0
+
+            for item in bill_items:
+                item_license_id = str(item.licensee_id or '').strip()
+                warehouse_qs = BrandWarehouse.objects.filter(capacity_size=int(item.size_ml))
+                if item_license_id:
+                    warehouse_qs = warehouse_qs.filter(license_id=item_license_id)
+
+                warehouse = warehouse_qs.filter(brand_details__iexact=item.brand).first()
+                if not warehouse:
+                    warehouse = warehouse_qs.filter(brand_details__icontains=item.brand).first()
+                if not warehouse:
+                    continue
+
+                BrandWarehouseTpCancellation.objects.create(
+                    brand_warehouse=warehouse,
+                    reference_no=permit.bill_no,
+                    cancelled_by=request.user.username,
+                    quantity_cases=int(item.cases or 0),
+                    quantity_bottles=int(item.cases or 0) * int(item.bottles_per_case or 0),
+                    amount_refunded=item.total_amount,
+                    reason=cancellation_reason,
+                    previous_stock=warehouse.current_stock,
+                    new_stock=warehouse.current_stock,
+                    permit_date=item.date,
+                    destination=item.sole_distributor_name,
+                    vehicle_no=item.vehicle_number,
+                    depot_address=item.depot_address,
+                    brand_name=f"{item.brand} ({item.size_ml}ml)"
+                )
+                created_count += 1
+
+            if created_count == 0:
+                print(f"WARNING: No brand_warehouse match found for fallback cancellation rows on {permit.bill_no}")
             else:
-                print(f"WARNING: No utilization found for {permit.bill_no}")
-
-
-        except Exception as e:
-            print(f"ERROR Handling Rejection: {e}")
-            # Consider raising if critical
-            pass
+                print(f"DEBUG: Created {created_count} fallback cancellation rows for {permit.bill_no}")
+        except Exception as cancellation_error:
+            print(f"ERROR cancellation logging during rejection for {permit.bill_no}: {cancellation_error}")
 
     def _handle_stock_deduction(self, permit):
         """
