@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import Q
+from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from decimal import Decimal
 import re
 from .serializers import TransitPermitSubmissionSerializer, EnaTransitPermitDetailSerializer
@@ -20,18 +21,62 @@ from models.transactional.supply_chain.access_control import (
 class SubmitTransitPermitAPIView(views.APIView):
     permission_classes = [IsAuthenticated]
 
+    def _resolve_submit_target_stage(self):
+        """
+        Resolve submit target stage from workflow table dynamically.
+        Prefers the stage that represents "payment successful, forwarded to officer".
+        """
+        from auth.workflow.models import Workflow, WorkflowStage
+
+        workflow_obj = Workflow.objects.filter(id=WORKFLOW_IDS['TRANSIT_PERMIT']).first()
+        if not workflow_obj:
+            return None, None
+
+        stage_qs = WorkflowStage.objects.filter(workflow=workflow_obj)
+
+        preferred_stage = stage_qs.filter(
+            Q(name='PaymentSuccessfulandForwardedToOfficerincharge')
+        ).first()
+        if preferred_stage:
+            return workflow_obj, preferred_stage
+
+        for stage in stage_qs:
+            normalized_name = ''.join(ch for ch in str(stage.name or '').lower() if ch.isalnum())
+            normalized_desc = ''.join(ch for ch in str(stage.description or '').lower() if ch.isalnum())
+            if (
+                'paymentsuccessful' in normalized_name and 'forwardedtoofficer' in normalized_name
+            ) or (
+                'paymentsuccessful' in normalized_desc and 'forwardedtoofficer' in normalized_desc
+            ):
+                return workflow_obj, stage
+
+        return workflow_obj, None
+
     def _generate_transit_ref(self) -> str:
-        existing_refs = EnaTransitPermitDetail.objects.values_list('bill_no', flat=True)
-        pattern = r'TRN/(\d+)/EXCISE'
+        existing_refs = list(EnaTransitPermitDetail.objects.values_list('bill_no', flat=True))
+        try:
+            from models.transactional.payment.models import WalletTransaction
+            existing_refs.extend(
+                WalletTransaction.objects.filter(source_module='transit_permit')
+                .exclude(reference_no__isnull=True)
+                .exclude(reference_no='')
+                .values_list('reference_no', flat=True)
+            )
+        except Exception:
+            pass
+
+        # Strict format: TRP/<number>/EXCISE
+        pattern = r'^TRP/0*(\d+)/EXCISE$'
         numbers = []
 
         for ref in existing_refs:
-            match = re.match(pattern, str(ref or ''))
+            normalized_ref = str(ref or '').strip().upper()
+            match = re.match(pattern, normalized_ref)
             if match:
                 numbers.append(int(match.group(1)))
 
         next_number = (max(numbers) + 1) if numbers else 1
-        return f"TRN/{next_number:02d}/EXCISE"
+        return f"TRP/{next_number:02d}/EXCISE"
 
     def _resolve_approved_license_id(self, user) -> str:
         """
@@ -124,6 +169,19 @@ class SubmitTransitPermitAPIView(views.APIView):
             now_ts = timezone.now()
 
             if excise_wallet and excise_total > 0:
+                excise_transaction_id = f"TRP-{bill_no}-EXCISE"
+                excise_exists = WalletTransaction.objects.filter(
+                    transaction_id=excise_transaction_id,
+                    head_of_account=excise_wallet.head_of_account,
+                    entry_type='DR',
+                    source_module='transit_permit',
+                ).exists()
+                if excise_exists:
+                    raise ValueError(
+                        f"Transit wallet debit already exists for bill {bill_no}. "
+                        "Please refresh and continue with the latest reference."
+                    )
+
                 before = Decimal(str(excise_wallet.current_balance or 0))
                 after = before - excise_total
                 excise_wallet.current_balance = after
@@ -133,7 +191,7 @@ class SubmitTransitPermitAPIView(views.APIView):
 
                 WalletTransaction.objects.create(
                     wallet_balance=excise_wallet,
-                    transaction_id=f"TRP-{bill_no}-EXCISE",
+                    transaction_id=excise_transaction_id,
                     licensee_id=license_id,
                     licensee_name=excise_wallet.licensee_name,
                     user_id=username or excise_wallet.user_id,
@@ -153,6 +211,19 @@ class SubmitTransitPermitAPIView(views.APIView):
                 )
 
             if education_wallet and education_total > 0:
+                education_transaction_id = f"TRP-{bill_no}-EDUCATION"
+                education_exists = WalletTransaction.objects.filter(
+                    transaction_id=education_transaction_id,
+                    head_of_account=education_wallet.head_of_account,
+                    entry_type='DR',
+                    source_module='transit_permit',
+                ).exists()
+                if education_exists:
+                    raise ValueError(
+                        f"Transit education-cess debit already exists for bill {bill_no}. "
+                        "Please refresh and continue with the latest reference."
+                    )
+
                 before = Decimal(str(education_wallet.current_balance or 0))
                 after = before - education_total
                 education_wallet.current_balance = after
@@ -162,7 +233,7 @@ class SubmitTransitPermitAPIView(views.APIView):
 
                 WalletTransaction.objects.create(
                     wallet_balance=education_wallet,
-                    transaction_id=f"TRP-{bill_no}-EDUCATION",
+                    transaction_id=education_transaction_id,
                     licensee_id=license_id,
                     licensee_name=education_wallet.licensee_name,
                     user_id=username or education_wallet.user_id,
@@ -284,19 +355,12 @@ class SubmitTransitPermitAPIView(views.APIView):
             # 3. Save each product as a new row
             try:
                 with transaction.atomic():
-                    workflow_obj = None
-                    paid_stage = None
-                    try:
-                        from auth.workflow.models import Workflow, WorkflowStage
-                        workflow_obj = Workflow.objects.filter(id=WORKFLOW_IDS['TRANSIT_PERMIT']).first()
-                        if workflow_obj:
-                            paid_stage = WorkflowStage.objects.filter(
-                                workflow=workflow_obj,
-                                name='PaymentSuccessfulandForwardedToOfficerincharge'
-                            ).first()
-                    except Exception:
-                        workflow_obj = None
-                        paid_stage = None
+                    workflow_obj, paid_stage = self._resolve_submit_target_stage()
+                    submit_message = (
+                        str(getattr(paid_stage, 'description', '') or '').strip()
+                        if paid_stage else
+                        "Transit Permit submitted, payment deducted, and forwarded to Officer In-Charge."
+                    )
 
                     for product in products:
                         obj = EnaTransitPermitDetail(
@@ -337,13 +401,16 @@ class SubmitTransitPermitAPIView(views.APIView):
                             )
                         )
 
-                        # Payment is completed on submit; forward directly to OIC stage.
-                        obj.status = 'PaymentSuccessfulandForwardedToOfficerincharge'
-                        obj.status_code = 'TRP_02'
+                        # Payment is completed on submit; forward directly to OIC stage from workflow table.
+                        if paid_stage:
+                            obj.status = paid_stage.name
+                            obj.status_code = 'TRP_02'
+                            obj.current_stage = paid_stage
+                        else:
+                            obj.status = 'PaymentSuccessfulandForwardedToOfficerincharge'
+                            obj.status_code = 'TRP_02'
                         if workflow_obj:
                             obj.workflow = workflow_obj
-                        if paid_stage:
-                            obj.current_stage = paid_stage
                         obj.save()
                         created_records.append(obj)
 
@@ -363,7 +430,8 @@ class SubmitTransitPermitAPIView(views.APIView):
                 
                 return Response({
                     "status": "success",
-                    "message": "Transit Permit submitted, payment deducted, and forwarded to Officer In-Charge.",
+                    "message": submit_message,
+                    "bill_no": bill_no,
                     "count": len(created_records)
                 }, status=status.HTTP_201_CREATED)
                 
@@ -447,6 +515,47 @@ class PerformTransitPermitActionAPIView(views.APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    def _expand_license_aliases(self, value: str):
+        normalized = str(value or '').strip()
+        if not normalized:
+            return []
+        aliases = [normalized]
+        if normalized.startswith('NLI/'):
+            aliases.append(f"NA/{normalized[4:]}")
+        elif normalized.startswith('NA/'):
+            aliases.append(f"NLI/{normalized[3:]}")
+        return aliases
+
+    def _collect_user_scoped_license_ids(self, user):
+        scoped = set()
+
+        assignment = getattr(user, 'oic_assignment', None)
+        if assignment:
+            for raw in [
+                getattr(assignment, 'licensee_id', ''),
+                getattr(getattr(assignment, 'license', None), 'license_id', ''),
+                getattr(getattr(assignment, 'approved_application', None), 'application_id', ''),
+            ]:
+                for alias in self._expand_license_aliases(raw):
+                    scoped.add(alias)
+
+        profile = getattr(user, 'supply_chain_profile', None)
+        if profile:
+            for alias in self._expand_license_aliases(getattr(profile, 'licensee_id', '')):
+                scoped.add(alias)
+
+        units = getattr(user, 'manufacturing_units', None)
+        if units is not None:
+            for raw in (
+                units.exclude(licensee_id__isnull=True)
+                .exclude(licensee_id='')
+                .values_list('licensee_id', flat=True)
+            ):
+                for alias in self._expand_license_aliases(raw):
+                    scoped.add(alias)
+
+        return scoped
+
     def post(self, request, pk):
         try:
             action = request.data.get('action')
@@ -462,12 +571,15 @@ class PerformTransitPermitActionAPIView(views.APIView):
             # Ownership/permission check (dynamic, DB-driven).
             # Workflow users (OIC/officers) can process mapped workflow items.
             # Licensee users can process only their own permit.
-            if has_workflow_access(request.user, WORKFLOW_IDS['TRANSIT_PERMIT']):
+            permit_licensee_id = str(permit.licensee_id or '').strip()
+            user_scoped_ids = self._collect_user_scoped_license_ids(request.user)
+            permit_aliases = set(self._expand_license_aliases(permit_licensee_id))
+            mapped_to_permit = bool(permit_aliases.intersection(user_scoped_ids))
+
+            if has_workflow_access(request.user, WORKFLOW_IDS['TRANSIT_PERMIT']) and mapped_to_permit:
                 pass
             elif hasattr(request.user, 'supply_chain_profile'):
-                user_licensee_id = str(request.user.supply_chain_profile.licensee_id or '').strip()
-                permit_licensee_id = str(permit.licensee_id or '').strip()
-                if user_licensee_id != permit_licensee_id:
+                if not mapped_to_permit:
                     raise PermissionDenied("You are not allowed to modify this transit permit.")
             else:
                 raise PermissionDenied("You are not allowed to modify this transit permit.")
@@ -524,6 +636,18 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 if transition_matches(t, request.user, action):
                     target_transition = t
                     break
+
+            if not target_transition:
+                # Fallback for OIC/officer role token mismatches in transition.condition role text.
+                for t in transitions:
+                    cond = t.condition or {}
+                    cond_action = str(cond.get('action') or '').upper().strip()
+                    cond_role = ''.join(ch for ch in str(cond.get('role') or '').lower() if ch.isalnum())
+                    if cond_action and cond_action != str(action or '').upper().strip():
+                        continue
+                    if not cond_role or cond_role in {'officer', 'officerincharge', 'offcierincharge', 'oic'}:
+                        target_transition = t
+                        break
             
             if not target_transition:
                 return Response({
@@ -566,6 +690,11 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 'data': serializer.data
             }, status=status.HTTP_200_OK)
 
+        except (PermissionDenied, DjangoPermissionDenied) as e:
+            return Response({
+                'status': 'error',
+                'message': str(e)
+            }, status=status.HTTP_403_FORBIDDEN)
         except Exception as e:
             import traceback
             traceback.print_exc()

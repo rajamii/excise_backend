@@ -151,6 +151,24 @@ class WorkflowService:
         return ''.join(ch for ch in str(value or '').lower() if ch.isalnum())
 
     @staticmethod
+    def _role_token_matches_cond(user_role_token, cond_role_token):
+        user_role_token = WorkflowService._normalize_token(user_role_token)
+        cond_role_token = WorkflowService._normalize_token(cond_role_token)
+        if not cond_role_token:
+            return True
+        if user_role_token == cond_role_token:
+            return True
+
+        officer_aliases = {
+            'officer', 'officerincharge', 'offcierincharge', 'oic',
+            'level1', 'level2', 'level3', 'level4', 'level5', 'siteadmin'
+        }
+        if user_role_token in officer_aliases and cond_role_token in officer_aliases:
+            return True
+
+        return False
+
+    @staticmethod
     def _condition_role_matches(condition, user):
         condition = condition or {}
         role = getattr(user, 'role', None)
@@ -170,7 +188,44 @@ class WorkflowService:
             return True
 
         user_role_name = WorkflowService._normalize_token(getattr(role, 'name', ''))
-        return cond_role == user_role_name
+        return WorkflowService._role_token_matches_cond(user_role_name, cond_role)
+
+    @staticmethod
+    def _has_stage_process_permission(application, user, target_stage=None, context=None):
+        if getattr(user, 'is_superuser', False):
+            return True
+
+        role = getattr(user, 'role', None)
+        if role and StagePermission.objects.filter(
+            stage=application.current_stage,
+            role=role,
+            can_process=True
+        ).exists():
+            return True
+
+        # Fallback for deployments where StagePermission rows are incomplete:
+        # allow processing when there is a valid workflow transition from current stage
+        # for this user's role/action.
+        transitions = WorkflowTransition.objects.filter(
+            workflow=application.workflow,
+            from_stage=application.current_stage
+        )
+        if target_stage is not None:
+            transitions = transitions.filter(to_stage=target_stage)
+
+        action = str((context or {}).get('action') or '').strip().upper()
+        for transition in transitions:
+            condition = transition.condition or {}
+            if not WorkflowService._condition_role_matches(condition, user):
+                continue
+            cond_action = str(condition.get('action') or '').strip().upper()
+            if cond_action and action and cond_action != action:
+                continue
+            if cond_action and not action:
+                continue
+            return True
+
+        return False
 
     @staticmethod
     def _transition_matches_submit(transition, user):
@@ -360,13 +415,13 @@ class WorkflowService:
         context = context or {}
 
         # ---------- Permission ----------
-        if not user.is_superuser:
-            if not StagePermission.objects.filter(
-                stage=application.current_stage,
-                role=user.role,
-                can_process=True
-            ).exists():
-                raise PermissionDenied("You cannot process this stage.")
+        if not WorkflowService._has_stage_process_permission(
+            application=application,
+            user=user,
+            target_stage=target_stage,
+            context=context
+        ):
+            raise PermissionDenied("You cannot process this stage.")
 
         # ---------- Transition ----------
         WorkflowService.validate_transition(application, target_stage, context, user=user)

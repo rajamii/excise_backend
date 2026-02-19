@@ -8,6 +8,24 @@ def _normalize_token(value):
     return ''.join(ch for ch in str(value or '').lower() if ch.isalnum())
 
 
+def _role_token_matches_cond(user_role_token, cond_role_token):
+    user_role_token = _normalize_token(user_role_token)
+    cond_role_token = _normalize_token(cond_role_token)
+    if not cond_role_token:
+        return True
+    if user_role_token == cond_role_token:
+        return True
+
+    officer_aliases = {
+        'officer', 'officerincharge', 'offcierincharge', 'oic',
+        'level1', 'level2', 'level3', 'level4', 'level5', 'siteadmin'
+    }
+    if user_role_token in officer_aliases and cond_role_token in officer_aliases:
+        return True
+
+    return False
+
+
 def _expand_license_aliases(value):
     normalized = str(value or '').strip()
     if not normalized:
@@ -66,7 +84,7 @@ def has_workflow_access(user, workflow_id):
                 pass
 
         cond_role_token = _normalize_token(cond.get('role'))
-        if cond_role_token and role_token and cond_role_token == role_token:
+        if cond_role_token and role_token and _role_token_matches_cond(role_token, cond_role_token):
             return True
 
     return False
@@ -167,7 +185,7 @@ def condition_role_matches(cond, user):
         return True
 
     user_role = _normalize_token(getattr(getattr(user, 'role', None), 'name', ''))
-    return cond_role == user_role
+    return _role_token_matches_cond(user_role, cond_role)
 
 
 def transition_matches(transition, user, action):
