@@ -475,6 +475,28 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
             'total_count': cancellations.count()
         }, status=status.HTTP_200_OK)
 
+    @action(detail=False, methods=['get'], url_path='tp-cancellations')
+    def tp_cancellations(self, request):
+        """
+        Get TP cancellation rows from brand_warehouse_tp_cancellation.
+        Optional query param:
+          - reference_no: filter by transit permit reference number (bill no)
+        """
+        from .serializers import BrandWarehouseTpCancellationSerializer
+
+        cancellations = BrandWarehouseTpCancellation.objects.all().order_by('-cancellation_date')
+
+        reference_no = str(request.query_params.get('reference_no', '') or '').strip()
+        if reference_no:
+            cancellations = cancellations.filter(reference_no=reference_no)
+
+        serializer = BrandWarehouseTpCancellationSerializer(cancellations, many=True)
+        return Response({
+            'success': True,
+            'count': cancellations.count(),
+            'results': serializer.data,
+        }, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=['get'], url_path='arrivals')
     def get_arrivals(self, request, pk=None):
         """
