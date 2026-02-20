@@ -3,6 +3,9 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
+from django.db import transaction, models
+from django.utils import timezone
+from decimal import Decimal
 from .models import EnaRevalidationDetail
 from .serializers import EnaRevalidationDetailSerializer
 from auth.workflow.constants import WORKFLOW_IDS
@@ -17,6 +20,161 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
     queryset = EnaRevalidationDetail.objects.all().order_by('-created_at')
     serializer_class = EnaRevalidationDetailSerializer
     permission_classes = [IsAuthenticated]
+
+    REVALIDATION_FEE_AMOUNT = Decimal('1000.00')
+
+    def _expand_license_aliases(self, license_id: str):
+        normalized = str(license_id or '').strip()
+        if not normalized:
+            return []
+
+        candidates = [normalized]
+        if normalized.startswith('NLI/'):
+            candidates.append(f"NA/{normalized[4:]}")
+        if normalized.startswith('NA/'):
+            candidates.append(f"NLI/{normalized[3:]}")
+
+        seen = set()
+        ordered = []
+        for value in candidates:
+            if value and value not in seen:
+                seen.add(value)
+                ordered.append(value)
+        return ordered
+
+    def _resolve_wallet_license_candidates(self, revalidation, user):
+        candidates = []
+
+        req_license = str(getattr(revalidation, 'licensee_id', '') or '').strip()
+        candidates.extend(self._expand_license_aliases(req_license))
+
+        profile_license = ''
+        if hasattr(user, 'supply_chain_profile'):
+            profile_license = str(getattr(user.supply_chain_profile, 'licensee_id', '') or '').strip()
+        candidates.extend(self._expand_license_aliases(profile_license))
+
+        try:
+            from models.masters.license.models import License
+            active_licenses = License.objects.filter(
+                applicant=user,
+                source_type='new_license_application',
+                is_active=True
+            ).order_by('-issue_date')
+
+            for cid in list(candidates):
+                hit = active_licenses.filter(
+                    models.Q(license_id=cid) | models.Q(source_object_id=cid)
+                ).first()
+                if hit and hit.license_id:
+                    candidates.extend(self._expand_license_aliases(str(hit.license_id)))
+
+            latest = active_licenses.first()
+            if latest and latest.license_id:
+                candidates.extend(self._expand_license_aliases(str(latest.license_id)))
+        except Exception:
+            pass
+
+        seen = set()
+        ordered = []
+        for cid in candidates:
+            if cid and cid not in seen:
+                seen.add(cid)
+                ordered.append(cid)
+        return ordered
+
+    def _debit_wallet_for_revalidation_submission(self, revalidation, user):
+        from models.transactional.payment.models import WalletBalance, WalletTransaction
+
+        amount = self.REVALIDATION_FEE_AMOUNT
+        if amount <= 0:
+            return {'debited': False, 'reason': 'zero_amount'}
+
+        reference_no = str(getattr(revalidation, 'our_ref_no', '') or f"REV-{revalidation.pk}")
+        transaction_id = f"REV-{revalidation.pk}-PAYMENT"
+
+        already_debited = WalletTransaction.objects.filter(
+            transaction_id=transaction_id,
+            source_module='ena_revalidation',
+            entry_type='DR'
+        ).exists()
+        if already_debited:
+            return {'debited': False, 'reason': 'already_debited'}
+
+        candidates = self._resolve_wallet_license_candidates(revalidation, user)
+        if not candidates:
+            raise ValueError("Unable to resolve licensee_id for wallet deduction.")
+
+        wallet = None
+        resolved_licensee_id = ''
+
+        for cid in candidates:
+            wallet = (
+                WalletBalance.objects.select_for_update()
+                .filter(licensee_id=cid, wallet_type__iexact='excise')
+                .order_by('wallet_balance_id')
+                .first()
+            )
+            if wallet:
+                resolved_licensee_id = cid
+                break
+
+        if not wallet:
+            for cid in candidates:
+                wallet = (
+                    WalletBalance.objects.select_for_update()
+                    .filter(licensee_id=cid, wallet_type__iexact='brewery')
+                    .order_by('wallet_balance_id')
+                    .first()
+                )
+                if wallet:
+                    resolved_licensee_id = cid
+                    break
+
+        if not wallet:
+            raise ValueError(
+                f"Wallet not found for licensee_id. Tried: {', '.join(candidates)}"
+            )
+
+        current_balance = Decimal(str(wallet.current_balance or 0))
+        if current_balance < amount:
+            raise ValueError(
+                f"Insufficient wallet balance. Available: {current_balance}, Required: {amount}"
+            )
+
+        now_ts = timezone.now()
+        after = current_balance - amount
+        wallet.current_balance = after
+        wallet.total_debit = Decimal(str(wallet.total_debit or 0)) + amount
+        wallet.last_updated_at = now_ts
+        wallet.save(update_fields=['current_balance', 'total_debit', 'last_updated_at'])
+
+        WalletTransaction.objects.create(
+            wallet_balance=wallet,
+            transaction_id=transaction_id,
+            licensee_id=resolved_licensee_id,
+            licensee_name=wallet.licensee_name,
+            user_id=str(getattr(user, 'username', '') or wallet.user_id or ''),
+            module_type=wallet.module_type,
+            wallet_type=wallet.wallet_type,
+            head_of_account=wallet.head_of_account,
+            entry_type='DR',
+            transaction_type='debit',
+            amount=amount,
+            balance_before=current_balance,
+            balance_after=after,
+            reference_no=reference_no,
+            source_module='ena_revalidation',
+            payment_status='success',
+            remarks='Revalidation submission fee debit',
+            created_at=now_ts,
+        )
+
+        return {
+            'debited': True,
+            'licensee_id': resolved_licensee_id,
+            'wallet_type': wallet.wallet_type,
+            'amount': str(amount)
+        }
 
     def get_queryset(self):
         queryset = EnaRevalidationDetail.objects.all().order_by('-created_at')
@@ -49,29 +207,39 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             status_name = 'ForwardedRevalidationToCommissioner'
             status_code = 'RV_02' # Assuming 01 was Pending, 02 might be Forwarded - this is just a string code
             
-            # Sync to fields
-            revalidation.status = status_name
-            revalidation.status_code = status_code
-            
-            # Bind to Workflow
-            try:
-                workflow = Workflow.objects.get(id=WORKFLOW_IDS['ENA_REVALIDATION'])
-                stage = WorkflowStage.objects.get(workflow=workflow, name=status_name)
-                
-                revalidation.workflow = workflow
-                revalidation.current_stage = stage
-            except Exception as e:
-                # Log warning but don't fail if workflow setup incomplete (though it should be complete)
-                print(f"Warning: Workflow binding failed: {e}")
+            wallet_result = None
+            with transaction.atomic():
+                wallet_result = self._debit_wallet_for_revalidation_submission(
+                    revalidation=revalidation,
+                    user=request.user
+                )
 
-            revalidation.save()
+                # Sync to fields
+                revalidation.status = status_name
+                revalidation.status_code = status_code
+                
+                # Bind to Workflow
+                try:
+                    workflow = Workflow.objects.get(id=WORKFLOW_IDS['ENA_REVALIDATION'])
+                    stage = WorkflowStage.objects.get(workflow=workflow, name=status_name)
+                    
+                    revalidation.workflow = workflow
+                    revalidation.current_stage = stage
+                except Exception as e:
+                    # Log warning but don't fail if workflow setup incomplete (though it should be complete)
+                    print(f"Warning: Workflow binding failed: {e}")
+
+                revalidation.save()
             
             serializer = self.get_serializer(revalidation)
-            return Response({
+            response_payload = {
                 'status': 'success',
                 'message': f'Revalidation submitted with status: {status_name}',
                 'data': serializer.data
-            }, status=status.HTTP_200_OK)
+            }
+            if wallet_result is not None:
+                response_payload['wallet_deduction'] = wallet_result
+            return Response(response_payload, status=status.HTTP_200_OK)
             
         except Exception as e:
             return Response({

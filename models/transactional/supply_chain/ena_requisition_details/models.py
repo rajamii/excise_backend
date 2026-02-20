@@ -6,6 +6,7 @@ from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
 
 class EnaRequisitionDetail(models.Model):
     requisiton_number_of_permits = models.IntegerField()
+    details_permits_number = models.CharField(max_length=500, blank=True, null=True)
     our_ref_no = models.CharField(max_length=50)
     requisition_date = models.DateTimeField()
     lifted_from_distillery_name = models.CharField(max_length=255)
