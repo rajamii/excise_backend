@@ -10,6 +10,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
     can_initiate_cancellation = serializers.SerializerMethodField()
     
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
+    current_stage_is_final = serializers.SerializerMethodField()
     workflow_name = serializers.CharField(source='workflow.name', read_only=True)
     
     # Explicitly include our_ref_no to ensure it's serialized
@@ -137,6 +138,18 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
                     actions.append(normalized_action)
         
         return list(set(actions)) # Unique actions
+
+    def get_current_stage_is_final(self, obj):
+        stage = getattr(obj, 'current_stage', None)
+        if not stage:
+            return False
+
+        if bool(getattr(stage, 'is_final', False)):
+            return True
+
+        from auth.workflow.models import WorkflowTransition
+        has_outgoing = WorkflowTransition.objects.filter(from_stage=stage).exists()
+        return not has_outgoing
 
     def _normalize_stage_token(self, value):
         token = ''.join(ch for ch in str(value or '').lower() if ch.isalnum())
