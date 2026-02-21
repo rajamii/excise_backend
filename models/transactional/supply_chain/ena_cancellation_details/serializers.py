@@ -94,5 +94,5 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
 class CancellationCreateSerializer(serializers.Serializer):
     reference_no = serializers.CharField(max_length=100)
     permit_numbers = serializers.ListField(child=serializers.CharField(max_length=100))
-    licensee_id = serializers.CharField(max_length=50)
+    licensee_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
 

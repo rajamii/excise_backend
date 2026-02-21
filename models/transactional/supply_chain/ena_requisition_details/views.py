@@ -36,6 +36,14 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
         if our_ref_no is not None:
             queryset = queryset.filter(our_ref_no=our_ref_no)
         return queryset
+    
+    def get_serializer_context(self):
+        """
+        Ensure request is passed to serializer context
+        """
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
 
 
 class EnaRequisitionDetailRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -50,6 +58,14 @@ class EnaRequisitionDetailRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDe
             licensee_field='licensee_id'
         )
         return queryset
+    
+    def get_serializer_context(self):
+        """
+        Ensure request is passed to serializer context
+        """
+        context = super().get_serializer_context()
+        context['request'] = self.request
+        return context
 
 
 class GetNextRefNumberAPIView(APIView):

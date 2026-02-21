@@ -26,6 +26,7 @@ class EnaCancellationDetail(models.Model):
     total_cancellation_amount = models.DecimalField(max_digits=18, decimal_places=2)
     permit_nocount = models.CharField(max_length=500, blank=True, null=True)
     licensee_id = models.CharField(max_length=50)
+    license_id = models.CharField(max_length=100, blank=True, null=True)
     cancellation_each_permit_date = models.DateTimeField(blank=True, null=True)
     refund_processed_date = models.DateTimeField(blank=True, null=True)
     refund_approved_by = models.CharField(max_length=255, blank=True, null=True)

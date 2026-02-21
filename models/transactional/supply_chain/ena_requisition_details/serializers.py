@@ -7,7 +7,9 @@ from models.transactional.supply_chain.access_control import condition_role_matc
 
 class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
+    allowed_action_configs = serializers.SerializerMethodField()
     can_initiate_cancellation = serializers.SerializerMethodField()
+    has_active_revalidation = serializers.SerializerMethodField()
     
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
     current_stage_is_final = serializers.SerializerMethodField()
@@ -52,6 +54,12 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         data['strength'] = instance.strength or ''
         data['status'] = instance.status or 'PENDING'
         
+        # Ensure status_code is set - derive from stage if not set
+        if not instance.status_code or instance.status_code == 'RQ_00':
+            data['status_code'] = self._derive_status_code_from_stage(instance)
+        else:
+            data['status_code'] = instance.status_code
+        
         print(f"DEBUG: Serializing requisition {instance.id}")
         print(f"  - our_ref_no: '{instance.our_ref_no}' -> '{data['our_ref_no']}'")
         print(f"  - lifted_from: '{instance.lifted_from}' -> '{data['lifted_from']}'")
@@ -62,8 +70,47 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         print(f"  - purpose_name: '{instance.purpose_name}' -> '{data['purpose_name']}'")
         print(f"  - totalbl: {instance.totalbl} -> '{data['totalbl']}'")
         print(f"  - status: '{instance.status}' -> '{data['status']}'")
+        print(f"  - status_code: '{instance.status_code}' -> '{data['status_code']}'")
         
         return data
+    
+    def _derive_status_code_from_stage(self, instance):
+        """
+        Derive status_code from current_stage or status field.
+        This is a fallback for when status_code is not properly set.
+        """
+        stage_name = ''
+        if instance.current_stage:
+            stage_name = instance.current_stage.name
+            # Check if stage is final (approved)
+            if getattr(instance.current_stage, 'is_final', False):
+                # Check if it's approved or rejected
+                stage_lower = stage_name.lower()
+                if 'reject' in stage_lower:
+                    return 'RQ_10'  # Rejected
+                else:
+                    return 'RQ_09'  # Approved
+        else:
+            stage_name = instance.status or ''
+        
+        # Map common stage names to status codes
+        stage_lower = stage_name.lower().replace(' ', '').replace('_', '')
+        
+        stage_code_map = {
+            'pending': 'RQ_00',
+            'submitted': 'RQ_01',
+            'underreview': 'RQ_02',
+            'forwardedtopermitsection': 'RQ_03',
+            'forwardedpaysliptopermitsection': 'RQ_04',
+            'approvedbypermitsection': 'RQ_05',
+            'forwardedtocommissioner': 'RQ_06',
+            'approvedbycommissioner': 'RQ_09',
+            'approved': 'RQ_09',
+            'rejected': 'RQ_10',
+            'rejectedbycommissioner': 'RQ_10',
+        }
+        
+        return stage_code_map.get(stage_lower, instance.status_code or 'RQ_00')
 
     def get_allowed_actions(self, obj):
         request = self.context.get('request')
@@ -212,34 +259,140 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         actions = self.get_allowed_actions(obj)
         
         # 2. Check for "Request Cancellation" specific logic
+        # This is independent of workflow transitions since it's a special action
+        # that can be initiated from a final approved stage
         if self.get_can_initiate_cancellation(obj):
             if 'REQUEST_CANCELLATION' not in actions:
                 actions.append('REQUEST_CANCELLATION')
-
+        
+        # 3. If no actions at all, return empty list
         if not actions:
             return []
         
+        # 4. Convert action names to UI configs
         from auth.workflow.services import WorkflowService
         configs = []
         for action_name in actions:
-            config = WorkflowService.get_action_config(action_name)
-            configs.append(config)
+            try:
+                config = WorkflowService.get_action_config(action_name)
+                if config:
+                    configs.append(config)
+            except Exception as e:
+                print(f"Error getting config for action {action_name}: {e}")
+                # Add a basic config as fallback
+                configs.append({
+                    'action': action_name,
+                    'label': action_name.replace('_', ' ').title(),
+                    'icon': 'arrow_forward',
+                    'color': 'primary',
+                    'tooltip': action_name.replace('_', ' ').title()
+                })
         
         return configs
 
     def get_can_initiate_cancellation(self, obj):
         request = self.context.get('request')
+        
+        print(f"DEBUG get_can_initiate_cancellation: obj.id={obj.id}")
+        print(f"  - request: {request}")
+        print(f"  - request.user: {request.user if request else 'NO REQUEST'}")
+        
         if not request or not request.user.is_authenticated:
+            print(f"  - FAILED: No request or user not authenticated")
             return False
             
         # Only Licensee can initiate cancellation
         user_role_name = request.user.role.name if hasattr(request.user, 'role') and request.user.role else None
+        print(f"  - user_role_name: {user_role_name}")
+        
         if user_role_name not in ['licensee', 'Licensee']:
+            print(f"  - FAILED: User is not a licensee")
             return False
 
-        # Status must be 'RQ_09' (Approved)
-        # We explicitly check for the code here in the backend business logic
-        return obj.status_code == 'RQ_09'
+        # Check if requisition is approved (final stage)
+        # Use current_stage.is_final instead of status_code since status_code might not be updated
+        if not obj.current_stage:
+            print(f"  - FAILED: No current_stage")
+            return False
+        
+        is_final_stage = getattr(obj.current_stage, 'is_final', False)
+        print(f"  - current_stage: {obj.current_stage.name if obj.current_stage else 'None'}")
+        print(f"  - is_final_stage: {is_final_stage}")
+        
+        if not is_final_stage:
+            print(f"  - FAILED: Not a final stage")
+            return False
+        
+        # Check if it's approved (not rejected)
+        status_lower = str(obj.status or '').lower()
+        stage_name_lower = str(obj.current_stage.name or '').lower() if obj.current_stage else ''
+        
+        print(f"  - status: {obj.status}")
+        print(f"  - stage_name: {obj.current_stage.name if obj.current_stage else 'None'}")
+        
+        # If status or stage name contains 'reject', it's not approved
+        if 'reject' in status_lower or 'reject' in stage_name_lower:
+            print(f"  - FAILED: Status or stage contains 'reject'")
+            return False
+        
+        # Check if there's an active revalidation - if yes, cannot cancel
+        has_active_reval = self.get_has_active_revalidation(obj)
+        print(f"  - has_active_revalidation: {has_active_reval}")
+        
+        if has_active_reval:
+            print(f"  - FAILED: Has active revalidation")
+            return False
+        
+        # Check if already cancelled or cancellation in progress
+        if 'cancel' in status_lower or 'cancel' in stage_name_lower:
+            print(f"  - FAILED: Already cancelled or in progress")
+            return False
+        
+        print(f"  - SUCCESS: Can initiate cancellation!")
+        return True
+
+    def get_has_active_revalidation(self, obj):
+        """
+        Check if there's an active (in-progress) revalidation for this requisition.
+        A revalidation is considered active if it's not in a final/completed state.
+        """
+        try:
+            from models.transactional.supply_chain.ena_revalidation_details.models import EnaRevalidationDetail
+            
+            # Check for revalidations with the same licensee_id and similar reference pattern
+            # or created recently (within last 90 days) for the same licensee
+            from django.utils import timezone
+            from datetime import timedelta
+            
+            ninety_days_ago = timezone.now() - timedelta(days=90)
+            
+            # Look for revalidations that:
+            # 1. Belong to the same licensee
+            # 2. Were created recently (within 90 days)
+            # 3. Are not in a final/completed state (status_code not ending in approved/rejected/cancelled)
+            active_revalidations = EnaRevalidationDetail.objects.filter(
+                licensee_id=obj.licensee_id,
+                created_at__gte=ninety_days_ago
+            ).exclude(
+                status_code__in=['RV_09', 'RV_APPROVED', 'RV_REJECTED', 'RV_CANCELLED']
+            ).exclude(
+                status__icontains='cancelled'
+            ).exclude(
+                status__icontains='rejected'
+            )
+            
+            # Additional check: if current_stage.is_final is True, it's not active
+            active_count = 0
+            for revalidation in active_revalidations:
+                if revalidation.current_stage and getattr(revalidation.current_stage, 'is_final', False):
+                    continue
+                active_count += 1
+            
+            return active_count > 0
+            
+        except Exception as e:
+            print(f"Error checking active revalidation: {e}")
+            return False
 
     def create(self, validated_data):
         # from models.masters.supply_chain.status_master.models import StatusMaster # Removed

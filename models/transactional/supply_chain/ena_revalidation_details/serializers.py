@@ -96,6 +96,10 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
         return configs
 
     def create(self, validated_data):
+        # IMPORTANT: Always generate a new REV reference number for revalidation
+        # Remove any our_ref_no that might have been copied from requisition
+        validated_data.pop('our_ref_no', None)
+        
         existing_refs = EnaRevalidationDetail.objects.values_list('our_ref_no', flat=True)
         pattern = r'REV/(\d+)/EXCISE'
         numbers = []
