@@ -308,6 +308,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
                     total_bl=req.totalbl,
                     requisiton_number_of_permits=req.requisiton_number_of_permits,
+                    details_permits_number=req.details_permits_number,  # Copy from requisition
                     # Fields potentially missing in Requisition Model:
                     branch_name=req.lifted_from_distillery_name,
                     branch_address="N/A",
@@ -324,6 +325,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                     distillery_name=req.lifted_from_distillery_name
                 )
 
+                print(f"✅ Copied details_permits_number from requisition: {req.details_permits_number}")
                 print("Attempting to save cancellation...")
                 cancellation.save()
                 wallet_result = self._debit_wallet_for_cancellation_submission(

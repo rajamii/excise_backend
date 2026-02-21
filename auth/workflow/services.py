@@ -121,6 +121,13 @@ ACTION_CONFIGS = {
         'requires_confirmation': True,
         'confirmation_message': 'Are you sure you want to reject the pay slip?'
     },
+    'VIEW_PERMIT_SLIP': {
+        'label': 'View Permit Slip',
+        'icon': 'description',
+        'color': 'primary',
+        'tooltip': 'View Final Permit Slip',
+        'requires_confirmation': False
+    },
     # Default fallback
     'DEFAULT': {
         'label': 'Action',
