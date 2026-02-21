@@ -17,6 +17,7 @@ class HologramProcurement(models.Model):
 
     ref_no = models.CharField(max_length=50, unique=True)
     licensee = models.ForeignKey(SupplyChainUserProfile, on_delete=models.CASCADE, related_name='hologram_procurements')
+    license = models.ForeignKey('license.License', on_delete=models.PROTECT, related_name='hologram_procurements_by_license', null=True, blank=True, help_text='License associated with this hologram procurement')
     manufacturing_unit = models.CharField(max_length=255) # Storing name for display
     date = models.DateTimeField(default=timezone.now)
     
@@ -49,6 +50,11 @@ class HologramProcurement(models.Model):
     class Meta:
         db_table = 'hologram_procurement'
         ordering = ['-date']
+        indexes = [
+            models.Index(fields=['license']),
+            models.Index(fields=['licensee']),
+            models.Index(fields=['current_stage']),
+        ]
 
     def __str__(self):
         return f"{self.ref_no} - {self.licensee.manufacturing_unit_name}"

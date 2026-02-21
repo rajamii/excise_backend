@@ -161,7 +161,24 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
 
         if _is_scoped_officer_or_licensee(user_role_name):
             if hasattr(user, 'supply_chain_profile'):
-                return queryset.filter(licensee=user.supply_chain_profile)
+                # Filter by licensee profile AND license if available
+                queryset = queryset.filter(licensee=user.supply_chain_profile)
+                
+                # Additional filter by license for better isolation
+                from models.masters.license.models import License
+                user_licenses = License.objects.filter(
+                    applicant=user,
+                    is_active=True
+                ).values_list('license_id', flat=True)
+                
+                if user_licenses:
+                    # Show procurements with matching license OR no license (backward compatibility)
+                    queryset = queryset.filter(
+                        models.Q(license__license_id__in=user_licenses) | 
+                        models.Q(license__isnull=True)
+                    )
+                
+                return queryset
             return queryset.none()
 
         visible_stage_ids = _get_visible_stage_ids_for_user(
@@ -191,9 +208,22 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 # Fallback or error - Should be populated via command
                 raise serializers.ValidationError("Workflow configuration missing.")
 
+            # Get the license associated with this user/profile
+            from models.masters.license.models import License
+            license = None
+            try:
+                # Try to get the active license for this user
+                license = License.objects.filter(
+                    applicant=self.request.user,
+                    is_active=True
+                ).first()
+            except Exception as e:
+                print(f"Warning: Could not fetch license for user {self.request.user.id}: {e}")
+
             instance = serializer.save(
                 ref_no=ref_no,
                 licensee=profile,
+                license=license,
                 workflow=workflow,
                 current_stage=initial_stage,
                 manufacturing_unit=profile.manufacturing_unit_name

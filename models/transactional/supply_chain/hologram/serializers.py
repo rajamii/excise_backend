@@ -47,6 +47,7 @@ def _condition_role_matches(cond, request):
 
 class HologramProcurementSerializer(serializers.ModelSerializer):
     licensee_name = serializers.CharField(source='licensee.manufacturing_unit_name', read_only=True)
+    license_id = serializers.CharField(source='license.license_id', read_only=True)
     status = serializers.CharField(source='current_stage.name', read_only=True)
     stage_id = serializers.IntegerField(source='current_stage.id', read_only=True)
     allowed_actions = serializers.SerializerMethodField()
@@ -58,7 +59,7 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
     class Meta:
         model = HologramProcurement
         fields = '__all__'
-        read_only_fields = ('ref_no', 'date', 'workflow', 'current_stage', 'payment_status', 'manufacturing_unit', 'licensee')
+        read_only_fields = ('ref_no', 'date', 'workflow', 'current_stage', 'payment_status', 'manufacturing_unit', 'licensee', 'license')
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
