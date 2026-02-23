@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.db import transaction as db_transaction, models
+from decimal import Decimal
 from .models import HologramProcurement, HologramRequest, HologramRollsDetails
 from .serializers import HologramProcurementSerializer, HologramRequestSerializer
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition, Transaction, StagePermission
@@ -347,6 +348,9 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         if not action_name:
             return Response({'error': 'Action is required'}, status=status.HTTP_400_BAD_REQUEST)
 
+        normalized_action = str(action_name or '').strip().lower()
+        wallet_result = None
+
         # Find transition matching current stage and action
         transitions = WorkflowTransition.objects.filter(
             workflow=instance.workflow,
@@ -365,6 +369,9 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 
         if selected_transition:
             with db_transaction.atomic():
+                if normalized_action == 'pay':
+                    wallet_result = self._debit_hologram_wallet_for_payment(instance, request.user)
+
                 instance.current_stage = selected_transition.to_stage
                 
                 # CRITICAL: Save carton_details if provided with the action
@@ -382,6 +389,29 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                      if instance.carton_details:
                          self._sync_rolls_details(instance, instance.carton_details)
 
+                if normalized_action == 'pay':
+                    instance.payment_status = 'completed'
+                    payment_details = dict(instance.payment_details or {})
+                    history = list(payment_details.get('wallet_history') or [])
+                    history.append({
+                        'transaction_id': wallet_result.get('transaction_id') if wallet_result else '',
+                        'amount': str(wallet_result.get('amount')) if wallet_result else '0',
+                        'wallet_type': wallet_result.get('wallet_type') if wallet_result else 'hologram',
+                        'head_of_account': wallet_result.get('head_of_account') if wallet_result else '',
+                        'paid_at': timezone.now().isoformat(),
+                        'paid_by': str(getattr(request.user, 'username', '') or ''),
+                        'reference_no': instance.ref_no
+                    })
+                    payment_details.update({
+                        'wallet_payment': float(wallet_result.get('amount')) if wallet_result else float(payment_details.get('wallet_payment') or 0),
+                        'total_amount': float(wallet_result.get('amount')) if wallet_result else float(payment_details.get('total_amount') or 0),
+                        'payment_mode': 'wallet',
+                        'payment_status': 'completed',
+                        'paid_at': timezone.now().isoformat(),
+                        'wallet_history': history
+                    })
+                    instance.payment_details = payment_details
+
                 Transaction.objects.create(
                     application=instance,
                     stage=selected_transition.to_stage,
@@ -397,6 +427,30 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 if carton_details:
                     instance.carton_details = carton_details
                     self._sync_rolls_details(instance, carton_details)
+
+            if normalized_action == 'pay':
+                wallet_result = self._debit_hologram_wallet_for_payment(instance, request.user)
+                instance.payment_status = 'completed'
+                payment_details = dict(instance.payment_details or {})
+                history = list(payment_details.get('wallet_history') or [])
+                history.append({
+                    'transaction_id': wallet_result.get('transaction_id') if wallet_result else '',
+                    'amount': str(wallet_result.get('amount')) if wallet_result else '0',
+                    'wallet_type': wallet_result.get('wallet_type') if wallet_result else 'hologram',
+                    'head_of_account': wallet_result.get('head_of_account') if wallet_result else '',
+                    'paid_at': timezone.now().isoformat(),
+                    'paid_by': str(getattr(request.user, 'username', '') or ''),
+                    'reference_no': instance.ref_no
+                })
+                payment_details.update({
+                    'wallet_payment': float(wallet_result.get('amount')) if wallet_result else float(payment_details.get('wallet_payment') or 0),
+                    'total_amount': float(wallet_result.get('amount')) if wallet_result else float(payment_details.get('total_amount') or 0),
+                    'payment_mode': 'wallet',
+                    'payment_status': 'completed',
+                    'paid_at': timezone.now().isoformat(),
+                    'wallet_history': history
+                })
+                instance.payment_details = payment_details
             
             instance.save()
             
@@ -406,8 +460,108 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 performed_by=self.request.user,
                 remarks=remarks or f"Action '{action_name}' performed"
             )
-            
-        return Response(self.get_serializer(instance).data)
+
+        instance.save()
+        response_payload = self.get_serializer(instance).data
+        if wallet_result is not None:
+            response_payload['wallet_deduction'] = wallet_result
+        return Response(response_payload)
+
+    def _debit_hologram_wallet_for_payment(self, instance, user):
+        """
+        Debit hologram wallet immediately when licensee pays for hologram procurement.
+        Persists wallet history in wallet_transactions table.
+        """
+        from models.transactional.payment.models import WalletBalance, WalletTransaction
+
+        licensee_id = (
+            str(getattr(getattr(instance, 'license', None), 'license_id', '') or '').strip() or
+            str(getattr(getattr(instance, 'licensee', None), 'licensee_id', '') or '').strip()
+        )
+        if not licensee_id:
+            raise serializers.ValidationError({'error': 'Unable to resolve licensee id for wallet deduction.'})
+
+        total_qty = (
+            Decimal(str(instance.local_qty or 0)) +
+            Decimal(str(instance.export_qty or 0)) +
+            Decimal(str(instance.defence_qty or 0))
+        )
+        amount = (total_qty * Decimal('0.15')).quantize(Decimal('0.01'))
+        if amount <= 0:
+            raise serializers.ValidationError({'error': 'Invalid hologram payment amount.'})
+
+        transaction_id = f"HGP-{instance.id}-PAYMENT"
+        existing = WalletTransaction.objects.filter(
+            transaction_id=transaction_id,
+            source_module='hologram_procurement',
+            entry_type='DR'
+        ).first()
+        if existing:
+            return {
+                'transaction_id': existing.transaction_id,
+                'amount': Decimal(str(existing.amount or 0)),
+                'wallet_type': existing.wallet_type,
+                'head_of_account': existing.head_of_account,
+                'balance_after': Decimal(str(existing.balance_after or 0)),
+                'reference_no': existing.reference_no,
+                'already_processed': True
+            }
+
+        with db_transaction.atomic():
+            wallet = (
+                WalletBalance.objects.select_for_update()
+                .filter(licensee_id=licensee_id, wallet_type__iexact='hologram')
+                .order_by('wallet_balance_id')
+                .first()
+            )
+            if not wallet:
+                raise serializers.ValidationError({
+                    'error': f'Hologram wallet not found for licensee_id={licensee_id}.'
+                })
+
+            before = Decimal(str(wallet.current_balance or 0))
+            if before < amount:
+                raise serializers.ValidationError({
+                    'error': f'Insufficient hologram wallet balance. Available: {before}, Required: {amount}.'
+                })
+
+            after = before - amount
+            now_ts = timezone.now()
+            wallet.current_balance = after
+            wallet.total_debit = Decimal(str(wallet.total_debit or 0)) + amount
+            wallet.last_updated_at = now_ts
+            wallet.save(update_fields=['current_balance', 'total_debit', 'last_updated_at'])
+
+            WalletTransaction.objects.create(
+                wallet_balance=wallet,
+                transaction_id=transaction_id,
+                licensee_id=licensee_id,
+                licensee_name=wallet.licensee_name,
+                user_id=str(getattr(user, 'username', '') or wallet.user_id or ''),
+                module_type=wallet.module_type,
+                wallet_type=wallet.wallet_type,
+                head_of_account=wallet.head_of_account,
+                entry_type='DR',
+                transaction_type='debit',
+                amount=amount,
+                balance_before=before,
+                balance_after=after,
+                reference_no=instance.ref_no,
+                source_module='hologram_procurement',
+                payment_status='success',
+                remarks=f'Hologram wallet debit for procurement {instance.ref_no}',
+                created_at=now_ts,
+            )
+
+        return {
+            'transaction_id': transaction_id,
+            'amount': amount,
+            'wallet_type': wallet.wallet_type,
+            'head_of_account': wallet.head_of_account,
+            'balance_after': after,
+            'reference_no': instance.ref_no,
+            'already_processed': False
+        }
     
     @action(detail=True, methods=['patch'], url_path='update-quantities')
     def update_quantities(self, request, pk=None):
