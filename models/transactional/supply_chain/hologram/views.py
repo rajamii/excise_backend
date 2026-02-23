@@ -3,7 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
-from django.db import transaction as db_transaction
+from django.db import transaction as db_transaction, models
 from .models import HologramProcurement, HologramRequest, HologramRollsDetails
 from .serializers import HologramProcurementSerializer, HologramRequestSerializer
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition, Transaction, StagePermission
@@ -101,23 +101,112 @@ def _get_visible_stage_ids_for_user(user, workflow_id):
 
 def _get_or_create_active_supply_chain_profile(user):
     profile = SupplyChainUserProfile.objects.filter(user=user).first()
+    active_license, establishment_name, site_address, license_type = _resolve_license_context(user)
     if profile:
+        update_fields = []
+        if establishment_name and profile.manufacturing_unit_name != establishment_name:
+            profile.manufacturing_unit_name = establishment_name
+            update_fields.append('manufacturing_unit_name')
+        if active_license and profile.licensee_id != active_license.license_id:
+            profile.licensee_id = active_license.license_id
+            update_fields.append('licensee_id')
+        if site_address and profile.address != site_address:
+            profile.address = site_address
+            update_fields.append('address')
+        if license_type and profile.license_type != license_type:
+            profile.license_type = license_type
+            update_fields.append('license_type')
+        if update_fields:
+            profile.save(update_fields=update_fields)
         return profile
 
     latest_unit = UserManufacturingUnit.objects.filter(user=user).order_by('-updated_at', '-id').first()
-    if not latest_unit:
+    if latest_unit:
+        profile, _ = SupplyChainUserProfile.objects.update_or_create(
+            user=user,
+            defaults={
+                'manufacturing_unit_name': latest_unit.manufacturing_unit_name,
+                'licensee_id': latest_unit.licensee_id,
+                'license_type': latest_unit.license_type,
+                'address': latest_unit.address,
+            }
+        )
+        return profile
+
+    if not (active_license and establishment_name):
         return None
 
     profile, _ = SupplyChainUserProfile.objects.update_or_create(
         user=user,
         defaults={
-            'manufacturing_unit_name': latest_unit.manufacturing_unit_name,
-            'licensee_id': latest_unit.licensee_id,
-            'license_type': latest_unit.license_type,
-            'address': latest_unit.address,
+            'manufacturing_unit_name': establishment_name,
+            'licensee_id': active_license.license_id,
+            'license_type': license_type,
+            'address': site_address,
+        }
+    )
+    UserManufacturingUnit.objects.update_or_create(
+        user=user,
+        licensee_id=active_license.license_id,
+        defaults={
+            'manufacturing_unit_name': establishment_name,
+            'license_type': license_type,
+            'address': site_address,
         }
     )
     return profile
+
+
+def _resolve_license_context(user):
+    active_license = None
+    establishment_name = ''
+    site_address = ''
+    license_type = 'Distillery'
+
+    try:
+        from models.masters.license.models import License
+        from models.transactional.new_license_application.models import NewLicenseApplication
+
+        active_license = (
+            License.objects.filter(
+                applicant=user,
+                source_type='new_license_application',
+                is_active=True
+            )
+            .order_by('-issue_date', '-license_id')
+            .first()
+        )
+
+        if not active_license:
+            active_license = (
+                License.objects.filter(
+                    applicant=user,
+                    is_active=True
+                )
+                .order_by('-issue_date', '-license_id')
+                .first()
+            )
+
+        if active_license:
+            source = getattr(active_license, 'source_application', None)
+            establishment_name = str(getattr(source, 'establishment_name', '') or '').strip()
+            site_address = str(getattr(source, 'site_address', '') or '').strip()
+
+            if not establishment_name and active_license.source_object_id:
+                app = NewLicenseApplication.objects.filter(
+                    application_id=str(active_license.source_object_id).strip()
+                ).only('establishment_name', 'site_address').first()
+                if app:
+                    establishment_name = str(getattr(app, 'establishment_name', '') or '').strip()
+                    site_address = str(getattr(app, 'site_address', '') or '').strip()
+
+            category_name = str(getattr(getattr(active_license, 'license_category', None), 'category_name', '') or '').lower()
+            if 'beer' in category_name or 'brewery' in category_name:
+                license_type = 'Brewery'
+    except Exception:
+        return None, '', '', 'Distillery'
+
+    return active_license, establishment_name, site_address, license_type
 
 def _generate_financial_year(now_dt=None):
     dt = timezone.localtime(now_dt) if now_dt else timezone.localtime()
@@ -192,6 +281,30 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         profile = _get_or_create_active_supply_chain_profile(self.request.user)
+        license, manufacturing_unit_name, _, _ = _resolve_license_context(self.request.user)
+        
+        # If no license found or no establishment name, try profile
+        if not manufacturing_unit_name and profile:
+            manufacturing_unit_name = profile.manufacturing_unit_name
+
+        if not license and profile and profile.licensee_id:
+            try:
+                from models.masters.license.models import License
+                license = License.objects.filter(
+                    license_id=profile.licensee_id,
+                    is_active=True
+                ).first()
+            except Exception:
+                license = None
+
+        if not profile and license and manufacturing_unit_name:
+            profile = _get_or_create_active_supply_chain_profile(self.request.user)
+        
+        # If still no manufacturing unit name, raise error
+        if not manufacturing_unit_name:
+            raise serializers.ValidationError({
+                'detail': 'No manufacturing unit found. Please ensure you have an active license.'
+            })
         if not profile:
             raise serializers.ValidationError({
                 'detail': 'No active supply chain profile found. Select your manufacturing unit first.'
@@ -208,25 +321,13 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 # Fallback or error - Should be populated via command
                 raise serializers.ValidationError("Workflow configuration missing.")
 
-            # Get the license associated with this user/profile
-            from models.masters.license.models import License
-            license = None
-            try:
-                # Try to get the active license for this user
-                license = License.objects.filter(
-                    applicant=self.request.user,
-                    is_active=True
-                ).first()
-            except Exception as e:
-                print(f"Warning: Could not fetch license for user {self.request.user.id}: {e}")
-
             instance = serializer.save(
                 ref_no=ref_no,
                 licensee=profile,
                 license=license,
                 workflow=workflow,
                 current_stage=initial_stage,
-                manufacturing_unit=profile.manufacturing_unit_name
+                manufacturing_unit=manufacturing_unit_name
             )
             
             # Log initial transaction

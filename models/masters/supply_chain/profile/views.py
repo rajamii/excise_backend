@@ -5,6 +5,8 @@ from .models import SupplyChainUserProfile
 from .serializers import SupplyChainUserProfileSerializer
 from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
 from models.masters.license.models import License
+from models.transactional.new_license_application.models import NewLicenseApplication
+from .models import UserManufacturingUnit
 
 
 def _resolve_approved_license_id(user, raw_license_id: str = '', unit_name: str = '') -> str:
@@ -48,6 +50,69 @@ def _resolve_approved_license_id(user, raw_license_id: str = '', unit_name: str 
         return str(latest.license_id).strip()
 
     return ''
+
+
+def _resolve_latest_approved_license_context(user):
+    approved_license = (
+        License.objects.filter(
+            applicant=user,
+            source_type='new_license_application',
+            is_active=True
+        )
+        .order_by('-issue_date', '-license_id')
+        .first()
+    )
+    if not approved_license:
+        return None, '', '', ''
+
+    establishment_name = ''
+    site_address = ''
+    source_app = getattr(approved_license, 'source_application', None)
+    if source_app:
+        establishment_name = str(getattr(source_app, 'establishment_name', '') or '').strip()
+        site_address = str(getattr(source_app, 'site_address', '') or '').strip()
+
+    if not establishment_name and approved_license.source_object_id:
+        app = NewLicenseApplication.objects.filter(
+            application_id=str(approved_license.source_object_id).strip()
+        ).only('establishment_name', 'site_address').first()
+        if app:
+            establishment_name = str(getattr(app, 'establishment_name', '') or '').strip()
+            site_address = str(getattr(app, 'site_address', '') or '').strip()
+
+    license_type = 'Distillery'
+    category_name = str(getattr(getattr(approved_license, 'license_category', None), 'category_name', '') or '').lower()
+    if 'beer' in category_name or 'brewery' in category_name:
+        license_type = 'Brewery'
+
+    return approved_license, establishment_name, site_address, license_type
+
+
+def _auto_bootstrap_profile_from_license(user):
+    approved_license, establishment_name, site_address, license_type = _resolve_latest_approved_license_context(user)
+    if not approved_license or not establishment_name:
+        return None
+
+    UserManufacturingUnit.objects.update_or_create(
+        user=user,
+        licensee_id=approved_license.license_id,
+        defaults={
+            'manufacturing_unit_name': establishment_name,
+            'license_type': license_type,
+            'address': site_address
+        }
+    )
+
+    profile, _ = SupplyChainUserProfile.objects.update_or_create(
+        user=user,
+        defaults={
+            'manufacturing_unit_name': establishment_name,
+            'licensee_id': approved_license.license_id,
+            'license_type': license_type,
+            'address': site_address
+        }
+    )
+    return profile
 
 class ManufacturingUnitListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -110,6 +175,10 @@ class SupplyChainUserProfileView(APIView):
             serializer = SupplyChainUserProfileSerializer(profile)
             return Response({'success': True, 'exists': True, 'data': serializer.data})
         except SupplyChainUserProfile.DoesNotExist:
+            profile = _auto_bootstrap_profile_from_license(request.user)
+            if profile:
+                serializer = SupplyChainUserProfileSerializer(profile)
+                return Response({'success': True, 'exists': True, 'data': serializer.data})
             return Response({'success': True, 'exists': False, 'data': None})
 
     def post(self, request):

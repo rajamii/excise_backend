@@ -51,7 +51,6 @@ class HologramProcurement(models.Model):
         db_table = 'hologram_procurement'
         ordering = ['-date']
         indexes = [
-            models.Index(fields=['license']),
             models.Index(fields=['licensee']),
             models.Index(fields=['current_stage']),
         ]
