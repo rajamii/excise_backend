@@ -280,6 +280,8 @@ class DailyHologramRegister(models.Model):
     
     # Link to Licensee
     licensee = models.ForeignKey(SupplyChainUserProfile, on_delete=models.CASCADE, related_name='daily_register_entries')
+    # Denormalized license for strict user/OIC ownership scoping.
+    license_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     
     # Core Data
     reference_no = models.CharField(max_length=100)
@@ -338,12 +340,23 @@ class DailyHologramRegister(models.Model):
         ordering = ['-usage_date', '-id']
         indexes = [
             models.Index(fields=['licensee', 'approval_status']),
+            models.Index(fields=['license_id', 'approval_status']),
             models.Index(fields=['cartoon_number', 'hologram_type']),
             models.Index(fields=['usage_date']),
         ]
 
     def __str__(self):
         return f"{self.reference_no} ({self.usage_date})"
+
+    def save(self, *args, **kwargs):
+        if not self.license_id:
+            resolved = (
+                str(getattr(getattr(self, 'hologram_request', None), 'license_id', '') or '').strip()
+                or str(getattr(getattr(self, 'licensee', None), 'licensee_id', '') or '').strip()
+            )
+            if resolved:
+                self.license_id = resolved
+        super().save(*args, **kwargs)
 
 
 class HologramSerialRange(models.Model):
@@ -441,14 +454,29 @@ class HologramUsageHistory(models.Model):
     
     # Link to daily register
     daily_register_entry = models.ForeignKey('DailyHologramRegister', null=True, blank=True, on_delete=models.SET_NULL, related_name='usage_history')
+    # Denormalized license for strict user/OIC ownership scoping.
+    license_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     
     class Meta:
         db_table = 'hologram_usage_history'
         ordering = ['-date', '-approved_at']
         indexes = [
             models.Index(fields=['roll', 'usage_type']),
+            models.Index(fields=['license_id', 'usage_type']),
             models.Index(fields=['date']),
         ]
-    
+
     def __str__(self):
         return f"{self.usage_type} - {self.from_serial} to {self.to_serial} ({self.date})"
+
+    def save(self, *args, **kwargs):
+        if not self.license_id:
+            resolved = (
+                str(getattr(getattr(self, 'daily_register_entry', None), 'license_id', '') or '').strip()
+                or str(getattr(getattr(self, 'roll', None), 'license_id', '') or '').strip()
+                or str(getattr(getattr(getattr(self, 'roll', None), 'procurement', None), 'license_id', '') or '').strip()
+                or str(getattr(getattr(getattr(getattr(self, 'roll', None), 'procurement', None), 'licensee', None), 'licensee_id', '') or '').strip()
+            )
+            if resolved:
+                self.license_id = resolved
+        super().save(*args, **kwargs)

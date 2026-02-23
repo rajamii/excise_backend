@@ -374,7 +374,7 @@ class DailyHologramRegisterSerializer(serializers.ModelSerializer):
     class Meta:
         model = DailyHologramRegister
         fields = '__all__'
-        read_only_fields = ('submission_date', 'licensee', 'approved_by', 'approved_at')
+        read_only_fields = ('submission_date', 'licensee', 'license_id', 'approved_by', 'approved_at')
     
     def create(self, validated_data):
         # Extract allocated range fields before creating instance
@@ -444,7 +444,7 @@ class HologramUsageHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = HologramUsageHistory
         fields = '__all__'
-        read_only_fields = ('approved_by', 'approved_at')
+        read_only_fields = ('approved_by', 'approved_at', 'license_id')
 
 
 class HologramRollsDetailedSerializer(HologramRollsDetailsSerializer):

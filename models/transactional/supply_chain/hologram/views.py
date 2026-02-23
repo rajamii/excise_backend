@@ -1355,12 +1355,23 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
         # OIC / Licensee Access - Return entries for their licensee profile
         # Also support OIC roles which may use fallback profile
         if _is_scoped_officer_or_licensee(role_name):
-            return scope_by_profile_or_workflow(
+            scoped_by_daily_license = scope_by_profile_or_workflow(
+                user=user,
+                queryset=DailyHologramRegister.objects.all(),
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_REQUEST'],
+                licensee_field='license_id'
+            )
+            # Backward compatibility for old rows without daily.license_id populated.
+            scoped_by_profile_license = scope_by_profile_or_workflow(
                 user=user,
                 queryset=DailyHologramRegister.objects.all(),
                 workflow_id=WORKFLOW_IDS['HOLOGRAM_REQUEST'],
                 licensee_field='licensee__licensee_id'
             )
+            return DailyHologramRegister.objects.filter(
+                models.Q(id__in=scoped_by_daily_license.values('id')) |
+                models.Q(id__in=scoped_by_profile_license.values('id'))
+            ).distinct()
                 
         # IT Cell / Admin / OIC Access (View All)
         if _get_user_role_id(user) and StagePermission.objects.filter(
@@ -1378,7 +1389,10 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
             if hasattr(self.request.user, 'supply_chain_profile'):
                 try:
                     profile = self.request.user.supply_chain_profile
-                    instance = serializer.save(licensee=profile)
+                    instance = serializer.save(
+                        licensee=profile,
+                        license_id=_resolve_request_license_id(profile=profile, acting_user=self.request.user) or None
+                    )
                 except Exception as e:
                     print(f"ERROR: accessing supply_chain_profile: {e}")
                     raise serializers.ValidationError(f"User profile error: {str(e)}")
@@ -1391,7 +1405,10 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                     first_profile = SupplyChainUserProfile.objects.first()
                     if first_profile:
                         print(f"DEBUG: Fallback to first available profile: {first_profile.manufacturing_unit_name}")
-                        instance = serializer.save(licensee=first_profile)
+                        instance = serializer.save(
+                            licensee=first_profile,
+                            license_id=_resolve_request_license_id(profile=first_profile, acting_user=self.request.user) or None
+                        )
                     else:
                         raise serializers.ValidationError("No profile found.")
                 
@@ -2719,9 +2736,17 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
         month_num = month_map.get(month_param, timezone.now().month)
         year_num = int(year_param)
         
-        # Get licensee from user if not provided
-        if not licensee_id and hasattr(request.user, 'supply_chain_profile'):
-            licensee_id = request.user.supply_chain_profile.id
+        # Get scoped license from user if not provided.
+        # Prefer denormalized license_id (NA/NLI format), keep legacy profile-id fallback.
+        legacy_profile_id = None
+        if hasattr(request.user, 'supply_chain_profile'):
+            legacy_profile_id = getattr(request.user.supply_chain_profile, 'id', None)
+        scoped_license_id = _resolve_request_license_id(
+            profile=getattr(request.user, 'supply_chain_profile', None),
+            acting_user=request.user
+        )
+        if not licensee_id:
+            licensee_id = scoped_license_id or (str(legacy_profile_id) if legacy_profile_id else '')
         
         # Build query filters
         filters = Q(
@@ -2732,7 +2757,11 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
         )
         
         if licensee_id:
-            filters &= Q(licensee_id=licensee_id)
+            normalized_license = str(licensee_id).strip()
+            if any(ch.isalpha() for ch in normalized_license) or '/' in normalized_license:
+                filters &= (Q(license_id=normalized_license) | Q(licensee__licensee_id=normalized_license))
+            else:
+                filters &= Q(licensee_id=normalized_license)
         
         # Get approved daily register entries for the month
         daily_entries = DailyHologramRegister.objects.filter(filters).order_by('usage_date', 'id')
@@ -2749,7 +2778,11 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
             approval_status='APPROVED'
         )
         if licensee_id:
-            prev_filters &= Q(licensee_id=licensee_id)
+            normalized_license = str(licensee_id).strip()
+            if any(ch.isalpha() for ch in normalized_license) or '/' in normalized_license:
+                prev_filters &= (Q(license_id=normalized_license) | Q(licensee__licensee_id=normalized_license))
+            else:
+                prev_filters &= Q(licensee_id=normalized_license)
         
         prev_entries = DailyHologramRegister.objects.filter(prev_filters)
         
@@ -2764,7 +2797,11 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
             type=hologram_type
         )
         if licensee_id:
-            arrival_filters &= (Q(license_id=licensee_id) | Q(procurement__licensee_id=licensee_id))
+            normalized_license = str(licensee_id).strip()
+            if any(ch.isalpha() for ch in normalized_license) or '/' in normalized_license:
+                arrival_filters &= (Q(license_id=normalized_license) | Q(procurement__licensee__licensee_id=normalized_license))
+            else:
+                arrival_filters &= Q(procurement__licensee_id=normalized_license)
         
         arrivals = HologramRollsDetails.objects.filter(arrival_filters)
         fresh_arrivals = arrivals.aggregate(total=Sum('total_count'))['total'] or 0
@@ -2789,7 +2826,13 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
                 type=hologram_type
             )
             if licensee_id:
-                all_prev_rolls = all_prev_rolls.filter(Q(license_id=licensee_id) | Q(procurement__licensee_id=licensee_id))
+                normalized_license = str(licensee_id).strip()
+                if any(ch.isalpha() for ch in normalized_license) or '/' in normalized_license:
+                    all_prev_rolls = all_prev_rolls.filter(
+                        Q(license_id=normalized_license) | Q(procurement__licensee__licensee_id=normalized_license)
+                    )
+                else:
+                    all_prev_rolls = all_prev_rolls.filter(procurement__licensee_id=normalized_license)
             
             total_received = all_prev_rolls.aggregate(total=Sum('total_count'))['total'] or 0
             
@@ -2801,7 +2844,13 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
                 approval_status='APPROVED'
             )
             if licensee_id:
-                all_prev_usage = all_prev_usage.filter(licensee_id=licensee_id)
+                normalized_license = str(licensee_id).strip()
+                if any(ch.isalpha() for ch in normalized_license) or '/' in normalized_license:
+                    all_prev_usage = all_prev_usage.filter(
+                        Q(license_id=normalized_license) | Q(licensee__licensee_id=normalized_license)
+                    )
+                else:
+                    all_prev_usage = all_prev_usage.filter(licensee_id=normalized_license)
             
             total_prev_utilized = all_prev_usage.aggregate(total=Sum('issued_qty'))['total'] or 0
             total_prev_wastage = all_prev_usage.aggregate(total=Sum('wastage_qty'))['total'] or 0
