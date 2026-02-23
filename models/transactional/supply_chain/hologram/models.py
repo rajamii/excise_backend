@@ -358,6 +358,8 @@ class HologramSerialRange(models.Model):
     ]
     
     roll = models.ForeignKey(HologramRollsDetails, on_delete=models.CASCADE, related_name='ranges')
+    # Denormalized license for direct user/OIC ownership filtering.
+    license_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     from_serial = models.CharField(max_length=100)
     to_serial = models.CharField(max_length=100)
     count = models.IntegerField()
@@ -385,11 +387,23 @@ class HologramSerialRange(models.Model):
         ordering = ['from_serial']
         indexes = [
             models.Index(fields=['roll', 'status']),
+            models.Index(fields=['license_id', 'status']),
             models.Index(fields=['from_serial', 'to_serial']),
         ]
     
     def __str__(self):
         return f"{self.from_serial} - {self.to_serial} ({self.status})"
+
+    def save(self, *args, **kwargs):
+        if not self.license_id and self.roll_id:
+            resolved = (
+                str(getattr(getattr(self.roll, 'procurement', None), 'license_id', '') or '').strip()
+                or str(getattr(self.roll, 'license_id', '') or '').strip()
+                or str(getattr(getattr(getattr(self.roll, 'procurement', None), 'licensee', None), 'licensee_id', '') or '').strip()
+            )
+            if resolved:
+                self.license_id = resolved
+        super().save(*args, **kwargs)
 
 
 class HologramUsageHistory(models.Model):
