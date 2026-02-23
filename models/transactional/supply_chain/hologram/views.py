@@ -188,6 +188,32 @@ def _resolve_roll_license_id(procurement, acting_user=None):
     return ''
 
 
+def _resolve_request_license_id(profile=None, acting_user=None):
+    """
+    Resolve license_id to persist on hologram_request.
+    """
+    candidates = []
+
+    if acting_user is not None:
+        assignment = getattr(acting_user, 'oic_assignment', None)
+        if assignment is not None:
+            candidates.extend([
+                getattr(assignment, 'licensee_id', ''),
+                getattr(getattr(assignment, 'license', None), 'license_id', ''),
+            ])
+        candidates.append(getattr(getattr(acting_user, 'supply_chain_profile', None), 'licensee_id', ''))
+
+    if profile is not None:
+        candidates.append(getattr(profile, 'licensee_id', ''))
+
+    for value in candidates:
+        normalized = str(value or '').strip()
+        if normalized:
+            return normalized
+
+    return ''
+
+
 def _resolve_license_context(user):
     active_license = None
     establishment_name = ''
@@ -936,12 +962,23 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         print(f"DEBUG: User: {user.username}, Role: '{role_name}'")
 
         if _is_scoped_officer_or_licensee(role_name):
-            return scope_by_profile_or_workflow(
+            scoped_by_request_license = scope_by_profile_or_workflow(
+                user=user,
+                queryset=queryset,
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_REQUEST'],
+                licensee_field='license_id'
+            )
+            # Backward compatibility for historical rows without license_id populated.
+            scoped_by_profile_license = scope_by_profile_or_workflow(
                 user=user,
                 queryset=queryset,
                 workflow_id=WORKFLOW_IDS['HOLOGRAM_REQUEST'],
                 licensee_field='licensee__licensee_id'
             )
+            return queryset.filter(
+                models.Q(id__in=scoped_by_request_license.values('id')) |
+                models.Q(id__in=scoped_by_profile_license.values('id'))
+            ).distinct()
 
         visible_stage_ids = _get_visible_stage_ids_for_user(
             user=user,
@@ -971,6 +1008,7 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
             instance = serializer.save(
                 ref_no=ref_no,
                 licensee=profile,
+                license_id=_resolve_request_license_id(profile=profile, acting_user=self.request.user) or None,
                 workflow=workflow,
                 current_stage=initial_stage
             )
@@ -988,6 +1026,15 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         action_name = request.data.get('action')
         remarks = request.data.get('remarks', '')
         issued_assets = request.data.get('issued_assets')
+
+        if not getattr(instance, 'license_id', None):
+            resolved_license_id = _resolve_request_license_id(
+                profile=getattr(instance, 'licensee', None),
+                acting_user=request.user
+            )
+            if resolved_license_id:
+                instance.license_id = resolved_license_id
+                instance.save(update_fields=['license_id'])
 
         print(f"DEBUG: perform_action. Ref: {instance.ref_no}, Current Stage: {instance.current_stage.name}, Action: {action_name}")
         print(f"DEBUG: issued_assets received: {issued_assets}")

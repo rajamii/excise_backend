@@ -65,6 +65,8 @@ class HologramRequest(models.Model):
     
     ref_no = models.CharField(max_length=50, unique=True)
     licensee = models.ForeignKey(SupplyChainUserProfile, on_delete=models.CASCADE, related_name='hologram_requests')
+    # Denormalized license for strict OIC/licensee ownership scoping.
+    license_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     submission_date = models.DateTimeField(default=timezone.now)
     usage_date = models.DateField()
     quantity = models.IntegerField()
