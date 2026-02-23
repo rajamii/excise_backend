@@ -61,7 +61,7 @@ class HologramProcurement(models.Model):
 
 class HologramRequest(models.Model):
     STATUS_SUBMITTED = 'Submitted'
-    STATUS_APPROVED = 'Approved by Permit Section'
+    STATUS_APPROVED = 'Approved by OIC'
     
     ref_no = models.CharField(max_length=50, unique=True)
     licensee = models.ForeignKey(SupplyChainUserProfile, on_delete=models.CASCADE, related_name='hologram_requests')

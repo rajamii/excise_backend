@@ -2458,7 +2458,7 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 approval_txn = req.transactions.filter(
                     Q(stage__name__icontains='Approved') | 
                     Q(stage__name__icontains='In Use') |
-                    Q(stage__name='Approved by Permit Section')
+                    Q(stage__name='Approved by OIC')
                 ).order_by('timestamp').first()
                 
                 print(f"Approval Transaction: {approval_txn.stage.name if approval_txn else 'None'}")
