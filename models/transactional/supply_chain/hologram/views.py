@@ -10,6 +10,7 @@ from .serializers import HologramProcurementSerializer, HologramRequestSerialize
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition, Transaction, StagePermission
 from auth.workflow.constants import WORKFLOW_IDS
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
+from models.transactional.supply_chain.access_control import scope_by_profile_or_workflow
 
 HOLOGRAM_REF_PREFIX = 'NHP'
 HOLOGRAM_REF_DISTRICT_CODE = '1101'
@@ -158,6 +159,35 @@ def _get_or_create_active_supply_chain_profile(user):
     return profile
 
 
+def _resolve_roll_license_id(procurement, acting_user=None):
+    """
+    Resolve license_id to persist on hologram_rolls_details.
+    Priority keeps OIC-mapped ownership explicit at submit/arrival time.
+    """
+    candidates = []
+
+    if acting_user is not None:
+        assignment = getattr(acting_user, 'oic_assignment', None)
+        if assignment is not None:
+            candidates.extend([
+                getattr(assignment, 'licensee_id', ''),
+                getattr(getattr(assignment, 'license', None), 'license_id', ''),
+            ])
+        candidates.append(getattr(getattr(acting_user, 'supply_chain_profile', None), 'licensee_id', ''))
+
+    candidates.extend([
+        getattr(getattr(procurement, 'license', None), 'license_id', ''),
+        getattr(getattr(procurement, 'licensee', None), 'licensee_id', ''),
+    ])
+
+    for value in candidates:
+        normalized = str(value or '').strip()
+        if normalized:
+            return normalized
+
+    return ''
+
+
 def _resolve_license_context(user):
     active_license = None
     establishment_name = ''
@@ -250,26 +280,12 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         user_role_name = _normalize_role_name(getattr(getattr(user, 'role', None), 'name', ''))
 
         if _is_scoped_officer_or_licensee(user_role_name):
-            if hasattr(user, 'supply_chain_profile'):
-                # Filter by licensee profile AND license if available
-                queryset = queryset.filter(licensee=user.supply_chain_profile)
-                
-                # Additional filter by license for better isolation
-                from models.masters.license.models import License
-                user_licenses = License.objects.filter(
-                    applicant=user,
-                    is_active=True
-                ).values_list('license_id', flat=True)
-                
-                if user_licenses:
-                    # Show procurements with matching license OR no license (backward compatibility)
-                    queryset = queryset.filter(
-                        models.Q(license__license_id__in=user_licenses) | 
-                        models.Q(license__isnull=True)
-                    )
-                
-                return queryset
-            return queryset.none()
+            return scope_by_profile_or_workflow(
+                user=user,
+                queryset=queryset,
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'],
+                licensee_field='licensee__licensee_id'
+            )
 
         visible_stage_ids = _get_visible_stage_ids_for_user(
             user=user,
@@ -380,14 +396,14 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     if carton_details:
                         instance.carton_details = carton_details
                         # Sync to new table
-                        self._sync_rolls_details(instance, carton_details)
+                        self._sync_rolls_details(instance, carton_details, acting_user=request.user)
 
                 instance.save()
                 
                 # Check for Arrival Confirmation to ensure sync
                 if action_name in ['confirm_arrival', 'arrival_confirmed', 'Confirm Arrival', 'confirm', 'Confirm']:
                      if instance.carton_details:
-                         self._sync_rolls_details(instance, instance.carton_details)
+                         self._sync_rolls_details(instance, instance.carton_details, acting_user=request.user)
 
                 if normalized_action == 'pay':
                     instance.payment_status = 'completed'
@@ -426,7 +442,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 carton_details = request.data.get('carton_details')
                 if carton_details:
                     instance.carton_details = carton_details
-                    self._sync_rolls_details(instance, carton_details)
+                    self._sync_rolls_details(instance, carton_details, acting_user=request.user)
 
             if normalized_action == 'pay':
                 wallet_result = self._debit_hologram_wallet_for_payment(instance, request.user)
@@ -637,7 +653,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             'new_payment_amount': new_payment_amount
         })
 
-    def _sync_rolls_details(self, procurement, carton_details):
+    def _sync_rolls_details(self, procurement, carton_details, acting_user=None):
         """
         Syncs JSON carton details to HologramRollsDetails table
         """
@@ -656,6 +672,8 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             # Default fallback type (for backward compatibility)
             default_proc_type = proc_types[0] if proc_types else 'LOCAL'
                 
+            resolved_license_id = _resolve_roll_license_id(procurement, acting_user=acting_user)
+
             for item in carton_details:
                 carton_num = item.get('cartoonNumber') or item.get('cartoon_number') or item.get('carton_number')
                 if not carton_num:
@@ -688,6 +706,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     carton_number=carton_num,
                     defaults={
                         **defaults,
+                        'license_id': resolved_license_id or None,
                         'available': defaults['total_count'],
                         'status': 'AVAILABLE'
                     }
@@ -718,6 +737,8 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     obj.from_serial = defaults['from_serial']
                     obj.to_serial = defaults['to_serial']
                     obj.total_count = defaults['total_count']
+                    if resolved_license_id:
+                        obj.license_id = resolved_license_id
                     
                     # Reset available if unused (assuming edit mode)
                     if obj.used == 0 and obj.damaged == 0:
@@ -915,9 +936,12 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         print(f"DEBUG: User: {user.username}, Role: '{role_name}'")
 
         if _is_scoped_officer_or_licensee(role_name):
-            if hasattr(user, 'supply_chain_profile'):
-                return queryset.filter(licensee=user.supply_chain_profile)
-            return queryset.none()
+            return scope_by_profile_or_workflow(
+                user=user,
+                queryset=queryset,
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_REQUEST'],
+                licensee_field='licensee__licensee_id'
+            )
 
         visible_stage_ids = _get_visible_stage_ids_for_user(
             user=user,
@@ -1284,9 +1308,12 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
         # OIC / Licensee Access - Return entries for their licensee profile
         # Also support OIC roles which may use fallback profile
         if _is_scoped_officer_or_licensee(role_name):
-            if hasattr(user, 'supply_chain_profile'):
-                return DailyHologramRegister.objects.filter(licensee=user.supply_chain_profile)
-            return DailyHologramRegister.objects.none()
+            return scope_by_profile_or_workflow(
+                user=user,
+                queryset=DailyHologramRegister.objects.all(),
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_REQUEST'],
+                licensee_field='licensee__licensee_id'
+            )
                 
         # IT Cell / Admin / OIC Access (View All)
         if _get_user_role_id(user) and StagePermission.objects.filter(
@@ -2179,9 +2206,23 @@ class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
         
         # OIC / Licensee Access
         if _is_scoped_officer_or_licensee(role_name):
-            if hasattr(user, 'supply_chain_profile'):
-                return HologramRollsDetails.objects.filter(procurement__licensee=user.supply_chain_profile)
-            return HologramRollsDetails.objects.none()
+            scoped_by_roll_license = scope_by_profile_or_workflow(
+                user=user,
+                queryset=HologramRollsDetails.objects.all(),
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'],
+                licensee_field='license_id'
+            )
+            # Backward compatibility for historical rows without license_id populated.
+            scoped_by_procurement = scope_by_profile_or_workflow(
+                user=user,
+                queryset=HologramRollsDetails.objects.all(),
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'],
+                licensee_field='procurement__licensee__licensee_id'
+            )
+            return HologramRollsDetails.objects.filter(
+                models.Q(id__in=scoped_by_roll_license.values('id')) |
+                models.Q(id__in=scoped_by_procurement.values('id'))
+            ).distinct()
                 
         # IT Cell / Admin / Commissioner / OIC Access (View All)
         if _get_user_role_id(user) and StagePermission.objects.filter(
@@ -2676,7 +2717,7 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
             type=hologram_type
         )
         if licensee_id:
-            arrival_filters &= Q(procurement__licensee_id=licensee_id)
+            arrival_filters &= (Q(license_id=licensee_id) | Q(procurement__licensee_id=licensee_id))
         
         arrivals = HologramRollsDetails.objects.filter(arrival_filters)
         fresh_arrivals = arrivals.aggregate(total=Sum('total_count'))['total'] or 0
@@ -2701,7 +2742,7 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
                 type=hologram_type
             )
             if licensee_id:
-                all_prev_rolls = all_prev_rolls.filter(procurement__licensee_id=licensee_id)
+                all_prev_rolls = all_prev_rolls.filter(Q(license_id=licensee_id) | Q(procurement__licensee_id=licensee_id))
             
             total_received = all_prev_rolls.aggregate(total=Sum('total_count'))['total'] or 0
             

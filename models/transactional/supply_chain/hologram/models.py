@@ -120,6 +120,8 @@ class HologramRollsDetails(models.Model):
     ]
     
     procurement = models.ForeignKey(HologramProcurement, on_delete=models.CASCADE, related_name='rolls_details')
+    # Denormalized license for direct ownership filtering in OIC/licensee dashboards.
+    license_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     received_date = models.DateTimeField(default=timezone.now)
     carton_number = models.CharField(max_length=100, unique=True)
     type = models.CharField(max_length=50, choices=TYPE_CHOICES, blank=True, null=True)
