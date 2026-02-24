@@ -14,3 +14,12 @@ def noise_dots_light(draw, image):
             fill=captcha_settings.CAPTCHA_FOREGROUND_COLOR,
         )
     return draw
+
+
+def random_letter_color_dark(_idx, _plaintext_captcha):
+    """Random per-letter color with strong contrast for readability."""
+    return "#{:02X}{:02X}{:02X}".format(
+        random.randint(20, 120),
+        random.randint(20, 120),
+        random.randint(20, 120),
+    )

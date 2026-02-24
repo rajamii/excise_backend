@@ -230,7 +230,7 @@ CAPTCHA_NOISE_FUNCTIONS = (
     "captcha.helpers.noise_arcs",
     "auth.user.captcha_helpers.noise_dots_light",
 )
-CAPTCHA_FILTER_FUNCTIONS = ("captcha.helpers.post_smooth",)
-CAPTCHA_LETTER_COLOR_FUNCT = "captcha.helpers.random_letter_color_challenge"
+CAPTCHA_FILTER_FUNCTIONS = ()
+CAPTCHA_LETTER_COLOR_FUNCT = "auth.user.captcha_helpers.random_letter_color_dark"
 CAPTCHA_FOREGROUND_COLOR = "#2b2b2b"
 CAPTCHA_BACKGROUND_COLOR = "#ffffff"
