@@ -1385,13 +1385,24 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         try:
+            save_kwargs = {}
+            # Daily register "Save" from OIC should be treated as approved entry metadata-wise.
+            is_fixed_payload = bool(self.request.data.get('is_fixed', False))
+            if is_fixed_payload:
+                save_kwargs.update({
+                    'approval_status': DailyHologramRegister.APPROVAL_STATUS_APPROVED,
+                    'approved_by': self.request.user,
+                    'approved_at': timezone.now()
+                })
+
             # Ensure licensee is set from the logged-in user
             if hasattr(self.request.user, 'supply_chain_profile'):
                 try:
                     profile = self.request.user.supply_chain_profile
                     instance = serializer.save(
                         licensee=profile,
-                        license_id=_resolve_request_license_id(profile=profile, acting_user=self.request.user) or None
+                        license_id=_resolve_request_license_id(profile=profile, acting_user=self.request.user) or None,
+                        **save_kwargs
                     )
                 except Exception as e:
                     print(f"ERROR: accessing supply_chain_profile: {e}")
@@ -1407,7 +1418,8 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                         print(f"DEBUG: Fallback to first available profile: {first_profile.manufacturing_unit_name}")
                         instance = serializer.save(
                             licensee=first_profile,
-                            license_id=_resolve_request_license_id(profile=first_profile, acting_user=self.request.user) or None
+                            license_id=_resolve_request_license_id(profile=first_profile, acting_user=self.request.user) or None,
+                            **save_kwargs
                         )
                     else:
                         raise serializers.ValidationError("No profile found.")
@@ -1481,6 +1493,12 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         instance = serializer.save()
+        # Keep officer name visible for edited fixed entries as well.
+        if bool(getattr(instance, 'is_fixed', False)) and not getattr(instance, 'approved_by_id', None):
+            instance.approval_status = DailyHologramRegister.APPROVAL_STATUS_APPROVED
+            instance.approved_by = self.request.user
+            instance.approved_at = timezone.now()
+            instance.save(update_fields=['approval_status', 'approved_by', 'approved_at'])
         self._sync_brand_warehouse_stock(instance)
 
     def _sync_brand_warehouse_stock(self, instance):
