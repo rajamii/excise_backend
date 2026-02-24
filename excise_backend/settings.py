@@ -219,3 +219,18 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
 }
+
+# Captcha tuning: keep it readable with only light line noise.
+CAPTCHA_LENGTH = 5
+CAPTCHA_TIMEOUT = 5  # minutes
+CAPTCHA_FONT_SIZE = 30
+CAPTCHA_IMAGE_SIZE = (130, 42)
+CAPTCHA_LETTER_ROTATION = (-5, 5)
+CAPTCHA_NOISE_FUNCTIONS = (
+    "captcha.helpers.noise_arcs",
+    "auth.user.captcha_helpers.noise_dots_light",
+)
+CAPTCHA_FILTER_FUNCTIONS = ("captcha.helpers.post_smooth",)
+CAPTCHA_LETTER_COLOR_FUNCT = "captcha.helpers.random_letter_color_challenge"
+CAPTCHA_FOREGROUND_COLOR = "#2b2b2b"
+CAPTCHA_BACKGROUND_COLOR = "#ffffff"
