@@ -16,6 +16,7 @@ class SiteEnquiryReport(models.Model):
     content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
     object_id = models.CharField(max_length=50)  # application_id is string PK
     content_object = GenericForeignKey('content_type', 'object_id')
+    license_id = models.CharField(max_length=100, blank=True, null=True)
 
     # === Worship Place ===
     has_traditional_place = models.BooleanField(default=False)
@@ -106,6 +107,7 @@ class SiteEnquiryReport(models.Model):
         unique_together = ('content_type', 'object_id')
         indexes = [
             models.Index(fields=['content_type', 'object_id']),
+            models.Index(fields=['license_id']),
         ]
 
     def __str__(self):

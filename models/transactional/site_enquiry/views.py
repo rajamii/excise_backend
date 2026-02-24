@@ -14,6 +14,59 @@ from models.transactional.new_license_application.models import NewLicenseApplic
 from auth.workflow.models import WorkflowStage
 from auth.workflow.services import WorkflowService
 
+
+def _first_non_empty(*values):
+    for value in values:
+        text = str(value or '').strip()
+        if text:
+            return text
+    return ''
+
+
+def _resolve_license_id_for_report(request, application):
+    explicit = _first_non_empty(
+        request.data.get('license_id'),
+        request.data.get('licenseId'),
+    )
+    if explicit:
+        return explicit
+
+    user = request.user
+
+    supply_chain_profile = getattr(user, 'supply_chain_profile', None)
+    if supply_chain_profile:
+        profile_license = _first_non_empty(getattr(supply_chain_profile, 'licensee_id', ''))
+        if profile_license:
+            return profile_license
+
+    manufacturing_units = getattr(user, 'manufacturing_units', None)
+    if manufacturing_units is not None:
+        latest_unit = manufacturing_units.order_by('-updated_at', '-created_at').first()
+        if latest_unit:
+            unit_license = _first_non_empty(getattr(latest_unit, 'licensee_id', ''))
+            if unit_license:
+                return unit_license
+
+    oic_assignment = getattr(user, 'oic_assignment', None)
+    if oic_assignment:
+        assignment_license = _first_non_empty(getattr(oic_assignment, 'licensee_id', ''))
+        if assignment_license:
+            return assignment_license
+
+    renewal_license = getattr(getattr(application, 'renewal_of', None), 'license_id', '')
+    application_license = _first_non_empty(
+        renewal_license,
+        getattr(application, 'license_no', ''),
+        getattr(application, 'license', ''),
+    )
+    if application_license:
+        return application_license
+
+    # For pre-approval flows (e.g. new license application), there is no
+    # issued NA/... license yet. Persist application_id as traceable fallback.
+    return _first_non_empty(getattr(application, 'application_id', ''))
+
+
 @api_view(['GET', 'POST'])
 @permission_classes([HasStagePermission])
 def site_enquiry_detail(request, application_id):
@@ -46,7 +99,11 @@ def site_enquiry_detail(request, application_id):
 
         serializer = SiteEnquiryReportSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save(content_type=ct, object_id=application.application_id)
+            serializer.save(
+                content_type=ct,
+                object_id=application.application_id,
+                license_id=_resolve_license_id_for_report(request, application) or None,
+            )
             return Response(serializer.data, status=201)
         return Response(serializer.errors, status=400)
     
