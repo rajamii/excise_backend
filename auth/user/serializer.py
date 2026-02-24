@@ -15,12 +15,13 @@ class UserSerializer(serializers.ModelSerializer):
     middleName = serializers.CharField(source='middle_name', read_only=True)
     lastName = serializers.CharField(source='last_name', read_only=True)
     phoneNumber = serializers.CharField(source='phone_number', read_only=True)
+    panNumber = serializers.SerializerMethodField()
     hasActiveLicense = serializers.SerializerMethodField()
     
     class Meta:
         model = CustomUser
-        fields = ['id', 'email', 'username', 'firstName', 'middleName', 'lastName', 
-                 'phoneNumber', 'district', 'subdivision', 'address', 'role',
+        fields = ['id', 'email', 'username', 'firstName', 'middleName', 'lastName',
+                 'phoneNumber', 'panNumber', 'district', 'subdivision', 'address', 'role',
                  'created_by', 'hasActiveLicense'
         ]
                  
@@ -60,6 +61,10 @@ class UserSerializer(serializers.ModelSerializer):
         if obj.new_license_applications.filter(current_stage__name='approved').exists():
             return True
         return False
+
+    def get_panNumber(self, obj):
+        profile = getattr(obj, 'licensee_profile', None)
+        return getattr(profile, 'pan_number', None)
 
 class UserCreateSerializer(serializers.ModelSerializer):
     class Meta:
