@@ -1529,6 +1529,27 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
         print(f"{'='*80}\n")
         
         try:
+            def _safe_int(value):
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return None
+
+            def _range_quantity(range_item):
+                qty = _safe_int(range_item.get('quantity'))
+                if qty is not None and qty >= 0:
+                    return qty
+                from_s = _safe_int(range_item.get('fromSerial') or range_item.get('from_serial'))
+                to_s = _safe_int(range_item.get('toSerial') or range_item.get('to_serial'))
+                if from_s is None or to_s is None:
+                    return 0
+                return max(0, to_s - from_s + 1)
+
+            def _total_from_ranges(ranges):
+                if not isinstance(ranges, list):
+                    return 0
+                return sum(_range_quantity(item or {}) for item in ranges)
+
             carton_number = None
             # Extract carton number strictly
             # roll_range format usually "CARTON - Range X-Y" or "CARTON-X-Y"
@@ -1566,7 +1587,11 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
 
             # Find matching procurement
             from .models import HologramProcurement
-            procurements = HologramProcurement.objects.filter(licensee=instance.licensee)
+            procurements = HologramProcurement.objects.filter(
+                models.Q(licensee=instance.licensee) |
+                models.Q(license_id=getattr(instance, 'license_id', None)) |
+                models.Q(ref_no=getattr(instance, 'reference_no', None))
+            ).distinct()
             
             target_procurement = None
             target_detail_index = -1
@@ -1578,27 +1603,94 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
             for proc in procurements:
                 details = proc.carton_details or []
                 for idx, detail in enumerate(details):
-                    d_carton = detail.get('cartoonNumber') or detail.get('cartoon_number')
+                    d_carton = detail.get('cartoonNumber') or detail.get('cartoon_number') or detail.get('carton_number')
                     if normalize(d_carton) == target_key:
                         target_procurement = proc
                         target_detail_index = idx
                         break
                 if target_procurement:
                     break
-            
-            if target_procurement and target_detail_index >= 0:
-                detail = target_procurement.carton_details[target_detail_index]
+
+            # Fallback: resolve procurement from rolls table when carton_details JSON shape is inconsistent
+            if not target_procurement:
+                candidate_roll = None
+                roll_fallback_qs = HologramRollsDetails.objects.select_related('procurement').all()
+                if getattr(instance, 'license_id', None):
+                    roll_fallback_qs = roll_fallback_qs.filter(
+                        models.Q(license_id=instance.license_id) |
+                        models.Q(procurement__license_id=instance.license_id)
+                    )
+                elif instance.licensee_id:
+                    roll_fallback_qs = roll_fallback_qs.filter(procurement__licensee=instance.licensee)
+
+                for roll_candidate in roll_fallback_qs:
+                    if normalize(getattr(roll_candidate, 'carton_number', '')) == target_key:
+                        candidate_roll = roll_candidate
+                        break
+
+                if candidate_roll and candidate_roll.procurement_id:
+                    target_procurement = candidate_roll.procurement
+                    details = target_procurement.carton_details or []
+                    for idx, detail in enumerate(details):
+                        d_carton = detail.get('cartoonNumber') or detail.get('cartoon_number') or detail.get('carton_number')
+                        if normalize(d_carton) == target_key:
+                            target_detail_index = idx
+                            break
+             
+            if target_procurement:
+                detail = {}
+                if target_detail_index >= 0:
+                    detail = target_procurement.carton_details[target_detail_index]
                 
                 # Get HologramRollsDetails object
                 roll_obj = None
                 try:
-                    roll_obj = HologramRollsDetails.objects.select_for_update().get(
+                    roll_obj = HologramRollsDetails.objects.select_for_update().filter(
                         procurement=target_procurement,
-                        carton_number=carton_number
-                    )
-                except HologramRollsDetails.DoesNotExist:
+                        carton_number__iexact=(carton_number or '').strip()
+                    ).first()
+
+                    # Fallback for legacy rows with inconsistent spacing/casing.
+                    if not roll_obj:
+                        for candidate_roll in HologramRollsDetails.objects.select_for_update().filter(procurement=target_procurement):
+                            if normalize(getattr(candidate_roll, 'carton_number', '')) == target_key:
+                                roll_obj = candidate_roll
+                                break
+
+                    # Cross-procurement fallback when request/profile linkage differs but license/carton match.
+                    if not roll_obj:
+                        roll_cross_qs = HologramRollsDetails.objects.select_for_update().filter(
+                            carton_number__iexact=(carton_number or '').strip()
+                        )
+                        if getattr(instance, 'license_id', None):
+                            roll_cross_qs = roll_cross_qs.filter(
+                                models.Q(license_id=instance.license_id) |
+                                models.Q(procurement__license_id=instance.license_id)
+                            )
+                        elif instance.licensee_id:
+                            roll_cross_qs = roll_cross_qs.filter(procurement__licensee=instance.licensee)
+                        roll_obj = roll_cross_qs.first()
+
+                except Exception:
+                    roll_obj = None
+
+                if not roll_obj:
                     print(f"ERROR: HologramRollsDetails not found for {carton_number}")
                     return
+
+                issued_ranges = instance.issued_ranges or []
+                wastage_ranges = instance.wastage_ranges or []
+
+                issued_qty_from_ranges = _total_from_ranges(issued_ranges)
+                wastage_qty_from_ranges = _total_from_ranges(wastage_ranges)
+
+                effective_issued_qty = _safe_int(instance.issued_qty) or 0
+                effective_wastage_qty = _safe_int(instance.wastage_qty) or 0
+
+                if issued_qty_from_ranges > 0:
+                    effective_issued_qty = issued_qty_from_ranges
+                if wastage_qty_from_ranges > 0:
+                    effective_wastage_qty = wastage_qty_from_ranges
                 
                 # Get current counts
                 total_count = roll_obj.total_count
@@ -1607,21 +1699,23 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 print(f"DEBUG: Current state - total: {total_count}, used: {current_used}, damaged: {current_damaged}")
                 
                 # Calculate new counts
-                new_used = current_used + (instance.issued_qty or 0) 
-                new_damaged = current_damaged + (instance.wastage_qty or 0)
+                new_used = current_used + effective_issued_qty
+                new_damaged = current_damaged + effective_wastage_qty
                 new_available = max(0, total_count - new_used - new_damaged)
                 
                 print(f"DEBUG: New state - available: {new_available}, used: {new_used}, damaged: {new_damaged}")
                 
                 # Update JSON in procurement
-                detail['used_qty'] = new_used
-                detail['damage_qty'] = new_damaged
-                detail['available_qty'] = new_available
-                detail['status'] = 'COMPLETED' if new_available == 0 else 'AVAILABLE'
-                target_procurement.carton_details[target_detail_index] = detail 
+                updated_status = 'COMPLETED' if new_available == 0 else 'AVAILABLE'
+                if target_detail_index >= 0:
+                    detail['used_qty'] = new_used
+                    detail['damage_qty'] = new_damaged
+                    detail['available_qty'] = new_available
+                    detail['status'] = updated_status
+                    target_procurement.carton_details[target_detail_index] = detail 
                 
                 # Update balance
-                deduct_qty = instance.issued_qty or 0
+                deduct_qty = effective_issued_qty
                 if target_procurement.local_qty > 0:
                      target_procurement.local_qty = max(0, float(target_procurement.local_qty) - deduct_qty)
                 elif target_procurement.export_qty > 0:
@@ -1652,7 +1746,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 print(f"=" * 80)
                 
                 # SPECIAL CASE: "Not Used" - if issued and wastage are both 0
-                if (not instance.issued_qty or instance.issued_qty == 0) and (not instance.wastage_qty or instance.wastage_qty == 0):
+                if effective_issued_qty == 0 and effective_wastage_qty == 0:
                     print(f"⚠️ 'Not Used' case detected (Issued: 0, Wastage: 0)")
                     
                     try:
@@ -1731,8 +1825,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 damaged_serials = set()
                 
                 # Collect USED serials
-                if instance.issued_qty and instance.issued_qty > 0:
-                    issued_ranges = instance.issued_ranges or []
+                if effective_issued_qty > 0:
                     if issued_ranges:
                         for issued_range in issued_ranges:
                             from_s = issued_range.get('fromSerial') or issued_range.get('from_serial')
@@ -1754,8 +1847,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             pass
                 
                 # Collect DAMAGED serials
-                if instance.wastage_qty and instance.wastage_qty > 0:
-                    wastage_ranges = instance.wastage_ranges or []
+                if effective_wastage_qty > 0:
                     if wastage_ranges:
                         for wastage_range in wastage_ranges:
                             from_s = wastage_range.get('fromSerial') or wastage_range.get('from_serial')
@@ -2069,16 +2161,16 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
 
                 
                 # Now create USED ranges
-                if instance.issued_qty and instance.issued_qty > 0:
-                    issued_ranges = instance.issued_ranges or []
+                if effective_issued_qty > 0:
                     if issued_ranges:
                         for issued_range in issued_ranges:
+                            current_range_qty = _range_quantity(issued_range or {})
                             usage_entry = {
                                 'type': 'ISSUED',
                                 'cartoonNumber': carton_number,
                                 'issuedFromSerial': issued_range.get('fromSerial') or issued_range.get('from_serial'),
                                 'issuedToSerial': issued_range.get('toSerial') or issued_range.get('to_serial'),
-                                'issuedQuantity': issued_range.get('quantity'),
+                                'issuedQuantity': current_range_qty,
                                 'date': str(instance.usage_date),
                                 'referenceNo': instance.reference_no,
                                 'brandName': instance.brand_details,
@@ -2094,7 +2186,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 roll=roll_obj,
                                 from_serial=usage_entry['issuedFromSerial'],
                                 to_serial=usage_entry['issuedToSerial'],
-                                count=usage_entry['issuedQuantity'],
+                                count=current_range_qty,
                                 status='USED',
                                 used_date=instance.usage_date,
                                 reference_no=instance.reference_no,
@@ -2110,7 +2202,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             'cartoonNumber': carton_number,
                             'issuedFromSerial': instance.issued_from,
                             'issuedToSerial': instance.issued_to,
-                            'issuedQuantity': instance.issued_qty,
+                            'issuedQuantity': effective_issued_qty,
                             'date': str(instance.usage_date),
                             'referenceNo': instance.reference_no,
                             'brandName': instance.brand_details,
@@ -2126,7 +2218,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             roll=roll_obj,
                             from_serial=instance.issued_from,
                             to_serial=instance.issued_to,
-                            count=instance.issued_qty,
+                            count=effective_issued_qty,
                             status='USED',
                             used_date=instance.usage_date,
                             reference_no=instance.reference_no,
@@ -2137,19 +2229,21 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                         print(f"✅ Created USED serial range: {instance.issued_from} - {instance.issued_to}")
                 
                 # Now create DAMAGED ranges
-                if instance.wastage_qty and instance.wastage_qty > 0:
-                    wastage_ranges = instance.wastage_ranges or []
+                if effective_wastage_qty > 0:
                     if wastage_ranges:
                         for wastage_range in wastage_ranges:
+                            current_range_qty = _range_quantity(wastage_range or {})
                             usage_entry = {
                                 'type': 'WASTAGE',
                                 'cartoonNumber': carton_number,
                                 'wastageFromSerial': wastage_range.get('fromSerial') or wastage_range.get('from_serial'),
                                 'wastageToSerial': wastage_range.get('toSerial') or wastage_range.get('to_serial'),
-                                'wastageQuantity': wastage_range.get('quantity'),
+                                'wastageQuantity': current_range_qty,
                                 'date': str(instance.usage_date),
                                 'damageReason': wastage_range.get('damageReason') or instance.damage_reason,
                                 'referenceNo': instance.reference_no,
+                                'brandName': instance.brand_details,
+                                'brandDetails': instance.brand_details,
                                 'reportedBy': self.request.user.username if self.request else 'System',
                                 'approvedBy': self.request.user.username if self.request else 'System',
                                 'approvedAt': timezone.now().isoformat()
@@ -2161,7 +2255,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 roll=roll_obj,
                                 from_serial=usage_entry['wastageFromSerial'],
                                 to_serial=usage_entry['wastageToSerial'],
-                                count=usage_entry['wastageQuantity'],
+                                count=current_range_qty,
                                 status='DAMAGED',
                                 damage_date=instance.usage_date,
                                 damage_reason=usage_entry['damageReason'],
@@ -2176,10 +2270,12 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             'cartoonNumber': carton_number,
                             'wastageFromSerial': instance.wastage_from,
                             'wastageToSerial': instance.wastage_to,
-                            'wastageQuantity': instance.wastage_qty,
+                            'wastageQuantity': effective_wastage_qty,
                             'date': str(instance.usage_date),
                             'damageReason': instance.damage_reason,
                             'referenceNo': instance.reference_no,
+                            'brandName': instance.brand_details,
+                            'brandDetails': instance.brand_details,
                             'reportedBy': self.request.user.username if self.request else 'System',
                             'approvedBy': self.request.user.username if self.request else 'System',
                             'approvedAt': timezone.now().isoformat()
@@ -2191,7 +2287,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             roll=roll_obj,
                             from_serial=instance.wastage_from,
                             to_serial=instance.wastage_to,
-                            count=instance.wastage_qty,
+                            count=effective_wastage_qty,
                             status='DAMAGED',
                             damage_date=instance.usage_date,
                             damage_reason=instance.damage_reason,
@@ -2204,35 +2300,37 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 roll_obj.used = new_used
                 roll_obj.damaged = new_damaged
                 roll_obj.available = new_available
-                roll_obj.status = detail['status']
+                roll_obj.status = updated_status
                 roll_obj.save()
-                
+                # After Daily Register save, remaining IN_USE ranges should be released.
+                # Status policy after save: only AVAILABLE or COMPLETED.
+                remaining_in_use_ranges = HologramSerialRange.objects.filter(roll=roll_obj, status='IN_USE')
+                if remaining_in_use_ranges.exists():
+                    for in_use_range in remaining_in_use_ranges:
+                        in_use_range.status = 'AVAILABLE'
+                        if not in_use_range.description:
+                            in_use_range.description = f"Released to AVAILABLE after daily save {instance.reference_no}"
+                        in_use_range.save(update_fields=['status', 'description', 'updated_at'])
+                    print(f"Converted {remaining_in_use_ranges.count()} IN_USE range(s) to AVAILABLE after daily save")
+
                 # Recalculate available count from AVAILABLE ranges
                 available_ranges = HologramSerialRange.objects.filter(roll=roll_obj, status='AVAILABLE')
                 total_available = sum(r.count for r in available_ranges)
                 if total_available != roll_obj.available:
                     roll_obj.available = total_available
                     roll_obj.save(update_fields=['available'])
-                    print(f"✅ Updated roll.available to {total_available} from AVAILABLE ranges")
-                
-                # CRITICAL: Update status based on available count
+                    print(f"Updated roll.available to {total_available} from AVAILABLE ranges")
+
+                # Status rule after save:
+                # available == 0 -> COMPLETED
+                # available  > 0 -> AVAILABLE
                 if roll_obj.available == 0:
                     roll_obj.status = 'COMPLETED'
-                    print(f"✅ Status changed to COMPLETED (no holograms left)")
-                elif roll_obj.available > 0 and roll_obj.available < roll_obj.total_count:
-                    # Has some available, but not all - could be IN_USE or AVAILABLE
-                    # Check if there are any IN_USE ranges
-                    in_use_count = HologramSerialRange.objects.filter(roll=roll_obj, status='IN_USE').count()
-                    if in_use_count > 0:
-                        roll_obj.status = 'IN_USE'
-                        print(f"✅ Status remains IN_USE (has IN_USE ranges)")
-                    else:
-                        roll_obj.status = 'AVAILABLE'
-                        print(f"✅ Status changed to AVAILABLE (has {roll_obj.available} holograms available)")
-                elif roll_obj.available == roll_obj.total_count:
+                    print(f"Status changed to COMPLETED (no holograms left)")
+                else:
                     roll_obj.status = 'AVAILABLE'
-                    print(f"✅ Status changed to AVAILABLE (fully available)")
-                
+                    print(f"Status changed to AVAILABLE (has {roll_obj.available} holograms available)")
+
                 roll_obj.save(update_fields=['status'])
                 
                 # CRITICAL FIX: Sync these changes back to the HologramProcurement JSON
@@ -2278,6 +2376,8 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 print(f"✅ Updated HologramRollsDetails - available: {roll_obj.available}, used: {roll_obj.used}, damaged: {roll_obj.damaged}")
                 print(f"✅ Status: {roll_obj.status}, Available Range: {roll_obj.available_range}")
                 print(f"✅ Usage history entries: {len(roll_obj.usage_history)}")
+            else:
+                print(f"ERROR: Could not resolve target procurement for carton '{carton_number}' and reference '{instance.reference_no}'")
                 
         except Exception as e:
             print(f"ERROR updating procurement usage: {e}")
