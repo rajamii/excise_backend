@@ -92,6 +92,13 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
         Returns the most recent quantity update transaction
         """
         try:
+            # Primary source: structured history persisted on the procurement row.
+            payment_details = getattr(obj, 'payment_details', None) or {}
+            if isinstance(payment_details, dict):
+                persisted = payment_details.get('edit_history')
+                if isinstance(persisted, dict) and persisted.get('originalQuantities') and persisted.get('updatedQuantities'):
+                    return persisted
+
             # Find transaction with quantity update remarks
             edit_txn = obj.transactions.filter(
                 remarks__icontains='Quantities updated by Commissioner'
@@ -102,15 +109,16 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
             
             # Parse the remarks to extract quantities
             # Format: "Quantities updated by Commissioner: Local 30.00 → 50.00, Export 0.00 → 0.00, Defence 0.00 → 0.00. New payment amount: ₹7.50"
-            remarks = edit_txn.remarks
+            remarks = str(edit_txn.remarks or '')
             
             import re
             
             # Extract quantities using regex
-            local_match = re.search(r'Local ([\d.]+) → ([\d.]+)', remarks)
-            export_match = re.search(r'Export ([\d.]+) → ([\d.]+)', remarks)
-            defence_match = re.search(r'Defence ([\d.]+) → ([\d.]+)', remarks)
-            payment_match = re.search(r'New payment amount: ₹([\d.]+)', remarks)
+            transition_sep = r'[^0-9a-zA-Z]+'
+            local_match = re.search(rf'Local\s+([\d.]+)\s*{transition_sep}\s*([\d.]+)', remarks, re.IGNORECASE)
+            export_match = re.search(rf'Export\s+([\d.]+)\s*{transition_sep}\s*([\d.]+)', remarks, re.IGNORECASE)
+            defence_match = re.search(rf'(?:Defence|Defense)\s+([\d.]+)\s*{transition_sep}\s*([\d.]+)', remarks, re.IGNORECASE)
+            payment_match = re.search(r'New payment amount:\s*[^\d]*([\d.]+)', remarks, re.IGNORECASE)
             
             if not local_match:
                 return None
@@ -465,3 +473,5 @@ class HologramRollsSummarySerializer(serializers.Serializer):
     damaged = serializers.IntegerField()
     by_type = serializers.DictField()
     by_status = serializers.DictField()
+
+

@@ -650,12 +650,36 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             instance.payment_details = {}
         instance.payment_details['wallet_payment'] = new_payment_amount
         instance.payment_details['total_amount'] = new_payment_amount
+        instance.payment_details['edit_history'] = {
+            'editedBy': getattr(self.request.user, 'username', None) or 'Commissioner',
+            'editedDate': timezone.now().strftime('%Y-%m-%d'),
+            'originalQuantities': {
+                'local': original_quantities['local'],
+                'export': original_quantities['export'],
+                'defence': original_quantities['defence'],
+                'total': original_quantities['total'],
+            },
+            'updatedQuantities': {
+                'local': float(instance.local_qty),
+                'export': float(instance.export_qty),
+                'defence': float(instance.defence_qty),
+                'total': new_total,
+            },
+            'originalPayment': original_quantities['total'] * 0.15,
+            'updatedPayment': new_payment_amount,
+        }
         
         # Save changes
         instance.save()
         
         # Create transaction log for audit trail
-        edit_remarks = f"Quantities updated by Commissioner: Local {original_quantities['local']} → {instance.local_qty}, Export {original_quantities['export']} → {instance.export_qty}, Defence {original_quantities['defence']} → {instance.defence_qty}. New payment amount: ₹{new_payment_amount:.2f}"
+        edit_remarks = (
+            "Quantities updated by Commissioner: "
+            f"Local {original_quantities['local']} -> {instance.local_qty}, "
+            f"Export {original_quantities['export']} -> {instance.export_qty}, "
+            f"Defence {original_quantities['defence']} -> {instance.defence_qty}. "
+            f"New payment amount: Rs {new_payment_amount:.2f}"
+        )
         
         Transaction.objects.create(
             application=instance,
