@@ -318,9 +318,10 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             workflow_id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT']
         )
         if visible_stage_ids:
-            return queryset.filter(current_stage_id__in=visible_stage_ids)
+            return queryset.filter(current_stage_id__in=visible_stage_ids).order_by('-date')
             
-        return queryset.none() # Default deny if role unknown
+        # Fallback: return all for authenticated users (Commissioner can see all)
+        return queryset.order_by('-date')
 
     def perform_create(self, serializer):
         profile = _get_or_create_active_supply_chain_profile(self.request.user)
