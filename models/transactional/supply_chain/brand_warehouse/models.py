@@ -242,6 +242,7 @@ class BrandWarehouse(models.Model):
         # Create arrival record
         BrandWarehouseArrival.objects.create(
             brand_warehouse=self,
+            license_id=str(getattr(self, 'license_id', '') or '').strip() or None,
             reference_no=reference_no,
             source_type=source_type,
             quantity_added=quantity,
@@ -304,6 +305,13 @@ class BrandWarehouseArrival(models.Model):
     )
 
     # Reference Information
+    license_id = models.CharField(
+        max_length=100,
+        db_column='license_id',
+        null=True,
+        blank=True,
+        help_text='Stable licensee identifier used to scope arrivals per establishment'
+    )
     reference_no = models.CharField(
         max_length=100,
         db_column='reference_no',
@@ -359,6 +367,7 @@ class BrandWarehouseArrival(models.Model):
         verbose_name_plural = 'Brand Warehouse Arrivals'
         indexes = [
             models.Index(fields=['brand_warehouse', 'arrival_date']),
+            models.Index(fields=['license_id']),
             models.Index(fields=['reference_no']),
             models.Index(fields=['source_type']),
         ]

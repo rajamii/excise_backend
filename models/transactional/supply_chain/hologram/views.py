@@ -1414,6 +1414,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 
             # CRITICAL: Update Procurement Inventory
             self._update_procurement_usage(instance)
+            self._sync_brand_warehouse_stock(instance)
             
             # CRITICAL: Update Request Status to 'Production Completed'
             if instance.hologram_request:
@@ -1477,6 +1478,33 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
             import traceback
             traceback.print_exc()
             raise serializers.ValidationError(f"Internal Server Error during save: {str(e)}")
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        self._sync_brand_warehouse_stock(instance)
+
+    def _sync_brand_warehouse_stock(self, instance):
+        """
+        Ensure stock inventory and arrival trail are updated immediately
+        when a Daily Register row is saved/fixed.
+        """
+        try:
+            if not instance:
+                return
+            if not bool(getattr(instance, 'is_fixed', False)):
+                return
+            if int(getattr(instance, 'issued_qty', 0) or 0) <= 0:
+                return
+            if bool(getattr(instance, 'stock_updated', False)):
+                return
+
+            from models.transactional.supply_chain.brand_warehouse.services import BrandWarehouseStockService
+
+            success = BrandWarehouseStockService.update_stock_from_hologram_register(instance)
+            if success:
+                DailyHologramRegister.objects.filter(id=instance.id).update(stock_updated=True)
+        except Exception as e:
+            print(f"ERROR: Failed to sync brand warehouse stock for daily register {getattr(instance, 'id', None)}: {e}")
 
     def _update_procurement_usage(self, instance):
         """

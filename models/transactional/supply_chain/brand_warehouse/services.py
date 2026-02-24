@@ -290,10 +290,11 @@ class BrandWarehouseStockService:
         try:
             with transaction.atomic():
                 # Extract brand and quantity information from monthly statement
-                brand_name = daily_register_entry.brand_details
+                brand_name = BrandWarehouseStockService._clean_brand_name_for_match(daily_register_entry.brand_details)
                 bottle_size = daily_register_entry.bottle_size
                 issued_qty = daily_register_entry.issued_qty
                 reference_no = daily_register_entry.reference_no
+                license_id = str(getattr(daily_register_entry, 'license_id', '') or '').strip()
                 
                 # Get distillery name from licensee
                 distillery_name = daily_register_entry.licensee.manufacturing_unit_name
@@ -308,20 +309,29 @@ class BrandWarehouseStockService:
                     logger.warning(f"Could not parse bottle size: {bottle_size} for {reference_no}")
                     return False
                 
-                # Find existing Brand Warehouse entry for this distillery + brand + pack size
-                brand_warehouse = BrandWarehouse.objects.filter(
-                    distillery_name__icontains=distillery_name,
+                # Find existing Brand Warehouse entry using strict license scope first.
+                warehouse_qs = BrandWarehouse.objects.filter(
                     brand_details__icontains=brand_name,
                     capacity_size=capacity_ml
-                ).first()
+                )
+                if license_id:
+                    warehouse_qs = warehouse_qs.filter(license_id__in=BrandWarehouseStockService._license_aliases(license_id))
+                else:
+                    warehouse_qs = warehouse_qs.filter(distillery_name__icontains=distillery_name)
+
+                brand_warehouse = warehouse_qs.order_by('-updated_at').first()
                 
                 if not brand_warehouse:
                     # Create new entry if not found (this ensures no brands go missing)
                     brand_warehouse = BrandWarehouseStockService._create_brand_warehouse_entry(
                         distillery_name=distillery_name,
                         brand_name=brand_name,
-                        capacity_ml=capacity_ml
+                        capacity_ml=capacity_ml,
+                        license_id=license_id
                     )
+                    if brand_warehouse and license_id and not brand_warehouse.license_id:
+                        brand_warehouse.license_id = license_id
+                        brand_warehouse.save(update_fields=['license_id', 'updated_at'])
                 
                 if not brand_warehouse:
                     logger.error(f"Could not find/create brand warehouse for {distillery_name} - {brand_name} ({capacity_ml}ml)")
@@ -350,6 +360,7 @@ class BrandWarehouseStockService:
                 # Create arrival record for tracking
                 arrival = BrandWarehouseArrival.objects.create(
                     brand_warehouse=brand_warehouse,
+                    license_id=license_id or str(getattr(brand_warehouse, 'license_id', '') or '').strip() or None,
                     reference_no=reference_no,
                     source_type='HOLOGRAM_REGISTER',
                     quantity_added=issued_qty,
@@ -472,9 +483,17 @@ class BrandWarehouseStockService:
                 pass
         
         return None
+
+    @staticmethod
+    def _clean_brand_name_for_match(brand_name: str) -> str:
+        raw = str(brand_name or '').strip()
+        if not raw:
+            return ''
+        # Remove UI prefix patterns like "Brand 1: ..."
+        return re.sub(r'^\s*brand\s*\d+\s*:\s*', '', raw, flags=re.IGNORECASE).strip()
     
     @staticmethod
-    def _create_brand_warehouse_entry(distillery_name, brand_name, capacity_ml):
+    def _create_brand_warehouse_entry(distillery_name, brand_name, capacity_ml, license_id=None):
         """
         Create new Brand Warehouse entry for Sikkim brands
         
@@ -497,6 +516,7 @@ class BrandWarehouseStockService:
             # Create new Brand Warehouse entry
             brand_warehouse = BrandWarehouse.objects.create(
                 distillery_name=distillery_name,
+                license_id=str(license_id or '').strip() or None,
                 brand_type=template.brand_type if template else 'Liquor',
                 brand_details=brand_name,
                 current_stock=0,  # Will be updated immediately after creation

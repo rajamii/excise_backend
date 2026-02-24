@@ -128,16 +128,16 @@ class BrandWarehouseArrivalAdmin(admin.ModelAdmin):
     Admin interface for Brand Warehouse Arrivals
     """
     list_display = [
-        'reference_no', 'brand_warehouse', 'source_type', 
+        'reference_no', 'license_id', 'brand_warehouse', 'source_type', 
         'quantity_added', 'arrival_date'
     ]
-    list_filter = ['source_type', 'arrival_date']
-    search_fields = ['reference_no', 'brand_warehouse__brand_details']
+    list_filter = ['source_type', 'arrival_date', 'license_id']
+    search_fields = ['reference_no', 'license_id', 'brand_warehouse__brand_details']
     readonly_fields = ['created_at']
     
     fieldsets = (
         ('Reference Information', {
-            'fields': ('reference_no', 'source_type', 'brand_warehouse')
+            'fields': ('reference_no', 'license_id', 'source_type', 'brand_warehouse')
         }),
         ('Stock Information', {
             'fields': ('quantity_added', 'previous_stock', 'new_stock')

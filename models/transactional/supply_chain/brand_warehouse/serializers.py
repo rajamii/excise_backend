@@ -13,6 +13,7 @@ class BrandWarehouseArrivalSerializer(serializers.ModelSerializer):
         model = BrandWarehouseArrival
         fields = [
             'id',
+            'license_id',
             'reference_no',
             'source_type',
             'source_type_display',
