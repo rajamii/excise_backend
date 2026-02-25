@@ -174,6 +174,14 @@ def _ensure_site_admin(request):
         raise PermissionDenied("Only Site Admin can access this endpoint.")
 
 
+def _ensure_site_admin_or_commissioner(request):
+    if not request.user or not request.user.is_authenticated:
+        raise PermissionDenied("Authentication required.")
+    role_id = getattr(request.user, 'role_id', None)
+    if role_id not in {1, 10}:
+        raise PermissionDenied("Only Site Admin or Commissioner can access this endpoint.")
+
+
 def _derive_licensee_id(application, license_obj):
     # Always map to issued/approved license id (e.g. NA/...).
     approved_license_id = str(getattr(license_obj, 'license_id', '') or '').strip()
@@ -216,7 +224,7 @@ def _generate_temp_password(length: int = 12):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def oic_approved_establishments(request):
-    _ensure_site_admin(request)
+    _ensure_site_admin_or_commissioner(request)
 
     content_type = ContentType.objects.get_for_model(NewLicenseApplication)
     licenses = (
@@ -260,7 +268,7 @@ def oic_approved_establishments(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def oic_officer_list(request):
-    _ensure_site_admin(request)
+    _ensure_site_admin_or_commissioner(request)
 
     assignments = OICOfficerAssignment.objects.select_related(
         'officer',

@@ -2671,6 +2671,7 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
         """
         from django.db.models import Q
         from datetime import datetime
+        from django.utils import timezone as django_timezone
         
         try:
             # Get all hologram requests
@@ -2701,7 +2702,7 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 # Get daily register entries for this request
                 daily_entries = DailyHologramRegister.objects.filter(
                     Q(hologram_request=req) | Q(reference_no=req.ref_no)
-                ).order_by('created_at')
+                ).select_related('licensee').prefetch_related('rolls_used').order_by('created_at', 'id')
                 
                 print(f"Daily Register Entries: {daily_entries.count()}")
                 
@@ -2738,57 +2739,97 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                     status = 'COMPLETED'
                     print(f"Status: COMPLETED (has daily register entries)")
                 
-                # Calculate deadline and time remaining if approved
+                # Calculate deadline and SLA if approved
                 if approval_txn:
-                    # Deadline is 5 PM on approval date (make timezone-aware)
-                    from django.utils import timezone as django_timezone
-                    
+                    # Deadline is 5 PM on approval date
                     approval_date = approval_txn.timestamp.date()
                     deadline_naive = datetime.combine(approval_date, datetime.strptime('17:00', '%H:%M').time())
-                    # Make deadline timezone-aware
                     deadline = django_timezone.make_aware(deadline_naive) if django_timezone.is_naive(deadline_naive) else deadline_naive
                     
-                    # Check if completed
+                    now = django_timezone.now()
+
+                    # Completed: decide on-time vs late based on OIC save timestamp (created_at)
                     if status == 'COMPLETED' and daily_entries.exists():
-                        last_entry = daily_entries.last()
-                        completion_datetime = datetime.combine(
-                            last_entry.usage_date,
-                            datetime.strptime('00:00', '%H:%M').time()
-                        )
-                        if last_entry.created_at:
-                            completion_datetime = last_entry.created_at
+                        last_entry = daily_entries.order_by('-created_at', '-id').first()
+                        completion_datetime = last_entry.created_at if last_entry and last_entry.created_at else None
                         
-                        # Make completion_datetime timezone-aware if needed
-                        if django_timezone.is_naive(completion_datetime):
+                        if completion_datetime is None and last_entry and last_entry.usage_date:
+                            fallback_naive = datetime.combine(last_entry.usage_date, datetime.strptime('00:00', '%H:%M').time())
+                            completion_datetime = django_timezone.make_aware(fallback_naive) if django_timezone.is_naive(fallback_naive) else fallback_naive
+                        elif completion_datetime is not None and django_timezone.is_naive(completion_datetime):
                             completion_datetime = django_timezone.make_aware(completion_datetime)
                         
-                        completion_date = last_entry.usage_date.isoformat()
-                        completion_time = last_entry.created_at.strftime('%H:%M:%S') if last_entry.created_at else '00:00:00'
-                        completed_on_time = completion_datetime <= deadline
+                        completion_date = last_entry.usage_date.isoformat() if last_entry and last_entry.usage_date else None
+                        completion_time = completion_datetime.strftime('%H:%M:%S') if completion_datetime else None
+                        completed_on_time = completion_datetime <= deadline if completion_datetime else None
+                        is_overdue = False
+                        if completed_on_time is False:
+                            time_remaining = f"Completed Late (saved at {completion_time})"
+                        elif completed_on_time is True:
+                            time_remaining = f"Completed On Time (saved at {completion_time})"
                         
                         # Get officer who entered the data
-                        if last_entry.licensee:
+                        if last_entry and last_entry.licensee:
                             officer_name = last_entry.licensee.manufacturing_unit_name
                         
-                        # Get brands entered
+                        # Get brands entered with allocated/issued/wastage and roll details
                         for entry in daily_entries:
+                            rolls_assigned = []
+                            for roll in entry.rolls_used.all():
+                                rolls_assigned.append({
+                                    'rollId': roll.id,
+                                    'cartoonNumber': roll.carton_number,
+                                    'rollNumber': roll.roll_no,
+                                    'quantity': roll.available,
+                                    'fromSerial': roll.from_serial,
+                                    'toSerial': roll.to_serial,
+                                })
+
+                            serial_ranges = []
+                            for r in (entry.issued_ranges or []):
+                                serial_ranges.append({
+                                    'from': r.get('fromSerial') or r.get('from') or r.get('issuedFromSerial') or '',
+                                    'to': r.get('toSerial') or r.get('to') or r.get('issuedToSerial') or '',
+                                    'count': r.get('quantity') or r.get('count') or 0,
+                                    'type': 'ISSUED',
+                                })
+                            for r in (entry.wastage_ranges or []):
+                                serial_ranges.append({
+                                    'from': r.get('fromSerial') or r.get('from') or r.get('wastageFromSerial') or '',
+                                    'to': r.get('toSerial') or r.get('to') or r.get('wastageToSerial') or '',
+                                    'count': r.get('quantity') or r.get('count') or 0,
+                                    'type': 'WASTAGE',
+                                })
+
                             if entry.brand_details:
                                 brands_entered.append({
                                     'brand': entry.brand_details,
+                                    'brandCode': entry.brand_details,
                                     'bottleSize': entry.bottle_size or '',
-                                    'quantity': entry.issued_qty or 0,
-                                    'usageDate': entry.usage_date.isoformat()
+                                    'allocatedQty': entry.hologram_qty or 0,
+                                    'issuedQty': entry.issued_qty or 0,
+                                    'wastageQty': entry.wastage_qty or 0,
+                                    'damageReason': entry.damage_reason or '',
+                                    'rollRange': entry.roll_range or '',
+                                    'quantity': entry.issued_qty or 0,  # backward-compatible
+                                    'usageDate': entry.usage_date.isoformat(),
+                                    'savedAt': entry.created_at.isoformat() if entry.created_at else '',
+                                    'rollsAssigned': rolls_assigned,
+                                    'serialRanges': serial_ranges,
                                 })
-                    elif status == 'UNDER_PROCESS':
-                        # Check if overdue
-                        now = django_timezone.now()  # Use timezone-aware now
+                    elif status in {'UNDER_PROCESS', 'APPLIED'}:
+                        # OIC has not saved daily entry yet; track remaining time vs 5 PM deadline
                         if now > deadline:
                             is_overdue = True
-                            time_remaining = f"Overdue by {int((now - deadline).total_seconds() / 3600)}h"
+                            overdue_seconds = int((now - deadline).total_seconds())
+                            overdue_hours = overdue_seconds // 3600
+                            overdue_minutes = (overdue_seconds % 3600) // 60
+                            time_remaining = f"Overdue by {overdue_hours}h {overdue_minutes}m (deadline 5:00 PM)"
                         else:
-                            hours_left = int((deadline - now).total_seconds() / 3600)
-                            minutes_left = int(((deadline - now).total_seconds() % 3600) / 60)
-                            time_remaining = f"{hours_left}h {minutes_left}m remaining"
+                            remaining_seconds = int((deadline - now).total_seconds())
+                            hours_left = remaining_seconds // 3600
+                            minutes_left = (remaining_seconds % 3600) // 60
+                            time_remaining = f"{hours_left}h {minutes_left}m remaining (deadline 5:00 PM)"
                 
                 print(f"Final Status: {status}")
                 
@@ -2819,8 +2860,8 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
             total_entries = len(result_data)
             applied_count = sum(1 for r in result_data if r['status'] == 'APPLIED')
             under_process_count = sum(1 for r in result_data if r['status'] == 'UNDER_PROCESS')
-            completed_on_time_count = sum(1 for r in result_data if r['status'] == 'COMPLETED' and r['completedOnTime'])
-            completed_late_count = sum(1 for r in result_data if r['status'] == 'COMPLETED' and not r['completedOnTime'])
+            completed_on_time_count = sum(1 for r in result_data if r['status'] == 'COMPLETED' and r['completedOnTime'] is True)
+            completed_late_count = sum(1 for r in result_data if r['status'] == 'COMPLETED' and r['completedOnTime'] is False)
             overdue_count = sum(1 for r in result_data if r['isOverdue'])
             
             print(f"\n=== Summary ===")
