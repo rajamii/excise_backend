@@ -1,6 +1,94 @@
 from django.db import models
 from django.utils import timezone
 
+def _resolve_approved_license_id(raw_value: str) -> str:
+    """
+    Normalize any incoming licensee/profile id to the approved license_id format
+    (typically NA/...).
+    """
+    value = str(raw_value or "").strip()
+    if not value:
+        return ""
+
+    try:
+        from models.masters.license.models import License
+    except Exception:
+        return value
+
+    active_qs = License.objects.filter(is_active=True)
+
+    # Already an approved license_id.
+    hit = active_qs.filter(license_id=value).order_by("-issue_date", "-license_id").first()
+    if hit and hit.license_id:
+        return str(hit.license_id).strip()
+
+    # If source object id was passed (often legacy/licensee profile id), map it.
+    hit = active_qs.filter(source_object_id=value).order_by("-issue_date", "-license_id").first()
+    if hit and hit.license_id:
+        return str(hit.license_id).strip()
+
+    # Common alias mapping seen in supply-chain ids.
+    if value.startswith("NLI/"):
+        alias = f"NA/{value[4:]}"
+        hit = active_qs.filter(license_id=alias).order_by("-issue_date", "-license_id").first()
+        if hit and hit.license_id:
+            return str(hit.license_id).strip()
+    elif value.startswith("NA/"):
+        alias = f"NLI/{value[3:]}"
+        hit = active_qs.filter(source_object_id=alias).order_by("-issue_date", "-license_id").first()
+        if hit and hit.license_id:
+            return str(hit.license_id).strip()
+
+    return value
+
+def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = "") -> str:
+    value = str(license_id_value or "").strip()
+    if not value:
+        return str(fallback or "").strip()
+
+    try:
+        from models.masters.license.models import License
+    except Exception:
+        return str(fallback or "").strip()
+
+    active_qs = License.objects.filter(is_active=True)
+    lic = active_qs.filter(license_id=value).order_by("-issue_date", "-license_id").first()
+    if not lic:
+        lic = active_qs.filter(source_object_id=value).order_by("-issue_date", "-license_id").first()
+
+    if not lic and value.startswith("NLI/"):
+        alias = f"NA/{value[4:]}"
+        lic = active_qs.filter(license_id=alias).order_by("-issue_date", "-license_id").first()
+    elif not lic and value.startswith("NA/"):
+        alias = f"NLI/{value[3:]}"
+        lic = active_qs.filter(source_object_id=alias).order_by("-issue_date", "-license_id").first()
+
+    if not lic:
+        return str(fallback or "").strip()
+
+    sub_category = getattr(lic, "license_sub_category", None)
+    sub_desc = str(getattr(sub_category, "description", "") or "").strip().lower()
+    if "distill" in sub_desc:
+        return "distillery"
+    if "brew" in sub_desc or "beer" in sub_desc:
+        return "brewery"
+
+    sub_category_id = getattr(lic, "license_sub_category_id", None)
+    if sub_category_id == 1:
+        return "brewery"
+    if sub_category_id == 2:
+        return "distillery"
+
+    source = getattr(lic, "source_application", None)
+    license_type = getattr(source, "license_type", None) if source is not None else None
+    type_name = str(getattr(license_type, "license_type", "") or "").strip().lower()
+    if "distill" in type_name:
+        return "distillery"
+    if "brew" in type_name or "beer" in type_name:
+        return "brewery"
+
+    return str(fallback or "").strip()
+
 
 class PaymentGatewayParameter(models.Model):
     sl_no = models.IntegerField(primary_key=True)
@@ -308,3 +396,11 @@ class WalletTransaction(models.Model):
     class Meta:
         managed = False
         db_table = "wallet_transactions"
+
+    def save(self, *args, **kwargs):
+        self.licensee_id = _resolve_approved_license_id(self.licensee_id)
+        self.module_type = _resolve_module_type_from_license_id(
+            self.licensee_id,
+            fallback=self.module_type
+        )
+        super().save(*args, **kwargs)

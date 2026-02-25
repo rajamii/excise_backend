@@ -33,6 +33,43 @@ from .serializers import (
     WalletTransactionSerializer,
 )
 
+def _wallet_license_candidates(raw_licensee_id: str):
+    value = str(raw_licensee_id or "").strip()
+    if not value:
+        return []
+
+    out = [value]
+
+    # Basic alias expansion.
+    if value.startswith("NLI/"):
+        out.append(f"NA/{value[4:]}")
+    elif value.startswith("NA/"):
+        out.append(f"NLI/{value[3:]}")
+
+    # Resolve through active licenses for source_object_id -> approved license_id mapping.
+    try:
+        from models.masters.license.models import License
+        active_qs = License.objects.filter(is_active=True)
+        by_license = active_qs.filter(license_id=value).order_by("-issue_date", "-license_id").first()
+        if by_license and by_license.license_id:
+            out.append(str(by_license.license_id).strip())
+        by_source = active_qs.filter(source_object_id=value).order_by("-issue_date", "-license_id").first()
+        if by_source and by_source.license_id:
+            out.append(str(by_source.license_id).strip())
+    except Exception:
+        pass
+
+    # Preserve order, remove duplicates/blanks.
+    cleaned = []
+    seen = set()
+    for item in out:
+        key = str(item or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(key)
+    return cleaned
+
 
 def _generate_transaction_id() -> str:
     return timezone.now().strftime("TXN%Y%m%d%H%M%S%f")
@@ -128,7 +165,10 @@ def payment_wallet_balance(request, licensee_id):
 @permission_classes([IsAuthenticated])
 def wallet_summary(request, licensee_id):
     module_type = request.query_params.get("module_type")
-    qs = WalletBalance.objects.filter(licensee_id=licensee_id).order_by("wallet_type", "head_of_account")
+    candidates = _wallet_license_candidates(licensee_id)
+    if not candidates:
+        candidates = [str(licensee_id or "").strip()]
+    qs = WalletBalance.objects.filter(licensee_id__in=candidates).order_by("wallet_type", "head_of_account")
     if module_type:
         qs = qs.filter(module_type__iexact=module_type)
 
@@ -146,9 +186,12 @@ def wallet_summary(request, licensee_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def wallet_recharge_list(request, licensee_id):
+    candidates = _wallet_license_candidates(licensee_id)
+    if not candidates:
+        candidates = [str(licensee_id or "").strip()]
     qs = (
         WalletTransaction.objects.filter(
-            licensee_id=licensee_id,
+            licensee_id__in=candidates,
             transaction_type__iexact="recharge",
         )
         .order_by("-created_at")
@@ -177,7 +220,10 @@ def wallet_recharge_list(request, licensee_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def wallet_history_list(request, licensee_id):
-    qs = WalletTransaction.objects.filter(licensee_id=licensee_id).order_by("-created_at")
+    candidates = _wallet_license_candidates(licensee_id)
+    if not candidates:
+        candidates = [str(licensee_id or "").strip()]
+    qs = WalletTransaction.objects.filter(licensee_id__in=candidates).order_by("-created_at")
 
     wallet_type = request.query_params.get("wallet_type")
     if wallet_type:
