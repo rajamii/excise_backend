@@ -5,6 +5,7 @@ from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.db import transaction as db_transaction, models
 from decimal import Decimal
+import re
 from .models import HologramProcurement, HologramRequest, HologramRollsDetails
 from .serializers import HologramProcurementSerializer, HologramRequestSerializer
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition, Transaction, StagePermission
@@ -421,6 +422,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 if action_name == 'assign_cartons':
                     carton_details = request.data.get('carton_details')
                     if carton_details:
+                        self._validate_assign_cartons(instance, carton_details)
                         instance.carton_details = carton_details
                         # Sync to new table
                         self._sync_rolls_details(instance, carton_details, acting_user=request.user)
@@ -468,6 +470,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             if action_name == 'assign_cartons':
                 carton_details = request.data.get('carton_details')
                 if carton_details:
+                    self._validate_assign_cartons(instance, carton_details)
                     instance.carton_details = carton_details
                     self._sync_rolls_details(instance, carton_details, acting_user=request.user)
 
@@ -509,6 +512,82 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         if wallet_result is not None:
             response_payload['wallet_deduction'] = wallet_result
         return Response(response_payload)
+
+    def _normalize_carton_key(self, value):
+        text = str(value or '').strip().lower()
+        if not text:
+            return ''
+        text = text.split('/')[-1].strip()
+        text = re.sub(r'\([a-z]+\)$', '', text).strip()
+        return re.sub(r'\s+', '', text)
+
+    def _normalize_serial_key(self, value):
+        text = str(value or '').strip()
+        if not text:
+            return ''
+        match = re.search(r'\d+', text)
+        if match:
+            return str(int(match.group(0)))
+        return text.lower()
+
+    def _validate_assign_cartons(self, instance, carton_details):
+        if not isinstance(carton_details, list):
+            raise serializers.ValidationError({'detail': 'Invalid carton details payload.'})
+
+        incoming_carton_keys = set()
+        incoming_range_keys = set()
+
+        for item in carton_details:
+            carton_key = self._normalize_carton_key(
+                item.get('baseCartoonNumber') or
+                item.get('cartoonNumber') or
+                item.get('cartoon_number') or
+                item.get('carton_number')
+            )
+            from_key = self._normalize_serial_key(item.get('fromSerial') or item.get('from_serial'))
+            to_key = self._normalize_serial_key(item.get('toSerial') or item.get('to_serial'))
+
+            if carton_key:
+                if carton_key in incoming_carton_keys:
+                    raise serializers.ValidationError({
+                        'detail': 'Carton number already exists. Please use another carton number.'
+                    })
+                incoming_carton_keys.add(carton_key)
+
+            if from_key and to_key:
+                range_key = f'{from_key}-{to_key}'
+                if range_key in incoming_range_keys:
+                    raise serializers.ValidationError({
+                        'detail': 'This serial range is already entered before. Please use another range.'
+                    })
+                incoming_range_keys.add(range_key)
+
+        existing_rolls = HologramRollsDetails.objects.filter(
+            procurement__licensee=instance.licensee
+        ).exclude(procurement=instance).values(
+            'carton_number', 'from_serial', 'to_serial'
+        )
+
+        existing_carton_keys = set()
+        existing_range_keys = set()
+        for row in existing_rolls:
+            carton_key = self._normalize_carton_key(row.get('carton_number'))
+            from_key = self._normalize_serial_key(row.get('from_serial'))
+            to_key = self._normalize_serial_key(row.get('to_serial'))
+            if carton_key:
+                existing_carton_keys.add(carton_key)
+            if from_key and to_key:
+                existing_range_keys.add(f'{from_key}-{to_key}')
+
+        if any(key in existing_carton_keys for key in incoming_carton_keys):
+            raise serializers.ValidationError({
+                'detail': 'Carton number already exists for this distillery/brewery. Try another carton number.'
+            })
+
+        if any(key in existing_range_keys for key in incoming_range_keys):
+            raise serializers.ValidationError({
+                'detail': 'This serial range is already entered before. Please use another range.'
+            })
 
     def _debit_hologram_wallet_for_payment(self, instance, user):
         """
