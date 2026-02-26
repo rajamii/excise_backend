@@ -9,8 +9,8 @@ from django.db import transaction, models
 from django.utils import timezone
 from decimal import Decimal
 import re
-from .models import EnaRequisitionDetail
-from .serializers import EnaRequisitionDetailSerializer
+from .models import EnaRequisitionDetail, RequisitionBulkLiterDetail
+from .serializers import EnaRequisitionDetailSerializer, RequisitionBulkLiterDetailSerializer
 from auth.workflow.constants import WORKFLOW_IDS
 from models.transactional.supply_chain.access_control import (
     has_workflow_access,
@@ -111,6 +111,99 @@ class GetNextRefNumberAPIView(APIView):
                 'next_sequence': next_number
             }, status=status.HTTP_200_OK)
             
+        except Exception as e:
+            return Response({
+                'status': 'error',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class RequisitionArrivalBulkLiterDetailAPIView(APIView):
+    def _get_scoped_requisition(self, request, pk):
+        queryset = scope_by_profile_or_workflow(
+            request.user,
+            EnaRequisitionDetail.objects.all(),
+            WORKFLOW_IDS['ENA_REQUISITION'],
+            licensee_field='licensee_id'
+        )
+        return queryset.get(pk=pk)
+
+    def get(self, request, pk):
+        try:
+            requisition = self._get_scoped_requisition(request, pk)
+            detail = RequisitionBulkLiterDetail.objects.filter(requisition=requisition).first()
+
+            if not detail:
+                return Response({
+                    'status': 'success',
+                    'message': 'No arrival details found.',
+                    'data': None
+                }, status=status.HTTP_200_OK)
+
+            serializer = RequisitionBulkLiterDetailSerializer(detail)
+            return Response({
+                'status': 'success',
+                'data': serializer.data
+            }, status=status.HTTP_200_OK)
+
+        except EnaRequisitionDetail.DoesNotExist:
+            return Response({
+                'status': 'error',
+                'message': 'Requisition not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({
+                'status': 'error',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def post(self, request, pk):
+        try:
+            is_licensee_user = (
+                hasattr(request.user, 'supply_chain_profile')
+                or hasattr(request.user, 'manufacturing_units')
+            )
+            if not is_licensee_user:
+                return Response({
+                    'status': 'error',
+                    'message': 'Only licensee users can update arrival details.'
+                }, status=status.HTTP_403_FORBIDDEN)
+
+            requisition = self._get_scoped_requisition(request, pk)
+
+            payload = request.data.copy()
+            payload['requisition'] = requisition.id
+            payload['reference_no'] = requisition.our_ref_no
+            payload['licensee_id'] = requisition.licensee_id
+
+            existing = RequisitionBulkLiterDetail.objects.filter(requisition=requisition).first()
+            serializer = RequisitionBulkLiterDetailSerializer(
+                existing,
+                data=payload,
+                partial=bool(existing)
+            )
+            serializer.is_valid(raise_exception=True)
+            record = serializer.save(
+                reference_no=requisition.our_ref_no,
+                licensee_id=requisition.licensee_id
+            )
+
+            return Response({
+                'status': 'success',
+                'message': 'Arrival details saved successfully.',
+                'data': RequisitionBulkLiterDetailSerializer(record).data
+            }, status=status.HTTP_200_OK if existing else status.HTTP_201_CREATED)
+
+        except EnaRequisitionDetail.DoesNotExist:
+            return Response({
+                'status': 'error',
+                'message': 'Requisition not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except PermissionDenied as e:
+            return Response({
+                'status': 'error',
+                'message': str(e)
+            }, status=status.HTTP_403_FORBIDDEN)
         except Exception as e:
             return Response({
                 'status': 'error',

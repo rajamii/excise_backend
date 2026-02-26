@@ -1,6 +1,8 @@
 from rest_framework import serializers
 from django.db import transaction
-from .models import EnaRequisitionDetail
+from decimal import Decimal, InvalidOperation
+from django.core.exceptions import ObjectDoesNotExist
+from .models import EnaRequisitionDetail, RequisitionBulkLiterDetail
 from auth.workflow.constants import WORKFLOW_IDS
 import re
 from models.transactional.supply_chain.access_control import condition_role_matches
@@ -53,6 +55,15 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         data['bulk_spirit_type'] = instance.bulk_spirit_type or ''
         data['strength'] = instance.strength or ''
         data['status'] = instance.status or 'PENDING'
+        try:
+            arrival = instance.bulk_liter_detail
+            data['has_arrival_details'] = True
+            data['arrival_total_bulk_liter'] = str(arrival.total_bulk_liter or '0')
+            data['arrival_tanker_count'] = int(arrival.tanker_count or 0)
+        except ObjectDoesNotExist:
+            data['has_arrival_details'] = False
+            data['arrival_total_bulk_liter'] = '0'
+            data['arrival_tanker_count'] = 0
         
         # Ensure status_code is set - derive from stage if not set
         if not instance.status_code or instance.status_code == 'RQ_00':
@@ -528,3 +539,85 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             pass
 
         return 0.0
+
+
+class RequisitionBulkLiterDetailSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RequisitionBulkLiterDetail
+        fields = '__all__'
+        read_only_fields = ['reference_no', 'licensee_id', 'total_bulk_liter', 'created_at', 'updated_at']
+
+    def validate(self, attrs):
+        tanker_details = attrs.get('tanker_details')
+        tanker_count = attrs.get('tanker_count')
+
+        if tanker_details is None and self.instance is not None:
+            tanker_details = self.instance.tanker_details
+        if tanker_count is None and self.instance is not None:
+            tanker_count = self.instance.tanker_count
+
+        tanker_count = int(tanker_count or 0)
+        if tanker_count <= 0:
+            raise serializers.ValidationError({'tanker_count': 'Tanker count must be greater than 0.'})
+
+        if not isinstance(tanker_details, list):
+            raise serializers.ValidationError({'tanker_details': 'Tanker details must be a list.'})
+
+        if len(tanker_details) != tanker_count:
+            raise serializers.ValidationError({
+                'tanker_details': 'Tanker details count must match tanker_count.'
+            })
+
+        normalized_rows = []
+        total_bulk_liter = Decimal('0')
+
+        for idx, row in enumerate(tanker_details, start=1):
+            if not isinstance(row, dict):
+                raise serializers.ValidationError({
+                    'tanker_details': f'Row {idx} must be an object with tanker_no and bulk_liter.'
+                })
+
+            tanker_no = str(row.get('tanker_no', '')).strip()
+            if not tanker_no:
+                raise serializers.ValidationError({
+                    'tanker_details': f'Tanker number is required for row {idx}.'
+                })
+
+            try:
+                bulk_liter = Decimal(str(row.get('bulk_liter', '0')))
+            except (InvalidOperation, ValueError, TypeError):
+                raise serializers.ValidationError({
+                    'tanker_details': f'Bulk liter must be numeric for row {idx}.'
+                })
+
+            if bulk_liter <= 0:
+                raise serializers.ValidationError({
+                    'tanker_details': f'Bulk liter must be greater than 0 for row {idx}.'
+                })
+
+            total_bulk_liter += bulk_liter
+            normalized_rows.append({
+                'tanker_no': tanker_no,
+                'bulk_liter': str(bulk_liter)
+            })
+
+        requisition = attrs.get('requisition') or getattr(self.instance, 'requisition', None)
+        requested_total_bl = Decimal('0')
+        if requisition is not None:
+            try:
+                requested_total_bl = Decimal(str(getattr(requisition, 'totalbl', '0') or '0'))
+            except (InvalidOperation, ValueError, TypeError):
+                requested_total_bl = Decimal('0')
+
+        if requested_total_bl > 0 and total_bulk_liter > requested_total_bl:
+            raise serializers.ValidationError({
+                'tanker_details': (
+                    f"Total bulk liter ({total_bulk_liter}) cannot exceed requisition total quantity "
+                    f"({requested_total_bl})."
+                )
+            })
+
+        attrs['tanker_count'] = tanker_count
+        attrs['tanker_details'] = normalized_rows
+        attrs['total_bulk_liter'] = total_bulk_liter
+        return attrs
