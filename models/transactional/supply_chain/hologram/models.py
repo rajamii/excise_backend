@@ -28,6 +28,12 @@ class HologramProcurement(models.Model):
     payment_status = models.CharField(max_length=50, blank=True, null=True)
     payment_details = models.JSONField(default=dict, blank=True)
     carton_details = models.JSONField(default=list, blank=True) # Stores assigned cartons and serials
+    arrival_date = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='Timestamp when OIC confirms carton arrival'
+    )
     remarks = models.TextField(blank=True, null=True)
     
     # Workflow Integration

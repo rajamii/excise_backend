@@ -59,7 +59,7 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
     class Meta:
         model = HologramProcurement
         fields = '__all__'
-        read_only_fields = ('ref_no', 'date', 'workflow', 'current_stage', 'payment_status', 'manufacturing_unit', 'licensee', 'license')
+        read_only_fields = ('ref_no', 'date', 'workflow', 'current_stage', 'payment_status', 'manufacturing_unit', 'licensee', 'license', 'arrival_date')
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

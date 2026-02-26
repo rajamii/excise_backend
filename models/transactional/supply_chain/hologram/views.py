@@ -2,6 +2,7 @@ from rest_framework import viewsets, status, permissions, serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.shortcuts import get_object_or_404
 from django.db import transaction as db_transaction, models
 from decimal import Decimal
@@ -419,20 +420,41 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 instance.current_stage = selected_transition.to_stage
                 
                 # CRITICAL: Save carton_details if provided with the action
-                if action_name == 'assign_cartons':
+                if normalized_action == 'assign_cartons':
                     carton_details = request.data.get('carton_details')
                     if carton_details:
+                        arrival_processed_date = request.data.get('arrival_processed_date')
+                        arrival_ts = parse_datetime(str(arrival_processed_date)) if arrival_processed_date else None
+                        if arrival_ts and timezone.is_naive(arrival_ts):
+                            arrival_ts = timezone.make_aware(arrival_ts)
+                        if not arrival_ts:
+                            arrival_ts = timezone.now()
+
+                        # Ensure each carton carries an arrival timestamp for roll-level display.
+                        for detail in carton_details:
+                            if isinstance(detail, dict):
+                                has_arrived_value = (
+                                    detail.get('arrivedDate') or
+                                    detail.get('arrived_date') or
+                                    detail.get('arrival_date')
+                                )
+                                if not has_arrived_value:
+                                    detail['arrivedDate'] = arrival_ts.isoformat()
+
                         self._validate_assign_cartons(instance, carton_details)
                         instance.carton_details = carton_details
+                        instance.arrival_date = arrival_ts
                         # Sync to new table
                         self._sync_rolls_details(instance, carton_details, acting_user=request.user)
 
                 instance.save()
                 
                 # Check for Arrival Confirmation to ensure sync
-                if action_name in ['confirm_arrival', 'arrival_confirmed', 'Confirm Arrival', 'confirm', 'Confirm']:
-                     if instance.carton_details:
-                         self._sync_rolls_details(instance, instance.carton_details, acting_user=request.user)
+                if normalized_action in ['confirm_arrival', 'arrival_confirmed', 'confirm arrival', 'confirm']:
+                    if not instance.arrival_date:
+                        instance.arrival_date = timezone.now()
+                    if instance.carton_details:
+                        self._sync_rolls_details(instance, instance.carton_details, acting_user=request.user)
 
                 if normalized_action == 'pay':
                     instance.payment_status = 'completed'
@@ -467,12 +489,33 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             # ALLOW UPDATE: If action is 'assign_cartons' and we have details, allow update without transition
             # This handles re-submission of carton details for records already in 'Cartoon Assigned' or 'Arrived' state
             
-            if action_name == 'assign_cartons':
+            if normalized_action == 'assign_cartons':
                 carton_details = request.data.get('carton_details')
                 if carton_details:
+                    arrival_processed_date = request.data.get('arrival_processed_date')
+                    arrival_ts = parse_datetime(str(arrival_processed_date)) if arrival_processed_date else None
+                    if arrival_ts and timezone.is_naive(arrival_ts):
+                        arrival_ts = timezone.make_aware(arrival_ts)
+                    if not arrival_ts:
+                        arrival_ts = timezone.now()
+
+                    for detail in carton_details:
+                        if isinstance(detail, dict):
+                            has_arrived_value = (
+                                detail.get('arrivedDate') or
+                                detail.get('arrived_date') or
+                                detail.get('arrival_date')
+                            )
+                            if not has_arrived_value:
+                                detail['arrivedDate'] = arrival_ts.isoformat()
+
                     self._validate_assign_cartons(instance, carton_details)
                     instance.carton_details = carton_details
+                    instance.arrival_date = arrival_ts
                     self._sync_rolls_details(instance, carton_details, acting_user=request.user)
+            elif normalized_action in ['confirm_arrival', 'arrival_confirmed', 'confirm arrival', 'confirm']:
+                if not instance.arrival_date:
+                    instance.arrival_date = timezone.now()
 
             if normalized_action == 'pay':
                 wallet_result = self._debit_hologram_wallet_for_payment(instance, request.user)
