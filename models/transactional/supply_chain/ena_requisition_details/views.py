@@ -211,6 +211,82 @@ class RequisitionArrivalBulkLiterDetailAPIView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+class RequisitionArrivalBulkLiterDetailsListAPIView(APIView):
+    def _expand_license_aliases(self, value: str):
+        token = str(value or '').strip()
+        if not token:
+            return []
+        aliases = [token]
+        if token.startswith('NLI/'):
+            aliases.append(f"NA/{token[4:]}")
+        elif token.startswith('NA/'):
+            aliases.append(f"NLI/{token[3:]}")
+        return aliases
+
+    def get(self, request):
+        try:
+            requisitions = scope_by_profile_or_workflow(
+                request.user,
+                EnaRequisitionDetail.objects.all(),
+                WORKFLOW_IDS['ENA_REQUISITION'],
+                licensee_field='licensee_id'
+            )
+
+            licensee_candidates = set()
+            if hasattr(request.user, 'supply_chain_profile'):
+                for alias in self._expand_license_aliases(getattr(request.user.supply_chain_profile, 'licensee_id', '')):
+                    licensee_candidates.add(alias)
+            if hasattr(request.user, 'manufacturing_units'):
+                for raw_id in request.user.manufacturing_units.exclude(licensee_id__isnull=True).exclude(licensee_id='').values_list('licensee_id', flat=True):
+                    for alias in self._expand_license_aliases(raw_id):
+                        licensee_candidates.add(alias)
+
+            rows_qs = RequisitionBulkLiterDetail.objects.select_related('requisition').order_by('-updated_at')
+            if licensee_candidates:
+                license_q = models.Q()
+                for cid in licensee_candidates:
+                    token = str(cid or '').strip()
+                    if token:
+                        license_q |= models.Q(licensee_id__iexact=token)
+                if license_q:
+                    rows_qs = rows_qs.filter(license_q)
+                if not rows_qs.exists():
+                    ref_nos = list(
+                        requisitions.exclude(our_ref_no__isnull=True).exclude(our_ref_no='').values_list('our_ref_no', flat=True)
+                    )
+                    if ref_nos:
+                        rows_qs = RequisitionBulkLiterDetail.objects.filter(
+                            reference_no__in=ref_nos
+                        ).select_related('requisition').order_by('-updated_at')
+            rows = rows_qs
+
+            data = []
+            for row in rows:
+                req = getattr(row, 'requisition', None)
+                data.append({
+                    'id': row.id,
+                    'requisition_id': req.id if req else None,
+                    'reference_no': row.reference_no,
+                    'licensee_id': row.licensee_id,
+                    'tanker_count': row.tanker_count,
+                    'tanker_details': row.tanker_details or [],
+                    'total_bulk_liter': str(row.total_bulk_liter or 0),
+                    'arrival_date': row.updated_at.date().isoformat() if row.updated_at else '',
+                    'requisition_total_quantity': str(getattr(req, 'totalbl', 0) or 0) if req else '0',
+                    'distillery_name': (getattr(req, 'lifted_from_distillery_name', '') or '') if req else '',
+                    'approval_date': getattr(req, 'approval_date', None) if req else None,
+                })
+
+            return Response({
+                'status': 'success',
+                'data': data
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({
+                'status': 'error',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 class PerformRequisitionActionAPIView(APIView):
     """
     API endpoint to perform an action (APPROVE/REJECT) on a requisition.
