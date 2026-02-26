@@ -96,6 +96,20 @@ class PaymentInitiateSerializer(serializers.Serializer):
         return value
 
 
+class WalletRechargePrepareSerializer(serializers.Serializer):
+    licensee_id = serializers.CharField(max_length=50)
+    wallet_type = serializers.ChoiceField(choices=("excise", "brewery", "education", "hologram"))
+
+
+class WalletRechargeInitiateSerializer(serializers.Serializer):
+    licensee_id = serializers.CharField(max_length=50)
+    wallet_type = serializers.ChoiceField(choices=("excise", "brewery", "education", "hologram"))
+    amount = serializers.DecimalField(max_digits=18, decimal_places=2, min_value=Decimal("0.01"))
+    wallet_transaction_id = serializers.CharField(max_length=100)
+    gateway_sl_no = serializers.IntegerField(required=False)
+    return_url = serializers.CharField(max_length=500, required=False, allow_blank=True)
+
+
 class PaymentStatusUpdateSerializer(serializers.Serializer):
     payment_status = serializers.ChoiceField(choices=("P", "S", "F"))
     response_authstatus = serializers.CharField(max_length=10, required=False, allow_blank=True)

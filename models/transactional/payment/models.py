@@ -327,6 +327,24 @@ class PaymentModuleHoa(models.Model):
         db_table = "eabgari_module_hoa"
 
 
+class PaymentWalletTypeHoaMapping(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    module_type = models.CharField(max_length=20)
+    wallet_type = models.CharField(max_length=30)
+    head_of_account = models.CharField(max_length=50)
+    is_active = models.CharField(max_length=1, default="Y")
+    created_date = models.DateTimeField(default=timezone.now)
+    modified_date = models.DateTimeField(null=True, blank=True)
+    user_id = models.CharField(max_length=50, null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = "eabgari_wallet_type_hoa_mapping"
+
+    def __str__(self):
+        return f"{self.module_type}:{self.wallet_type} -> {self.head_of_account}"
+
+
 class PaymentWalletTransactionHistory(models.Model):
     wallet_txn_id = models.BigAutoField(primary_key=True)
     user_id = models.CharField(max_length=50)

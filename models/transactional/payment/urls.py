@@ -5,8 +5,11 @@ from . import views
 app_name = "payment"
 
 urlpatterns = [
+    path("billdesk/response/", views.billdesk_response_callback, name="billdesk-response-callback"),
     path("master-data/", views.payment_master_data, name="master-data"),
     path("modules/<str:module_code>/hoas/", views.payment_module_hoas, name="module-hoas"),
+    path("wallet/recharge/prepare/", views.wallet_recharge_prepare, name="wallet-recharge-prepare"),
+    path("wallet/recharge/initiate/", views.wallet_recharge_initiate, name="wallet-recharge-initiate"),
     # NOTE:
     # license_id values can contain "/" (e.g. NA/03/2025-26/0001),
     # so wallet routes must use <path:...>.
