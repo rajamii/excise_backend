@@ -549,7 +549,10 @@ def payment_transaction_list(request):
     qs = PaymentBilldeskTransaction.objects.all().order_by("-transaction_date")
 
     if request.query_params.get("payer_id"):
-        qs = qs.filter(payer_id=request.query_params["payer_id"])
+        candidates = _wallet_license_candidates(request.query_params["payer_id"])
+        if not candidates:
+            candidates = [str(request.query_params["payer_id"] or "").strip()]
+        qs = qs.filter(payer_id__in=candidates)
     if request.query_params.get("payment_module_code"):
         qs = qs.filter(payment_module_code=request.query_params["payment_module_code"])
     if request.query_params.get("payment_status"):
