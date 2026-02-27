@@ -5,6 +5,7 @@ from auth.workflow.models import Transaction, Objection, Workflow, WorkflowStage
 
 class EnaCancellationDetail(models.Model):
     our_ref_no = models.CharField(max_length=50)
+    requisition_ref_no = models.CharField(max_length=50, blank=True, null=True)
     requisition_date = models.DateTimeField()
     grain_ena_number = models.DecimalField(max_digits=18, decimal_places=2)
     bulk_spirit_type = models.CharField(max_length=255, blank=True, null=True)

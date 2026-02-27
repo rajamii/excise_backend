@@ -206,10 +206,13 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         )
 
         our_ref_no = self.request.query_params.get('our_ref_no', None)
+        requisition_ref_no = self.request.query_params.get('requisition_ref_no', None)
         status_param = self.request.query_params.get('status', None)
         
         if our_ref_no is not None:
             queryset = queryset.filter(our_ref_no__icontains=our_ref_no)
+        if requisition_ref_no is not None:
+            queryset = queryset.filter(requisition_ref_no__icontains=requisition_ref_no)
         if status_param is not None:
             queryset = queryset.filter(status=status_param)
             
@@ -293,6 +296,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                 # Prepare Cancellation Data
                 cancellation = EnaCancellationDetail(
                     our_ref_no=cancel_ref,
+                    requisition_ref_no=ref_no,
                     requisition_date=req.requisition_date,
                     grain_ena_number=req.grain_ena_number,
                     bulk_spirit_type=req.bulk_spirit_type,

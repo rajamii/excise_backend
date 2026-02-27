@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from django.db import transaction
+from django.db import transaction, models
 from decimal import Decimal, InvalidOperation
 from django.core.exceptions import ObjectDoesNotExist
 from .models import EnaRequisitionDetail, RequisitionBulkLiterDetail
@@ -353,6 +353,11 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         if has_active_reval:
             print(f"  - FAILED: Has active revalidation")
             return False
+
+        # Check if all requisition permits are already cancelled by commissioner-approved cancellations
+        if self._are_all_requisition_permits_cancelled(obj):
+            print(f"  - FAILED: All permits already cancelled for requisition")
+            return False
         
         # Check if already cancelled or cancellation in progress
         if 'cancel' in status_lower or 'cancel' in stage_name_lower:
@@ -361,6 +366,59 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         
         print(f"  - SUCCESS: Can initiate cancellation!")
         return True
+
+    def _parse_permit_tokens(self, value):
+        return [
+            str(token).strip()
+            for token in str(value or '').split(',')
+            if str(token).strip()
+        ]
+
+    def _is_commissioner_approved_cancellation(self, cancellation_obj):
+        status_token = self._normalize_stage_token(getattr(cancellation_obj, 'status', ''))
+        stage_name = ''
+        if getattr(cancellation_obj, 'current_stage', None):
+            stage_name = getattr(cancellation_obj.current_stage, 'name', '')
+        stage_token = self._normalize_stage_token(stage_name)
+
+        merged = f"{status_token} {stage_token}"
+        return 'approved' in merged and 'commissioner' in merged
+
+    def _approved_cancelled_permit_numbers_for_requisition(self, requisition_ref_no):
+        if not requisition_ref_no:
+            return set()
+
+        from models.transactional.supply_chain.ena_cancellation_details.models import EnaCancellationDetail
+
+        rows = EnaCancellationDetail.objects.filter(
+            models.Q(requisition_ref_no=requisition_ref_no) |
+            models.Q(our_ref_no=requisition_ref_no)
+        ).select_related('current_stage')
+
+        approved_numbers = set()
+        for row in rows:
+            if not self._is_commissioner_approved_cancellation(row):
+                continue
+            cancelled_raw = getattr(row, 'cancelled_permit_numbers', None) or getattr(row, 'cancelled_permit_number', None) or ''
+            for token in self._parse_permit_tokens(cancelled_raw):
+                approved_numbers.add(token)
+
+        return approved_numbers
+
+    def _all_requisition_permit_numbers(self, obj):
+        permit_tokens = self._parse_permit_tokens(getattr(obj, 'details_permits_number', ''))
+        if permit_tokens:
+            return set(permit_tokens)
+
+        count = self._safe_permit_count(getattr(obj, 'requisiton_number_of_permits', 0))
+        return {str(i) for i in range(1, count + 1)}
+
+    def _are_all_requisition_permits_cancelled(self, obj):
+        all_permits = self._all_requisition_permit_numbers(obj)
+        if not all_permits:
+            return False
+        approved_cancelled = self._approved_cancelled_permit_numbers_for_requisition(getattr(obj, 'our_ref_no', ''))
+        return all_permits.issubset(approved_cancelled)
 
     def get_has_active_revalidation(self, obj):
         """
