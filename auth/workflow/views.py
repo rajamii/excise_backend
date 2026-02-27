@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.views import PermissionDenied
 from django.apps import apps
 from django.forms import ValidationError
+from django.core.exceptions import SuspiciousOperation
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import status
@@ -185,80 +186,83 @@ def stage_permission_delete(request, pk):
 @api_view(['GET'])
 @permission_classes([HasStagePermission])
 def get_next_stages(request, application_id):
-    application = _get_application_by_id(application_id)
-    if not application:
-        return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
-        
-    # Enforce stage-level processing permission for action discovery.
-    # Without this, non-processing users can still fetch next actions on GET.
-    if not request.user.is_superuser:
-        if not getattr(request.user, 'role', None):
-            return Response([], status=status.HTTP_200_OK)
-        if not StagePermission.objects.filter(
-            stage=application.current_stage,
-            role=request.user.role,
-            can_process=True
-        ).exists():
-            # For users who can view but not process this stage, return no actions
-            # instead of 403 so frontend can render gracefully.
-            return Response([], status=status.HTTP_200_OK)
+    try:
+        application = _get_application_by_id(application_id)
+        if not application:
+            return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+        # Enforce stage-level processing permission for action discovery.
+        # Without this, non-processing users can still fetch next actions on GET.
+        if not request.user.is_superuser:
+            if not getattr(request.user, 'role', None):
+                return Response([], status=status.HTTP_200_OK)
+            if not StagePermission.objects.filter(
+                stage=application.current_stage,
+                role=request.user.role,
+                can_process=True
+            ).exists():
+                # For users who can view but not process this stage, return no actions
+                # instead of 403 so frontend can render gracefully.
+                return Response([], status=status.HTTP_200_OK)
 
-    current_stage = application.current_stage
-    transitions = WorkflowTransition.objects.filter(
-        workflow=application.workflow,
-        from_stage=current_stage
-    ).select_related('to_stage').order_by('id')
+        current_stage = application.current_stage
+        transitions = WorkflowTransition.objects.filter(
+            workflow=application.workflow,
+            from_stage=current_stage
+        ).select_related('to_stage').order_by('id')
 
-    # Filter transitions by transition-level role condition when present.
-    filtered_transitions = []
-    for t in transitions:
-        condition = t.condition or {}
-        if WorkflowService._condition_role_matches(condition, request.user):
-            filtered_transitions.append(t)
+        # Filter transitions by transition-level role condition when present.
+        filtered_transitions = []
+        for t in transitions:
+            condition = t.condition or {}
+            if WorkflowService._condition_role_matches(condition, request.user):
+                filtered_transitions.append(t)
 
-    def _normalized_action(condition: dict) -> str | None:
-        action = str((condition or {}).get('action') or '').strip().upper()
-        if action:
-            return action
-        if (condition or {}).get('has_objections') is True:
-            return 'RAISE_OBJECTION'
-        if (condition or {}).get('objections_resolved') is True:
-            return 'RESOLVE_OBJECTION'
-        if (condition or {}).get('is_reverted') is True:
-            return 'REVERT'
-        return None
+        def _normalized_action(condition: dict) -> str | None:
+            action = str((condition or {}).get('action') or '').strip().upper()
+            if action:
+                return action
+            if (condition or {}).get('has_objections') is True:
+                return 'RAISE_OBJECTION'
+            if (condition or {}).get('objections_resolved') is True:
+                return 'RESOLVE_OBJECTION'
+            if (condition or {}).get('is_reverted') is True:
+                return 'REVERT'
+            return None
 
-    data = []
-    for t in filtered_transitions:
-        condition = t.condition or {}
-        action = _normalized_action(condition)
-        data.append({
-            'id': t.to_stage.id,
-            'name': t.to_stage.name,
-            'description': t.to_stage.description or "",
-            'action': action or None,
-            'transition_id': t.id,
-            'condition': condition,
-        })
-    return Response(data)
+        data = []
+        for t in filtered_transitions:
+            condition = t.condition or {}
+            action = _normalized_action(condition)
+            data.append({
+                'id': t.to_stage.id,
+                'name': t.to_stage.name,
+                'description': t.to_stage.description or "",
+                'action': action or None,
+                'transition_id': t.id,
+                'condition': condition,
+            })
+        return Response(data)
+    except SuspiciousOperation as exc:
+        return Response({"detail": f"Invalid request: {str(exc)}"}, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['POST'])
 @permission_classes([HasStagePermission])
 def advance_application(request, application_id, stage_id):  # request is here
-    application = _get_application_by_id(application_id)
-    if not application:
-        return Response({"detail": "Application not found"}, status=404)
-
     try:
-        target_stage = application.workflow.stages.get(id=stage_id)
-    except WorkflowStage.DoesNotExist:
-        return Response({"detail": "Target stage does not exist"}, status=400)
+        application = _get_application_by_id(application_id)
+        if not application:
+            return Response({"detail": "Application not found"}, status=404)
 
-    remarks = request.data.get("remarks", "")
-    if not remarks and "context_data" in request.data:
-                remarks = request.data["context_data"].get("remarks", "")
-    
-    try:
+        try:
+            target_stage = application.workflow.stages.get(id=stage_id)
+        except WorkflowStage.DoesNotExist:
+            return Response({"detail": "Target stage does not exist"}, status=400)
+
+        remarks = request.data.get("remarks", "")
+        if not remarks and "context_data" in request.data:
+            remarks = request.data["context_data"].get("remarks", "")
+        
         WorkflowService.advance_stage(
             application=application,
             user=request.user,
@@ -268,6 +272,8 @@ def advance_application(request, application_id, stage_id):  # request is here
         ) 
         # Pass the request.user down
         return _serialize_application(application, requesting_user=request.user)
+    except SuspiciousOperation as exc:
+        return Response({"detail": f"Invalid request: {str(exc)}"}, status=400)
     except Exception as e:
         return Response({"detail": str(e)}, status=400)
 

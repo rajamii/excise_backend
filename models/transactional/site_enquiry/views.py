@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from auth.roles.permissions import HasAppPermission
 from django.shortcuts import get_object_or_404
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError, SuspiciousOperation
 from django.contrib.contenttypes.models import ContentType
 from .models import SiteEnquiryReport
 from .serializers import SiteEnquiryReportSerializer
@@ -97,15 +97,18 @@ def site_enquiry_detail(request, application_id):
         if SiteEnquiryReport.objects.filter(content_type=ct, object_id=application.application_id).exists():
             return Response({"detail": "Site enquiry already submitted"}, status=400)
 
-        serializer = SiteEnquiryReportSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save(
-                content_type=ct,
-                object_id=application.application_id,
-                license_id=_resolve_license_id_for_report(request, application) or None,
-            )
-            return Response(serializer.data, status=201)
-        return Response(serializer.errors, status=400)
+        try:
+            serializer = SiteEnquiryReportSerializer(data=request.data)
+            if serializer.is_valid():
+                serializer.save(
+                    content_type=ct,
+                    object_id=application.application_id,
+                    license_id=_resolve_license_id_for_report(request, application) or None,
+                )
+                return Response(serializer.data, status=201)
+            return Response(serializer.errors, status=400)
+        except SuspiciousOperation as exc:
+            return Response({"detail": f"Invalid upload data: {str(exc)}"}, status=400)
     
 
 @permission_classes([HasAppPermission('license_application', 'update'), HasStagePermission])

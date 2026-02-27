@@ -1,14 +1,20 @@
 from django.db import models
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
-from django.utils.timezone import now
+import os
+import uuid
 
 
 def upload_site_image(instance, filename):
-    app_label = instance.content_object._meta.app_label
-    model_name = instance.content_object._meta.model_name
-    app_id = instance.content_object.application_id
-    return f"site_enquiry/{app_label}/{model_name}/{app_id}/{filename}"
+    content_object = getattr(instance, 'content_object', None)
+    app_label = getattr(getattr(content_object, '_meta', None), 'app_label', 'transactional')
+    model_name = getattr(getattr(content_object, '_meta', None), 'model_name', 'site_enquiry')
+    app_id = str(getattr(content_object, 'application_id', '') or getattr(instance, 'object_id', '') or 'unknown')
+    safe_app_id = app_id.replace('/', '_').replace('\\', '_')
+    _, ext = os.path.splitext(str(filename or 'upload.bin'))
+    safe_ext = (ext or '.bin')[:10]
+    short_name = f"{uuid.uuid4().hex[:12]}{safe_ext.lower()}"
+    return f"site_enquiry/{app_label}/{model_name}/{safe_app_id}/{short_name}"
 
 
 class SiteEnquiryReport(models.Model):
@@ -60,7 +66,7 @@ class SiteEnquiryReport(models.Model):
     is_on_highway = models.BooleanField(default=False)
     highway_name = models.TextField(blank=True)
 
-    shop_image_document = models.FileField(upload_to=upload_site_image)
+    shop_image_document = models.FileField(upload_to=upload_site_image, max_length=500)
 
     latitude = models.FloatField(null=True, blank=True)
     longitude = models.FloatField(null=True, blank=True)

@@ -47,6 +47,11 @@ def _is_oic_scoped_user(user):
     )
 
 
+def _is_licensee_scoped_user(user):
+    role_token = _normalize_token(getattr(getattr(user, 'role', None), 'name', ''))
+    return role_token in {'licensee', 'licencee'}
+
+
 def has_workflow_access(user, workflow_id):
     if getattr(user, 'is_superuser', False) or getattr(user, 'is_staff', False):
         return True
@@ -159,6 +164,10 @@ def scope_by_profile_or_workflow(user, queryset, workflow_id, licensee_field='li
 
     # OIC users without an assignment should not see cross-license records.
     if is_oic_user:
+        return queryset.none()
+
+    # Licensee users without mapped IDs must not fall back to workflow-wide access.
+    if _is_licensee_scoped_user(user):
         return queryset.none()
 
     # Workflow roles use DB-configured stage permissions.

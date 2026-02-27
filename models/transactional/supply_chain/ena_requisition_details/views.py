@@ -231,6 +231,12 @@ class RequisitionArrivalBulkLiterDetailsListAPIView(APIView):
                 WORKFLOW_IDS['ENA_REQUISITION'],
                 licensee_field='licensee_id'
             )
+            requisition_ids = list(requisitions.values_list('id', flat=True))
+            if not requisition_ids:
+                return Response({
+                    'status': 'success',
+                    'data': []
+                }, status=status.HTTP_200_OK)
 
             licensee_candidates = set()
             if hasattr(request.user, 'supply_chain_profile'):
@@ -241,7 +247,9 @@ class RequisitionArrivalBulkLiterDetailsListAPIView(APIView):
                     for alias in self._expand_license_aliases(raw_id):
                         licensee_candidates.add(alias)
 
-            rows_qs = RequisitionBulkLiterDetail.objects.select_related('requisition').order_by('-updated_at')
+            rows_qs = RequisitionBulkLiterDetail.objects.select_related('requisition').filter(
+                requisition_id__in=requisition_ids
+            ).order_by('-updated_at')
             if licensee_candidates:
                 license_q = models.Q()
                 for cid in licensee_candidates:
@@ -256,6 +264,7 @@ class RequisitionArrivalBulkLiterDetailsListAPIView(APIView):
                     )
                     if ref_nos:
                         rows_qs = RequisitionBulkLiterDetail.objects.filter(
+                            requisition_id__in=requisition_ids,
                             reference_no__in=ref_nos
                         ).select_related('requisition').order_by('-updated_at')
             rows = rows_qs
