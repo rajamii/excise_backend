@@ -318,6 +318,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                     cancellation_date=timezone.now(),
                     cancellation_br_amount=Decimal('0.00'),
                     cancelled_permit_number=",".join(permit_numbers),
+                    cancelled_permit_numbers=",".join(permit_numbers),
                     total_cancellation_amount=Decimal(str(total_amount)),
                     permit_nocount=str(len(permit_numbers)),
                     licensee_id=licensee_id,
@@ -362,8 +363,13 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             
             # Parse cancelled permit numbers
             cancelled_permits = []
-            if cancellation.cancelled_permit_number:
-                cancelled_permits = [p.strip() for p in cancellation.cancelled_permit_number.split(',') if p.strip()]
+            cancelled_permits_raw = (
+                cancellation.cancelled_permit_numbers
+                or cancellation.cancelled_permit_number
+                or ''
+            )
+            if cancelled_permits_raw:
+                cancelled_permits = [p.strip() for p in cancelled_permits_raw.split(',') if p.strip()]
             
             # Generate letter data
             letter_data = {

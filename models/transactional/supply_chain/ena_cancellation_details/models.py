@@ -23,6 +23,7 @@ class EnaCancellationDetail(models.Model):
     cancellation_date = models.DateTimeField()
     cancellation_br_amount = models.DecimalField(max_digits=18, decimal_places=2)
     cancelled_permit_number = models.CharField(max_length=100, blank=True, null=True)
+    cancelled_permit_numbers = models.CharField(max_length=500, blank=True, null=True)
     total_cancellation_amount = models.DecimalField(max_digits=18, decimal_places=2)
     permit_nocount = models.CharField(max_length=500, blank=True, null=True)
     details_permits_number = models.CharField(max_length=500, blank=True, null=True)
