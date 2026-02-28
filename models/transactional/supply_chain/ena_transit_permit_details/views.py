@@ -556,6 +556,114 @@ class PerformTransitPermitActionAPIView(views.APIView):
 
         return scoped
 
+    def _resolve_wallet_license_candidates(self, raw_licensee_id: str):
+        normalized = str(raw_licensee_id or '').strip()
+        if not normalized:
+            return []
+
+        candidates = set(self._expand_license_aliases(normalized))
+
+        try:
+            from models.masters.license.models import License
+
+            license_rows = License.objects.filter(is_active=True).filter(
+                Q(license_id__in=list(candidates)) | Q(source_object_id__in=list(candidates))
+            )
+            for row in license_rows:
+                for raw in [getattr(row, 'license_id', ''), getattr(row, 'source_object_id', '')]:
+                    for alias in self._expand_license_aliases(raw):
+                        candidates.add(alias)
+        except Exception:
+            pass
+
+        return [c for c in candidates if c]
+
+    def _refund_wallet_balances_for_rejection(self, user, permit, cancellation_reason=''):
+        from models.transactional.payment.models import WalletBalance, WalletTransaction
+
+        bill_no = str(getattr(permit, 'bill_no', '') or '').strip()
+        if not bill_no:
+            return {"credited": 0, "skipped": 0, "missing_wallet": 0}
+
+        candidates = self._resolve_wallet_license_candidates(getattr(permit, 'licensee_id', ''))
+        debit_qs = WalletTransaction.objects.filter(
+            source_module='transit_permit',
+            reference_no=bill_no,
+            entry_type__iexact='DR',
+        )
+        if candidates:
+            debit_qs = debit_qs.filter(licensee_id__in=candidates)
+
+        debit_rows = list(
+            debit_qs.select_related('wallet_balance').order_by('wallet_transaction_id')
+        )
+        if not debit_rows:
+            return {"credited": 0, "skipped": 0, "missing_wallet": 0}
+
+        now_ts = timezone.now()
+        actor = str(getattr(user, 'username', '') or '')
+        reason = str(cancellation_reason or '').strip()
+        reason_suffix = f" Reason: {reason}" if reason else ""
+        summary = {"credited": 0, "skipped": 0, "missing_wallet": 0}
+
+        with transaction.atomic():
+            for debit_row in debit_rows:
+                amount = Decimal(str(debit_row.amount or 0))
+                if amount <= 0:
+                    summary["skipped"] += 1
+                    continue
+
+                refund_transaction_id = f"{debit_row.transaction_id}-REFUND"
+                already_refunded = WalletTransaction.objects.filter(
+                    transaction_id=refund_transaction_id,
+                    source_module='transit_permit_refund',
+                    reference_no=bill_no,
+                    entry_type__iexact='CR',
+                ).exists()
+                if already_refunded:
+                    summary["skipped"] += 1
+                    continue
+
+                wallet = (
+                    WalletBalance.objects.select_for_update()
+                    .filter(wallet_balance_id=debit_row.wallet_balance_id)
+                    .first()
+                )
+                if not wallet:
+                    summary["missing_wallet"] += 1
+                    continue
+
+                before = Decimal(str(wallet.current_balance or 0))
+                after = before + amount
+                wallet.current_balance = after
+                wallet.total_credit = Decimal(str(wallet.total_credit or 0)) + amount
+                wallet.last_updated_at = now_ts
+                wallet.save(update_fields=['current_balance', 'total_credit', 'last_updated_at'])
+
+                WalletTransaction.objects.create(
+                    wallet_balance=wallet,
+                    transaction_id=refund_transaction_id,
+                    licensee_id=wallet.licensee_id or debit_row.licensee_id,
+                    licensee_name=wallet.licensee_name or debit_row.licensee_name,
+                    user_id=actor or wallet.user_id or debit_row.user_id,
+                    module_type=wallet.module_type or debit_row.module_type,
+                    wallet_type=wallet.wallet_type or debit_row.wallet_type,
+                    head_of_account=wallet.head_of_account or debit_row.head_of_account,
+                    entry_type='CR',
+                    transaction_type='credit',
+                    amount=amount,
+                    balance_before=before,
+                    balance_after=after,
+                    reference_no=bill_no,
+                    source_module='transit_permit_refund',
+                    payment_status='refunded',
+                    remarks=(f"Refund for cancelled transit permit {bill_no}.{reason_suffix}")[:300],
+                    created_at=now_ts,
+                )
+                summary["credited"] += 1
+
+        return summary
+
     def post(self, request, pk):
         try:
             action = str(request.data.get('action') or '').strip().upper()
@@ -720,51 +828,20 @@ class PerformTransitPermitActionAPIView(views.APIView):
 
         # 1. Refund wallet. This should not block cancellation-log creation.
         try:
-            from .models import Wallet, WalletTransaction
-
-            wallet = Wallet.objects.filter(user__supply_chain_profile__licensee_id=permit.licensee_id).first()
-
-            if wallet:
-                excise_amt = float(permit.total_excise_duty or 0)
-                add_excise_amt = float(permit.total_additional_excise or 0)
-                cess_amt = float(permit.total_education_cess or 0)
-
-                wallet.excise_balance = float(wallet.excise_balance) + excise_amt
-                wallet.additional_excise_balance = float(wallet.additional_excise_balance) + add_excise_amt
-                wallet.education_cess_balance = float(wallet.education_cess_balance) + cess_amt
-                wallet.save()
-
-                if excise_amt > 0:
-                    WalletTransaction.objects.create(
-                        wallet=wallet,
-                        transaction_type='CREDIT',
-                        amount=excise_amt,
-                        head='EXCISE',
-                        reference_no=permit.bill_no,
-                        description=f'Refund for Rejected Permit {permit.bill_no}'
-                    )
-                if add_excise_amt > 0:
-                    WalletTransaction.objects.create(
-                        wallet=wallet,
-                        transaction_type='CREDIT',
-                        amount=add_excise_amt,
-                        head='ADDITIONAL_EXCISE',
-                        reference_no=permit.bill_no,
-                        description=f'Refund for Rejected Permit {permit.bill_no}'
-                    )
-                if cess_amt > 0:
-                    WalletTransaction.objects.create(
-                        wallet=wallet,
-                        transaction_type='CREDIT',
-                        amount=cess_amt,
-                        head='EDUCATION_CESS',
-                        reference_no=permit.bill_no,
-                        description=f'Refund for Rejected Permit {permit.bill_no}'
-                    )
-
-                print(f"DEBUG: Wallet refunded for {permit.bill_no}")
-            else:
-                print(f"WARNING: No wallet found for licensee_id {permit.licensee_id}, skipping refund")
+            refund_summary = self._refund_wallet_balances_for_rejection(
+                request.user,
+                permit,
+                cancellation_reason=cancellation_reason
+            )
+            print(
+                "DEBUG: Wallet refund summary for %s -> credited=%s skipped=%s missing_wallet=%s"
+                % (
+                    permit.bill_no,
+                    refund_summary.get("credited", 0),
+                    refund_summary.get("skipped", 0),
+                    refund_summary.get("missing_wallet", 0),
+                )
+            )
         except Exception as wallet_error:
             print(f"ERROR wallet refund during rejection for {permit.bill_no}: {wallet_error}")
 
