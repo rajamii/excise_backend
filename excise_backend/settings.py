@@ -207,6 +207,19 @@ CORS_ORIGIN_ALLOW_ALL = True
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Payment callback configuration
+# Keep private callback URLs enabled for local development only.
+BILLDESK_ALLOW_PRIVATE_CALLBACK = DEBUG
+# IMPORTANT: For development, use HTTP. For production, use HTTPS with public domain
+# BillDesk WAF blocks localhost/private IPs in production
+if DEBUG:
+    # Development: Use HTTP (Django dev server doesn't support HTTPS)
+    BILLDESK_PUBLIC_CALLBACK_URL = "http://127.0.0.1:8000/transactional/payment/billdesk/response/"
+else:
+    # Production: Use HTTPS with public domain
+    BILLDESK_PUBLIC_CALLBACK_URL = "https://excise.sikkim.gov.in/api/transactional/payment/billdesk/response/"
+FRONTEND_URL = "http://localhost:4200"
+
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(days=1),       # default: 5 minutes
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),      # default: 1 day

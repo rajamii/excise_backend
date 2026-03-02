@@ -1,8 +1,10 @@
 import secrets
 import hmac
 import hashlib
+import ipaddress
 from decimal import Decimal
 from urllib.parse import quote_plus
+from urllib.parse import urlparse
 
 from django.db import transaction
 from django.shortcuts import get_object_or_404
@@ -138,10 +140,62 @@ def _resolve_license_module_type(raw_licensee_id: str) -> str:
     return "distillery"
 
 
+def _resolve_license_module_type_from_license(lic) -> str:
+    if not lic:
+        return "distillery"
+
+    sub_category = getattr(lic, "license_sub_category", None)
+    sub_desc = str(getattr(sub_category, "description", "") or "").strip().lower()
+    if "brew" in sub_desc or "beer" in sub_desc:
+        return "brewery"
+    if "distill" in sub_desc:
+        return "distillery"
+
+    sub_category_id = getattr(lic, "license_sub_category_id", None)
+    if sub_category_id == 1:
+        return "brewery"
+    if sub_category_id == 2:
+        return "distillery"
+
+    return "distillery"
+
+
+def _pick_primary_approved_license(candidates):
+    try:
+        from models.masters.license.models import License
+    except Exception:
+        return None
+
+    ids = [str(item or "").strip() for item in (candidates or []) if str(item or "").strip()]
+    if not ids:
+        return None
+
+    active_qs = License.objects.filter(is_active=True)
+
+    by_license_id = (
+        active_qs.filter(license_id__in=ids)
+        .select_related("license_sub_category")
+        .order_by("-valid_up_to", "-issue_date", "-license_id")
+        .first()
+    )
+    if by_license_id:
+        return by_license_id
+
+    by_source_object = (
+        active_qs.filter(source_object_id__in=ids)
+        .select_related("license_sub_category")
+        .order_by("-valid_up_to", "-issue_date", "-license_id")
+        .first()
+    )
+    return by_source_object
+
+
 def _wallet_type_aliases(wallet_type: str) -> tuple[str, ...]:
     requested = str(wallet_type or "").strip().lower()
-    if requested in ("excise", "brewery"):
-        return ("excise", "brewery")
+    if requested == "excise":
+        return ("excise",)
+    if requested == "brewery":
+        return ("brewery",)
     if requested == "education":
         return ("education", "education_cess", "cess")
     if requested == "hologram":
@@ -162,10 +216,10 @@ def _pick_wallet_row(rows, wallet_type: str, module_type: str):
             return row_type in aliases or "education" in row_type
         if requested == "hologram":
             return "hologram" in row_type
-        if requested in ("excise", "brewery"):
-            if row_type in aliases:
-                return True
-            return "education" not in row_type and "hologram" not in row_type
+        if requested == "excise":
+            return row_type == "excise"
+        if requested == "brewery":
+            return row_type == "brewery"
         return row_type == requested
 
     matched = [row for row in rows if is_match(row)]
@@ -211,22 +265,24 @@ def _resolve_hoa_from_master(wallet_type: str, module_type: str) -> str:
             return "education" in hoa_desc
         if requested == "hologram":
             return "hologram" in hoa_desc
-        if requested in ("excise", "brewery"):
+        if requested == "excise":
             return "excise" in hoa_desc
+        if requested == "brewery":
+            return "brew" in hoa_desc or "beer" in hoa_desc
         return False
 
     filtered = [row for row in rows if matches(row[1])]
     if not filtered:
         return rows[0][0]
 
-    if requested in ("excise", "brewery"):
-        if module == "brewery":
-            brewery_rows = [row for row in filtered if "brew" in row[1] or "beer" in row[1]]
-            if brewery_rows:
-                return brewery_rows[0][0]
+    if requested == "excise":
         distillery_rows = [row for row in filtered if "distill" in row[1]]
         if distillery_rows:
             return distillery_rows[0][0]
+    if requested == "brewery":
+        brewery_rows = [row for row in filtered if "brew" in row[1] or "beer" in row[1]]
+        if brewery_rows:
+            return brewery_rows[0][0]
 
     return filtered[0][0]
 
@@ -262,23 +318,34 @@ def _resolve_wallet_context(licensee_id: str, wallet_type: str) -> dict:
     if not candidates:
         candidates = [str(licensee_id or "").strip()]
 
-    module_type = _resolve_license_module_type(candidates[0])
+    primary_license = _pick_primary_approved_license(candidates)
+    if primary_license and str(getattr(primary_license, "license_id", "")).strip():
+        canonical_license_id = str(primary_license.license_id).strip()
+        if canonical_license_id not in candidates:
+            candidates = [canonical_license_id, *candidates]
+        module_type = _resolve_license_module_type_from_license(primary_license)
+    else:
+        module_type = _resolve_license_module_type(candidates[0])
+    effective_wallet_type = requested_wallet_type
+    if requested_wallet_type in ("excise", "brewery"):
+        effective_wallet_type = "brewery" if module_type == "brewery" else "excise"
+
     wallet_rows = list(
         WalletBalance.objects.filter(licensee_id__in=candidates).order_by("wallet_balance_id")
     )
-    wallet = _pick_wallet_row(wallet_rows, requested_wallet_type, module_type)
-    expected_hoa = _resolve_hoa_from_mapping(requested_wallet_type, module_type)
+    wallet = _pick_wallet_row(wallet_rows, effective_wallet_type, module_type)
+    expected_hoa = _resolve_hoa_from_mapping(effective_wallet_type, module_type)
     if not expected_hoa:
         expected_hoa = str(getattr(wallet, "head_of_account", "") or "").strip()
     if not expected_hoa:
-        expected_hoa = _resolve_hoa_from_master(requested_wallet_type, module_type)
+        expected_hoa = _resolve_hoa_from_master(effective_wallet_type, module_type)
 
     payer_id = str(getattr(wallet, "licensee_id", "") or "").strip() or candidates[0]
 
     return {
         "payer_id": payer_id,
         "module_type": module_type,
-        "wallet_type": requested_wallet_type,
+        "wallet_type": effective_wallet_type,
         "head_of_account": expected_hoa,
         "wallet_row": wallet,
     }
@@ -351,6 +418,29 @@ def _generate_wallet_transaction_id(wallet_type: str) -> str:
     raise RuntimeError("Unable to generate unique wallet transaction id")
 
 
+def _sanitize_billdesk_field(value: str) -> str:
+    """
+    Sanitize field values for BillDesk to prevent WAF rejection.
+    Removes special characters that commonly trigger security filters.
+    """
+    if not value or value == "NA":
+        return value
+    
+    # Remove special characters that trigger WAF
+    # Keep only alphanumeric, spaces, dots, hyphens, and forward slashes
+    import re
+    sanitized = re.sub(r'[!@#$%\^&*\(\)\+=\\\{\}\[\]\|:;,\"\'<>\?\~`]', '', value)
+    # Replace multiple spaces with single space
+    sanitized = re.sub(r'\s+', ' ', sanitized)
+    # Trim whitespace
+    sanitized = sanitized.strip()
+    # Limit length to 30 characters for additional info fields
+    if len(sanitized) > 30:
+        sanitized = sanitized[:30]
+    
+    return sanitized if sanitized else "NA"
+
+
 def _build_billdesk_request_message(
     *,
     gateway: PaymentGatewayParameter,
@@ -365,6 +455,15 @@ def _build_billdesk_request_message(
     addl7: str,
     return_url: str,
 ) -> tuple[str, str]:
+    # Sanitize all additional info fields to prevent WAF rejection
+    addl1 = _sanitize_billdesk_field(addl1)
+    addl2 = _sanitize_billdesk_field(addl2)
+    addl3 = _sanitize_billdesk_field(addl3)
+    addl4 = _sanitize_billdesk_field(addl4)
+    addl5 = _sanitize_billdesk_field(addl5)
+    addl6 = _sanitize_billdesk_field(addl6)
+    addl7 = _sanitize_billdesk_field(addl7)
+    
     msg_string = (
         f"{gateway.merchantid}|{utr}|NA|{Decimal(amount):0.2f}|NA|NA|NA|INR|NA|R|{gateway.securityid}|NA|NA|F|"
         f"{addl1}|{addl2}|{addl3}|{addl4}|{addl5}|{addl6}|{addl7}|{return_url}"
@@ -375,6 +474,39 @@ def _build_billdesk_request_message(
         hashlib.sha256,
     ).hexdigest().upper()
     return msg_string, digest
+
+
+def _is_public_callback_url(raw_url: str) -> bool:
+    allow_private = bool(getattr(settings, "BILLDESK_ALLOW_PRIVATE_CALLBACK", False))
+    if allow_private:
+        return True
+
+    value = str(raw_url or "").strip()
+    if not value:
+        return False
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return False
+
+    if parsed.scheme not in ("http", "https"):
+        return False
+
+    host = str(parsed.hostname or "").strip().lower()
+    if not host:
+        return False
+    if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1"):
+        return False
+
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return False
+    except ValueError:
+        # Non-IP hostnames are allowed.
+        pass
+
+    return True
 
 
 def _safe_limit(raw_limit=None, default: int = 100, max_limit: int = 1000) -> int:
@@ -588,7 +720,7 @@ def wallet_recharge_prepare(request):
     data = serializer.validated_data
     context = _resolve_wallet_context(data["licensee_id"], data["wallet_type"])
 
-    transaction_id = _generate_wallet_transaction_id(data["wallet_type"])
+    transaction_id = _generate_wallet_transaction_id(context["wallet_type"])
 
     return Response(
         {
@@ -653,14 +785,41 @@ def wallet_recharge_initiate(request):
     addl6 = "NA"
     addl7 = "NA"
 
-    return_url = (
-        str(data.get("return_url") or "").strip()
-        or str(gateway.return_url or "").strip()
+    configured_public_callback = str(getattr(settings, "BILLDESK_PUBLIC_CALLBACK_URL", "") or "").strip()
+    default_callback_url = (
+        configured_public_callback
         or request.build_absolute_uri("/transactional/payment/billdesk/response/")
     )
+    requested_return_url = str(data.get("return_url") or "").strip()
+    configured_return_url = str(gateway.return_url or "").strip()
+    configured_path = configured_return_url.lower()
+    configured_looks_like_frontend = (
+        "/payment/billdesk-handler" in configured_path
+        or "/payment/billdesk-response-landing" in configured_path
+        or "/payment/callback" in configured_path
+    )
+    configured_looks_like_backend_callback = "/billdesk/response" in configured_path
+    return_url = requested_return_url
+    if not return_url:
+        if configured_return_url and configured_looks_like_backend_callback and not configured_looks_like_frontend:
+            return_url = configured_return_url
+        else:
+            return_url = default_callback_url
     if not return_url:
         return Response(
             {"detail": "Return URL is not configured in gateway parameters."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not _is_public_callback_url(return_url):
+        return Response(
+            {
+                "detail": (
+                    "Invalid BillDesk callback URL. Configure a public callback URL "
+                    "(not localhost/127.x/private IP) in eabgari_payment_gateway_parameters.return_url "
+                    "or settings.BILLDESK_PUBLIC_CALLBACK_URL."
+                ),
+                "callback_url": return_url,
+            },
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -871,6 +1030,8 @@ def payment_update_status(request, utr):
 @api_view(["POST", "GET"])
 @permission_classes([AllowAny])
 def billdesk_response_callback(request):
+    frontend_base = getattr(settings, "FRONTEND_URL", "http://localhost:4200")
+
     msg = ""
     if request.method == "POST":
         msg = str(request.data.get("msg") or request.POST.get("msg") or "").strip()
@@ -879,28 +1040,28 @@ def billdesk_response_callback(request):
 
     if not msg:
         return HttpResponseRedirect(
-            "/payment/billdesk-response-landing?status=F&message="
+            f"{frontend_base}/payment/billdesk-response-landing?status=F&message="
             + quote_plus("Response not received from bank site")
         )
 
     parts = msg.split("|")
     if len(parts) < 26:
         return HttpResponseRedirect(
-            "/payment/billdesk-response-landing?status=F&message="
+            f"{frontend_base}/payment/billdesk-response-landing?status=F&message="
             + quote_plus("Invalid BillDesk response")
         )
 
     utr = str(parts[1] or "").strip()
     if not utr:
         return HttpResponseRedirect(
-            "/payment/billdesk-response-landing?status=F&message="
+            f"{frontend_base}/payment/billdesk-response-landing?status=F&message="
             + quote_plus("UTR missing in response")
         )
 
     txn = PaymentBilldeskTransaction.objects.filter(pk=utr).first()
     if not txn:
         return HttpResponseRedirect(
-            "/payment/billdesk-response-landing?status=F&message="
+            f"{frontend_base}/payment/billdesk-response-landing?status=F&message="
             + quote_plus("Transaction not found")
         )
 
@@ -991,7 +1152,6 @@ def billdesk_response_callback(request):
     txn.opr_date = timezone.now()
     txn.save()
 
-    frontend_base = getattr(settings, "FRONTEND_URL", "http://localhost:4200")
     is_success = payment_status == "S"
     txn_ref = str(parts[2] or "").strip()
     bank_ref = str(parts[3] or "").strip()
