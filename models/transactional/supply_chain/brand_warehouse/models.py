@@ -33,6 +33,12 @@ class BrandWarehouse(models.Model):
         ('OVERSTOCKED', 'Overstocked'),
     ]
 
+    PURPOSE_OF_SALE_CHOICES = [
+        ('LOCAL', 'Local'),
+        ('EXPORT', 'Export'),
+        ('DEFENCE', 'Defence'),
+    ]
+
     # Basic Information
     distillery_name = models.CharField(
         max_length=255,
@@ -56,6 +62,13 @@ class BrandWarehouse(models.Model):
         blank=True,
         null=True,
         help_text='Detailed information about the brand'
+    )
+    purpose_of_sale = models.CharField(
+        max_length=50,
+        choices=PURPOSE_OF_SALE_CHOICES,
+        default='LOCAL',
+        db_column='purpose_of_sale',
+        help_text='Purpose of sale: Local, Export, or Defence'
     )
 
     # Stock Information
