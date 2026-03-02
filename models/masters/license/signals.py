@@ -142,37 +142,6 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
         )
         logger.info(f"License created for application {application.pk}")
 
-        # Keep brand_warehouse mapped to issued license_id (NA/LA/...) without duplicates.
-        try:
-            establishment_name = str(getattr(application, 'establishment_name', '') or '').strip()
-            if establishment_name:
-                from models.transactional.supply_chain.brand_warehouse.services import BrandWarehouseStockService
-
-                sync_result = BrandWarehouseStockService.ensure_establishment_brands(
-                    license_id=created_license.license_id,
-                    establishment_name=establishment_name
-                )
-                logger.info(
-                    "Brand warehouse synced for license_id=%s establishment=%s created=%s updated=%s deduplicated=%s",
-                    created_license.license_id,
-                    establishment_name,
-                    sync_result.get('created', 0),
-                    sync_result.get('updated', 0),
-                    sync_result.get('deduplicated', 0),
-                )
-            else:
-                logger.warning(
-                    "Skipping brand warehouse sync: missing establishment_name for application=%s license_id=%s",
-                    application.pk,
-                    created_license.license_id
-                )
-        except Exception as warehouse_sync_error:
-            logger.error(
-                "License created but brand warehouse sync failed for license_id=%s: %s",
-                created_license.license_id,
-                warehouse_sync_error,
-            )
-
         # Initialize module wallets for newly issued license.
         try:
             from models.transactional.payment.wallet_initializer import (
