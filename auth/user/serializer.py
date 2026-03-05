@@ -120,21 +120,39 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         - role: 2 or {"id": 2}
         - district: 11 or {"code": 11} or {"districtCode": 11}
         - subdivision: 101 or {"code": 101} or {"subdivisionCode": 101}
+        - camelCase and snake_case keys (parser may convert to snake_case)
         Also ignore unsupported keys in update payloads.
         """
         allowed_keys = set(self.fields.keys())
         incoming = dict(data.items()) if hasattr(data, 'items') else dict(data)
 
+        # DRF CamelCaseJSONParser can convert frontend camelCase payloads to snake_case.
+        # Normalize common snake_case aliases back to serializer field names.
+        aliases = {
+            'first_name': 'firstName',
+            'middle_name': 'middleName',
+            'last_name': 'lastName',
+            'phone_number': 'phoneNumber',
+            'role_id': 'role',
+        }
+        for source_key, target_key in aliases.items():
+            if source_key in incoming and target_key not in incoming:
+                incoming[target_key] = incoming.get(source_key)
+
         role_value = incoming.get('role')
         if isinstance(role_value, dict):
-            incoming['role'] = role_value.get('id')
+            incoming['role'] = role_value.get('id') if role_value.get('id') is not None else role_value.get('roleId')
 
         district_value = incoming.get('district')
         if isinstance(district_value, dict):
             incoming['district'] = (
                 district_value.get('code')
                 if district_value.get('code') is not None
-                else district_value.get('districtCode')
+                else (
+                    district_value.get('districtCode')
+                    if district_value.get('districtCode') is not None
+                    else district_value.get('district_code')
+                )
             )
 
         subdivision_value = incoming.get('subdivision')
@@ -142,8 +160,25 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             incoming['subdivision'] = (
                 subdivision_value.get('code')
                 if subdivision_value.get('code') is not None
-                else subdivision_value.get('subdivisionCode')
+                else (
+                    subdivision_value.get('subdivisionCode')
+                    if subdivision_value.get('subdivisionCode') is not None
+                    else subdivision_value.get('subdivision_code')
+                )
             )
+
+        # Support top-level districtCode/subdivisionCode payload variants.
+        if incoming.get('district') is None:
+            if incoming.get('districtCode') is not None:
+                incoming['district'] = incoming.get('districtCode')
+            elif incoming.get('district_code') is not None:
+                incoming['district'] = incoming.get('district_code')
+
+        if incoming.get('subdivision') is None:
+            if incoming.get('subdivisionCode') is not None:
+                incoming['subdivision'] = incoming.get('subdivisionCode')
+            elif incoming.get('subdivision_code') is not None:
+                incoming['subdivision'] = incoming.get('subdivision_code')
 
         filtered = {k: v for k, v in incoming.items() if k in allowed_keys}
         return super().to_internal_value(filtered)

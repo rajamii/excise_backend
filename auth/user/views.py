@@ -462,6 +462,14 @@ class UserUpdateView(generics.UpdateAPIView):
         instance = self.get_object() 
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
+
+        # Prevent silent "success" when payload contains no valid updatable fields.
+        if not serializer.validated_data:
+            return Response(
+                {'message': 'No valid fields provided for update.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         self.perform_update(serializer)
 
         
