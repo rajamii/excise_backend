@@ -24,6 +24,7 @@ from .models import (
     PaymentModule,
     PaymentModuleHoa,
     PaymentStatusMasterBilldesk,
+    PaymentWalletTransaction,
     PaymentWalletTypeHoaMapping,
     PaymentWalletMaster,
     WalletBalance,
@@ -521,6 +522,190 @@ def _safe_limit(raw_limit=None, default: int = 100, max_limit: int = 1000) -> in
         return default
 
 
+def _resolve_frontend_response_path_for_module(module_code: str) -> str:
+    """
+    Resolve frontend response route from module master.
+    Fallback path is also resolved from module master (no hardcoded payment route).
+    """
+    fallback_module_code = _get_wallet_recharge_module_code()
+    fallback_module = (
+        PaymentModule.objects.filter(module_code=fallback_module_code)
+        .only("payment_response_page")
+        .first()
+    )
+    default_path = str(getattr(fallback_module, "payment_response_page", "") or "").strip()
+    if not default_path:
+        any_module = (
+            PaymentModule.objects.exclude(payment_response_page__isnull=True)
+            .exclude(payment_response_page__exact="")
+            .only("payment_response_page")
+            .order_by("module_code")
+            .first()
+        )
+        default_path = str(getattr(any_module, "payment_response_page", "") or "").strip()
+
+    default_path = default_path.replace("~/", "/").strip()
+    if default_path and not default_path.startswith("/"):
+        default_path = f"/{default_path}"
+    code = str(module_code or "").strip()
+    if not code:
+        return default_path
+
+    module = (
+        PaymentModule.objects.filter(module_code=code)
+        .only("payment_response_page")
+        .first()
+    )
+    if not module:
+        return default_path
+
+    raw_page = str(getattr(module, "payment_response_page", "") or "").strip()
+    if not raw_page:
+        return default_path
+
+    # Convert DB style values to frontend route candidates.
+    page = raw_page.replace("~/", "/").strip()
+    if not page.startswith("/"):
+        page = f"/{page}"
+
+    return page or default_path
+
+
+def _normalize_module_page_path(raw_page: str) -> str:
+    value = str(raw_page or "").strip()
+    if not value:
+        return ""
+    value = value.replace("~/", "/").strip()
+    if not value.startswith("/"):
+        value = f"/{value}"
+    return value.lower()
+
+
+def _get_frontend_module_page_paths() -> set[str]:
+    """
+    Collect normalized frontend invoking/response paths from module master table.
+    """
+    rows = PaymentModule.objects.only("payment_invoking_page", "payment_response_page").all()
+    paths: set[str] = set()
+    for row in rows:
+        inv = _normalize_module_page_path(getattr(row, "payment_invoking_page", ""))
+        resp = _normalize_module_page_path(getattr(row, "payment_response_page", ""))
+        if inv:
+            paths.add(inv)
+        if resp:
+            paths.add(resp)
+    return paths
+
+
+def _get_wallet_recharge_module_code() -> str:
+    """
+    Resolve module code for wallet advance payment from master table.
+    Falls back to 999 for backward compatibility.
+    """
+    exact = (
+        PaymentModule.objects.filter(module_desc__iexact="Advance Payment to e-Wallet")
+        .only("module_code")
+        .order_by("module_code")
+        .first()
+    )
+    if exact and str(getattr(exact, "module_code", "")).strip():
+        return str(exact.module_code).strip()
+
+    fuzzy = (
+        PaymentModule.objects.filter(module_desc__icontains="advance")
+        .filter(module_desc__icontains="wallet")
+        .only("module_code")
+        .order_by("module_code")
+        .first()
+    )
+    if fuzzy and str(getattr(fuzzy, "module_code", "")).strip():
+        return str(fuzzy.module_code).strip()
+
+    return "999"
+
+
+def _credit_legacy_wallet_tables_for_billdesk_recharge(txn: PaymentBilldeskTransaction) -> None:
+    """
+    Keep legacy wallet tables in sync for successful BillDesk wallet recharge:
+    - eabgari_pay_wallet_transaction
+    - eabgari_pay_wallet_master
+    """
+    if not txn:
+        return
+
+    payment_module_code = str(getattr(txn, "payment_module_code", "") or "").strip()
+    transaction_id = str(getattr(txn, "transaction_id_no_hoa", "") or "").strip()
+    payer_id = str(getattr(txn, "payer_id", "") or "").strip()
+    bank_utr = str(getattr(txn, "utr", "") or "").strip()
+    user_id = str(getattr(txn, "user_id", "") or "").strip()
+
+    expected_module_code = _get_wallet_recharge_module_code()
+
+    # Wallet recharge entries are generated with wallet advance module code + BILLDESK transaction id prefix.
+    if payment_module_code not in {expected_module_code, "999"} or not transaction_id.startswith("BILLDESK"):
+        return
+    if not payer_id or not transaction_id:
+        return
+
+    now_ts = timezone.now()
+    hoa_rows = list(
+        PaymentHoaSplit.objects.filter(transaction_id_no=transaction_id).order_by("id")
+    )
+    if not hoa_rows:
+        return
+
+    for hoa in hoa_rows:
+        head_of_account = str(getattr(hoa, "head_of_account", "") or "").strip()
+        amount = Decimal(str(getattr(hoa, "amount", "0") or "0"))
+        if not head_of_account or amount <= Decimal("0.00"):
+            continue
+
+        already_credited = PaymentWalletTransaction.objects.filter(
+            transaction_reference_number=transaction_id,
+            licensee_id_no=payer_id,
+            head_of_account=head_of_account,
+            wallet_transaction_type="C",
+            bank_utr=bank_utr,
+        ).exists()
+        if already_credited:
+            continue
+
+        PaymentWalletTransaction.objects.create(
+            implementing_state_code="28",
+            wallet_transaction_date=now_ts,
+            wallet_transaction_type="C",
+            licensee_id_no=payer_id,
+            head_of_account=head_of_account,
+            transaction_amount=amount,
+            transaction_reference_number=transaction_id,
+            wallet_transaction_status="Y",
+            initialization_flag="T",
+            bank_utr=bank_utr,
+            payment_module_code=payment_module_code,
+            transaction_remarks="System Entry: Advance Payment to wallet",
+            user_id=user_id,
+            opr_date=now_ts,
+        )
+
+        wallet_master = (
+            PaymentWalletMaster.objects.select_for_update()
+            .filter(licensee_id_no=payer_id, head_of_account=head_of_account)
+            .first()
+        )
+        if wallet_master:
+            wallet_master.wallet_amount = Decimal(str(wallet_master.wallet_amount or 0)) + amount
+            wallet_master.modified_date = now_ts
+            wallet_master.save(update_fields=["wallet_amount", "modified_date"])
+        else:
+            PaymentWalletMaster.objects.create(
+                licensee_id_no=payer_id,
+                head_of_account=head_of_account,
+                wallet_amount=amount,
+                created_date=now_ts,
+                modified_date=now_ts,
+            )
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def payment_master_data(request):
@@ -792,11 +977,12 @@ def wallet_recharge_initiate(request):
     )
     requested_return_url = str(data.get("return_url") or "").strip()
     configured_return_url = str(gateway.return_url or "").strip()
-    configured_path = configured_return_url.lower()
+    configured_path = str(urlparse(configured_return_url).path or "").strip().lower()
+    module_frontend_paths = _get_frontend_module_page_paths()
     configured_looks_like_frontend = (
-        "/payment/billdesk-handler" in configured_path
-        or "/payment/billdesk-response-landing" in configured_path
-        or "/payment/callback" in configured_path
+        configured_path in module_frontend_paths
+        if configured_path and module_frontend_paths
+        else False
     )
     configured_looks_like_backend_callback = "/billdesk/response" in configured_path
     return_url = requested_return_url
@@ -849,12 +1035,14 @@ def wallet_recharge_initiate(request):
     )
     request_msg = f"{request_msg_without_checksum}|{checksum}"
 
+    wallet_module_code = _get_wallet_recharge_module_code()
+
     with transaction.atomic():
         PaymentBilldeskTransaction.objects.create(
             utr=utr,
             transaction_id_no_hoa=transaction_id,
             payer_id=context["payer_id"],
-            payment_module_code="999",
+            payment_module_code=wallet_module_code,
             transaction_amount=amount,
             request_merchantid=gateway.merchantid,
             request_currencytype="INR",
@@ -881,7 +1069,7 @@ def wallet_recharge_initiate(request):
             head_of_account=context["head_of_account"],
             payer_id=context["payer_id"],
             amount=amount,
-            payment_module_code="999",
+            payment_module_code=wallet_module_code,
             requisition_id_no=None,
             user_id=request_user_id,
             opr_date=timezone.now(),
@@ -1031,6 +1219,7 @@ def payment_update_status(request, utr):
 @permission_classes([AllowAny])
 def billdesk_response_callback(request):
     frontend_base = getattr(settings, "FRONTEND_URL", "http://localhost:4200")
+    frontend_response_path = _resolve_frontend_response_path_for_module("")
 
     msg = ""
     if request.method == "POST":
@@ -1040,30 +1229,33 @@ def billdesk_response_callback(request):
 
     if not msg:
         return HttpResponseRedirect(
-            f"{frontend_base}/payment/billdesk-response-landing?status=F&message="
+            f"{frontend_base}{frontend_response_path}?status=F&message="
             + quote_plus("Response not received from bank site")
         )
 
     parts = msg.split("|")
     if len(parts) < 26:
         return HttpResponseRedirect(
-            f"{frontend_base}/payment/billdesk-response-landing?status=F&message="
+            f"{frontend_base}{frontend_response_path}?status=F&message="
             + quote_plus("Invalid BillDesk response")
         )
 
     utr = str(parts[1] or "").strip()
     if not utr:
         return HttpResponseRedirect(
-            f"{frontend_base}/payment/billdesk-response-landing?status=F&message="
+            f"{frontend_base}{frontend_response_path}?status=F&message="
             + quote_plus("UTR missing in response")
         )
 
     txn = PaymentBilldeskTransaction.objects.filter(pk=utr).first()
     if not txn:
         return HttpResponseRedirect(
-            f"{frontend_base}/payment/billdesk-response-landing?status=F&message="
+            f"{frontend_base}{frontend_response_path}?status=F&message="
             + quote_plus("Transaction not found")
         )
+    frontend_response_path = _resolve_frontend_response_path_for_module(
+        str(getattr(txn, "payment_module_code", "") or "").strip()
+    )
 
     request_merchant_id = str(parts[0] or "").strip()
     auth_status = str(parts[14] or "").strip()
@@ -1105,7 +1297,7 @@ def billdesk_response_callback(request):
         txn.save()
         details = quote_plus(error_description or "Checksum validation failed")
         return HttpResponseRedirect(
-            f"/payment/billdesk-response-landing?utr={quote_plus(utr)}&status=F"
+            f"{frontend_base}{frontend_response_path}?utr={quote_plus(utr)}&status=F"
             f"&message={quote_plus('Payment failed')}"
             f"&reason={quote_plus('Response checksum validation failed')}"
             f"&details={details}"
@@ -1116,41 +1308,46 @@ def billdesk_response_callback(request):
     reason, mapped_payment_status = _get_auth_status_info(auth_status)
     payment_status = "S" if mapped_payment_status == "S" else "F"
 
-    txn.response_string = msg
-    txn.response_merchantid = request_merchant_id
-    txn.response_customerid = str(parts[1] or "").strip()
-    txn.response_txnreferenceno = str(parts[2] or "").strip()
-    txn.response_bankreferenceno = str(parts[3] or "").strip()
-    try:
-        txn.response_txnamount = Decimal(str(parts[4] or "0").strip() or "0")
-    except Exception:
-        pass
-    txn.response_bankid = str(parts[5] or "").strip()
-    txn.response_bankmerchantid = str(parts[6] or "").strip()
-    txn.response_txntype = str(parts[7] or "").strip()
-    txn.response_currencyname = str(parts[8] or "").strip()
-    txn.response_itemcode = str(parts[9] or "").strip()
-    txn.response_securitytype = str(parts[10] or "").strip()
-    txn.response_securityid = str(parts[11] or "").strip()
-    txn.response_securitypassword = str(parts[12] or "").strip()
-    txn.response_authstatus = auth_status
-    txn.response_settlementtype = str(parts[15] or "").strip()
-    txn.response_additionalinfo1 = str(parts[16] or "").strip()
-    txn.response_additionalinfo2 = str(parts[17] or "").strip()
-    txn.response_additionalinfo3 = str(parts[18] or "").strip()
-    txn.response_additionalinfo4 = str(parts[19] or "").strip()
-    txn.response_additionalinfo5 = str(parts[20] or "").strip()
-    txn.response_additionalinfo6 = str(parts[21] or "").strip()
-    txn.response_additionalinfo7 = str(parts[22] or "").strip()
-    txn.response_errorstatus = error_status
-    txn.response_errordescription = error_description
-    txn.response_checksum = checksum_received
-    txn.response_checksum_calculated = checksum_calculated
-    txn.response_initial_authstatus = auth_status
-    txn.response_initial_datetime = timezone.now()
-    txn.payment_status = payment_status
-    txn.opr_date = timezone.now()
-    txn.save()
+    with transaction.atomic():
+        txn = PaymentBilldeskTransaction.objects.select_for_update().get(pk=utr)
+        txn.response_string = msg
+        txn.response_merchantid = request_merchant_id
+        txn.response_customerid = str(parts[1] or "").strip()
+        txn.response_txnreferenceno = str(parts[2] or "").strip()
+        txn.response_bankreferenceno = str(parts[3] or "").strip()
+        try:
+            txn.response_txnamount = Decimal(str(parts[4] or "0").strip() or "0")
+        except Exception:
+            pass
+        txn.response_bankid = str(parts[5] or "").strip()
+        txn.response_bankmerchantid = str(parts[6] or "").strip()
+        txn.response_txntype = str(parts[7] or "").strip()
+        txn.response_currencyname = str(parts[8] or "").strip()
+        txn.response_itemcode = str(parts[9] or "").strip()
+        txn.response_securitytype = str(parts[10] or "").strip()
+        txn.response_securityid = str(parts[11] or "").strip()
+        txn.response_securitypassword = str(parts[12] or "").strip()
+        txn.response_authstatus = auth_status
+        txn.response_settlementtype = str(parts[15] or "").strip()
+        txn.response_additionalinfo1 = str(parts[16] or "").strip()
+        txn.response_additionalinfo2 = str(parts[17] or "").strip()
+        txn.response_additionalinfo3 = str(parts[18] or "").strip()
+        txn.response_additionalinfo4 = str(parts[19] or "").strip()
+        txn.response_additionalinfo5 = str(parts[20] or "").strip()
+        txn.response_additionalinfo6 = str(parts[21] or "").strip()
+        txn.response_additionalinfo7 = str(parts[22] or "").strip()
+        txn.response_errorstatus = error_status
+        txn.response_errordescription = error_description
+        txn.response_checksum = checksum_received
+        txn.response_checksum_calculated = checksum_calculated
+        txn.response_initial_authstatus = auth_status
+        txn.response_initial_datetime = timezone.now()
+        txn.payment_status = payment_status
+        txn.opr_date = timezone.now()
+        txn.save()
+
+        if payment_status == "S":
+            _credit_legacy_wallet_tables_for_billdesk_recharge(txn)
 
     is_success = payment_status == "S"
     txn_ref = str(parts[2] or "").strip()
@@ -1185,7 +1382,7 @@ def billdesk_response_callback(request):
     )
     message = "Payment successful" if is_success else "Payment failed"
     return HttpResponseRedirect(
-        f"{frontend_base}/payment/billdesk-response-landing?utr={quote_plus(utr)}"
+        f"{frontend_base}{frontend_response_path}?utr={quote_plus(utr)}"
         f"&status={quote_plus(payment_status)}"
         f"&message={quote_plus(message)}"
         f"&reason={quote_plus(reason)}"
