@@ -2,14 +2,20 @@ from rest_framework import viewsets, status, permissions, serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.shortcuts import get_object_or_404
-from django.db import transaction as db_transaction
+from django.db import transaction as db_transaction, models
+from decimal import Decimal
+import re
 from .models import HologramProcurement, HologramRequest, HologramRollsDetails
 from .serializers import HologramProcurementSerializer, HologramRequestSerializer
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition, Transaction, StagePermission
 from auth.workflow.constants import WORKFLOW_IDS
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
-import uuid
+from models.transactional.supply_chain.access_control import scope_by_profile_or_workflow
+
+HOLOGRAM_REF_PREFIX = 'NHP'
+HOLOGRAM_REF_DISTRICT_CODE = '1101'
 
 def _normalize_role_name(role_name):
     return ''.join(ch for ch in str(role_name or '').lower() if ch.isalnum())
@@ -25,6 +31,10 @@ def _canonical_role_token(role_name):
     if token in {'jointcommissioner', 'commissioner'}:
         return 'commissioner'
     return token
+
+
+def _is_scoped_officer_or_licensee(role_name_token):
+    return role_name_token in {'licensee', 'officerincharge', 'offcierincharge', 'oic'}
 
 def _get_user_role_id(user):
     return getattr(user, 'role_id', None) if user and user.is_authenticated else None
@@ -95,23 +105,191 @@ def _get_visible_stage_ids_for_user(user, workflow_id):
 
 def _get_or_create_active_supply_chain_profile(user):
     profile = SupplyChainUserProfile.objects.filter(user=user).first()
+    active_license, establishment_name, site_address, license_type = _resolve_license_context(user)
     if profile:
+        update_fields = []
+        if establishment_name and profile.manufacturing_unit_name != establishment_name:
+            profile.manufacturing_unit_name = establishment_name
+            update_fields.append('manufacturing_unit_name')
+        if active_license and profile.licensee_id != active_license.license_id:
+            profile.licensee_id = active_license.license_id
+            update_fields.append('licensee_id')
+        if site_address and profile.address != site_address:
+            profile.address = site_address
+            update_fields.append('address')
+        if license_type and profile.license_type != license_type:
+            profile.license_type = license_type
+            update_fields.append('license_type')
+        if update_fields:
+            profile.save(update_fields=update_fields)
         return profile
 
     latest_unit = UserManufacturingUnit.objects.filter(user=user).order_by('-updated_at', '-id').first()
-    if not latest_unit:
+    if latest_unit:
+        profile, _ = SupplyChainUserProfile.objects.update_or_create(
+            user=user,
+            defaults={
+                'manufacturing_unit_name': latest_unit.manufacturing_unit_name,
+                'licensee_id': latest_unit.licensee_id,
+                'license_type': latest_unit.license_type,
+                'address': latest_unit.address,
+            }
+        )
+        return profile
+
+    if not (active_license and establishment_name):
         return None
 
     profile, _ = SupplyChainUserProfile.objects.update_or_create(
         user=user,
         defaults={
-            'manufacturing_unit_name': latest_unit.manufacturing_unit_name,
-            'licensee_id': latest_unit.licensee_id,
-            'license_type': latest_unit.license_type,
-            'address': latest_unit.address,
+            'manufacturing_unit_name': establishment_name,
+            'licensee_id': active_license.license_id,
+            'license_type': license_type,
+            'address': site_address,
+        }
+    )
+    UserManufacturingUnit.objects.update_or_create(
+        user=user,
+        licensee_id=active_license.license_id,
+        defaults={
+            'manufacturing_unit_name': establishment_name,
+            'license_type': license_type,
+            'address': site_address,
         }
     )
     return profile
+
+
+def _resolve_roll_license_id(procurement, acting_user=None):
+    """
+    Resolve license_id to persist on hologram_rolls_details.
+    Priority keeps OIC-mapped ownership explicit at submit/arrival time.
+    """
+    candidates = []
+
+    if acting_user is not None:
+        assignment = getattr(acting_user, 'oic_assignment', None)
+        if assignment is not None:
+            candidates.extend([
+                getattr(assignment, 'licensee_id', ''),
+                getattr(getattr(assignment, 'license', None), 'license_id', ''),
+            ])
+        candidates.append(getattr(getattr(acting_user, 'supply_chain_profile', None), 'licensee_id', ''))
+
+    candidates.extend([
+        getattr(getattr(procurement, 'license', None), 'license_id', ''),
+        getattr(getattr(procurement, 'licensee', None), 'licensee_id', ''),
+    ])
+
+    for value in candidates:
+        normalized = str(value or '').strip()
+        if normalized:
+            return normalized
+
+    return ''
+
+
+def _resolve_request_license_id(profile=None, acting_user=None):
+    """
+    Resolve license_id to persist on hologram_request.
+    """
+    candidates = []
+
+    if acting_user is not None:
+        assignment = getattr(acting_user, 'oic_assignment', None)
+        if assignment is not None:
+            candidates.extend([
+                getattr(assignment, 'licensee_id', ''),
+                getattr(getattr(assignment, 'license', None), 'license_id', ''),
+            ])
+        candidates.append(getattr(getattr(acting_user, 'supply_chain_profile', None), 'licensee_id', ''))
+
+    if profile is not None:
+        candidates.append(getattr(profile, 'licensee_id', ''))
+
+    for value in candidates:
+        normalized = str(value or '').strip()
+        if normalized:
+            return normalized
+
+    return ''
+
+
+def _resolve_license_context(user):
+    active_license = None
+    establishment_name = ''
+    site_address = ''
+    license_type = 'Distillery'
+
+    try:
+        from models.masters.license.models import License
+        from models.transactional.new_license_application.models import NewLicenseApplication
+
+        active_license = (
+            License.objects.filter(
+                applicant=user,
+                source_type='new_license_application',
+                is_active=True
+            )
+            .order_by('-issue_date', '-license_id')
+            .first()
+        )
+
+        if not active_license:
+            active_license = (
+                License.objects.filter(
+                    applicant=user,
+                    is_active=True
+                )
+                .order_by('-issue_date', '-license_id')
+                .first()
+            )
+
+        if active_license:
+            source = getattr(active_license, 'source_application', None)
+            establishment_name = str(getattr(source, 'establishment_name', '') or '').strip()
+            site_address = str(getattr(source, 'site_address', '') or '').strip()
+
+            if not establishment_name and active_license.source_object_id:
+                app = NewLicenseApplication.objects.filter(
+                    application_id=str(active_license.source_object_id).strip()
+                ).only('establishment_name', 'site_address').first()
+                if app:
+                    establishment_name = str(getattr(app, 'establishment_name', '') or '').strip()
+                    site_address = str(getattr(app, 'site_address', '') or '').strip()
+
+            category_name = str(getattr(getattr(active_license, 'license_category', None), 'category_name', '') or '').lower()
+            if 'beer' in category_name or 'brewery' in category_name:
+                license_type = 'Brewery'
+    except Exception:
+        return None, '', '', 'Distillery'
+
+    return active_license, establishment_name, site_address, license_type
+
+def _generate_financial_year(now_dt=None):
+    dt = timezone.localtime(now_dt) if now_dt else timezone.localtime()
+    year = dt.year
+    if dt.month >= 4:
+        return f"{year}-{str(year + 1)[2:]}"
+    return f"{year - 1}-{str(year)[2:]}"
+
+def _generate_hologram_ref_no(model_cls):
+    financial_year = _generate_financial_year()
+    prefix = f"{HOLOGRAM_REF_PREFIX}/{HOLOGRAM_REF_DISTRICT_CODE}/{financial_year}"
+
+    last_obj = model_cls.objects.filter(
+        ref_no__startswith=prefix
+    ).select_for_update().order_by('-ref_no').first()
+
+    last_number = 0
+    if last_obj and getattr(last_obj, 'ref_no', None):
+        try:
+            last_number = int(str(last_obj.ref_no).split('/')[-1])
+        except (TypeError, ValueError):
+            last_number = 0
+
+    return f"{prefix}/{str(last_number + 1).zfill(4)}"
 
 class HologramProcurementViewSet(viewsets.ModelViewSet):
     queryset = HologramProcurement.objects.all()
@@ -129,53 +307,82 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             
         user_role_name = _normalize_role_name(getattr(getattr(user, 'role', None), 'name', ''))
 
-        if user_role_name == 'licensee':
-            if hasattr(user, 'supply_chain_profile'):
-                return queryset.filter(licensee=user.supply_chain_profile)
-            return queryset.none()
+        if _is_scoped_officer_or_licensee(user_role_name):
+            return scope_by_profile_or_workflow(
+                user=user,
+                queryset=queryset,
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'],
+                licensee_field='licensee__licensee_id'
+            )
 
         visible_stage_ids = _get_visible_stage_ids_for_user(
             user=user,
             workflow_id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT']
         )
         if visible_stage_ids:
-            return queryset.filter(current_stage_id__in=visible_stage_ids)
+            return queryset.filter(current_stage_id__in=visible_stage_ids).order_by('-date')
             
-        return queryset.none() # Default deny if role unknown
-        return queryset.none() # Default deny if role unknown
+        # Fallback: return all for authenticated users (Commissioner can see all)
+        return queryset.order_by('-date')
 
     def perform_create(self, serializer):
-        # Auto-generate Ref No
-        ref_no = f"YB/6/BREW/{timezone.now().year}/{uuid.uuid4().hex[:6].upper()}"
         profile = _get_or_create_active_supply_chain_profile(self.request.user)
+        license, manufacturing_unit_name, _, _ = _resolve_license_context(self.request.user)
+        
+        # If no license found or no establishment name, try profile
+        if not manufacturing_unit_name and profile:
+            manufacturing_unit_name = profile.manufacturing_unit_name
+
+        if not license and profile and profile.licensee_id:
+            try:
+                from models.masters.license.models import License
+                license = License.objects.filter(
+                    license_id=profile.licensee_id,
+                    is_active=True
+                ).first()
+            except Exception:
+                license = None
+
+        if not profile and license and manufacturing_unit_name:
+            profile = _get_or_create_active_supply_chain_profile(self.request.user)
+        
+        # If still no manufacturing unit name, raise error
+        if not manufacturing_unit_name:
+            raise serializers.ValidationError({
+                'detail': 'No manufacturing unit found. Please ensure you have an active license.'
+            })
         if not profile:
             raise serializers.ValidationError({
                 'detail': 'No active supply chain profile found. Select your manufacturing unit first.'
             })
         
-        # Get initial workflow stage
-        try:
-            workflow = Workflow.objects.get(id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'])
-            initial_stage = WorkflowStage.objects.get(workflow=workflow, is_initial=True)
-        except Workflow.DoesNotExist:
-             # Fallback or error - Should be populated via command
-             raise serializers.ValidationError("Workflow configuration missing.")
+        with db_transaction.atomic():
+            ref_no = _generate_hologram_ref_no(HologramProcurement)
 
-        instance = serializer.save(
-            ref_no=ref_no,
-            licensee=profile,
-            workflow=workflow,
-            current_stage=initial_stage,
-            manufacturing_unit=profile.manufacturing_unit_name
-        )
-        
-        # Log initial transaction
-        Transaction.objects.create(
-            application=instance,
-            stage=initial_stage,
-            performed_by=self.request.user,
-            remarks='Hologram Procurement Application Submitted'
-        )
+            # Get initial workflow stage
+            try:
+                workflow = Workflow.objects.get(id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'])
+                initial_stage = WorkflowStage.objects.get(workflow=workflow, is_initial=True)
+            except Workflow.DoesNotExist:
+                # Fallback or error - Should be populated via command
+                raise serializers.ValidationError("Workflow configuration missing.")
+
+            instance = serializer.save(
+                ref_no=ref_no,
+                licensee=profile,
+                license=license,
+                workflow=workflow,
+                current_stage=initial_stage,
+                manufacturing_unit=manufacturing_unit_name
+            )
+            
+            # Log initial transaction
+            Transaction.objects.create(
+                application=instance,
+                stage=initial_stage,
+                performed_by=self.request.user,
+                remarks='Hologram Procurement Application Submitted'
+            )
 
     @action(detail=True, methods=['post'])
     def perform_action(self, request, pk=None):
@@ -185,6 +392,9 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         
         if not action_name:
             return Response({'error': 'Action is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        normalized_action = str(action_name or '').strip().lower()
+        wallet_result = None
 
         # Find transition matching current stage and action
         transitions = WorkflowTransition.objects.filter(
@@ -204,22 +414,70 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 
         if selected_transition:
             with db_transaction.atomic():
+                if normalized_action == 'pay':
+                    wallet_result = self._debit_hologram_wallet_for_payment(instance, request.user)
+
                 instance.current_stage = selected_transition.to_stage
                 
                 # CRITICAL: Save carton_details if provided with the action
-                if action_name == 'assign_cartons':
+                if normalized_action == 'assign_cartons':
                     carton_details = request.data.get('carton_details')
                     if carton_details:
+                        arrival_processed_date = request.data.get('arrival_processed_date')
+                        arrival_ts = parse_datetime(str(arrival_processed_date)) if arrival_processed_date else None
+                        if arrival_ts and timezone.is_naive(arrival_ts):
+                            arrival_ts = timezone.make_aware(arrival_ts)
+                        if not arrival_ts:
+                            arrival_ts = timezone.now()
+
+                        # Ensure each carton carries an arrival timestamp for roll-level display.
+                        for detail in carton_details:
+                            if isinstance(detail, dict):
+                                has_arrived_value = (
+                                    detail.get('arrivedDate') or
+                                    detail.get('arrived_date') or
+                                    detail.get('arrival_date')
+                                )
+                                if not has_arrived_value:
+                                    detail['arrivedDate'] = arrival_ts.isoformat()
+
+                        self._validate_assign_cartons(instance, carton_details)
                         instance.carton_details = carton_details
+                        instance.arrival_date = arrival_ts
                         # Sync to new table
-                        self._sync_rolls_details(instance, carton_details)
+                        self._sync_rolls_details(instance, carton_details, acting_user=request.user)
 
                 instance.save()
                 
                 # Check for Arrival Confirmation to ensure sync
-                if action_name in ['confirm_arrival', 'arrival_confirmed', 'Confirm Arrival', 'confirm', 'Confirm']:
-                     if instance.carton_details:
-                         self._sync_rolls_details(instance, instance.carton_details)
+                if normalized_action in ['confirm_arrival', 'arrival_confirmed', 'confirm arrival', 'confirm']:
+                    if not instance.arrival_date:
+                        instance.arrival_date = timezone.now()
+                    if instance.carton_details:
+                        self._sync_rolls_details(instance, instance.carton_details, acting_user=request.user)
+
+                if normalized_action == 'pay':
+                    instance.payment_status = 'completed'
+                    payment_details = dict(instance.payment_details or {})
+                    history = list(payment_details.get('wallet_history') or [])
+                    history.append({
+                        'transaction_id': wallet_result.get('transaction_id') if wallet_result else '',
+                        'amount': str(wallet_result.get('amount')) if wallet_result else '0',
+                        'wallet_type': wallet_result.get('wallet_type') if wallet_result else 'hologram',
+                        'head_of_account': wallet_result.get('head_of_account') if wallet_result else '',
+                        'paid_at': timezone.now().isoformat(),
+                        'paid_by': str(getattr(request.user, 'username', '') or ''),
+                        'reference_no': instance.ref_no
+                    })
+                    payment_details.update({
+                        'wallet_payment': float(wallet_result.get('amount')) if wallet_result else float(payment_details.get('wallet_payment') or 0),
+                        'total_amount': float(wallet_result.get('amount')) if wallet_result else float(payment_details.get('total_amount') or 0),
+                        'payment_mode': 'wallet',
+                        'payment_status': 'completed',
+                        'paid_at': timezone.now().isoformat(),
+                        'wallet_history': history
+                    })
+                    instance.payment_details = payment_details
 
                 Transaction.objects.create(
                     application=instance,
@@ -231,11 +489,57 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             # ALLOW UPDATE: If action is 'assign_cartons' and we have details, allow update without transition
             # This handles re-submission of carton details for records already in 'Cartoon Assigned' or 'Arrived' state
             
-            if action_name == 'assign_cartons':
+            if normalized_action == 'assign_cartons':
                 carton_details = request.data.get('carton_details')
                 if carton_details:
+                    arrival_processed_date = request.data.get('arrival_processed_date')
+                    arrival_ts = parse_datetime(str(arrival_processed_date)) if arrival_processed_date else None
+                    if arrival_ts and timezone.is_naive(arrival_ts):
+                        arrival_ts = timezone.make_aware(arrival_ts)
+                    if not arrival_ts:
+                        arrival_ts = timezone.now()
+
+                    for detail in carton_details:
+                        if isinstance(detail, dict):
+                            has_arrived_value = (
+                                detail.get('arrivedDate') or
+                                detail.get('arrived_date') or
+                                detail.get('arrival_date')
+                            )
+                            if not has_arrived_value:
+                                detail['arrivedDate'] = arrival_ts.isoformat()
+
+                    self._validate_assign_cartons(instance, carton_details)
                     instance.carton_details = carton_details
-                    self._sync_rolls_details(instance, carton_details)
+                    instance.arrival_date = arrival_ts
+                    self._sync_rolls_details(instance, carton_details, acting_user=request.user)
+            elif normalized_action in ['confirm_arrival', 'arrival_confirmed', 'confirm arrival', 'confirm']:
+                if not instance.arrival_date:
+                    instance.arrival_date = timezone.now()
+
+            if normalized_action == 'pay':
+                wallet_result = self._debit_hologram_wallet_for_payment(instance, request.user)
+                instance.payment_status = 'completed'
+                payment_details = dict(instance.payment_details or {})
+                history = list(payment_details.get('wallet_history') or [])
+                history.append({
+                    'transaction_id': wallet_result.get('transaction_id') if wallet_result else '',
+                    'amount': str(wallet_result.get('amount')) if wallet_result else '0',
+                    'wallet_type': wallet_result.get('wallet_type') if wallet_result else 'hologram',
+                    'head_of_account': wallet_result.get('head_of_account') if wallet_result else '',
+                    'paid_at': timezone.now().isoformat(),
+                    'paid_by': str(getattr(request.user, 'username', '') or ''),
+                    'reference_no': instance.ref_no
+                })
+                payment_details.update({
+                    'wallet_payment': float(wallet_result.get('amount')) if wallet_result else float(payment_details.get('wallet_payment') or 0),
+                    'total_amount': float(wallet_result.get('amount')) if wallet_result else float(payment_details.get('total_amount') or 0),
+                    'payment_mode': 'wallet',
+                    'payment_status': 'completed',
+                    'paid_at': timezone.now().isoformat(),
+                    'wallet_history': history
+                })
+                instance.payment_details = payment_details
             
             instance.save()
             
@@ -245,8 +549,184 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 performed_by=self.request.user,
                 remarks=remarks or f"Action '{action_name}' performed"
             )
-            
-        return Response(self.get_serializer(instance).data)
+
+        instance.save()
+        response_payload = self.get_serializer(instance).data
+        if wallet_result is not None:
+            response_payload['wallet_deduction'] = wallet_result
+        return Response(response_payload)
+
+    def _normalize_carton_key(self, value):
+        text = str(value or '').strip().lower()
+        if not text:
+            return ''
+        text = text.split('/')[-1].strip()
+        text = re.sub(r'\([a-z]+\)$', '', text).strip()
+        return re.sub(r'\s+', '', text)
+
+    def _normalize_serial_key(self, value):
+        text = str(value or '').strip()
+        if not text:
+            return ''
+        match = re.search(r'\d+', text)
+        if match:
+            return str(int(match.group(0)))
+        return text.lower()
+
+    def _validate_assign_cartons(self, instance, carton_details):
+        if not isinstance(carton_details, list):
+            raise serializers.ValidationError({'detail': 'Invalid carton details payload.'})
+
+        incoming_carton_keys = set()
+        incoming_range_keys = set()
+
+        for item in carton_details:
+            carton_key = self._normalize_carton_key(
+                item.get('baseCartoonNumber') or
+                item.get('cartoonNumber') or
+                item.get('cartoon_number') or
+                item.get('carton_number')
+            )
+            from_key = self._normalize_serial_key(item.get('fromSerial') or item.get('from_serial'))
+            to_key = self._normalize_serial_key(item.get('toSerial') or item.get('to_serial'))
+
+            if carton_key:
+                if carton_key in incoming_carton_keys:
+                    raise serializers.ValidationError({
+                        'detail': 'Carton number already exists. Please use another carton number.'
+                    })
+                incoming_carton_keys.add(carton_key)
+
+            if from_key and to_key:
+                range_key = f'{from_key}-{to_key}'
+                if range_key in incoming_range_keys:
+                    raise serializers.ValidationError({
+                        'detail': 'This serial range is already entered before. Please use another range.'
+                    })
+                incoming_range_keys.add(range_key)
+
+        existing_rolls = HologramRollsDetails.objects.filter(
+            procurement__licensee=instance.licensee
+        ).exclude(procurement=instance).values(
+            'carton_number', 'from_serial', 'to_serial'
+        )
+
+        existing_carton_keys = set()
+        existing_range_keys = set()
+        for row in existing_rolls:
+            carton_key = self._normalize_carton_key(row.get('carton_number'))
+            from_key = self._normalize_serial_key(row.get('from_serial'))
+            to_key = self._normalize_serial_key(row.get('to_serial'))
+            if carton_key:
+                existing_carton_keys.add(carton_key)
+            if from_key and to_key:
+                existing_range_keys.add(f'{from_key}-{to_key}')
+
+        if any(key in existing_carton_keys for key in incoming_carton_keys):
+            raise serializers.ValidationError({
+                'detail': 'Carton number already exists for this distillery/brewery. Try another carton number.'
+            })
+
+        if any(key in existing_range_keys for key in incoming_range_keys):
+            raise serializers.ValidationError({
+                'detail': 'This serial range is already entered before. Please use another range.'
+            })
+
+    def _debit_hologram_wallet_for_payment(self, instance, user):
+        """
+        Debit hologram wallet immediately when licensee pays for hologram procurement.
+        Persists wallet history in wallet_transactions table.
+        """
+        from models.transactional.payment.models import WalletBalance, WalletTransaction
+
+        licensee_id = (
+            str(getattr(getattr(instance, 'license', None), 'license_id', '') or '').strip() or
+            str(getattr(getattr(instance, 'licensee', None), 'licensee_id', '') or '').strip()
+        )
+        if not licensee_id:
+            raise serializers.ValidationError({'error': 'Unable to resolve licensee id for wallet deduction.'})
+
+        total_qty = (
+            Decimal(str(instance.local_qty or 0)) +
+            Decimal(str(instance.export_qty or 0)) +
+            Decimal(str(instance.defence_qty or 0))
+        )
+        amount = (total_qty * Decimal('0.15')).quantize(Decimal('0.01'))
+        if amount <= 0:
+            raise serializers.ValidationError({'error': 'Invalid hologram payment amount.'})
+
+        transaction_id = f"HGP-{instance.id}-PAYMENT"
+        existing = WalletTransaction.objects.filter(
+            transaction_id=transaction_id,
+            source_module='hologram_procurement',
+            entry_type='DR'
+        ).first()
+        if existing:
+            return {
+                'transaction_id': existing.transaction_id,
+                'amount': Decimal(str(existing.amount or 0)),
+                'wallet_type': existing.wallet_type,
+                'head_of_account': existing.head_of_account,
+                'balance_after': Decimal(str(existing.balance_after or 0)),
+                'reference_no': existing.reference_no,
+                'already_processed': True
+            }
+
+        with db_transaction.atomic():
+            wallet = (
+                WalletBalance.objects.select_for_update()
+                .filter(licensee_id=licensee_id, wallet_type__iexact='hologram')
+                .order_by('wallet_balance_id')
+                .first()
+            )
+            if not wallet:
+                raise serializers.ValidationError({
+                    'error': f'Hologram wallet not found for licensee_id={licensee_id}.'
+                })
+
+            before = Decimal(str(wallet.current_balance or 0))
+            if before < amount:
+                raise serializers.ValidationError({
+                    'error': f'Insufficient hologram wallet balance. Available: {before}, Required: {amount}.'
+                })
+
+            after = before - amount
+            now_ts = timezone.now()
+            wallet.current_balance = after
+            wallet.total_debit = Decimal(str(wallet.total_debit or 0)) + amount
+            wallet.last_updated_at = now_ts
+            wallet.save(update_fields=['current_balance', 'total_debit', 'last_updated_at'])
+
+            WalletTransaction.objects.create(
+                wallet_balance=wallet,
+                transaction_id=transaction_id,
+                licensee_id=licensee_id,
+                licensee_name=wallet.licensee_name,
+                user_id=str(getattr(user, 'username', '') or wallet.user_id or ''),
+                module_type=wallet.module_type,
+                wallet_type=wallet.wallet_type,
+                head_of_account=wallet.head_of_account,
+                entry_type='DR',
+                transaction_type='debit',
+                amount=amount,
+                balance_before=before,
+                balance_after=after,
+                reference_no=instance.ref_no,
+                source_module='hologram_procurement',
+                payment_status='success',
+                remarks=f'Hologram wallet debit for procurement {instance.ref_no}',
+                created_at=now_ts,
+            )
+
+        return {
+            'transaction_id': transaction_id,
+            'amount': amount,
+            'wallet_type': wallet.wallet_type,
+            'head_of_account': wallet.head_of_account,
+            'balance_after': after,
+            'reference_no': instance.ref_no,
+            'already_processed': False
+        }
     
     @action(detail=True, methods=['patch'], url_path='update-quantities')
     def update_quantities(self, request, pk=None):
@@ -293,12 +773,36 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             instance.payment_details = {}
         instance.payment_details['wallet_payment'] = new_payment_amount
         instance.payment_details['total_amount'] = new_payment_amount
+        instance.payment_details['edit_history'] = {
+            'editedBy': getattr(self.request.user, 'username', None) or 'Commissioner',
+            'editedDate': timezone.now().strftime('%Y-%m-%d'),
+            'originalQuantities': {
+                'local': original_quantities['local'],
+                'export': original_quantities['export'],
+                'defence': original_quantities['defence'],
+                'total': original_quantities['total'],
+            },
+            'updatedQuantities': {
+                'local': float(instance.local_qty),
+                'export': float(instance.export_qty),
+                'defence': float(instance.defence_qty),
+                'total': new_total,
+            },
+            'originalPayment': original_quantities['total'] * 0.15,
+            'updatedPayment': new_payment_amount,
+        }
         
         # Save changes
         instance.save()
         
         # Create transaction log for audit trail
-        edit_remarks = f"Quantities updated by Commissioner: Local {original_quantities['local']} → {instance.local_qty}, Export {original_quantities['export']} → {instance.export_qty}, Defence {original_quantities['defence']} → {instance.defence_qty}. New payment amount: ₹{new_payment_amount:.2f}"
+        edit_remarks = (
+            "Quantities updated by Commissioner: "
+            f"Local {original_quantities['local']} -> {instance.local_qty}, "
+            f"Export {original_quantities['export']} -> {instance.export_qty}, "
+            f"Defence {original_quantities['defence']} -> {instance.defence_qty}. "
+            f"New payment amount: Rs {new_payment_amount:.2f}"
+        )
         
         Transaction.objects.create(
             application=instance,
@@ -322,7 +826,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             'new_payment_amount': new_payment_amount
         })
 
-    def _sync_rolls_details(self, procurement, carton_details):
+    def _sync_rolls_details(self, procurement, carton_details, acting_user=None):
         """
         Syncs JSON carton details to HologramRollsDetails table
         """
@@ -341,6 +845,8 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             # Default fallback type (for backward compatibility)
             default_proc_type = proc_types[0] if proc_types else 'LOCAL'
                 
+            resolved_license_id = _resolve_roll_license_id(procurement, acting_user=acting_user)
+
             for item in carton_details:
                 carton_num = item.get('cartoonNumber') or item.get('cartoon_number') or item.get('carton_number')
                 if not carton_num:
@@ -373,6 +879,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     carton_number=carton_num,
                     defaults={
                         **defaults,
+                        'license_id': resolved_license_id or None,
                         'available': defaults['total_count'],
                         'status': 'AVAILABLE'
                     }
@@ -403,6 +910,8 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     obj.from_serial = defaults['from_serial']
                     obj.to_serial = defaults['to_serial']
                     obj.total_count = defaults['total_count']
+                    if resolved_license_id:
+                        obj.license_id = resolved_license_id
                     
                     # Reset available if unused (assuming edit mode)
                     if obj.used == 0 and obj.damaged == 0:
@@ -599,10 +1108,24 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         role_name = _normalize_role_name(getattr(getattr(user, 'role', None), 'name', ''))
         print(f"DEBUG: User: {user.username}, Role: '{role_name}'")
 
-        if role_name == 'licensee':
-            if hasattr(user, 'supply_chain_profile'):
-                return queryset.filter(licensee=user.supply_chain_profile)
-            return queryset.none()
+        if _is_scoped_officer_or_licensee(role_name):
+            scoped_by_request_license = scope_by_profile_or_workflow(
+                user=user,
+                queryset=queryset,
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_REQUEST'],
+                licensee_field='license_id'
+            )
+            # Backward compatibility for historical rows without license_id populated.
+            scoped_by_profile_license = scope_by_profile_or_workflow(
+                user=user,
+                queryset=queryset,
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_REQUEST'],
+                licensee_field='licensee__licensee_id'
+            )
+            return queryset.filter(
+                models.Q(id__in=scoped_by_request_license.values('id')) |
+                models.Q(id__in=scoped_by_profile_license.values('id'))
+            ).distinct()
 
         visible_stage_ids = _get_visible_stage_ids_for_user(
             user=user,
@@ -614,32 +1137,35 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         return queryset.none()
 
     def perform_create(self, serializer):
-        ref_no = f"HRQ/{timezone.now().year}/{uuid.uuid4().hex[:6].upper()}"
         profile = _get_or_create_active_supply_chain_profile(self.request.user)
         if not profile:
             raise serializers.ValidationError({
                 'detail': 'No active supply chain profile found. Select your manufacturing unit first.'
             })
         
-        try:
-            workflow = Workflow.objects.get(id=WORKFLOW_IDS['HOLOGRAM_REQUEST'])
-            initial_stage = WorkflowStage.objects.get(workflow=workflow, is_initial=True)
-        except Workflow.DoesNotExist:
-             raise serializers.ValidationError("Workflow configuration missing.")
+        with db_transaction.atomic():
+            ref_no = _generate_hologram_ref_no(HologramRequest)
 
-        instance = serializer.save(
-            ref_no=ref_no,
-            licensee=profile,
-            workflow=workflow,
-            current_stage=initial_stage
-        )
+            try:
+                workflow = Workflow.objects.get(id=WORKFLOW_IDS['HOLOGRAM_REQUEST'])
+                initial_stage = WorkflowStage.objects.get(workflow=workflow, is_initial=True)
+            except Workflow.DoesNotExist:
+                raise serializers.ValidationError("Workflow configuration missing.")
 
-        Transaction.objects.create(
-            application=instance,
-            stage=initial_stage,
-            performed_by=self.request.user,
-            remarks='Hologram Production Request Submitted'
-        )
+            instance = serializer.save(
+                ref_no=ref_no,
+                licensee=profile,
+                license_id=_resolve_request_license_id(profile=profile, acting_user=self.request.user) or None,
+                workflow=workflow,
+                current_stage=initial_stage
+            )
+
+            Transaction.objects.create(
+                application=instance,
+                stage=initial_stage,
+                performed_by=self.request.user,
+                remarks='Hologram Production Request Submitted'
+            )
 
     @action(detail=True, methods=['post'])
     def perform_action(self, request, pk=None):
@@ -647,6 +1173,15 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         action_name = request.data.get('action')
         remarks = request.data.get('remarks', '')
         issued_assets = request.data.get('issued_assets')
+
+        if not getattr(instance, 'license_id', None):
+            resolved_license_id = _resolve_request_license_id(
+                profile=getattr(instance, 'licensee', None),
+                acting_user=request.user
+            )
+            if resolved_license_id:
+                instance.license_id = resolved_license_id
+                instance.save(update_fields=['license_id'])
 
         print(f"DEBUG: perform_action. Ref: {instance.ref_no}, Current Stage: {instance.current_stage.name}, Action: {action_name}")
         print(f"DEBUG: issued_assets received: {issued_assets}")
@@ -966,10 +1501,24 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
         
         # OIC / Licensee Access - Return entries for their licensee profile
         # Also support OIC roles which may use fallback profile
-        if role_name == 'licensee':
-            if hasattr(user, 'supply_chain_profile'):
-                return DailyHologramRegister.objects.filter(licensee=user.supply_chain_profile)
-            return DailyHologramRegister.objects.none()
+        if _is_scoped_officer_or_licensee(role_name):
+            scoped_by_daily_license = scope_by_profile_or_workflow(
+                user=user,
+                queryset=DailyHologramRegister.objects.all(),
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_REQUEST'],
+                licensee_field='license_id'
+            )
+            # Backward compatibility for old rows without daily.license_id populated.
+            scoped_by_profile_license = scope_by_profile_or_workflow(
+                user=user,
+                queryset=DailyHologramRegister.objects.all(),
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_REQUEST'],
+                licensee_field='licensee__licensee_id'
+            )
+            return DailyHologramRegister.objects.filter(
+                models.Q(id__in=scoped_by_daily_license.values('id')) |
+                models.Q(id__in=scoped_by_profile_license.values('id'))
+            ).distinct()
                 
         # IT Cell / Admin / OIC Access (View All)
         if _get_user_role_id(user) and StagePermission.objects.filter(
@@ -983,11 +1532,25 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         try:
+            save_kwargs = {}
+            # Daily register "Save" from OIC should be treated as approved entry metadata-wise.
+            is_fixed_payload = bool(self.request.data.get('is_fixed', False))
+            if is_fixed_payload:
+                save_kwargs.update({
+                    'approval_status': DailyHologramRegister.APPROVAL_STATUS_APPROVED,
+                    'approved_by': self.request.user,
+                    'approved_at': timezone.now()
+                })
+
             # Ensure licensee is set from the logged-in user
             if hasattr(self.request.user, 'supply_chain_profile'):
                 try:
                     profile = self.request.user.supply_chain_profile
-                    instance = serializer.save(licensee=profile)
+                    instance = serializer.save(
+                        licensee=profile,
+                        license_id=_resolve_request_license_id(profile=profile, acting_user=self.request.user) or None,
+                        **save_kwargs
+                    )
                 except Exception as e:
                     print(f"ERROR: accessing supply_chain_profile: {e}")
                     raise serializers.ValidationError(f"User profile error: {str(e)}")
@@ -1000,12 +1563,17 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                     first_profile = SupplyChainUserProfile.objects.first()
                     if first_profile:
                         print(f"DEBUG: Fallback to first available profile: {first_profile.manufacturing_unit_name}")
-                        instance = serializer.save(licensee=first_profile)
+                        instance = serializer.save(
+                            licensee=first_profile,
+                            license_id=_resolve_request_license_id(profile=first_profile, acting_user=self.request.user) or None,
+                            **save_kwargs
+                        )
                     else:
                         raise serializers.ValidationError("No profile found.")
                 
             # CRITICAL: Update Procurement Inventory
             self._update_procurement_usage(instance)
+            self._sync_brand_warehouse_stock(instance)
             
             # CRITICAL: Update Request Status to 'Production Completed'
             if instance.hologram_request:
@@ -1070,6 +1638,39 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
             traceback.print_exc()
             raise serializers.ValidationError(f"Internal Server Error during save: {str(e)}")
 
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        # Keep officer name visible for edited fixed entries as well.
+        if bool(getattr(instance, 'is_fixed', False)) and not getattr(instance, 'approved_by_id', None):
+            instance.approval_status = DailyHologramRegister.APPROVAL_STATUS_APPROVED
+            instance.approved_by = self.request.user
+            instance.approved_at = timezone.now()
+            instance.save(update_fields=['approval_status', 'approved_by', 'approved_at'])
+        self._sync_brand_warehouse_stock(instance)
+
+    def _sync_brand_warehouse_stock(self, instance):
+        """
+        Ensure stock inventory and arrival trail are updated immediately
+        when a Daily Register row is saved/fixed.
+        """
+        try:
+            if not instance:
+                return
+            if not bool(getattr(instance, 'is_fixed', False)):
+                return
+            if int(getattr(instance, 'issued_qty', 0) or 0) <= 0:
+                return
+            if bool(getattr(instance, 'stock_updated', False)):
+                return
+
+            from models.transactional.supply_chain.brand_warehouse.services import BrandWarehouseStockService
+
+            success = BrandWarehouseStockService.update_stock_from_hologram_register(instance)
+            if success:
+                DailyHologramRegister.objects.filter(id=instance.id).update(stock_updated=True)
+        except Exception as e:
+            print(f"ERROR: Failed to sync brand warehouse stock for daily register {getattr(instance, 'id', None)}: {e}")
+
     def _update_procurement_usage(self, instance):
         """
         Wrapper to ensure atomic transaction and row locking.
@@ -1093,6 +1694,27 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
         print(f"{'='*80}\n")
         
         try:
+            def _safe_int(value):
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return None
+
+            def _range_quantity(range_item):
+                qty = _safe_int(range_item.get('quantity'))
+                if qty is not None and qty >= 0:
+                    return qty
+                from_s = _safe_int(range_item.get('fromSerial') or range_item.get('from_serial'))
+                to_s = _safe_int(range_item.get('toSerial') or range_item.get('to_serial'))
+                if from_s is None or to_s is None:
+                    return 0
+                return max(0, to_s - from_s + 1)
+
+            def _total_from_ranges(ranges):
+                if not isinstance(ranges, list):
+                    return 0
+                return sum(_range_quantity(item or {}) for item in ranges)
+
             carton_number = None
             # Extract carton number strictly
             # roll_range format usually "CARTON - Range X-Y" or "CARTON-X-Y"
@@ -1130,7 +1752,11 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
 
             # Find matching procurement
             from .models import HologramProcurement
-            procurements = HologramProcurement.objects.filter(licensee=instance.licensee)
+            procurements = HologramProcurement.objects.filter(
+                models.Q(licensee=instance.licensee) |
+                models.Q(license_id=getattr(instance, 'license_id', None)) |
+                models.Q(ref_no=getattr(instance, 'reference_no', None))
+            ).distinct()
             
             target_procurement = None
             target_detail_index = -1
@@ -1142,27 +1768,94 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
             for proc in procurements:
                 details = proc.carton_details or []
                 for idx, detail in enumerate(details):
-                    d_carton = detail.get('cartoonNumber') or detail.get('cartoon_number')
+                    d_carton = detail.get('cartoonNumber') or detail.get('cartoon_number') or detail.get('carton_number')
                     if normalize(d_carton) == target_key:
                         target_procurement = proc
                         target_detail_index = idx
                         break
                 if target_procurement:
                     break
-            
-            if target_procurement and target_detail_index >= 0:
-                detail = target_procurement.carton_details[target_detail_index]
+
+            # Fallback: resolve procurement from rolls table when carton_details JSON shape is inconsistent
+            if not target_procurement:
+                candidate_roll = None
+                roll_fallback_qs = HologramRollsDetails.objects.select_related('procurement').all()
+                if getattr(instance, 'license_id', None):
+                    roll_fallback_qs = roll_fallback_qs.filter(
+                        models.Q(license_id=instance.license_id) |
+                        models.Q(procurement__license_id=instance.license_id)
+                    )
+                elif instance.licensee_id:
+                    roll_fallback_qs = roll_fallback_qs.filter(procurement__licensee=instance.licensee)
+
+                for roll_candidate in roll_fallback_qs:
+                    if normalize(getattr(roll_candidate, 'carton_number', '')) == target_key:
+                        candidate_roll = roll_candidate
+                        break
+
+                if candidate_roll and candidate_roll.procurement_id:
+                    target_procurement = candidate_roll.procurement
+                    details = target_procurement.carton_details or []
+                    for idx, detail in enumerate(details):
+                        d_carton = detail.get('cartoonNumber') or detail.get('cartoon_number') or detail.get('carton_number')
+                        if normalize(d_carton) == target_key:
+                            target_detail_index = idx
+                            break
+             
+            if target_procurement:
+                detail = {}
+                if target_detail_index >= 0:
+                    detail = target_procurement.carton_details[target_detail_index]
                 
                 # Get HologramRollsDetails object
                 roll_obj = None
                 try:
-                    roll_obj = HologramRollsDetails.objects.select_for_update().get(
+                    roll_obj = HologramRollsDetails.objects.select_for_update().filter(
                         procurement=target_procurement,
-                        carton_number=carton_number
-                    )
-                except HologramRollsDetails.DoesNotExist:
+                        carton_number__iexact=(carton_number or '').strip()
+                    ).first()
+
+                    # Fallback for legacy rows with inconsistent spacing/casing.
+                    if not roll_obj:
+                        for candidate_roll in HologramRollsDetails.objects.select_for_update().filter(procurement=target_procurement):
+                            if normalize(getattr(candidate_roll, 'carton_number', '')) == target_key:
+                                roll_obj = candidate_roll
+                                break
+
+                    # Cross-procurement fallback when request/profile linkage differs but license/carton match.
+                    if not roll_obj:
+                        roll_cross_qs = HologramRollsDetails.objects.select_for_update().filter(
+                            carton_number__iexact=(carton_number or '').strip()
+                        )
+                        if getattr(instance, 'license_id', None):
+                            roll_cross_qs = roll_cross_qs.filter(
+                                models.Q(license_id=instance.license_id) |
+                                models.Q(procurement__license_id=instance.license_id)
+                            )
+                        elif instance.licensee_id:
+                            roll_cross_qs = roll_cross_qs.filter(procurement__licensee=instance.licensee)
+                        roll_obj = roll_cross_qs.first()
+
+                except Exception:
+                    roll_obj = None
+
+                if not roll_obj:
                     print(f"ERROR: HologramRollsDetails not found for {carton_number}")
                     return
+
+                issued_ranges = instance.issued_ranges or []
+                wastage_ranges = instance.wastage_ranges or []
+
+                issued_qty_from_ranges = _total_from_ranges(issued_ranges)
+                wastage_qty_from_ranges = _total_from_ranges(wastage_ranges)
+
+                effective_issued_qty = _safe_int(instance.issued_qty) or 0
+                effective_wastage_qty = _safe_int(instance.wastage_qty) or 0
+
+                if issued_qty_from_ranges > 0:
+                    effective_issued_qty = issued_qty_from_ranges
+                if wastage_qty_from_ranges > 0:
+                    effective_wastage_qty = wastage_qty_from_ranges
                 
                 # Get current counts
                 total_count = roll_obj.total_count
@@ -1171,21 +1864,23 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 print(f"DEBUG: Current state - total: {total_count}, used: {current_used}, damaged: {current_damaged}")
                 
                 # Calculate new counts
-                new_used = current_used + (instance.issued_qty or 0) 
-                new_damaged = current_damaged + (instance.wastage_qty or 0)
+                new_used = current_used + effective_issued_qty
+                new_damaged = current_damaged + effective_wastage_qty
                 new_available = max(0, total_count - new_used - new_damaged)
                 
                 print(f"DEBUG: New state - available: {new_available}, used: {new_used}, damaged: {new_damaged}")
                 
                 # Update JSON in procurement
-                detail['used_qty'] = new_used
-                detail['damage_qty'] = new_damaged
-                detail['available_qty'] = new_available
-                detail['status'] = 'COMPLETED' if new_available == 0 else 'AVAILABLE'
-                target_procurement.carton_details[target_detail_index] = detail 
+                updated_status = 'COMPLETED' if new_available == 0 else 'AVAILABLE'
+                if target_detail_index >= 0:
+                    detail['used_qty'] = new_used
+                    detail['damage_qty'] = new_damaged
+                    detail['available_qty'] = new_available
+                    detail['status'] = updated_status
+                    target_procurement.carton_details[target_detail_index] = detail 
                 
                 # Update balance
-                deduct_qty = instance.issued_qty or 0
+                deduct_qty = effective_issued_qty
                 if target_procurement.local_qty > 0:
                      target_procurement.local_qty = max(0, float(target_procurement.local_qty) - deduct_qty)
                 elif target_procurement.export_qty > 0:
@@ -1216,7 +1911,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 print(f"=" * 80)
                 
                 # SPECIAL CASE: "Not Used" - if issued and wastage are both 0
-                if (not instance.issued_qty or instance.issued_qty == 0) and (not instance.wastage_qty or instance.wastage_qty == 0):
+                if effective_issued_qty == 0 and effective_wastage_qty == 0:
                     print(f"⚠️ 'Not Used' case detected (Issued: 0, Wastage: 0)")
                     
                     try:
@@ -1295,8 +1990,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 damaged_serials = set()
                 
                 # Collect USED serials
-                if instance.issued_qty and instance.issued_qty > 0:
-                    issued_ranges = instance.issued_ranges or []
+                if effective_issued_qty > 0:
                     if issued_ranges:
                         for issued_range in issued_ranges:
                             from_s = issued_range.get('fromSerial') or issued_range.get('from_serial')
@@ -1318,8 +2012,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             pass
                 
                 # Collect DAMAGED serials
-                if instance.wastage_qty and instance.wastage_qty > 0:
-                    wastage_ranges = instance.wastage_ranges or []
+                if effective_wastage_qty > 0:
                     if wastage_ranges:
                         for wastage_range in wastage_ranges:
                             from_s = wastage_range.get('fromSerial') or wastage_range.get('from_serial')
@@ -1633,16 +2326,16 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
 
                 
                 # Now create USED ranges
-                if instance.issued_qty and instance.issued_qty > 0:
-                    issued_ranges = instance.issued_ranges or []
+                if effective_issued_qty > 0:
                     if issued_ranges:
                         for issued_range in issued_ranges:
+                            current_range_qty = _range_quantity(issued_range or {})
                             usage_entry = {
                                 'type': 'ISSUED',
                                 'cartoonNumber': carton_number,
                                 'issuedFromSerial': issued_range.get('fromSerial') or issued_range.get('from_serial'),
                                 'issuedToSerial': issued_range.get('toSerial') or issued_range.get('to_serial'),
-                                'issuedQuantity': issued_range.get('quantity'),
+                                'issuedQuantity': current_range_qty,
                                 'date': str(instance.usage_date),
                                 'referenceNo': instance.reference_no,
                                 'brandName': instance.brand_details,
@@ -1658,7 +2351,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 roll=roll_obj,
                                 from_serial=usage_entry['issuedFromSerial'],
                                 to_serial=usage_entry['issuedToSerial'],
-                                count=usage_entry['issuedQuantity'],
+                                count=current_range_qty,
                                 status='USED',
                                 used_date=instance.usage_date,
                                 reference_no=instance.reference_no,
@@ -1674,7 +2367,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             'cartoonNumber': carton_number,
                             'issuedFromSerial': instance.issued_from,
                             'issuedToSerial': instance.issued_to,
-                            'issuedQuantity': instance.issued_qty,
+                            'issuedQuantity': effective_issued_qty,
                             'date': str(instance.usage_date),
                             'referenceNo': instance.reference_no,
                             'brandName': instance.brand_details,
@@ -1690,7 +2383,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             roll=roll_obj,
                             from_serial=instance.issued_from,
                             to_serial=instance.issued_to,
-                            count=instance.issued_qty,
+                            count=effective_issued_qty,
                             status='USED',
                             used_date=instance.usage_date,
                             reference_no=instance.reference_no,
@@ -1701,19 +2394,21 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                         print(f"✅ Created USED serial range: {instance.issued_from} - {instance.issued_to}")
                 
                 # Now create DAMAGED ranges
-                if instance.wastage_qty and instance.wastage_qty > 0:
-                    wastage_ranges = instance.wastage_ranges or []
+                if effective_wastage_qty > 0:
                     if wastage_ranges:
                         for wastage_range in wastage_ranges:
+                            current_range_qty = _range_quantity(wastage_range or {})
                             usage_entry = {
                                 'type': 'WASTAGE',
                                 'cartoonNumber': carton_number,
                                 'wastageFromSerial': wastage_range.get('fromSerial') or wastage_range.get('from_serial'),
                                 'wastageToSerial': wastage_range.get('toSerial') or wastage_range.get('to_serial'),
-                                'wastageQuantity': wastage_range.get('quantity'),
+                                'wastageQuantity': current_range_qty,
                                 'date': str(instance.usage_date),
                                 'damageReason': wastage_range.get('damageReason') or instance.damage_reason,
                                 'referenceNo': instance.reference_no,
+                                'brandName': instance.brand_details,
+                                'brandDetails': instance.brand_details,
                                 'reportedBy': self.request.user.username if self.request else 'System',
                                 'approvedBy': self.request.user.username if self.request else 'System',
                                 'approvedAt': timezone.now().isoformat()
@@ -1725,7 +2420,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 roll=roll_obj,
                                 from_serial=usage_entry['wastageFromSerial'],
                                 to_serial=usage_entry['wastageToSerial'],
-                                count=usage_entry['wastageQuantity'],
+                                count=current_range_qty,
                                 status='DAMAGED',
                                 damage_date=instance.usage_date,
                                 damage_reason=usage_entry['damageReason'],
@@ -1740,10 +2435,12 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             'cartoonNumber': carton_number,
                             'wastageFromSerial': instance.wastage_from,
                             'wastageToSerial': instance.wastage_to,
-                            'wastageQuantity': instance.wastage_qty,
+                            'wastageQuantity': effective_wastage_qty,
                             'date': str(instance.usage_date),
                             'damageReason': instance.damage_reason,
                             'referenceNo': instance.reference_no,
+                            'brandName': instance.brand_details,
+                            'brandDetails': instance.brand_details,
                             'reportedBy': self.request.user.username if self.request else 'System',
                             'approvedBy': self.request.user.username if self.request else 'System',
                             'approvedAt': timezone.now().isoformat()
@@ -1755,7 +2452,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             roll=roll_obj,
                             from_serial=instance.wastage_from,
                             to_serial=instance.wastage_to,
-                            count=instance.wastage_qty,
+                            count=effective_wastage_qty,
                             status='DAMAGED',
                             damage_date=instance.usage_date,
                             damage_reason=instance.damage_reason,
@@ -1768,35 +2465,37 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 roll_obj.used = new_used
                 roll_obj.damaged = new_damaged
                 roll_obj.available = new_available
-                roll_obj.status = detail['status']
+                roll_obj.status = updated_status
                 roll_obj.save()
-                
+                # After Daily Register save, remaining IN_USE ranges should be released.
+                # Status policy after save: only AVAILABLE or COMPLETED.
+                remaining_in_use_ranges = HologramSerialRange.objects.filter(roll=roll_obj, status='IN_USE')
+                if remaining_in_use_ranges.exists():
+                    for in_use_range in remaining_in_use_ranges:
+                        in_use_range.status = 'AVAILABLE'
+                        if not in_use_range.description:
+                            in_use_range.description = f"Released to AVAILABLE after daily save {instance.reference_no}"
+                        in_use_range.save(update_fields=['status', 'description', 'updated_at'])
+                    print(f"Converted {remaining_in_use_ranges.count()} IN_USE range(s) to AVAILABLE after daily save")
+
                 # Recalculate available count from AVAILABLE ranges
                 available_ranges = HologramSerialRange.objects.filter(roll=roll_obj, status='AVAILABLE')
                 total_available = sum(r.count for r in available_ranges)
                 if total_available != roll_obj.available:
                     roll_obj.available = total_available
                     roll_obj.save(update_fields=['available'])
-                    print(f"✅ Updated roll.available to {total_available} from AVAILABLE ranges")
-                
-                # CRITICAL: Update status based on available count
+                    print(f"Updated roll.available to {total_available} from AVAILABLE ranges")
+
+                # Status rule after save:
+                # available == 0 -> COMPLETED
+                # available  > 0 -> AVAILABLE
                 if roll_obj.available == 0:
                     roll_obj.status = 'COMPLETED'
-                    print(f"✅ Status changed to COMPLETED (no holograms left)")
-                elif roll_obj.available > 0 and roll_obj.available < roll_obj.total_count:
-                    # Has some available, but not all - could be IN_USE or AVAILABLE
-                    # Check if there are any IN_USE ranges
-                    in_use_count = HologramSerialRange.objects.filter(roll=roll_obj, status='IN_USE').count()
-                    if in_use_count > 0:
-                        roll_obj.status = 'IN_USE'
-                        print(f"✅ Status remains IN_USE (has IN_USE ranges)")
-                    else:
-                        roll_obj.status = 'AVAILABLE'
-                        print(f"✅ Status changed to AVAILABLE (has {roll_obj.available} holograms available)")
-                elif roll_obj.available == roll_obj.total_count:
+                    print(f"Status changed to COMPLETED (no holograms left)")
+                else:
                     roll_obj.status = 'AVAILABLE'
-                    print(f"✅ Status changed to AVAILABLE (fully available)")
-                
+                    print(f"Status changed to AVAILABLE (has {roll_obj.available} holograms available)")
+
                 roll_obj.save(update_fields=['status'])
                 
                 # CRITICAL FIX: Sync these changes back to the HologramProcurement JSON
@@ -1842,6 +2541,8 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 print(f"✅ Updated HologramRollsDetails - available: {roll_obj.available}, used: {roll_obj.used}, damaged: {roll_obj.damaged}")
                 print(f"✅ Status: {roll_obj.status}, Available Range: {roll_obj.available_range}")
                 print(f"✅ Usage history entries: {len(roll_obj.usage_history)}")
+            else:
+                print(f"ERROR: Could not resolve target procurement for carton '{carton_number}' and reference '{instance.reference_no}'")
                 
         except Exception as e:
             print(f"ERROR updating procurement usage: {e}")
@@ -1861,9 +2562,24 @@ class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
         role_name = _normalize_role_name(getattr(getattr(user, 'role', None), 'name', ''))
         
         # OIC / Licensee Access
-        if role_name == 'licensee':
-            if hasattr(user, 'supply_chain_profile'):
-                return HologramRollsDetails.objects.filter(procurement__licensee=user.supply_chain_profile)
+        if _is_scoped_officer_or_licensee(role_name):
+            scoped_by_roll_license = scope_by_profile_or_workflow(
+                user=user,
+                queryset=HologramRollsDetails.objects.all(),
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'],
+                licensee_field='license_id'
+            )
+            # Backward compatibility for historical rows without license_id populated.
+            scoped_by_procurement = scope_by_profile_or_workflow(
+                user=user,
+                queryset=HologramRollsDetails.objects.all(),
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'],
+                licensee_field='procurement__licensee__licensee_id'
+            )
+            return HologramRollsDetails.objects.filter(
+                models.Q(id__in=scoped_by_roll_license.values('id')) |
+                models.Q(id__in=scoped_by_procurement.values('id'))
+            ).distinct()
                 
         # IT Cell / Admin / Commissioner / OIC Access (View All)
         if _get_user_role_id(user) and StagePermission.objects.filter(
@@ -2077,6 +2793,7 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
         """
         from django.db.models import Q
         from datetime import datetime
+        from django.utils import timezone as django_timezone
         
         try:
             # Get all hologram requests
@@ -2099,7 +2816,7 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 approval_txn = req.transactions.filter(
                     Q(stage__name__icontains='Approved') | 
                     Q(stage__name__icontains='In Use') |
-                    Q(stage__name='Approved by Permit Section')
+                    Q(stage__name='Approved by OIC')
                 ).order_by('timestamp').first()
                 
                 print(f"Approval Transaction: {approval_txn.stage.name if approval_txn else 'None'}")
@@ -2107,7 +2824,7 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 # Get daily register entries for this request
                 daily_entries = DailyHologramRegister.objects.filter(
                     Q(hologram_request=req) | Q(reference_no=req.ref_no)
-                ).order_by('created_at')
+                ).select_related('licensee').prefetch_related('rolls_used').order_by('created_at', 'id')
                 
                 print(f"Daily Register Entries: {daily_entries.count()}")
                 
@@ -2144,57 +2861,97 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                     status = 'COMPLETED'
                     print(f"Status: COMPLETED (has daily register entries)")
                 
-                # Calculate deadline and time remaining if approved
+                # Calculate deadline and SLA if approved
                 if approval_txn:
-                    # Deadline is 5 PM on approval date (make timezone-aware)
-                    from django.utils import timezone as django_timezone
-                    
+                    # Deadline is 5 PM on approval date
                     approval_date = approval_txn.timestamp.date()
                     deadline_naive = datetime.combine(approval_date, datetime.strptime('17:00', '%H:%M').time())
-                    # Make deadline timezone-aware
                     deadline = django_timezone.make_aware(deadline_naive) if django_timezone.is_naive(deadline_naive) else deadline_naive
                     
-                    # Check if completed
+                    now = django_timezone.now()
+
+                    # Completed: decide on-time vs late based on OIC save timestamp (created_at)
                     if status == 'COMPLETED' and daily_entries.exists():
-                        last_entry = daily_entries.last()
-                        completion_datetime = datetime.combine(
-                            last_entry.usage_date,
-                            datetime.strptime('00:00', '%H:%M').time()
-                        )
-                        if last_entry.created_at:
-                            completion_datetime = last_entry.created_at
+                        last_entry = daily_entries.order_by('-created_at', '-id').first()
+                        completion_datetime = last_entry.created_at if last_entry and last_entry.created_at else None
                         
-                        # Make completion_datetime timezone-aware if needed
-                        if django_timezone.is_naive(completion_datetime):
+                        if completion_datetime is None and last_entry and last_entry.usage_date:
+                            fallback_naive = datetime.combine(last_entry.usage_date, datetime.strptime('00:00', '%H:%M').time())
+                            completion_datetime = django_timezone.make_aware(fallback_naive) if django_timezone.is_naive(fallback_naive) else fallback_naive
+                        elif completion_datetime is not None and django_timezone.is_naive(completion_datetime):
                             completion_datetime = django_timezone.make_aware(completion_datetime)
                         
-                        completion_date = last_entry.usage_date.isoformat()
-                        completion_time = last_entry.created_at.strftime('%H:%M:%S') if last_entry.created_at else '00:00:00'
-                        completed_on_time = completion_datetime <= deadline
+                        completion_date = last_entry.usage_date.isoformat() if last_entry and last_entry.usage_date else None
+                        completion_time = completion_datetime.strftime('%H:%M:%S') if completion_datetime else None
+                        completed_on_time = completion_datetime <= deadline if completion_datetime else None
+                        is_overdue = False
+                        if completed_on_time is False:
+                            time_remaining = f"Completed Late (saved at {completion_time})"
+                        elif completed_on_time is True:
+                            time_remaining = f"Completed On Time (saved at {completion_time})"
                         
                         # Get officer who entered the data
-                        if last_entry.licensee:
+                        if last_entry and last_entry.licensee:
                             officer_name = last_entry.licensee.manufacturing_unit_name
                         
-                        # Get brands entered
+                        # Get brands entered with allocated/issued/wastage and roll details
                         for entry in daily_entries:
+                            rolls_assigned = []
+                            for roll in entry.rolls_used.all():
+                                rolls_assigned.append({
+                                    'rollId': roll.id,
+                                    'cartoonNumber': roll.carton_number,
+                                    'rollNumber': roll.roll_no,
+                                    'quantity': roll.available,
+                                    'fromSerial': roll.from_serial,
+                                    'toSerial': roll.to_serial,
+                                })
+
+                            serial_ranges = []
+                            for r in (entry.issued_ranges or []):
+                                serial_ranges.append({
+                                    'from': r.get('fromSerial') or r.get('from') or r.get('issuedFromSerial') or '',
+                                    'to': r.get('toSerial') or r.get('to') or r.get('issuedToSerial') or '',
+                                    'count': r.get('quantity') or r.get('count') or 0,
+                                    'type': 'ISSUED',
+                                })
+                            for r in (entry.wastage_ranges or []):
+                                serial_ranges.append({
+                                    'from': r.get('fromSerial') or r.get('from') or r.get('wastageFromSerial') or '',
+                                    'to': r.get('toSerial') or r.get('to') or r.get('wastageToSerial') or '',
+                                    'count': r.get('quantity') or r.get('count') or 0,
+                                    'type': 'WASTAGE',
+                                })
+
                             if entry.brand_details:
                                 brands_entered.append({
                                     'brand': entry.brand_details,
+                                    'brandCode': entry.brand_details,
                                     'bottleSize': entry.bottle_size or '',
-                                    'quantity': entry.issued_qty or 0,
-                                    'usageDate': entry.usage_date.isoformat()
+                                    'allocatedQty': entry.hologram_qty or 0,
+                                    'issuedQty': entry.issued_qty or 0,
+                                    'wastageQty': entry.wastage_qty or 0,
+                                    'damageReason': entry.damage_reason or '',
+                                    'rollRange': entry.roll_range or '',
+                                    'quantity': entry.issued_qty or 0,  # backward-compatible
+                                    'usageDate': entry.usage_date.isoformat(),
+                                    'savedAt': entry.created_at.isoformat() if entry.created_at else '',
+                                    'rollsAssigned': rolls_assigned,
+                                    'serialRanges': serial_ranges,
                                 })
-                    elif status == 'UNDER_PROCESS':
-                        # Check if overdue
-                        now = django_timezone.now()  # Use timezone-aware now
+                    elif status in {'UNDER_PROCESS', 'APPLIED'}:
+                        # OIC has not saved daily entry yet; track remaining time vs 5 PM deadline
                         if now > deadline:
                             is_overdue = True
-                            time_remaining = f"Overdue by {int((now - deadline).total_seconds() / 3600)}h"
+                            overdue_seconds = int((now - deadline).total_seconds())
+                            overdue_hours = overdue_seconds // 3600
+                            overdue_minutes = (overdue_seconds % 3600) // 60
+                            time_remaining = f"Overdue by {overdue_hours}h {overdue_minutes}m (deadline 5:00 PM)"
                         else:
-                            hours_left = int((deadline - now).total_seconds() / 3600)
-                            minutes_left = int(((deadline - now).total_seconds() % 3600) / 60)
-                            time_remaining = f"{hours_left}h {minutes_left}m remaining"
+                            remaining_seconds = int((deadline - now).total_seconds())
+                            hours_left = remaining_seconds // 3600
+                            minutes_left = (remaining_seconds % 3600) // 60
+                            time_remaining = f"{hours_left}h {minutes_left}m remaining (deadline 5:00 PM)"
                 
                 print(f"Final Status: {status}")
                 
@@ -2225,8 +2982,8 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
             total_entries = len(result_data)
             applied_count = sum(1 for r in result_data if r['status'] == 'APPLIED')
             under_process_count = sum(1 for r in result_data if r['status'] == 'UNDER_PROCESS')
-            completed_on_time_count = sum(1 for r in result_data if r['status'] == 'COMPLETED' and r['completedOnTime'])
-            completed_late_count = sum(1 for r in result_data if r['status'] == 'COMPLETED' and not r['completedOnTime'])
+            completed_on_time_count = sum(1 for r in result_data if r['status'] == 'COMPLETED' and r['completedOnTime'] is True)
+            completed_late_count = sum(1 for r in result_data if r['status'] == 'COMPLETED' and r['completedOnTime'] is False)
             overdue_count = sum(1 for r in result_data if r['isOverdue'])
             
             print(f"\n=== Summary ===")
@@ -2313,9 +3070,17 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
         month_num = month_map.get(month_param, timezone.now().month)
         year_num = int(year_param)
         
-        # Get licensee from user if not provided
-        if not licensee_id and hasattr(request.user, 'supply_chain_profile'):
-            licensee_id = request.user.supply_chain_profile.id
+        # Get scoped license from user if not provided.
+        # Prefer denormalized license_id (NA/NLI format), keep legacy profile-id fallback.
+        legacy_profile_id = None
+        if hasattr(request.user, 'supply_chain_profile'):
+            legacy_profile_id = getattr(request.user.supply_chain_profile, 'id', None)
+        scoped_license_id = _resolve_request_license_id(
+            profile=getattr(request.user, 'supply_chain_profile', None),
+            acting_user=request.user
+        )
+        if not licensee_id:
+            licensee_id = scoped_license_id or (str(legacy_profile_id) if legacy_profile_id else '')
         
         # Build query filters
         filters = Q(
@@ -2326,7 +3091,11 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
         )
         
         if licensee_id:
-            filters &= Q(licensee_id=licensee_id)
+            normalized_license = str(licensee_id).strip()
+            if any(ch.isalpha() for ch in normalized_license) or '/' in normalized_license:
+                filters &= (Q(license_id=normalized_license) | Q(licensee__licensee_id=normalized_license))
+            else:
+                filters &= Q(licensee_id=normalized_license)
         
         # Get approved daily register entries for the month
         daily_entries = DailyHologramRegister.objects.filter(filters).order_by('usage_date', 'id')
@@ -2343,7 +3112,11 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
             approval_status='APPROVED'
         )
         if licensee_id:
-            prev_filters &= Q(licensee_id=licensee_id)
+            normalized_license = str(licensee_id).strip()
+            if any(ch.isalpha() for ch in normalized_license) or '/' in normalized_license:
+                prev_filters &= (Q(license_id=normalized_license) | Q(licensee__licensee_id=normalized_license))
+            else:
+                prev_filters &= Q(licensee_id=normalized_license)
         
         prev_entries = DailyHologramRegister.objects.filter(prev_filters)
         
@@ -2358,7 +3131,11 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
             type=hologram_type
         )
         if licensee_id:
-            arrival_filters &= Q(procurement__licensee_id=licensee_id)
+            normalized_license = str(licensee_id).strip()
+            if any(ch.isalpha() for ch in normalized_license) or '/' in normalized_license:
+                arrival_filters &= (Q(license_id=normalized_license) | Q(procurement__licensee__licensee_id=normalized_license))
+            else:
+                arrival_filters &= Q(procurement__licensee_id=normalized_license)
         
         arrivals = HologramRollsDetails.objects.filter(arrival_filters)
         fresh_arrivals = arrivals.aggregate(total=Sum('total_count'))['total'] or 0
@@ -2383,7 +3160,13 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
                 type=hologram_type
             )
             if licensee_id:
-                all_prev_rolls = all_prev_rolls.filter(procurement__licensee_id=licensee_id)
+                normalized_license = str(licensee_id).strip()
+                if any(ch.isalpha() for ch in normalized_license) or '/' in normalized_license:
+                    all_prev_rolls = all_prev_rolls.filter(
+                        Q(license_id=normalized_license) | Q(procurement__licensee__licensee_id=normalized_license)
+                    )
+                else:
+                    all_prev_rolls = all_prev_rolls.filter(procurement__licensee_id=normalized_license)
             
             total_received = all_prev_rolls.aggregate(total=Sum('total_count'))['total'] or 0
             
@@ -2395,7 +3178,13 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
                 approval_status='APPROVED'
             )
             if licensee_id:
-                all_prev_usage = all_prev_usage.filter(licensee_id=licensee_id)
+                normalized_license = str(licensee_id).strip()
+                if any(ch.isalpha() for ch in normalized_license) or '/' in normalized_license:
+                    all_prev_usage = all_prev_usage.filter(
+                        Q(license_id=normalized_license) | Q(licensee__licensee_id=normalized_license)
+                    )
+                else:
+                    all_prev_usage = all_prev_usage.filter(licensee_id=normalized_license)
             
             total_prev_utilized = all_prev_usage.aggregate(total=Sum('issued_qty'))['total'] or 0
             total_prev_wastage = all_prev_usage.aggregate(total=Sum('wastage_qty'))['total'] or 0

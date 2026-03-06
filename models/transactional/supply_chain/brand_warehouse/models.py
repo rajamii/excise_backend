@@ -33,11 +33,24 @@ class BrandWarehouse(models.Model):
         ('OVERSTOCKED', 'Overstocked'),
     ]
 
+    PURPOSE_OF_SALE_CHOICES = [
+        ('LOCAL', 'Local'),
+        ('EXPORT', 'Export'),
+        ('DEFENCE', 'Defence'),
+    ]
+
     # Basic Information
     distillery_name = models.CharField(
         max_length=255,
         db_column='distillery_name',
         help_text='Name of the distillery/manufacturing unit'
+    )
+    license_id = models.CharField(
+        max_length=100,
+        db_column='license_id',
+        null=True,
+        blank=True,
+        help_text='Stable licensee identifier used to scope stock per establishment'
     )
     brand_type = models.CharField(
         max_length=100,
@@ -49,6 +62,13 @@ class BrandWarehouse(models.Model):
         blank=True,
         null=True,
         help_text='Detailed information about the brand'
+    )
+    purpose_of_sale = models.CharField(
+        max_length=50,
+        choices=PURPOSE_OF_SALE_CHOICES,
+        default='LOCAL',
+        db_column='purpose_of_sale',
+        help_text='Purpose of sale: Local, Export, or Defence'
     )
 
     # Stock Information
@@ -74,15 +94,51 @@ class BrandWarehouse(models.Model):
         help_text='Current stock status'
     )
 
-    # Link to Liquor Data (for Sikkim brands)
-    liquor_data = models.ForeignKey(
-        'liquor_data.LiquorData',
-        on_delete=models.SET_NULL,
+    # Legacy source reference kept as plain identifier for backward compatibility.
+    # This is no longer used as a runtime FK after shifting reads to brand_warehouse.
+    liquor_data_id = models.IntegerField(
+        db_column='liquor_data_id',
         null=True,
         blank=True,
-        related_name='warehouse_entries',
-        db_column='liquor_data_id',
-        help_text='Link to liquor data details (for Sikkim brands)'
+        help_text='Legacy reference id from liquor_data_details'
+    )
+
+    # Rate/tax fields migrated from liquor_data_details
+    ex_factory_price_rs_per_case = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=0,
+        db_column='ex_factory_price_rs_per_case'
+    )
+    excise_duty_rs_per_case = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=0,
+        db_column='excise_duty_rs_per_case'
+    )
+    education_cess_rs_per_case = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=0,
+        db_column='education_cess_rs_per_case'
+    )
+    additional_excise_duty_rs_per_case = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=0,
+        db_column='additional_excise_duty_rs_per_case'
+    )
+    additional_excise_duty_12_5_percent_rs_per_case = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=0,
+        db_column='additional_excise_duty_12_5_percent_rs_per_case'
+    )
+    mrp_rs_per_bottle = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=0,
+        db_column='mrp_rs_per_bottle'
     )
 
     # Additional fields
@@ -143,6 +199,7 @@ class BrandWarehouse(models.Model):
         verbose_name = 'Brand Warehouse'
         verbose_name_plural = 'Brand Warehouses'
         indexes = [
+            models.Index(fields=['license_id']),
             models.Index(fields=['distillery_name']),
             models.Index(fields=['brand_type']),
             models.Index(fields=['status']),
@@ -198,6 +255,7 @@ class BrandWarehouse(models.Model):
         # Create arrival record
         BrandWarehouseArrival.objects.create(
             brand_warehouse=self,
+            license_id=str(getattr(self, 'license_id', '') or '').strip() or None,
             reference_no=reference_no,
             source_type=source_type,
             quantity_added=quantity,
@@ -260,6 +318,13 @@ class BrandWarehouseArrival(models.Model):
     )
 
     # Reference Information
+    license_id = models.CharField(
+        max_length=100,
+        db_column='license_id',
+        null=True,
+        blank=True,
+        help_text='Stable licensee identifier used to scope arrivals per establishment'
+    )
     reference_no = models.CharField(
         max_length=100,
         db_column='reference_no',
@@ -315,6 +380,7 @@ class BrandWarehouseArrival(models.Model):
         verbose_name_plural = 'Brand Warehouse Arrivals'
         indexes = [
             models.Index(fields=['brand_warehouse', 'arrival_date']),
+            models.Index(fields=['license_id']),
             models.Index(fields=['reference_no']),
             models.Index(fields=['source_type']),
         ]
@@ -345,6 +411,13 @@ class BrandWarehouseUtilization(models.Model):
     )
 
     # Transit Permit Information
+    license_id = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        db_column='license_id',
+        help_text='Approved license id (NA/NLI) used for permit scoping'
+    )
     permit_no = models.CharField(
         max_length=100,
         db_column='permit_no',
@@ -436,6 +509,7 @@ class BrandWarehouseUtilization(models.Model):
         verbose_name = 'Brand Warehouse Utilization'
         verbose_name_plural = 'Brand Warehouse Utilizations'
         indexes = [
+            models.Index(fields=['license_id']),
             models.Index(fields=['permit_no']),
             models.Index(fields=['date']),
             models.Index(fields=['status']),

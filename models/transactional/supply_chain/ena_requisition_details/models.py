@@ -6,6 +6,7 @@ from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
 
 class EnaRequisitionDetail(models.Model):
     requisiton_number_of_permits = models.IntegerField()
+    details_permits_number = models.CharField(max_length=500, blank=True, null=True)
     our_ref_no = models.CharField(max_length=50)
     requisition_date = models.DateTimeField()
     lifted_from_distillery_name = models.CharField(max_length=255)
@@ -49,5 +50,27 @@ class EnaRequisitionDetail(models.Model):
 
     def __str__(self) -> str:
         return f"ENA Req {self.requisition_number} ({self.application_id})"
+
+
+class RequisitionBulkLiterDetail(models.Model):
+    requisition = models.OneToOneField(
+        EnaRequisitionDetail,
+        on_delete=models.CASCADE,
+        related_name='bulk_liter_detail'
+    )
+    reference_no = models.CharField(max_length=50, db_index=True)
+    licensee_id = models.CharField(max_length=50, blank=True, null=True, db_index=True)
+    tanker_count = models.PositiveIntegerField(default=0)
+    tanker_details = models.JSONField(default=list, blank=True)
+    total_bulk_liter = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'reqution_bulk_liter_details'
+        ordering = ['-updated_at']
+
+    def __str__(self) -> str:
+        return f"{self.reference_no} ({self.licensee_id or 'NA'})"
 
 

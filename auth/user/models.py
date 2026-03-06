@@ -163,6 +163,7 @@ class CustomUser(AbstractBaseUser):
         on_delete=models.SET_NULL,
         related_name='created_users'
     )
+    is_oic_managed = models.BooleanField(default=False)
 
     objects = CustomUserManager()
 
@@ -258,3 +259,39 @@ class LicenseeProfile(models.Model):
 
     def __str__(self):
         return f"LicenseeProfile({self.user})"
+
+
+class OICOfficerAssignment(models.Model):
+    officer = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='oic_assignment'
+    )
+    approved_application = models.ForeignKey(
+        'new_license_application.NewLicenseApplication',
+        on_delete=models.PROTECT,
+        related_name='oic_officers'
+    )
+    license = models.ForeignKey(
+        'license.License',
+        on_delete=models.PROTECT,
+        related_name='oic_officers'
+    )
+    licensee_id = models.CharField(max_length=100)
+    establishment_name = models.CharField(max_length=150)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_oic_assignments'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'oic_officers_mapping'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.officer} -> {self.establishment_name}"

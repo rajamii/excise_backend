@@ -1,7 +1,6 @@
 from rest_framework import serializers
 from .models import BrandWarehouse, BrandWarehouseUtilization, BrandWarehouseArrival, BrandWarehouseTpCancellation
 from .services import BrandWarehouseStockService
-from models.masters.supply_chain.liquor_data.models import LiquorData
 
 
 class BrandWarehouseArrivalSerializer(serializers.ModelSerializer):
@@ -14,6 +13,7 @@ class BrandWarehouseArrivalSerializer(serializers.ModelSerializer):
         model = BrandWarehouseArrival
         fields = [
             'id',
+            'license_id',
             'reference_no',
             'source_type',
             'source_type_display',
@@ -61,6 +61,7 @@ class BrandWarehouseUtilizationSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'brand_warehouse',
+            'license_id',
             'permit_no',
             'date',
             'distributor',
@@ -120,6 +121,7 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
         model = BrandWarehouse
         fields = [
             'id',
+            'license_id',
             'distillery_name',
             'brand_type',
             'brand_details',
@@ -127,8 +129,14 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
             'capacity_size',
             'total_capacity',
             'status',
-            'liquor_data',
+            'liquor_data_id',
             'liquor_data_details',
+            'ex_factory_price_rs_per_case',
+            'excise_duty_rs_per_case',
+            'education_cess_rs_per_case',
+            'additional_excise_duty_rs_per_case',
+            'additional_excise_duty_12_5_percent_rs_per_case',
+            'mrp_rs_per_bottle',
             'reorder_level',
             'max_capacity',
             'average_daily_usage',
@@ -170,17 +178,21 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
         return last_arrival.arrival_date if last_arrival else None
 
     def get_liquor_data_details(self, obj):
-        """Get liquor data details if linked"""
-        if obj.liquor_data:
-            return {
-                'id': obj.liquor_data.id,
-                'brand_name': obj.liquor_data.brand_name,
-                'brand_owner': obj.liquor_data.brand_owner,
-                'liquor_type': obj.liquor_data.liquor_type,
-                'pack_size_ml': obj.liquor_data.pack_size_ml,
-                'manufacturing_unit_name': obj.liquor_data.manufacturing_unit_name,
-            }
-        return None
+        """Backward-compatible structure built from brand_warehouse columns."""
+        return {
+            'id': obj.liquor_data_id,
+            'brand_name': obj.brand_details,
+            'brand_owner': '',
+            'liquor_type': obj.brand_type,
+            'pack_size_ml': obj.capacity_size,
+            'manufacturing_unit_name': obj.distillery_name,
+            'ex_factory_price_rs_per_case': obj.ex_factory_price_rs_per_case,
+            'excise_duty_rs_per_case': obj.excise_duty_rs_per_case,
+            'education_cess_rs_per_case': obj.education_cess_rs_per_case,
+            'additional_excise_duty_rs_per_case': obj.additional_excise_duty_rs_per_case,
+            'additional_excise_duty_12_5_percent_rs_per_case': obj.additional_excise_duty_12_5_percent_rs_per_case,
+            'mrp_rs_per_bottle': obj.mrp_rs_per_bottle,
+        }
 
     def validate_current_stock(self, value):
         """Validate that current stock is not negative"""
@@ -242,6 +254,7 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
         model = BrandWarehouse
         fields = [
             'id',
+            'license_id',
             'distillery_name',
             'brand_type',
             'brand_details',

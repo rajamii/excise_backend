@@ -87,7 +87,7 @@ INSTALLED_APPS = [
     'models.transactional.new_license_application',
     'models.transactional.salesman_barman',
     'models.transactional.logs',
-    'models.transactional.transactiondata',
+    'models.transactional.payment',
     'models.transactional.supply_chain.ena_transit_permit_details',
     'models.transactional.supply_chain.ena_revalidation_details',
     'models.transactional.supply_chain.ena_requisition_details',  # Added missing app
@@ -155,9 +155,9 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'eAbkari',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD':'postgres',  # Your PostgreSQL password 
+        'PASSWORD': os.getenv('DB_PASSWORD', 'postgres'),  # Your PostgreSQL password
         'HOST': 'localhost',        # Default host
-        'PORT': '5432',             # Default PostgreSQL port
+        'PORT': '5433',             # Default PostgreSQL port
     }
 }
 
@@ -219,3 +219,18 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
 }
+
+# Captcha tuning: keep it readable with only light line noise.
+CAPTCHA_LENGTH = 5
+CAPTCHA_TIMEOUT = 5  # minutes
+CAPTCHA_FONT_SIZE = 30
+CAPTCHA_IMAGE_SIZE = (130, 42)
+CAPTCHA_LETTER_ROTATION = (-5, 5)
+CAPTCHA_NOISE_FUNCTIONS = (
+    "captcha.helpers.noise_arcs",
+    "auth.user.captcha_helpers.noise_dots_light",
+)
+CAPTCHA_FILTER_FUNCTIONS = ()
+CAPTCHA_LETTER_COLOR_FUNCT = "auth.user.captcha_helpers.random_letter_color_dark"
+CAPTCHA_FOREGROUND_COLOR = "#2b2b2b"
+CAPTCHA_BACKGROUND_COLOR = "#ffffff"

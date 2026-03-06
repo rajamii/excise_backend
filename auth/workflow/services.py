@@ -14,7 +14,7 @@ ACTION_CONFIGS = {
     'APPROVE': {
         'label': 'Approve',
         'icon': 'check_circle',
-        'color': 'accent',
+        'color': 'primary',
         'tooltip': 'Approve Application',
         'requires_confirmation': True,
         'confirmation_message': 'Are you sure you want to approve this application?'
@@ -46,7 +46,7 @@ ACTION_CONFIGS = {
     'VERIFY': {
         'label': 'Verify',
         'icon': 'verified',
-        'color': 'info',
+        'color': 'primary',
         'tooltip': 'Verify Application',
         'requires_confirmation': True,
         'confirmation_message': 'Are you sure you want to verify this application?'
@@ -92,7 +92,7 @@ ACTION_CONFIGS = {
     'REQUEST_REVALIDATION': {
         'label': 'Request Revalidation',
         'icon': 'restore',
-        'color': 'primary',
+        'color': 'warn',
         'tooltip': 'Request Revalidation',
         'requires_confirmation': True,
         'confirmation_message': 'The permit validity has been extended. Do you want to proceed with revalidation?'
@@ -121,6 +121,13 @@ ACTION_CONFIGS = {
         'requires_confirmation': True,
         'confirmation_message': 'Are you sure you want to reject the pay slip?'
     },
+    'VIEW_PERMIT_SLIP': {
+        'label': 'View Permit Slip',
+        'icon': 'description',
+        'color': 'primary',
+        'tooltip': 'View Final Permit Slip',
+        'requires_confirmation': False
+    },
     # Default fallback
     'DEFAULT': {
         'label': 'Action',
@@ -138,12 +145,137 @@ SERIALIZER_MAPPING = {
     ('license_application', 'licenseapplication'): 'models.transactional.license_application.serializers.LicenseApplicationSerializer',
     ('new_license_application', 'newlicenseapplication'): 'models.transactional.new_license_application.serializers.NewLicenseApplicationSerializer',
     ('salesman_barman', 'salesmanbarmanmodel'): 'models.transactional.salesman_barman.serializers.SalesmanBarmanSerializer',
+    ('company_registration', 'companymodel'): 'models.transactional.company_registration.serializers.CompanySerializer',
     ('ena_requisition_details', 'enarequisitiondetail'): 'models.transactional.supply_chain.ena_requisition_details.serializers.EnaRequisitionDetailSerializer',
     ('ena_revalidation_details', 'enarevalidationdetail'): 'models.transactional.supply_chain.ena_revalidation_details.serializers.EnaRevalidationDetailSerializer',
     ('ena_cancellation_details', 'enacancellationdetail'): 'models.transactional.supply_chain.ena_cancellation_details.serializers.EnaCancellationDetailSerializer',
 }
 
 class WorkflowService:
+
+    @staticmethod
+    def _normalize_token(value):
+        return ''.join(ch for ch in str(value or '').lower() if ch.isalnum())
+
+    @staticmethod
+    def _role_token_matches_cond(user_role_token, cond_role_token):
+        user_role_token = WorkflowService._normalize_token(user_role_token)
+        cond_role_token = WorkflowService._normalize_token(cond_role_token)
+        if not cond_role_token:
+            return True
+        if user_role_token == cond_role_token:
+            return True
+
+        officer_aliases = {
+            'officer', 'officerincharge', 'offcierincharge', 'oic',
+            'level1', 'level2', 'level3', 'level4', 'level5', 'siteadmin'
+        }
+        if user_role_token in officer_aliases and cond_role_token in officer_aliases:
+            return True
+
+        return False
+
+    @staticmethod
+    def _condition_role_matches(condition, user):
+        condition = condition or {}
+        role = getattr(user, 'role', None)
+        user_role_id = getattr(role, 'id', None)
+
+        cond_role_id = condition.get('role_id')
+        if cond_role_id is not None:
+            if user_role_id is None:
+                return False
+            try:
+                return int(cond_role_id) == int(user_role_id)
+            except (TypeError, ValueError):
+                return False
+
+        cond_role = WorkflowService._normalize_token(condition.get('role'))
+        if not cond_role:
+            return True
+
+        user_role_name = WorkflowService._normalize_token(getattr(role, 'name', ''))
+        return WorkflowService._role_token_matches_cond(user_role_name, cond_role)
+
+    @staticmethod
+    def _has_stage_process_permission(application, user, target_stage=None, context=None):
+        if getattr(user, 'is_superuser', False):
+            return True
+
+        role = getattr(user, 'role', None)
+        if role and StagePermission.objects.filter(
+            stage=application.current_stage,
+            role=role,
+            can_process=True
+        ).exists():
+            return True
+
+        # Fallback for deployments where StagePermission rows are incomplete:
+        # allow processing when there is a valid workflow transition from current stage
+        # for this user's role/action.
+        transitions = WorkflowTransition.objects.filter(
+            workflow=application.workflow,
+            from_stage=application.current_stage
+        )
+        if target_stage is not None:
+            transitions = transitions.filter(to_stage=target_stage)
+
+        action = str((context or {}).get('action') or '').strip().upper()
+        for transition in transitions:
+            condition = transition.condition or {}
+            if not WorkflowService._condition_role_matches(condition, user):
+                continue
+            cond_action = str(condition.get('action') or '').strip().upper()
+            if cond_action and action and cond_action != action:
+                continue
+            if cond_action and not action:
+                continue
+            return True
+
+        return False
+
+    @staticmethod
+    def _transition_matches_submit(transition, user):
+        condition = transition.condition or {}
+        if not WorkflowService._condition_role_matches(condition, user):
+            return False
+
+        cond_action = str(condition.get('action') or '').strip().lower()
+        if cond_action and cond_action not in {'submit', 'submitted', 'create', 'apply'}:
+            return False
+        return True
+
+    @staticmethod
+    def _transition_priority_for_submit(transition, user):
+        """
+        Lower tuple wins.
+        Preference order:
+        1) matching submit-condition transition
+        2) transition whose target stage has processor role mapped
+        3) target processor role is non-licensee
+        4) lower role_precedence (earlier processing role)
+        5) lower transition id for deterministic tie-break
+        """
+        condition = transition.condition or {}
+        cond_action = str(condition.get('action') or '').strip().lower()
+        action_rank = 1
+        if WorkflowService._transition_matches_submit(transition, user):
+            action_rank = 0
+        elif cond_action:
+            action_rank = 2
+
+        perm = StagePermission.objects.filter(
+            stage=transition.to_stage,
+            can_process=True
+        ).select_related('role').first()
+        has_perm_rank = 0 if (perm and perm.role) else 1
+
+        role_token = WorkflowService._normalize_token(getattr(getattr(perm, 'role', None), 'name', ''))
+        non_licensee_rank = 0 if role_token not in {'licensee', 'licenseuser', 'licenseeuser'} else 1
+        precedence_rank = getattr(getattr(perm, 'role', None), 'role_precedence', 999) if perm else 999
+        id_rank = getattr(transition, 'id', 0) or 0
+
+        return (action_rank, has_perm_rank, non_licensee_rank, precedence_rank, id_rank)
 
     @staticmethod
     def get_action_config(action_name):
@@ -182,25 +314,41 @@ class WorkflowService:
             remarks=remarks or "Application submitted by applicant"
         )
 
-        # 2. Auto-advance to level_1
-        transition = WorkflowTransition.objects.filter(
+        # 2. Auto-advance using DB transitions (optionally constrained by role/action)
+        transitions = list(WorkflowTransition.objects.filter(
             workflow=application.workflow,
             from_stage=initial_stage
-        ).first()
-        if not transition:
-            raise ValidationError("No transition from applicant_applied")
+        ).select_related('to_stage'))
+        if not transitions:
+            raise ValidationError(f"No transition configured from stage '{initial_stage.name}'")
+
+        transition = min(
+            transitions,
+            key=lambda t: WorkflowService._transition_priority_for_submit(t, user)
+        )
+        if WorkflowService._transition_priority_for_submit(transition, user)[0] == 2:
+            role_name = getattr(getattr(user, 'role', None), 'name', None)
+            raise ValidationError(
+                f"No submission transition from stage '{initial_stage.name}' for role '{role_name}'."
+            )
 
         application.current_stage = transition.to_stage
         application.save(update_fields=['current_stage'])
 
-        # 3. Log auto-forward
+        # 3. Enforce that next stage has an assigned processing role
         perm = StagePermission.objects.filter(stage=transition.to_stage, can_process=True).first()
+        if not perm or not perm.role:
+            raise ValidationError(
+                f"No role assigned to process stage '{transition.to_stage.name}'."
+            )
+
+        # 4. Log auto-forward
         Transaction.objects.create(
             content_type=ContentType.objects.get_for_model(application),
             object_id=str(application.pk),
             performed_by=user,
-            forwarded_by=perm.role if perm else None,
-            forwarded_to=perm.role if perm else None,
+            forwarded_by=perm.role,
+            forwarded_to=perm.role,
             stage=transition.to_stage,
             remarks="Application forwarded to Level 1 for review"
         )
@@ -213,26 +361,60 @@ class WorkflowService:
         ).select_related('to_stage')
 
     @staticmethod
-    def validate_transition(application, to_stage, context=None):
-        transition = WorkflowTransition.objects.filter(
+    def validate_transition(application, to_stage, context=None, user=None):
+        transitions = WorkflowTransition.objects.filter(
             workflow=application.workflow,
             from_stage=application.current_stage,
             to_stage=to_stage
-        ).first()
+        ).order_by('id')
 
-        if not transition:
+        if not transitions.exists():
             raise ValidationError(
                 f"Invalid transition from {application.current_stage.name} "
                 f"to {to_stage.name} in workflow {application.workflow.name}"
             )
 
-        if transition.condition:
-            for key, expected in transition.condition.items():
-                actual = (context or {}).get(key)
-                if actual != expected:
-                    raise ValidationError(f"Condition failed: {key} must be {expected}")
+        context = context or {}
+        first_error = None
 
-        return transition
+        for transition in transitions:
+            condition_failed = False
+            if transition.condition:
+                for key, expected in transition.condition.items():
+                    # role / role_id are validated against authenticated user's role
+                    if key in {"role", "role_id"}:
+                        if user is None:
+                            first_error = first_error or f"Condition failed: {key} cannot be validated without user"
+                            condition_failed = True
+                            break
+                        if not WorkflowService._condition_role_matches({key: expected}, user):
+                            first_error = first_error or f"Condition failed: {key} must be {expected}"
+                            condition_failed = True
+                            break
+                        continue
+
+                    # action may be omitted by callers that only send target stage.
+                    # in that case, do not fail; transition target itself is already explicit.
+                    if key == "action":
+                        actual_action = context.get("action")
+                        if actual_action is None:
+                            continue
+                        if str(actual_action).strip().lower() != str(expected).strip().lower():
+                            first_error = first_error or f"Condition failed: {key} must be {expected}"
+                            condition_failed = True
+                            break
+                        continue
+
+                    actual = context.get(key)
+                    if actual != expected:
+                        first_error = first_error or f"Condition failed: {key} must be {expected}"
+                        condition_failed = True
+                        break
+
+            if not condition_failed:
+                return transition
+
+        raise ValidationError(first_error or "No transition matched the provided context.")
 
     @staticmethod
     @transaction.atomic
@@ -240,16 +422,16 @@ class WorkflowService:
         context = context or {}
 
         # ---------- Permission ----------
-        if not user.is_superuser:
-            if not StagePermission.objects.filter(
-                stage=application.current_stage,
-                role=user.role,
-                can_process=True
-            ).exists():
-                raise PermissionDenied("You cannot process this stage.")
+        if not WorkflowService._has_stage_process_permission(
+            application=application,
+            user=user,
+            target_stage=target_stage,
+            context=context
+        ):
+            raise PermissionDenied("You cannot process this stage.")
 
         # ---------- Transition ----------
-        WorkflowService.validate_transition(application, target_stage, context)
+        WorkflowService.validate_transition(application, target_stage, context, user=user)
 
         # ---------- App-specific hooks (via context) ----------
         # if getattr(application, 'is_fee_calculated', None) is not None and target_stage.name == "level_1":

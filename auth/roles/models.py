@@ -75,7 +75,7 @@ class Role(models.Model):
 
     def __str__(self) -> str:
         return f"{self.name} (Level {self.role_precedence})"
-
+ 
 
 class DashboardRoleConfig(models.Model):
     role = models.OneToOneField(Role, on_delete=models.CASCADE, related_name='dashboard_config')

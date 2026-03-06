@@ -1,14 +1,12 @@
 from django.db import transaction
-from django.forms import ValidationError
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from django.core.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework import status
 from auth.roles.permissions import HasAppPermission
 from auth.workflow.permissions import HasStagePermission
-from auth.workflow.models import Workflow, StagePermission, WorkflowStage
+from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition
 from auth.workflow.constants import WORKFLOW_IDS
 from auth.workflow.services import WorkflowService
 from models.masters.license.models import License
@@ -68,6 +66,11 @@ def _get_stage_sets(workflow_id: int):
     }
 
 
+def _get_in_progress_stage_names(stage_sets: dict):
+    # Any non-final processing stage should be treated as in-progress/pending.
+    return set(stage_sets['all']) - set(stage_sets['approved']) - set(stage_sets['rejected'])
+
+
 def _get_role_stage_names(user, workflow_id: int):
     role = getattr(user, 'role', None)
     if not role:
@@ -79,6 +82,60 @@ def _get_role_stage_names(user, workflow_id: int):
             stagepermission__can_process=True
         ).values_list('name', flat=True).distinct()
     )
+
+
+def _build_role_transition_buckets(user, workflow_id: int, stage_sets: dict):
+    role = getattr(user, 'role', None)
+    if not role:
+        return None
+
+    role_stages = WorkflowStage.objects.filter(
+        workflow_id=workflow_id,
+        stagepermission__role=role,
+        stagepermission__can_process=True
+    ).distinct()
+
+    role_stage_ids = set(role_stages.values_list('id', flat=True))
+    role_stage_names = set(role_stages.values_list('name', flat=True))
+    if not role_stage_ids:
+        return None
+
+    transitions = WorkflowTransition.objects.filter(
+        workflow_id=workflow_id,
+        from_stage_id__in=role_stage_ids
+    ).select_related('to_stage')
+
+    approved_targets = set()
+    rejected_targets = set()
+    objection_targets = set()
+
+    for t in transitions:
+        to_name = str(t.to_stage.name or '')
+        to_name_lower = to_name.lower()
+        condition = t.condition or {}
+        action = str(condition.get('action') or '').strip().upper()
+
+        if action == 'REJECT' or 'reject' in to_name_lower:
+            rejected_targets.add(to_name)
+            continue
+
+        if action in {'RAISE_OBJECTION', 'OBJECTION'} or 'objection' in to_name_lower:
+            objection_targets.add(to_name)
+            continue
+
+        approved_targets.add(to_name)
+
+    pending_names = set(role_stage_names)
+    approved_names = set(approved_targets) | set(stage_sets['approved']) | set(stage_sets['payment'])
+    rejected_names = set(rejected_targets) | set(stage_sets['rejected'])
+    objection_names = set(objection_targets) | set(stage_sets['objection'])
+
+    return {
+        'pending': pending_names,
+        'approved': approved_names,
+        'rejected': rejected_names,
+        'objection': objection_names,
+    }
 
 def _create_application(request, workflow_id: int, serializer_cls):
     
@@ -115,28 +172,14 @@ def _create_application(request, workflow_id: int, serializer_cls):
             applicant=request.user
         )
 
-        
-        # 3. Who receives the first task?
-        sp = StagePermission.objects.filter(stage=initial_stage, can_process=True).first()
-
-        if not sp or not sp.role:
-            return Response(
-                {"detail": "No role assigned to process the initial stage."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-        forwarded_to_role = sp.role
-        if not forwarded_to_role:
-            raise ValidationError("No role configured for the initial stage.")
-
-        # 4. Generic transaction log (uses WorkflowTransaction, NOT a local model)
+        # 3. Generic workflow submission and auto-forward
         WorkflowService.submit_application(
             application=application,
             user=request.user,
             remarks="Application submitted",
         )
 
-        
-        # 5. Return the *fresh* object (includes generic relations)
+        # 4. Return the *fresh* object (includes generic relations)
         fresh = SalesmanBarmanModel.objects.get(pk=application.pk)
         fresh_serializer = serializer_cls(fresh)
         return Response(fresh_serializer.data, status=status.HTTP_201_CREATED)
@@ -279,8 +322,8 @@ def dashboard_counts(request):
 
     if role == 'licensee':
         base_qs = SalesmanBarmanModel.objects.filter(applicant=request.user)
-        applied_stages = stage_sets['initial'] | stage_sets['level']
-        pending_stages = stage_sets['objection'] | stage_sets['payment']
+        applied_stages = set(stage_sets['initial'])
+        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
         return Response({
             "applied": base_qs.filter(current_stage__name__in=applied_stages).count(),
             "pending": base_qs.filter(current_stage__name__in=pending_stages).count(),
@@ -298,43 +341,15 @@ def dashboard_counts(request):
             "rejected": all_qs.filter(current_stage__name__in=stage_sets['rejected']).count(),
         })
 
-    role_stage_names = _get_role_stage_names(request.user, workflow_id)
-    if not role_stage_names:
+    buckets = _build_role_transition_buckets(request.user, workflow_id, stage_sets)
+    if not buckets:
         return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
 
-    role_level_indexes = [
-        stage_sets['level_indexes'][name]
-        for name in role_stage_names
-        if name in stage_sets['level_indexes']
-    ]
-    max_role_level = max(role_level_indexes) if role_level_indexes else None
-
-    role_objection_stages = set()
-    for stage_name in role_stage_names:
-        index = _extract_level_index(stage_name)
-        candidate = f'level_{index}_objection' if index else None
-        if candidate and candidate in stage_sets['all']:
-            role_objection_stages.add(candidate)
-
-    forward_stages = set(stage_sets['approved']) | set(stage_sets['payment'])
-    if max_role_level is not None:
-        forward_stages.update({
-            name for name, idx in stage_sets['level_indexes'].items()
-            if idx and idx > max_role_level
-        })
-
-    role_rejected_stages = {
-        f'rejected_by_{stage_name}'
-        for stage_name in role_stage_names
-        if f'rejected_by_{stage_name}' in stage_sets['all']
-    }
-    if 'rejected' in stage_sets['all']:
-        role_rejected_stages.add('rejected')
-
     return Response({
-        "pending": all_qs.filter(current_stage__name__in=(role_stage_names | role_objection_stages)).count(),
-        "approved": all_qs.filter(current_stage__name__in=forward_stages).count(),
-        "rejected": all_qs.filter(current_stage__name__in=role_rejected_stages).count(),
+        "pending": all_qs.filter(current_stage__name__in=buckets['pending']).count(),
+        "approved": all_qs.filter(current_stage__name__in=buckets['approved']).count(),
+        "rejected": all_qs.filter(current_stage__name__in=buckets['rejected']).count(),
+        "objection": all_qs.filter(current_stage__name__in=buckets['objection']).count(),
     })
 
 @permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
@@ -348,8 +363,8 @@ def application_group(request):
 
     if role == 'licensee':
         base_qs = SalesmanBarmanModel.objects.filter(applicant=request.user)
-        applied_stages = stage_sets['initial'] | stage_sets['level']
-        pending_stages = stage_sets['objection'] | stage_sets['payment']
+        applied_stages = set(stage_sets['initial'])
+        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
         result = {
             "applied": SalesmanBarmanSerializer(
                 base_qs.filter(current_stage__name__in=applied_stages),
@@ -388,46 +403,20 @@ def application_group(request):
             ).data
         })
 
-    role_stage_names = _get_role_stage_names(request.user, workflow_id)
-    if role_stage_names:
-        role_level_indexes = [
-            stage_sets['level_indexes'][name]
-            for name in role_stage_names
-            if name in stage_sets['level_indexes']
-        ]
-        max_role_level = max(role_level_indexes) if role_level_indexes else None
-
-        role_objection_stages = set()
-        for stage_name in role_stage_names:
-            index = _extract_level_index(stage_name)
-            candidate = f'level_{index}_objection' if index else None
-            if candidate and candidate in stage_sets['all']:
-                role_objection_stages.add(candidate)
-
-        forward_stages = set(stage_sets['approved']) | set(stage_sets['payment'])
-        if max_role_level is not None:
-            forward_stages.update({
-                name for name, idx in stage_sets['level_indexes'].items()
-                if idx and idx > max_role_level
-            })
-
-        role_rejected_stages = {
-            f'rejected_by_{stage_name}'
-            for stage_name in role_stage_names
-            if f'rejected_by_{stage_name}' in stage_sets['all']
-        }
-        if 'rejected' in stage_sets['all']:
-            role_rejected_stages.add('rejected')
-
+    buckets = _build_role_transition_buckets(request.user, workflow_id, stage_sets)
+    if buckets:
         return Response({
             "pending": SalesmanBarmanSerializer(
-                all_qs.filter(current_stage__name__in=(role_stage_names | role_objection_stages)), many=True
+                all_qs.filter(current_stage__name__in=buckets['pending']), many=True
             ).data,
             "approved": SalesmanBarmanSerializer(
-                all_qs.filter(current_stage__name__in=forward_stages), many=True
+                all_qs.filter(current_stage__name__in=buckets['approved']), many=True
             ).data,
             "rejected": SalesmanBarmanSerializer(
-                all_qs.filter(current_stage__name__in=role_rejected_stages), many=True
+                all_qs.filter(current_stage__name__in=buckets['rejected']), many=True
+            ).data,
+            "objection": SalesmanBarmanSerializer(
+                all_qs.filter(current_stage__name__in=buckets['objection']), many=True
             ).data
         })
 

@@ -34,6 +34,7 @@ class ObjectionSerializer(serializers.ModelSerializer):
 class SalesmanBarmanSerializer(serializers.ModelSerializer):
     
     excise_district = CodeRelatedField(queryset=District.objects.all(), lookup_field='district_code')
+    current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
     license_category_name = serializers.CharField(source='license_category.license_category', read_only=True)
     renewal_of_license_id = serializers.CharField(source='renewal_of.license_id', read_only=True)
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)

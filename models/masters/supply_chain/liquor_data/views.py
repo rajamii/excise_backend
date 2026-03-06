@@ -1,10 +1,9 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from django.db.models import F, Value, CharField
+from django.db.models import Q, Max
 import logging
-from django.db import connection
-from .models import LiquorData
+from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
 
 logger = logging.getLogger(__name__)
 
@@ -13,42 +12,35 @@ class BrandSizeListView(APIView):
         try:
             # Get distillery filter from query params (defaults to Sikkim Distilleries Ltd)
             distillery_filter = request.GET.get('distillery', 'Sikkim Distilleries Ltd')
-            
-            # First, get all unique brand names from Sikkim Distilleries Ltd only
-            with connection.cursor() as cursor:
-                cursor.execute("""
-                    SELECT DISTINCT brand_name 
-                    FROM liquor_data_details 
-                    WHERE brand_name IS NOT NULL
-                    AND manufacturing_unit_name ILIKE %s
-                """, [f'%{distillery_filter}%'])
-                brand_names = [row[0] for row in cursor.fetchall()]
-            
-            result = []
-            
-            # For each brand, get its sizes (only from Sikkim Distilleries Ltd)
-            for brand_name in brand_names:
-                if not brand_name:
+
+            rows = BrandWarehouse.objects.filter(
+                distillery_name__icontains=distillery_filter
+            ).exclude(
+                brand_details__isnull=True
+            ).exclude(
+                brand_details=''
+            ).exclude(
+                capacity_size__isnull=True
+            ).values(
+                'brand_details', 'capacity_size'
+            )
+
+            grouped: dict[str, set[int]] = {}
+            for row in rows:
+                brand_name = str(row.get('brand_details') or '').strip()
+                size = row.get('capacity_size')
+                if not brand_name or size is None:
                     continue
-                    
-                with connection.cursor() as cursor:
-                    cursor.execute("""
-                        SELECT DISTINCT pack_size_ml 
-                        FROM liquor_data_details 
-                        WHERE brand_name = %s 
-                        AND manufacturing_unit_name ILIKE %s
-                        AND pack_size_ml IS NOT NULL
-                        ORDER BY pack_size_ml
-                    """, [brand_name, f'%{distillery_filter}%'])
-                    sizes = [row[0] for row in cursor.fetchall()]
-                
-                if sizes:
-                    result.append({
-                        'brandName': brand_name,
-                        'sizes': sizes,
-                        'manufacturingUnit': distillery_filter
-                    })
-            
+                grouped.setdefault(brand_name, set()).add(int(size))
+
+            result = []
+            for brand_name, sizes_set in grouped.items():
+                result.append({
+                    'brandName': brand_name,
+                    'sizes': sorted(list(sizes_set)),
+                    'manufacturingUnit': distillery_filter
+                })
+
             # Sort by brand name
             result.sort(key=lambda x: x['brandName'])
             
@@ -91,53 +83,42 @@ class LiquorRatesView(APIView):
                     'error': 'pack_size_ml must be a valid number'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            
-            with connection.cursor() as cursor:
-                query = """
-                    SELECT 
-                        brand_name,
-                        pack_size_ml,
-                        education_cess_rs_per_case,  
-                        excise_duty_rs_per_case,     
-                        additional_excise_duty_rs_per_case,
-                        brand_owner,
-                        liquor_type,
-                        ex_factory_price_rs_per_case,
-                        manufacturing_unit_name
-                    FROM liquor_data_details 
-                    WHERE brand_name ILIKE %s 
-                    AND pack_size_ml = %s
-                    LIMIT 1
-                """
-                cursor.execute(query, [brand_name.strip(), pack_size_ml])
-                row = cursor.fetchone()
+            normalized_brand = brand_name.strip()
+            base_qs = BrandWarehouse.objects.filter(capacity_size=pack_size_ml)
 
-            print(f"DEBUG: Database query result: {row}")
+            # Prefer exact match first, then fall back to contains for legacy name variations.
+            warehouse_row = base_qs.filter(brand_details__iexact=normalized_brand).first()
+            if not warehouse_row:
+                warehouse_row = base_qs.filter(
+                    Q(brand_details__icontains=normalized_brand) |
+                    Q(brand_details__istartswith=normalized_brand)
+                ).first()
 
-            if not row:
+            print(f"DEBUG: Database query result: {warehouse_row}")
+
+            if not warehouse_row:
                 return Response({
                     'success': False,
                     'error': f'No data found for brand: {brand_name} and size: {pack_size_ml}ml'
                 }, status=status.HTTP_404_NOT_FOUND)
 
-            
             response_data = {
-                'brand': row[0],
-                'size': f"{row[1]}ml",
-                'educationCess': float(row[2] or 0), 
-                'exciseDuty': float(row[3] or 0),
-                'additionalExcise': float(row[4] or 0),
+                'brand': warehouse_row.brand_details,
+                'size': f"{warehouse_row.capacity_size}ml",
+                'educationCess': float(warehouse_row.education_cess_rs_per_case or 0),
+                'exciseDuty': float(warehouse_row.excise_duty_rs_per_case or 0),
+                'additionalExcise': float(warehouse_row.additional_excise_duty_rs_per_case or 0),
                 
                 # New fields
-                'brandOwner': row[5],
-                'liquorType': row[6],
-                'exFactoryPrice': float(row[7] or 0),
-                'manufacturingUnitName': row[8],
+                'brandOwner': '',
+                'liquorType': warehouse_row.brand_type,
+                'exFactoryPrice': float(warehouse_row.ex_factory_price_rs_per_case or 0),
+                'manufacturingUnitName': warehouse_row.distillery_name,
 
-                'additionalExcise12_5': 0,
+                'additionalExcise12_5': float(warehouse_row.additional_excise_duty_12_5_percent_rs_per_case or 0),
                 'bottlingFee': 0,
                 'exportFee': 0,
-                'mrpPerBottle': 0,
+                'mrpPerBottle': float(warehouse_row.mrp_rs_per_bottle or 0),
                 'totalPricePerCase': 0
             }
 
@@ -172,30 +153,28 @@ class GetUserEntitiesView(APIView):
                     'error': 'licensee_id is required'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            with connection.cursor() as cursor:
-                cursor.execute("""
-                    SELECT 
-                        manufacturing_unit_name, 
-                        licensee_id_no,
-                        MAX(liquor_type) as sample_type
-                    FROM liquor_data_details 
-                    WHERE licensee_id_no = %s
-                    GROUP BY manufacturing_unit_name, licensee_id_no
-                """, [licensee_id])
-                
-                rows = cursor.fetchall()
-                
+            rows = BrandWarehouse.objects.filter(
+                license_id=licensee_id
+            ).exclude(
+                distillery_name__isnull=True
+            ).exclude(
+                distillery_name=''
+            ).values(
+                'distillery_name'
+            ).annotate(
+                sample_type=Max('brand_type')
+            )
+
             entities = []
             for row in rows:
-                unit_name = row[0]
-                lic_id = row[1]
-                l_type = row[2] if row[2] else ""
+                unit_name = row.get('distillery_name')
+                l_type = row.get('sample_type') or ""
                 
                 entity_type = 'Brewery' if 'beer' in l_type.lower() else 'Distillery'
                 
                 entities.append({
                     'name': unit_name,
-                    'licenseId': lic_id,
+                    'licenseId': licensee_id,
                     'type': entity_type
                 })
             

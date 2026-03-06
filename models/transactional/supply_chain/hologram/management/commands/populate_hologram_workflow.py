@@ -82,9 +82,8 @@ class Command(BaseCommand):
         # Stages
         req_stages_data = [
             {'name': 'Submitted', 'is_initial': True, 'is_final': False},
-            {'name': 'Approved by Permit Section', 'is_initial': False, 'is_final': False},
-            {'name': 'Rejected by Permit Section', 'is_initial': False, 'is_final': True},
-            {'name': 'Rejected by Permit Section', 'is_initial': False, 'is_final': True},
+            {'name': 'Approved by OIC', 'is_initial': False, 'is_final': False},
+            {'name': 'Rejected by OIC', 'is_initial': False, 'is_final': True},
             {'name': 'In Use', 'is_initial': False, 'is_final': False}, # OIC Issues -> In Use
             {'name': 'Production Completed', 'is_initial': False, 'is_final': True}, # Daily Register -> Completed
         ]
@@ -103,14 +102,16 @@ class Command(BaseCommand):
             if created:
                 self.stdout.write(f"  - Created Stage: {stage.name}")
 
-        # Transitions
+        # Transitions (OIC-direct flow)
+        # New flow:
+        # Submitted -> In Use (OIC approves/assigns)
+        # In Use -> Production Completed (OIC completes)
         req_transitions = [
-            ('Submitted', 'Approved by Permit Section', {'role': 'permit-section', 'action': 'approve'}),
-            ('Submitted', 'Rejected by Permit Section', {'role': 'permit-section', 'action': 'reject'}),
-            ('Approved by Permit Section', 'In Use', {'role': 'officer_in_charge', 'action': 'issue'}), 
-            ('Submitted', 'In Use', {'role': 'officer_in_charge', 'action': 'issue'}), # Self-Service Issue
-            ('In Use', 'Production Completed', {'role': 'officer_in_charge', 'action': 'complete'}), # Finalize
-            ('In Use', 'Production Completed', {'role': 'licensee', 'action': 'complete'}), # Finalize via Daily Entry
+            # Preferred action name for the new flow
+            ('Submitted', 'In Use', {'role': 'officer_in_charge', 'action': 'approve'}),
+            # Backward-compatible action name used by older UI payloads
+            ('Submitted', 'In Use', {'role': 'officer_in_charge', 'action': 'issue'}),
+            ('In Use', 'Production Completed', {'role': 'officer_in_charge', 'action': 'complete'}),
         ]
 
         for from_name, to_name, condition in req_transitions:
