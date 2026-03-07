@@ -4,6 +4,9 @@ from rest_framework import status
 from django.db.models import Q, Max
 import logging
 from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
+from models.masters.supply_chain.transit_permit.models import TransitPermitBottleType
+from models.transactional.supply_chain.ena_transit_permit_details.models import EnaTransitPermitDetail
+from .serializers import ApprovedBrandDetailsSerializer, BottleTypeSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +188,73 @@ class GetUserEntitiesView(APIView):
             
         except Exception as e:
             logger.error(f"Error in GetUserEntitiesView: {str(e)}", exc_info=True)
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class ApprovedBrandDetailsView(APIView):
+    """
+    Read-only API to fetch brand details for approved licensees
+    Shows only brands that were used in transit permits with their bottle types
+    """
+    def get(self, request):
+        try:
+            license_id = request.query_params.get('license_id')
+            
+            if not license_id:
+                return Response({
+                    'success': False,
+                    'error': 'license_id is required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Fetch brands from transit permits submitted by this licensee
+            transit_permits = EnaTransitPermitDetail.objects.filter(
+                licensee_id=license_id
+            ).exclude(
+                brand__isnull=True
+            ).exclude(
+                brand=''
+            ).exclude(
+                liquor_type__isnull=True
+            ).exclude(
+                liquor_type=''
+            ).exclude(
+                size_ml__isnull=True
+            ).exclude(
+                bottle_type__isnull=True
+            ).exclude(
+                bottle_type=''
+            ).values(
+                'brand',
+                'liquor_type',
+                'size_ml',
+                'bottle_type',
+                'manufacturing_unit_name'
+            ).distinct().order_by('brand', 'size_ml')
+
+            # Format brand data
+            brand_data = []
+            for permit in transit_permits:
+                brand_data.append({
+                    'brandName': permit['brand'],
+                    'liquorType': permit['liquor_type'],
+                    'bottleSize': permit['size_ml'],
+                    'bottleType': permit['bottle_type'],
+                    'manufacturingUnit': permit['manufacturing_unit_name'] or ''
+                })
+
+            logger.info(f"ApprovedBrandDetailsView: Returning {len(brand_data)} brands from transit permits for license_id: {license_id}")
+
+            return Response({
+                'success': True,
+                'data': brand_data,
+                'total': len(brand_data),
+                'licenseId': license_id
+            })
+
+        except Exception as e:
+            logger.error(f"Error in ApprovedBrandDetailsView: {str(e)}", exc_info=True)
             return Response({
                 'success': False,
                 'error': str(e)

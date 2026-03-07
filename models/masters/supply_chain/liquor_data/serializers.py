@@ -17,3 +17,16 @@ class BrandSizeSerializer(serializers.Serializer):
             'brand_name': instance['brand_name'],
             'sizes': instance['sizes']
         }
+
+class ApprovedBrandDetailsSerializer(serializers.Serializer):
+    """Read-only serializer for approved brand details"""
+    id = serializers.IntegerField(read_only=True)
+    brandName = serializers.CharField(source='brand_details', read_only=True)
+    liquorType = serializers.CharField(source='brand_type', read_only=True)
+    bottleSize = serializers.IntegerField(source='capacity_size', read_only=True)
+    manufacturingUnit = serializers.CharField(source='distillery_name', read_only=True)
+
+class BottleTypeSerializer(serializers.Serializer):
+    """Read-only serializer for bottle types"""
+    id = serializers.IntegerField(read_only=True)
+    bottleType = serializers.CharField(source='bottle_type', read_only=True)
