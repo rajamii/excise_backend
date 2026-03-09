@@ -1139,6 +1139,72 @@ def payment_initiate(request):
     utr = _generate_unique_utr()
     total_amount = sum((item["amount"] for item in data["items"]), Decimal("0.00"))
     request_user_id = data.get("user_id") or getattr(request.user, "username", None)
+    configured_public_callback = str(getattr(settings, "BILLDESK_PUBLIC_CALLBACK_URL", "") or "").strip()
+    default_callback_url = (
+        configured_public_callback
+        or request.build_absolute_uri("/transactional/payment/billdesk/response/")
+    )
+    configured_return_url = str(gateway.return_url or "").strip()
+    configured_path = str(urlparse(configured_return_url).path or "").strip().lower()
+    module_frontend_paths = _get_frontend_module_page_paths()
+    configured_looks_like_frontend = (
+        configured_path in module_frontend_paths
+        if configured_path and module_frontend_paths
+        else False
+    )
+    configured_looks_like_backend_callback = "/billdesk/response" in configured_path
+    return_url = ""
+    if configured_return_url and configured_looks_like_backend_callback and not configured_looks_like_frontend:
+        return_url = configured_return_url
+    else:
+        return_url = default_callback_url
+    if not return_url:
+        return Response(
+            {"detail": "Return URL is not configured in gateway parameters."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not _is_public_callback_url(return_url):
+        return Response(
+            {
+                "detail": (
+                    "Invalid BillDesk callback URL. Configure a public callback URL "
+                    "(not localhost/127.x/private IP) in eabgari_payment_gateway_parameters.return_url "
+                    "or settings.BILLDESK_PUBLIC_CALLBACK_URL."
+                ),
+                "callback_url": return_url,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    primary_hoa = str(data["items"][0]["head_of_account"]).strip()
+    primary_hoa_parts = primary_hoa.split("-")
+    addl1 = "NA"
+    if len(primary_hoa_parts) >= 5:
+        addl1 = f"{primary_hoa_parts[0]}.{primary_hoa_parts[2]}.{primary_hoa_parts[4]}"
+
+    addl2 = "SIKPAY"
+    module_desc = str(getattr(module, "module_desc", "") or "").strip()
+    requisition = str(data.get("requisition_id_no") or "").strip()
+    addl3 = requisition or module_desc or primary_hoa
+    addl4 = "NA"
+    addl5 = "NA"
+    addl6 = "NA"
+    addl7 = "NA"
+
+    request_msg_without_checksum, checksum = _build_billdesk_request_message(
+        gateway=gateway,
+        utr=utr,
+        amount=total_amount,
+        addl1=addl1,
+        addl2=addl2,
+        addl3=addl3,
+        addl4=addl4,
+        addl5=addl5,
+        addl6=addl6,
+        addl7=addl7,
+        return_url=return_url,
+    )
+    request_msg = f"{request_msg_without_checksum}|{checksum}"
 
     with transaction.atomic():
         txn = PaymentBilldeskTransaction.objects.create(
@@ -1148,8 +1214,20 @@ def payment_initiate(request):
             payment_module_code=module.module_code,
             transaction_amount=total_amount,
             request_merchantid=gateway.merchantid,
+            request_currencytype="INR",
+            request_typefield1="R",
             request_securityid=gateway.securityid,
-            request_return_url=gateway.return_url,
+            request_typefield2="F",
+            request_additionalinfo1=addl1,
+            request_additionalinfo2=addl2,
+            request_additionalinfo3=addl3,
+            request_additionalinfo4=addl4,
+            request_additionalinfo5=addl5,
+            request_additionalinfo6=addl6,
+            request_additionalinfo7=addl7,
+            request_return_url=return_url,
+            request_checksum=checksum,
+            request_string=request_msg,
             payment_status="P",
             user_id=request_user_id,
         )
@@ -1180,8 +1258,11 @@ def payment_initiate(request):
                 "sl_no": gateway.sl_no,
                 "name": gateway.payment_gateway_name,
                 "merchantid": gateway.merchantid,
-                "return_url": gateway.return_url,
+                "return_url": return_url,
             },
+            "msg": request_msg,
+            "options": "NA",
+            "callback_url": return_url,
         },
         status=status.HTTP_201_CREATED,
     )

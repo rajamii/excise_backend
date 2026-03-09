@@ -520,13 +520,18 @@ def _serialize_application(application, requesting_user=None):
     
 logger = logging.getLogger(__name__)
 
+def _normalize_role_token(value):
+    return ''.join(ch for ch in str(value or '').lower() if ch.isalnum())
+
 @api_view(['POST'])
 def pay_license_fee(request, application_id):
    
     if not request.user.is_authenticated:
         return Response({"error": "Authentication required"}, status=status.HTTP_401_UNAUTHORIZED)
 
-    if getattr(request.user, 'role', None) and request.user.role.name != 'licensee':
+    role = getattr(request.user, 'role', None)
+    normalized_role = _normalize_role_token(getattr(role, 'name', ''))
+    if role and normalized_role not in {'licensee', 'licenseuser', 'licenseeuser'}:
         return Response(
             {"error": "Only licensees can pay the license fee."},
             status=status.HTTP_403_FORBIDDEN
