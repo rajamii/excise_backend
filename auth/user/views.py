@@ -665,7 +665,8 @@ def send_otp_api(request):
 
         response_data = {
             'otp_id': str(otp_obj.id),
-            'message': sms_message or 'OTP sent successfully to your registered mobile number.',
+            'message': 'OTP sent successfully to your registered mobile number.',
+            'gateway_message': sms_message,
         }
 
         if getattr(settings, 'OTP_EXPOSE_IN_RESPONSE', False):
