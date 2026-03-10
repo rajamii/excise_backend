@@ -203,17 +203,17 @@ STATIC_URL = 'static/'
 CORS_ORIGIN_ALLOW_ALL = True
 
 # OTP SMS gateway configuration (environment-driven)
-OTP_SMS_BASE_URL = os.getenv('OTP_SMS_BASE_URL', 'https://smsgw.sms.gov.in/failsafe/HttpLink')
-# Defaults aligned to legacy OTP service; override via environment in production.
-OTP_SMS_USERNAME = os.getenv('OTP_SMS_USERNAME', 'dfegos.sms')
-OTP_SMS_PIN = os.getenv('OTP_SMS_PIN', 'D4%23wW4%23sV4')
-OTP_SMS_SIGNATURE = os.getenv('OTP_SMS_SIGNATURE', 'FEDGOS')
-OTP_SMS_ENTITY_ID = os.getenv('OTP_SMS_ENTITY_ID', '1201170893842853020')
-OTP_SMS_TEMPLATE_ID = os.getenv('OTP_SMS_TEMPLATE_ID', '1207171014831452965')
+OTP_SMS_BASE_URL = os.getenv('OTP_SMS_BASE_URL', 'https://smsgw.sms.gov.in/failsafe/MLink')
+# Defaults aligned to live Excise gateway attributes; override via environment in production.
+OTP_SMS_USERNAME = os.getenv('OTP_SMS_USERNAME', 'eabkari.sms')
+OTP_SMS_PIN = os.getenv('OTP_SMS_PIN', 'V3$tT1#sA7')
+OTP_SMS_SIGNATURE = os.getenv('OTP_SMS_SIGNATURE', 'SIKEXC')
+OTP_SMS_ENTITY_ID = os.getenv('OTP_SMS_ENTITY_ID', '1001599213647119039')
+OTP_SMS_TEMPLATE_ID = os.getenv('OTP_SMS_TEMPLATE_ID', '1007722920127309405')
 OTP_SMS_MESSAGE_TEMPLATE = os.getenv(
     'OTP_SMS_MESSAGE_TEMPLATE',
-    # Must exactly match DLT-approved template text for OTP delivery.
-    ' OTP for registration of Online Marking Order is :{otp}\n- Forest Environment and Wildlife Department, Govt. of Sikkim'
+    # Must exactly match Excise DLT-approved template text for OTP delivery.
+    'From eAbkari, GoSK :\nYour OTP is {otp}\n Thanks'
 )
 OTP_SMS_VERIFY_SSL = os.getenv('OTP_SMS_VERIFY_SSL', 'false'
 ).strip().lower() == 'true'

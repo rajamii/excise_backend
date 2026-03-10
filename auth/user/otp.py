@@ -7,7 +7,8 @@ from auth.user.models import OTP
 from django.core.cache import cache
 import logging
 import requests
-from urllib.parse import urlencode, unquote
+import re
+from urllib.parse import quote, urlencode, unquote
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,39 @@ def _looks_like_gateway_failure(response_text: str) -> bool:
         "mismatch",
     )
     return any(term in normalized for term in failure_terms)
+
+
+def _parse_gateway_ack(response_text: str) -> tuple[str | None, str | None]:
+    """
+    Extract gateway request ID and response code from plain text responses like:
+    'Message Accepted for Request ID=...~code=API000 & info=...'
+    """
+    text = response_text or ""
+    req_match = re.search(r"Request\s*ID\s*=\s*([^\s~&]+)", text, flags=re.IGNORECASE)
+    code_match = re.search(r"code\s*=\s*([A-Za-z0-9_]+)", text, flags=re.IGNORECASE)
+    request_id = req_match.group(1).strip() if req_match else None
+    code = code_match.group(1).strip().upper() if code_match else None
+    return request_id, code
+
+
+def _format_gateway_mobile_number(phone_number: str) -> str:
+    digits_only = "".join(ch for ch in str(phone_number or "") if ch.isdigit())
+    if len(digits_only) == 12 and digits_only.startswith("91"):
+        return digits_only
+    if len(digits_only) == 10:
+        return f"91{digits_only}"
+    return digits_only
+
+
+def _normalize_message_for_gateway(message: str) -> str:
+    """
+    Keep legacy behavior close to vbNewLine-based formatting from old code:
+    - Normalize any newline form to CRLF so URL-encoding emits %0D%0A.
+    - Replace '&' with 'and' as done in legacy service code.
+    """
+    normalized = str(message or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalized.replace("\n", "\r\n")
+    return normalized.replace("&", "and")
 
 def get_new_otp(phone_number):
 
@@ -120,19 +154,24 @@ def send_otp_via_sms_gateway(phone_number: str, otp_value: str) -> tuple[bool, s
         "OTP_SMS_MESSAGE_TEMPLATE",
         "Your OTP for login is {otp}. Do not share it with anyone."
     )
-    message = message_template.format(otp=otp_value)
+    message = _normalize_message_for_gateway(message_template.format(otp=otp_value))
+    mnumber = _format_gateway_mobile_number(phone_number)
+
+    params = {
+        "username": username,
+        "pin": pin,
+        "message": message,
+        "mnumber": mnumber,
+        "signature": signature,
+        "dlt_entity_id": entity_id,
+        "dlt_template_id": template_id,
+    }
+    if len(message) > 160:
+        params["concat"] = "1"
 
     query = urlencode(
-        {
-            "username": username,
-            "pin": pin,
-            "message": message,
-            "mnumber": phone_number,
-            "signature": signature,
-            "dlt_entity_id": entity_id,
-            "dlt_template_id": template_id,
-        },
-        safe=":/",
+        params,
+        quote_via=quote,
     )
     url = f"{base_url}?{query}"
 
@@ -142,14 +181,18 @@ def send_otp_via_sms_gateway(phone_number: str, otp_value: str) -> tuple[bool, s
         response = requests.get(url, timeout=timeout_seconds, verify=verify_ssl)
         response.raise_for_status()
         response_text = (response.text or "").strip()
+        request_id, code = _parse_gateway_ack(response_text)
 
         # Some gateways return HTTP 200 even for business-level failures.
-        if _looks_like_gateway_failure(response_text):
+        # If a code is present, treat non-API000 as failure.
+        if (code and code != "API000") or _looks_like_gateway_failure(response_text):
             logger.error(
                 "OTP SMS gateway reported failure for %s: %s",
                 _mask_phone(phone_number),
                 response_text[:300],
             )
+            if code:
+                return False, f"OTP SMS gateway rejected the request (code={code}, request_id={request_id or 'N/A'})"
             return False, "OTP SMS gateway rejected the request"
 
         logger.info(
@@ -157,6 +200,8 @@ def send_otp_via_sms_gateway(phone_number: str, otp_value: str) -> tuple[bool, s
             _mask_phone(phone_number),
             response_text[:300],
         )
+        if request_id or code:
+            return True, f"OTP accepted by gateway (code={code or 'N/A'}, request_id={request_id or 'N/A'})"
         return True, "OTP SMS sent successfully"
     except requests.RequestException as exc:
         logger.exception("Failed to send OTP SMS to %s: %s", _mask_phone(phone_number), str(exc))
