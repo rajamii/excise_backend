@@ -624,11 +624,97 @@ def _get_wallet_recharge_module_code() -> str:
     return "999"
 
 
+def _resolve_wallet_type_from_hoa(head_of_account: str, module_type: str = "") -> str:
+    hoa_code = str(head_of_account or "").strip()
+    if not hoa_code:
+        return ""
+
+    module = str(module_type or "").strip().lower()
+    candidates = list(PaymentWalletTypeHoaMapping.objects.filter(is_active="Y").order_by("id"))
+    if module:
+        module_matches = [
+            row for row in candidates
+            if str(getattr(row, "module_type", "") or "").strip().lower() == module
+            and str(getattr(row, "head_of_account", "") or "").strip() == hoa_code
+        ]
+        if module_matches:
+            return str(getattr(module_matches[0], "wallet_type", "") or "").strip().lower()
+
+    for row in candidates:
+        if str(getattr(row, "head_of_account", "") or "").strip() == hoa_code:
+            return str(getattr(row, "wallet_type", "") or "").strip().lower()
+
+    return ""
+
+
+def _get_or_create_wallet_balance_for_recharge(
+    *,
+    payer_id: str,
+    head_of_account: str,
+    user_id: str,
+) -> WalletBalance | None:
+    candidates = _wallet_license_candidates(payer_id)
+    if not candidates:
+        candidates = [str(payer_id or "").strip()]
+
+    primary_license = _pick_primary_approved_license(candidates)
+    canonical_license_id = str(getattr(primary_license, "license_id", "") or "").strip() if primary_license else ""
+    if canonical_license_id and canonical_license_id not in candidates:
+        candidates = [canonical_license_id, *candidates]
+
+    module_type = _resolve_license_module_type_from_license(primary_license) if primary_license else _resolve_license_module_type(candidates[0])
+    wallet_type = _resolve_wallet_type_from_hoa(head_of_account, module_type)
+
+    exact_wallet = (
+        WalletBalance.objects.select_for_update()
+        .filter(licensee_id__in=candidates, head_of_account=head_of_account)
+        .order_by("wallet_balance_id")
+        .first()
+    )
+    if exact_wallet:
+        return exact_wallet
+
+    if not canonical_license_id:
+        canonical_license_id = str(candidates[0] or "").strip()
+    if not canonical_license_id:
+        return None
+
+    licensee_name = ""
+    manufacturing_unit = ""
+    if primary_license:
+        try:
+            from .wallet_initializer import _build_manufacturing_unit_name, _build_person_name
+
+            licensee_name = _build_person_name(primary_license)
+            manufacturing_unit = _build_manufacturing_unit_name(primary_license)
+        except Exception:
+            licensee_name = ""
+            manufacturing_unit = ""
+
+    return WalletBalance.objects.create(
+        licensee_id=canonical_license_id,
+        licensee_name=licensee_name,
+        manufacturing_unit=manufacturing_unit,
+        user_id=user_id,
+        module_type=module_type or "",
+        wallet_type=wallet_type or "",
+        head_of_account=head_of_account,
+        opening_balance=Decimal("0.00"),
+        total_credit=Decimal("0.00"),
+        total_debit=Decimal("0.00"),
+        current_balance=Decimal("0.00"),
+        last_updated_at=timezone.now(),
+        created_at=timezone.now(),
+    )
+
+
 def _credit_legacy_wallet_tables_for_billdesk_recharge(txn: PaymentBilldeskTransaction) -> None:
     """
-    Keep legacy wallet tables in sync for successful BillDesk wallet recharge:
+    Keep wallet tables in sync for successful BillDesk wallet recharge:
     - eabgari_pay_wallet_transaction
     - eabgari_pay_wallet_master
+    - wallet_balances
+    - wallet_transactions
     """
     if not txn:
         return
@@ -705,6 +791,156 @@ def _credit_legacy_wallet_tables_for_billdesk_recharge(txn: PaymentBilldeskTrans
                 modified_date=now_ts,
             )
 
+        wallet_balance = _get_or_create_wallet_balance_for_recharge(
+            payer_id=payer_id,
+            head_of_account=head_of_account,
+            user_id=user_id,
+        )
+        if wallet_balance is None:
+            continue
+
+        wallet_licensee_id = str(getattr(wallet_balance, "licensee_id", "") or "").strip() or payer_id
+        wallet_user_id = str(user_id or getattr(wallet_balance, "user_id", "") or "").strip()
+        current_balance = Decimal(str(getattr(wallet_balance, "current_balance", 0) or 0))
+        balance_after = current_balance + amount
+
+        wallet_txn_exists = WalletTransaction.objects.filter(
+            wallet_balance=wallet_balance,
+            transaction_id=transaction_id,
+            licensee_id=wallet_licensee_id,
+            head_of_account=head_of_account,
+            entry_type="CR",
+            transaction_type="recharge",
+        ).exists()
+        if wallet_txn_exists:
+            continue
+
+        wallet_balance.total_credit = Decimal(str(getattr(wallet_balance, "total_credit", 0) or 0)) + amount
+        wallet_balance.current_balance = balance_after
+        wallet_balance.last_updated_at = now_ts
+        if not getattr(wallet_balance, "user_id", None) and wallet_user_id:
+            wallet_balance.user_id = wallet_user_id
+        wallet_balance.save(update_fields=["total_credit", "current_balance", "last_updated_at", "user_id"])
+
+        WalletTransaction.objects.create(
+            wallet_balance=wallet_balance,
+            transaction_id=transaction_id,
+            licensee_id=wallet_licensee_id,
+            licensee_name=str(getattr(wallet_balance, "licensee_name", "") or "").strip(),
+            user_id=wallet_user_id,
+            module_type=str(getattr(wallet_balance, "module_type", "") or "").strip(),
+            wallet_type=str(getattr(wallet_balance, "wallet_type", "") or "").strip(),
+            head_of_account=head_of_account,
+            entry_type="CR",
+            transaction_type="recharge",
+            amount=amount,
+            balance_before=current_balance,
+            balance_after=balance_after,
+            reference_no=bank_utr or transaction_id,
+            source_module="billdesk_wallet_recharge",
+            payment_status="SUCCESS",
+            remarks="BillDesk wallet recharge",
+        )
+
+
+def _sync_wallet_tables_from_legacy_recharges(licensee_ids) -> None:
+    """
+    Backfill wallet_balances and wallet_transactions from already-successful
+    legacy wallet recharge entries. This keeps the wallet UI consistent for
+    older successful BillDesk recharges that were written only to legacy tables.
+    """
+    candidates = [
+        str(item or "").strip()
+        for item in (licensee_ids or [])
+        if str(item or "").strip()
+    ]
+    if not candidates:
+        return
+
+    legacy_rows = (
+        PaymentWalletTransaction.objects.filter(
+            licensee_id_no__in=candidates,
+            wallet_transaction_type="C",
+            transaction_reference_number__startswith="BILLDESK",
+        )
+        .order_by("wallet_transaction_date", "id")
+    )
+
+    for legacy in legacy_rows:
+        transaction_id = str(getattr(legacy, "transaction_reference_number", "") or "").strip()
+        licensee_id = str(getattr(legacy, "licensee_id_no", "") or "").strip()
+        head_of_account = str(getattr(legacy, "head_of_account", "") or "").strip()
+        user_id = str(getattr(legacy, "user_id", "") or "").strip()
+        bank_utr = str(getattr(legacy, "bank_utr", "") or "").strip()
+        amount = Decimal(str(getattr(legacy, "transaction_amount", "0") or "0"))
+        created_at = getattr(legacy, "wallet_transaction_date", None) or timezone.now()
+        if created_at and timezone.is_naive(created_at):
+            created_at = timezone.make_aware(created_at, timezone.get_current_timezone())
+
+        if not transaction_id or not licensee_id or not head_of_account or amount <= Decimal("0.00"):
+            continue
+
+        wallet_txn_exists = WalletTransaction.objects.filter(
+            transaction_id=transaction_id,
+            licensee_id__in=_wallet_license_candidates(licensee_id) or [licensee_id],
+            head_of_account=head_of_account,
+            entry_type="CR",
+            transaction_type__iexact="recharge",
+        ).exists()
+        if wallet_txn_exists:
+            continue
+
+        with transaction.atomic():
+            wallet_balance = _get_or_create_wallet_balance_for_recharge(
+                payer_id=licensee_id,
+                head_of_account=head_of_account,
+                user_id=user_id,
+            )
+            if wallet_balance is None:
+                continue
+
+            duplicate = WalletTransaction.objects.filter(
+                wallet_balance=wallet_balance,
+                transaction_id=transaction_id,
+                head_of_account=head_of_account,
+                entry_type="CR",
+                transaction_type__iexact="recharge",
+            ).exists()
+            if duplicate:
+                continue
+
+            current_balance = Decimal(str(getattr(wallet_balance, "current_balance", 0) or 0))
+            balance_after = current_balance + amount
+            wallet_user_id = str(user_id or getattr(wallet_balance, "user_id", "") or "").strip()
+
+            wallet_balance.total_credit = Decimal(str(getattr(wallet_balance, "total_credit", 0) or 0)) + amount
+            wallet_balance.current_balance = balance_after
+            wallet_balance.last_updated_at = created_at
+            if not getattr(wallet_balance, "user_id", None) and wallet_user_id:
+                wallet_balance.user_id = wallet_user_id
+            wallet_balance.save(update_fields=["total_credit", "current_balance", "last_updated_at", "user_id"])
+
+            WalletTransaction.objects.create(
+                wallet_balance=wallet_balance,
+                transaction_id=transaction_id,
+                licensee_id=str(getattr(wallet_balance, "licensee_id", "") or "").strip() or licensee_id,
+                licensee_name=str(getattr(wallet_balance, "licensee_name", "") or "").strip(),
+                user_id=wallet_user_id,
+                module_type=str(getattr(wallet_balance, "module_type", "") or "").strip(),
+                wallet_type=str(getattr(wallet_balance, "wallet_type", "") or "").strip(),
+                head_of_account=head_of_account,
+                entry_type="CR",
+                transaction_type="recharge",
+                amount=amount,
+                balance_before=current_balance,
+                balance_after=balance_after,
+                reference_no=bank_utr or transaction_id,
+                source_module="billdesk_wallet_recharge_legacy_sync",
+                payment_status="SUCCESS",
+                remarks="Backfilled from legacy wallet recharge",
+                created_at=created_at,
+            )
+
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -779,6 +1015,7 @@ def wallet_summary(request, licensee_id):
     candidates = _wallet_license_candidates(licensee_id)
     if not candidates:
         candidates = [str(licensee_id or "").strip()]
+    _sync_wallet_tables_from_legacy_recharges(candidates)
     qs = WalletBalance.objects.filter(licensee_id__in=candidates).order_by("wallet_type", "head_of_account")
     if module_type:
         qs = qs.filter(module_type__iexact=module_type)
@@ -800,6 +1037,7 @@ def wallet_recharge_list(request, licensee_id):
     candidates = _wallet_license_candidates(licensee_id)
     if not candidates:
         candidates = [str(licensee_id or "").strip()]
+    _sync_wallet_tables_from_legacy_recharges(candidates)
     qs = (
         WalletTransaction.objects.filter(
             licensee_id__in=candidates,
@@ -834,6 +1072,7 @@ def wallet_history_list(request, licensee_id):
     candidates = _wallet_license_candidates(licensee_id)
     if not candidates:
         candidates = [str(licensee_id or "").strip()]
+    _sync_wallet_tables_from_legacy_recharges(candidates)
     qs = WalletTransaction.objects.filter(licensee_id__in=candidates).order_by("-created_at")
 
     wallet_type = request.query_params.get("wallet_type")

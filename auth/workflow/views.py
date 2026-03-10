@@ -550,44 +550,70 @@ def pay_license_fee(request, application_id):
     if not application:
         return Response({"error": "Application not found"}, status.HTTP_404_NOT_FOUND)
 
-    # Must be in payment_pending stage
-    if not hasattr(application, 'current_stage') or application.current_stage.name != 'payment_pending':
+    payment_transitions = []
+    candidate_transitions = []
+    if getattr(application, 'current_stage', None) and getattr(application, 'workflow', None):
+        candidate_transitions = list(
+            WorkflowTransition.objects.filter(
+                workflow=application.workflow,
+                from_stage=application.current_stage
+            )
+            .select_related('to_stage')
+            .order_by('id')
+        )
+        for transition in candidate_transitions:
+            condition = transition.condition or {}
+            cond_action = str(condition.get('action') or '').strip().upper()
+            if cond_action != 'PAY':
+                continue
+            if not WorkflowService._condition_role_matches(condition, request.user):
+                continue
+            payment_transitions.append(transition)
+
+    if not payment_transitions and len(candidate_transitions) == 1:
+        fallback_transition = candidate_transitions[0]
+        fallback_condition = fallback_transition.condition or {}
+        if WorkflowService._condition_role_matches(fallback_condition, request.user):
+            payment_transitions.append(fallback_transition)
+
+    if not payment_transitions:
         return Response({
             "error": "Payment not allowed",
             "current_stage": getattr(application.current_stage, 'name', 'unknown'),
-            "required_stage": "payment_pending"
+            "required_action": "PAY",
+            "available_transitions": len(candidate_transitions)
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    # Verify user is the original applicant
-    first_transaction = Transaction.objects.filter(
-        content_type=ContentType.objects.get_for_model(application),
-        object_id=str(application.pk)
-    ).order_by('timestamp').first()
+    # Verify user is the original applicant.
+    # Prefer the application's applicant FK when present; transaction history is a fallback only.
+    applicant_user = getattr(application, 'applicant', None)
+    if applicant_user is not None:
+        if applicant_user != request.user:
+            return Response(
+                {"error": "You are not the applicant for this license."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+    else:
+        first_transaction = Transaction.objects.filter(
+            content_type=ContentType.objects.get_for_model(application),
+            object_id=str(application.pk)
+        ).order_by('timestamp').first()
 
-    if not first_transaction or first_transaction.performed_by != request.user:
-        return Response(
-            {"error": "You are not the applicant for this license."},
-            status=status.HTTP_403_FORBIDDEN
-        )
+        if not first_transaction or first_transaction.performed_by != request.user:
+            return Response(
+                {"error": "You are not the applicant for this license."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
-    # Get the 'approved' stage
-    try:
-        approved_stage = WorkflowStage.objects.get(
-            workflow=application.workflow,
-            name='approved'
-        )
-    except WorkflowStage.DoesNotExist:
-        return Response(
-            {"error": "Approved stage not configured."},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+    target_stage = payment_transitions[0].to_stage
 
     # Advance to approved → triggers License creation via signal
     with transaction.atomic():
         WorkflowService.advance_stage(
             application=application,
             user=request.user,
-            target_stage=approved_stage,
+            target_stage=target_stage,
+            context={"action": "PAY"},
             remarks="License fee paid by applicant. License issued."
         )
 
@@ -595,6 +621,6 @@ def pay_license_fee(request, application_id):
         "success": True,
         "message": "Payment successful. License has been issued.",
         "application_id": application_id,
-        "stage": "approved"
+        "stage": getattr(target_stage, 'name', 'unknown')
     }, status=status.HTTP_200_OK)
 
