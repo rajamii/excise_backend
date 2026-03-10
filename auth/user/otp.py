@@ -74,18 +74,23 @@ def _normalize_message_for_gateway(message: str) -> str:
 
 def get_new_otp(phone_number):
 
-    fifteen_minutes_ago = timezone.now() - timedelta(minutes=15)
+    request_limit = int(getattr(settings, "OTP_REQUEST_LIMIT", 15))
+    request_window_minutes = int(getattr(settings, "OTP_REQUEST_WINDOW_MINUTES", 15))
+    window_start = timezone.now() - timedelta(minutes=request_window_minutes)
     recent_otps_count = OTP.objects.filter(
         phone_number=phone_number,
-        created_at__gte=fifteen_minutes_ago
+        created_at__gte=window_start
     ).count()
 
-    if recent_otps_count >= 15:
-        raise ValueError("OTP request limit reached (15 attempts). Please try again after 15 minutes.")
+    if recent_otps_count >= request_limit:
+        raise ValueError(
+            f"OTP request limit reached ({request_limit} attempts). "
+            f"Please try again after {request_window_minutes} minutes."
+        )
     
     OTP.objects.filter(
         phone_number=phone_number,
-        created_at__lt=fifteen_minutes_ago,
+        created_at__lt=window_start,
         used=False
     ).delete()
 

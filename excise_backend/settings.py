@@ -220,6 +220,8 @@ OTP_SMS_VERIFY_SSL = os.getenv('OTP_SMS_VERIFY_SSL', 'false'
 OTP_SMS_TIMEOUT_SECONDS = int(os.getenv('OTP_SMS_TIMEOUT_SECONDS', '10'))
 OTP_SMS_FORCE_SEND_IN_DEBUG = os.getenv('OTP_SMS_FORCE_SEND_IN_DEBUG', 'true').strip().lower() == 'true'
 OTP_EXPOSE_IN_RESPONSE = os.getenv('OTP_EXPOSE_IN_RESPONSE', 'false').strip().lower() == 'true'
+OTP_REQUEST_LIMIT = int(os.getenv('OTP_REQUEST_LIMIT', '15'))
+OTP_REQUEST_WINDOW_MINUTES = int(os.getenv('OTP_REQUEST_WINDOW_MINUTES', '15'))
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
