@@ -21,7 +21,15 @@ from auth.user.serializer import (
 )
 from typing import cast
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
-from auth.user.otp import get_new_otp, verify_otp, mark_phone_as_verified, clear_phone_verified, is_phone_verified
+from auth.user.otp import (
+    get_new_otp,
+    verify_otp,
+    mark_phone_as_verified,
+    clear_phone_verified,
+    is_phone_verified,
+    send_otp_via_sms_gateway,
+)
+from django.conf import settings
 from captcha.helpers import captcha_image_url
 from captcha.models import CaptchaStore
 from rest_framework_simplejwt.views import TokenRefreshView
@@ -34,11 +42,19 @@ from models.masters.license.models import License
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
 import secrets
 import string
+import re
+
+
+def _normalize_phone_number(raw_phone: str | None) -> str:
+    normalized = re.sub(r'\D', '', str(raw_phone or ''))
+    if len(normalized) == 12 and normalized.startswith('91'):
+        normalized = normalized[2:]
+    return normalized
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def verify_otp_for_registration(request):
-    phone_number = request.data.get('phone_number')
+    phone_number = _normalize_phone_number(request.data.get('phone_number'))
     otp_input = request.data.get('otp')
     otp_id = request.data.get('otp_id')
 
@@ -79,7 +95,7 @@ def licensee_register_after_verification(request):
             'errors': {f: ['This field is required.'] for f in missing}
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    phone_number = request.data['phone_number']
+    phone_number = _normalize_phone_number(request.data['phone_number'])
 
     # CRITICAL: Check if phone was verified recently
     if not is_phone_verified(phone_number):
@@ -616,16 +632,20 @@ class TokenRefreshAPI(TokenRefreshView):
 # Send OTP API
 @api_view(['POST'])
 def send_otp_api(request):
-    phone_number = request.data.get('phone_number')
+    phone_number = _normalize_phone_number(request.data.get('phone_number'))
     purpose = request.data.get('purpose')  # New optional field: 'login' or 'register'
 
     if not phone_number:
         return Response({'error': 'Phone number is required'}, status=status.HTTP_400_BAD_REQUEST)
+    if len(phone_number) != 10 or phone_number[0] not in {'6', '7', '8', '9'}:
+        return Response({'error': 'Invalid phone number format'}, status=status.HTTP_400_BAD_REQUEST)
 
     # If purpose is 'register', skip user existence check
     if purpose != 'register':
         try:
             user = CustomUser.objects.get(phone_number=phone_number)
+            # Always send OTP to the canonical registered phone number from DB.
+            phone_number = _normalize_phone_number(user.phone_number)
         except CustomUser.DoesNotExist:
             return Response({'error': 'User with this phone number does not exist'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -636,18 +656,28 @@ def send_otp_api(request):
 
     try:
         otp_obj = get_new_otp(phone_number)
-        # In production: send SMS here
-        # For dev: return OTP (remove in prod!)
-        return Response({
+        sms_sent, sms_message = send_otp_via_sms_gateway(phone_number, otp_obj.otp)
+        if not sms_sent:
+            return Response(
+                {'error': sms_message or 'Failed to send OTP SMS. Please try again.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        response_data = {
             'otp_id': str(otp_obj.id),
-            'otp': otp_obj.otp  # REMOVE IN PRODUCTION
-        }, status=status.HTTP_200_OK)
+            'message': 'OTP sent successfully to your registered mobile number.',
+        }
+
+        if getattr(settings, 'OTP_EXPOSE_IN_RESPONSE', False):
+            response_data['otp'] = otp_obj.otp
+
+        return Response(response_data, status=status.HTTP_200_OK)
     except ValueError as e:
         return Response({'error': str(e)}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
 @api_view(['POST'])
 def verify_otp_api(request):
-    phone_number = request.data.get('phone_number')
+    phone_number = _normalize_phone_number(request.data.get('phone_number'))
     otp_input = request.data.get('otp')
     otp_id = request.data.get('otp_id')
 

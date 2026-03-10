@@ -202,6 +202,25 @@ STATIC_URL = 'static/'
 
 CORS_ORIGIN_ALLOW_ALL = True
 
+# OTP SMS gateway configuration (environment-driven)
+OTP_SMS_BASE_URL = os.getenv('OTP_SMS_BASE_URL', 'https://smsgw.sms.gov.in/failsafe/HttpLink')
+# Defaults aligned to legacy OTP service; override via environment in production.
+OTP_SMS_USERNAME = os.getenv('OTP_SMS_USERNAME', 'dfegos.sms')
+OTP_SMS_PIN = os.getenv('OTP_SMS_PIN', 'D4%23wW4%23sV4')
+OTP_SMS_SIGNATURE = os.getenv('OTP_SMS_SIGNATURE', 'FEDGOS')
+OTP_SMS_ENTITY_ID = os.getenv('OTP_SMS_ENTITY_ID', '1201170893842853020')
+OTP_SMS_TEMPLATE_ID = os.getenv('OTP_SMS_TEMPLATE_ID', '1207171014831452965')
+OTP_SMS_MESSAGE_TEMPLATE = os.getenv(
+    'OTP_SMS_MESSAGE_TEMPLATE',
+    # Must exactly match DLT-approved template text for OTP delivery.
+    ' OTP for registration of Online Marking Order is :{otp}\n- Forest Environment and Wildlife Department, Govt. of Sikkim'
+)
+OTP_SMS_VERIFY_SSL = os.getenv('OTP_SMS_VERIFY_SSL', 'false'
+).strip().lower() == 'true'
+OTP_SMS_TIMEOUT_SECONDS = int(os.getenv('OTP_SMS_TIMEOUT_SECONDS', '10'))
+OTP_SMS_FORCE_SEND_IN_DEBUG = os.getenv('OTP_SMS_FORCE_SEND_IN_DEBUG', 'true').strip().lower() == 'true'
+OTP_EXPOSE_IN_RESPONSE = os.getenv('OTP_EXPOSE_IN_RESPONSE', 'false').strip().lower() == 'true'
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
