@@ -3,7 +3,8 @@ from datetime import timedelta
 from django.utils import timezone
 from django.db import transaction
 from django.conf import settings
-from auth.user.models import OTP
+from django.db.utils import OperationalError, ProgrammingError
+from auth.user.models import OTP, SMSServiceConfig
 from django.core.cache import cache
 import logging
 import requests
@@ -129,6 +130,29 @@ def clear_phone_verified(phone_number: str):
     cache.delete(f"phone_verified_{phone_number}")
 
 
+def _get_sms_config_from_db() -> dict | None:
+    try:
+        config = SMSServiceConfig.objects.filter(is_active=True).order_by("-updated_at").first()
+    except (OperationalError, ProgrammingError):
+        # During first deployment/migration window, fall back to settings.
+        return None
+
+    if not config:
+        return None
+
+    return {
+        "base_url": (config.base_url or "").strip(),
+        "username": (config.username or "").strip(),
+        "pin": (config.pin or "").strip(),
+        "signature": (config.signature or "").strip(),
+        "entity_id": (config.dlt_entity_id or "").strip(),
+        "template_id": (config.dlt_template_id or "").strip(),
+        "message_template": config.message_template or "",
+        "verify_ssl": bool(config.verify_ssl),
+        "timeout_seconds": int(config.timeout_seconds or 10),
+    }
+
+
 def send_otp_via_sms_gateway(phone_number: str, otp_value: str) -> tuple[bool, str]:
     """
     Sends OTP via configured SMS gateway.
@@ -142,23 +166,37 @@ def send_otp_via_sms_gateway(phone_number: str, otp_value: str) -> tuple[bool, s
         )
         return False, "OTP SMS not sent because DEBUG bypass is active"
 
-    base_url = getattr(settings, "OTP_SMS_BASE_URL", "").strip()
-    username = getattr(settings, "OTP_SMS_USERNAME", "").strip()
-    # Old service stored encoded pin (`%23` for `#`). Decode once, then urlencode safely.
-    pin = unquote(getattr(settings, "OTP_SMS_PIN", "").strip())
-    signature = getattr(settings, "OTP_SMS_SIGNATURE", "").strip()
-    entity_id = getattr(settings, "OTP_SMS_ENTITY_ID", "").strip()
-    template_id = getattr(settings, "OTP_SMS_TEMPLATE_ID", "").strip()
+    db_config = _get_sms_config_from_db()
+    if db_config:
+        base_url = db_config["base_url"]
+        username = db_config["username"]
+        pin = db_config["pin"]
+        signature = db_config["signature"]
+        entity_id = db_config["entity_id"]
+        template_id = db_config["template_id"]
+        message_template = db_config["message_template"]
+        verify_ssl = db_config["verify_ssl"]
+        timeout_seconds = db_config["timeout_seconds"]
+    else:
+        base_url = getattr(settings, "OTP_SMS_BASE_URL", "").strip()
+        username = getattr(settings, "OTP_SMS_USERNAME", "").strip()
+        # Old service stored encoded pin (`%23` for `#`). Decode once, then urlencode safely.
+        pin = unquote(getattr(settings, "OTP_SMS_PIN", "").strip())
+        signature = getattr(settings, "OTP_SMS_SIGNATURE", "").strip()
+        entity_id = getattr(settings, "OTP_SMS_ENTITY_ID", "").strip()
+        template_id = getattr(settings, "OTP_SMS_TEMPLATE_ID", "").strip()
+        message_template = getattr(
+            settings,
+            "OTP_SMS_MESSAGE_TEMPLATE",
+            "Your OTP for login is {otp}. Do not share it with anyone."
+        )
+        verify_ssl = bool(getattr(settings, "OTP_SMS_VERIFY_SSL", True))
+        timeout_seconds = int(getattr(settings, "OTP_SMS_TIMEOUT_SECONDS", 10))
 
     if not all([base_url, username, pin, signature, entity_id, template_id]):
         logger.error("OTP SMS gateway settings are incomplete")
         return False, "OTP SMS gateway settings are incomplete"
 
-    message_template = getattr(
-        settings,
-        "OTP_SMS_MESSAGE_TEMPLATE",
-        "Your OTP for login is {otp}. Do not share it with anyone."
-    )
     message = _normalize_message_for_gateway(message_template.format(otp=otp_value))
     mnumber = _format_gateway_mobile_number(phone_number)
 
@@ -181,8 +219,6 @@ def send_otp_via_sms_gateway(phone_number: str, otp_value: str) -> tuple[bool, s
     url = f"{base_url}?{query}"
 
     try:
-        verify_ssl = bool(getattr(settings, "OTP_SMS_VERIFY_SSL", True))
-        timeout_seconds = int(getattr(settings, "OTP_SMS_TIMEOUT_SECONDS", 10))
         response = requests.get(url, timeout=timeout_seconds, verify=verify_ssl)
         response.raise_for_status()
         response_text = (response.text or "").strip()

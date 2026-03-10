@@ -210,6 +210,38 @@ class OTP(models.Model):
         return f"{self.phone_number} - {self.otp}"   
 
 
+class SMSServiceConfig(models.Model):
+    name = models.CharField(max_length=50, unique=True, default="default")
+    username = models.CharField(max_length=100)
+    pin = models.CharField(max_length=255)
+    signature = models.CharField(max_length=50)
+    dlt_entity_id = models.CharField(max_length=50)
+    dlt_template_id = models.CharField(max_length=50, default="1007722920127309405")
+    base_url = models.URLField(default="https://smsgw.sms.gov.in/failsafe/MLink")
+    message_template = models.TextField(
+        default="From eAbkari, GoSK :\nYour OTP is {otp}\n Thanks"
+    )
+    verify_ssl = models.BooleanField(default=False)
+    timeout_seconds = models.PositiveIntegerField(default=10)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "sms_service_config"
+        verbose_name = "SMS Service Config"
+        verbose_name_plural = "SMS Service Configs"
+        ordering = ["-updated_at"]
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if self.is_active:
+            self.__class__.objects.exclude(pk=self.pk).filter(is_active=True).update(is_active=False)
+
+    def __str__(self):
+        return f"{self.name} ({'active' if self.is_active else 'inactive'})"
+
+
 class LicenseeProfile(models.Model):
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,

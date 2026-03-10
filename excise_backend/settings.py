@@ -204,11 +204,11 @@ CORS_ORIGIN_ALLOW_ALL = True
 
 # OTP SMS gateway configuration (environment-driven)
 OTP_SMS_BASE_URL = os.getenv('OTP_SMS_BASE_URL', 'https://smsgw.sms.gov.in/failsafe/MLink')
-# Defaults aligned to live Excise gateway attributes; override via environment in production.
-OTP_SMS_USERNAME = os.getenv('OTP_SMS_USERNAME', 'eabkari.sms')
-OTP_SMS_PIN = os.getenv('OTP_SMS_PIN', 'V3$tT1#sA7')
-OTP_SMS_SIGNATURE = os.getenv('OTP_SMS_SIGNATURE', 'SIKEXC')
-OTP_SMS_ENTITY_ID = os.getenv('OTP_SMS_ENTITY_ID', '1001599213647119039')
+# Keep sensitive values empty by default; prefer DB-backed SMSServiceConfig.
+OTP_SMS_USERNAME = os.getenv('OTP_SMS_USERNAME', '')
+OTP_SMS_PIN = os.getenv('OTP_SMS_PIN', '')
+OTP_SMS_SIGNATURE = os.getenv('OTP_SMS_SIGNATURE', '')
+OTP_SMS_ENTITY_ID = os.getenv('OTP_SMS_ENTITY_ID', '')
 OTP_SMS_TEMPLATE_ID = os.getenv('OTP_SMS_TEMPLATE_ID', '1007722920127309405')
 OTP_SMS_MESSAGE_TEMPLATE = os.getenv(
     'OTP_SMS_MESSAGE_TEMPLATE',
