@@ -7,7 +7,8 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.exceptions import PermissionDenied
 from django.shortcuts import get_object_or_404
 from django.contrib.contenttypes.models import ContentType
-from django.db import transaction
+from django.db import transaction, IntegrityError
+from django.db.models.deletion import ProtectedError
 from auth.user.models import CustomUser, OICOfficerAssignment
 from auth.user.serializer import (
     UserSerializer,
@@ -34,6 +35,7 @@ from models.masters.license.models import License
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
 import secrets
 import string
+from django.utils import timezone
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -428,7 +430,7 @@ class UserListView(generics.ListAPIView):
     """
     Lists all users. Requires 'user.view' permission.
     """
-    queryset = CustomUser.objects.filter(is_oic_managed=False)
+    queryset = CustomUser.objects.filter(is_oic_managed=False, is_active=True)
     serializer_class = UserSerializer
     permission_classes = [make_permission('user', 'view')]
 
@@ -513,6 +515,29 @@ class UserDeleteView(generics.DestroyAPIView):
     serializer_class = UserSerializer
     permission_classes = [make_permission('user', 'delete')]
 
+    def _soft_delete_user(self, instance: CustomUser) -> None:
+        timestamp_token = timezone.now().strftime('%Y%m%d%H%M%S')
+        unique_suffix = str(instance.pk)
+
+        instance.is_active = False
+
+        if instance.email:
+            local_part, _, domain_part = instance.email.partition('@')
+            sanitized_local = local_part[:20] if local_part else 'deleted'
+            domain_value = domain_part or 'deleted.local'
+            instance.email = f"{sanitized_local}.deleted.{timestamp_token}.{unique_suffix}@{domain_value}"
+
+        if instance.username:
+            instance.username = f"deleted_{timestamp_token}_{unique_suffix}"[:30]
+
+        # Keep phone unique after soft delete to allow reuse for new user creation.
+        replacement_phone = f"9{str(instance.pk).zfill(9)[-9:]}"
+        if CustomUser.objects.exclude(pk=instance.pk).filter(phone_number=replacement_phone).exists():
+            replacement_phone = f"8{timestamp_token[-9:]}"
+        instance.phone_number = replacement_phone
+
+        instance.save(update_fields=['is_active', 'email', 'username', 'phone_number'])
+
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object() # The user being deleted
 
@@ -539,8 +564,17 @@ class UserDeleteView(generics.DestroyAPIView):
             }
         )
 
-        self.perform_destroy(instance)
-        return Response({'message': 'User deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
+        try:
+            self.perform_destroy(instance)
+            return Response({'message': 'User deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
+        except (ProtectedError, IntegrityError):
+            self._soft_delete_user(instance)
+            return Response(
+                {
+                    'message': 'User could not be hard deleted due to linked records. User has been deactivated and removed from the list.'
+                },
+                status=status.HTTP_200_OK
+            )
     
 # LoginAPI handles user login functionality via JWT.
 class LoginAPI(APIView):
