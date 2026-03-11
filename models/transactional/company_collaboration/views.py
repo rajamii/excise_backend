@@ -1,8 +1,7 @@
-import json
+﻿import json
 import re
 
-from django.db import transaction
-from django.db.models import Count
+from django.db import transaction, connection
 from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status
 from rest_framework.decorators import api_view, parser_classes, permission_classes
@@ -13,7 +12,6 @@ from auth.roles.permissions import HasAppPermission
 from auth.workflow.models import Workflow, WorkflowStage
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
-from models.masters.supply_chain.liquor_data.models import LiquorData
 
 from .models import CompanyCollaboration
 from .serializers import CompanyCollaborationSerializer
@@ -104,30 +102,35 @@ def _create_application(request):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def list_brand_owners(request):
-    queryset = (
-        LiquorData.objects.exclude(brand_owner__isnull=True)
-        .exclude(brand_owner__exact='')
-        .values('brand_owner', 'manufacturing_unit_name')
-        .annotate(brand_count=Count('brand_name', distinct=True))
-        .order_by('brand_owner', 'manufacturing_unit_name')
-    )
+    query = """
+        SELECT distillery_name, COUNT(DISTINCT brand_details) AS brand_count
+        FROM brand_warehouse
+        WHERE COALESCE(distillery_name, '') <> ''
+          AND (is_deleted = false OR is_deleted IS NULL)
+        GROUP BY distillery_name
+        ORDER BY distillery_name
+    """
+
+    with connection.cursor() as cursor:
+        cursor.execute(query)
+        rows = cursor.fetchall()
 
     data = []
-    for row in queryset:
-        brand_owner = str(row.get('brand_owner') or '').strip()
-        unit_name = str(row.get('manufacturing_unit_name') or '').strip()
-        owner_code = CompanyCollaboration.make_owner_code(brand_owner, unit_name)
-        location = unit_name or brand_owner
+    for distillery_name, brand_count in rows:
+        name = str(distillery_name or '').strip()
+        if not name:
+            continue
 
+        owner_code = CompanyCollaboration.make_owner_code(name)
         data.append({
             'id': owner_code,
-            'brandOwner': brand_owner,
+            'brandOwner': name,
             'brandOwnerCode': owner_code,
-            'companyName': brand_owner,
-            'companyAddress': location,
-            'location': location,
+            'companyName': name,
+            'companyAddress': '',
+            'location': name,
             'status': 'Active',
-            'brandCount': int(row.get('brand_count') or 0),
+            'brandCount': int(brand_count or 0),
         })
 
     return Response({'success': True, 'data': data})
@@ -139,78 +142,75 @@ def list_brands(request):
     owner_code = request.query_params.get('brand_owner_code') or request.query_params.get('brandOwnerCode')
     owner_name = request.query_params.get('brand_owner') or request.query_params.get('brandOwner')
 
-    grouped_owner_rows = (
-        LiquorData.objects.exclude(brand_owner__isnull=True)
-        .exclude(brand_owner__exact='')
-        .values('brand_owner', 'manufacturing_unit_name')
-        .annotate(brand_count=Count('brand_name', distinct=True))
-    )
-
-    owner_row = None
-    if owner_code:
-        for row in grouped_owner_rows:
-            candidate_code = CompanyCollaboration.make_owner_code(
-                str(row.get('brand_owner') or '').strip(),
-                str(row.get('manufacturing_unit_name') or '').strip()
+    owner_distillery = None
+    if owner_name:
+        owner_distillery = owner_name
+    elif owner_code:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT distillery_name
+                FROM brand_warehouse
+                WHERE COALESCE(distillery_name, '') <> ''
+                  AND (is_deleted = false OR is_deleted IS NULL)
+                """
             )
+            rows = cursor.fetchall()
+        for (distillery_name,) in rows:
+            name = str(distillery_name or '').strip()
+            if not name:
+                continue
+            candidate_code = CompanyCollaboration.make_owner_code(name)
             if candidate_code == owner_code:
-                owner_row = row
+                owner_distillery = name
                 break
 
-    queryset = LiquorData.objects.exclude(brand_name__isnull=True).exclude(brand_name__exact='')
+    base_query = """
+        SELECT brand_details, distillery_name, brand_type, capacity_size
+        FROM brand_warehouse
+        WHERE COALESCE(brand_details, '') <> ''
+          AND (is_deleted = false OR is_deleted IS NULL)
+    """
+    params = []
+    if owner_distillery:
+        base_query += " AND LOWER(distillery_name) = LOWER(%s)"
+        params.append(owner_distillery)
+    base_query += " ORDER BY brand_details, capacity_size"
 
-    if owner_row:
-        queryset = queryset.filter(
-            brand_owner=owner_row.get('brand_owner'),
-            manufacturing_unit_name=owner_row.get('manufacturing_unit_name'),
-        )
-    elif owner_name:
-        queryset = queryset.filter(brand_owner__iexact=owner_name)
-
-    rows = queryset.values(
-        'brand_name',
-        'brand_owner',
-        'liquor_type',
-        'purpose_of_sale',
-        'manufacturing_unit_name',
-        'pack_size_ml',
-    ).order_by('brand_name', 'pack_size_ml')
+    with connection.cursor() as cursor:
+        cursor.execute(base_query, params)
+        rows = cursor.fetchall()
 
     brand_map = {}
-    for row in rows:
-        brand_name = str(row.get('brand_name') or '').strip()
+    for brand_details, distillery_name, brand_type, capacity_size in rows:
+        brand_name = str(brand_details or '').strip()
         if not brand_name:
             continue
 
-        brand_owner = str(row.get('brand_owner') or '').strip()
-        key = (
-            brand_name,
-            brand_owner,
-            str(row.get('liquor_type') or '').strip(),
-            str(row.get('purpose_of_sale') or '').strip(),
-            str(row.get('manufacturing_unit_name') or '').strip(),
-        )
+        owner_name_value = str(distillery_name or '').strip()
+        type_value = str(brand_type or '').strip()
+        key = (brand_name, owner_name_value, type_value)
+
         if key not in brand_map:
+            owner_code_value = CompanyCollaboration.make_owner_code(owner_name_value) if owner_name_value else ''
+            label_type = _display_label(type_value, 'General')
             brand_map[key] = {
-                'id': CompanyCollaboration.make_brand_code(brand_name, brand_owner),
-                'brandCode': CompanyCollaboration.make_brand_code(brand_name, brand_owner),
+                'id': CompanyCollaboration.make_brand_code(brand_name, owner_name_value),
+                'brandCode': CompanyCollaboration.make_brand_code(brand_name, owner_name_value),
                 'brandName': brand_name,
-                'category': _display_label(row.get('purpose_of_sale') or row.get('liquor_type'), 'General'),
-                'type': _display_label(row.get('liquor_type'), 'General'),
+                'category': label_type,
+                'kind': label_type,
+                'type': label_type,
                 'strength': _extract_strength(brand_name),
                 'sizes': [],
-                'brandOwner': brand_owner,
-                'brandOwnerCode': owner_row and CompanyCollaboration.make_owner_code(
-                    str(owner_row.get('brand_owner') or '').strip(),
-                    str(owner_row.get('manufacturing_unit_name') or '').strip()
-                ) or '',
-                'manufacturingUnitName': str(row.get('manufacturing_unit_name') or '').strip(),
+                'brandOwner': owner_name_value,
+                'brandOwnerCode': owner_code_value,
+                'manufacturingUnitName': owner_name_value,
                 'status': 'Active',
             }
 
-        size_ml = row.get('pack_size_ml')
-        if size_ml is not None:
-            label = f"{size_ml} ml"
+        if capacity_size:
+            label = f"{capacity_size} Ml"
             if label not in brand_map[key]['sizes']:
                 brand_map[key]['sizes'].append(label)
 
@@ -447,3 +447,4 @@ def application_group(request):
         return Response(result)
 
     return Response({'detail': 'Invalid role'}, status=status.HTTP_400_BAD_REQUEST)
+

@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 
 from django.contrib.contenttypes.fields import GenericRelation
 from django.db import models, transaction
@@ -34,16 +34,21 @@ class CompanyCollaboration(models.Model):
     brand_owner_code = models.CharField(max_length=120, blank=True, null=True)
     brand_owner_name = models.CharField(max_length=255, blank=True, null=True)
     brand_owner_address = models.TextField(blank=True, null=True)
+    brand_owner_pan = models.CharField(max_length=20, blank=True, null=True)
+    brand_owner_office_address = models.TextField(blank=True, null=True)
+    brand_owner_factory_address = models.TextField(blank=True, null=True)
+    brand_owner_mobile = models.CharField(max_length=15, blank=True, null=True)
+    brand_owner_email = models.EmailField(blank=True, null=True)
 
     licensee_name = models.CharField(max_length=255)
     licensee_address = models.TextField()
-    contact_person = models.CharField(max_length=255)
-    contact_number = models.CharField(max_length=10)
-    email_address = models.EmailField()
+    contact_person = models.CharField(max_length=255, blank=True, null=True)
+    contact_number = models.CharField(max_length=10, blank=True, null=True)
+    email_address = models.EmailField(blank=True, null=True)
     license_number = models.CharField(max_length=100)
-    license_type = models.CharField(max_length=100)
-    establishment_type = models.CharField(max_length=100)
-    business_reg_number = models.CharField(max_length=100)
+    license_type = models.CharField(max_length=100, blank=True, null=True)
+    establishment_type = models.CharField(max_length=100, blank=True, null=True)
+    business_reg_number = models.CharField(max_length=100, blank=True, null=True)
 
     selected_brand_ids = models.JSONField(default=list, blank=True)
     selected_brands = models.JSONField(default=list, blank=True)
@@ -129,4 +134,5 @@ class CompanyCollaboration(models.Model):
             models.Index(fields=['current_stage'], name='comp_collab_stage_idx'),
             models.Index(fields=['applicant'], name='comp_collab_applicant_idx'),
         ]
+
 
