@@ -19,6 +19,47 @@ from models.transactional.supply_chain.access_control import (
 )
 
 
+def _normalize_role_token(value):
+    return ''.join(ch for ch in str(value or '').lower() if ch.isalnum())
+
+
+def _is_commissioner_user(user):
+    role_token = _normalize_role_token(getattr(getattr(user, 'role', None), 'name', ''))
+    return role_token in {
+        'commissioner', 'jointcommissioner', 'level1', 'level2', 'level3', 'level4', 'level5', 'siteadmin'
+    }
+
+
+def _filter_commissioner_visible_requisitions(user, queryset):
+    if not _is_commissioner_user(user):
+        return queryset
+
+    hidden_status_codes = {'RQ_00'}
+    hidden_stage_tokens = {'pending', 'submitted'}
+
+    visible_ids = []
+    for row in queryset.select_related('current_stage'):
+        status_code = str(getattr(row, 'status_code', '') or '').strip().upper()
+        status_token = _normalize_role_token(getattr(row, 'status', ''))
+        stage_token = _normalize_role_token(getattr(getattr(row, 'current_stage', None), 'name', ''))
+
+        if status_code and status_code not in hidden_status_codes:
+            visible_ids.append(row.pk)
+            continue
+
+        if stage_token and stage_token not in hidden_stage_tokens:
+            visible_ids.append(row.pk)
+            continue
+
+        if status_token and status_token not in hidden_stage_tokens:
+            visible_ids.append(row.pk)
+
+    if not visible_ids:
+        return queryset.none()
+
+    return queryset.filter(pk__in=visible_ids)
+
+
 class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
     queryset = EnaRequisitionDetail.objects.all()
     serializer_class = EnaRequisitionDetailSerializer
@@ -31,6 +72,7 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
             WORKFLOW_IDS['ENA_REQUISITION'],
             licensee_field='licensee_id'
         )
+        queryset = _filter_commissioner_visible_requisitions(self.request.user, queryset)
 
         our_ref_no = self.request.query_params.get('our_ref_no', None)
         if our_ref_no is not None:

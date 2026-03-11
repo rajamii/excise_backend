@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 from django.core.exceptions import ObjectDoesNotExist
 from .models import EnaRequisitionDetail, RequisitionBulkLiterDetail
 from auth.workflow.constants import WORKFLOW_IDS
+from models.masters.license.models import License
 import re
 from models.transactional.supply_chain.access_control import condition_role_matches
 
@@ -12,6 +13,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
     allowed_action_configs = serializers.SerializerMethodField()
     can_initiate_cancellation = serializers.SerializerMethodField()
     has_active_revalidation = serializers.SerializerMethodField()
+    establishment_name = serializers.SerializerMethodField()
     
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
     current_stage_is_final = serializers.SerializerMethodField()
@@ -84,6 +86,42 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         print(f"  - status_code: '{instance.status_code}' -> '{data['status_code']}'")
         
         return data
+
+    def _expand_license_aliases(self, raw_license_id):
+        token = str(raw_license_id or '').strip()
+        if not token:
+            return []
+
+        aliases = [token]
+        if token.startswith('NLI/'):
+            aliases.append(f"NA/{token[4:]}")
+        elif token.startswith('NA/'):
+            aliases.append(f"NLI/{token[3:]}")
+        return aliases
+
+    def get_establishment_name(self, obj):
+        for license_id in self._expand_license_aliases(getattr(obj, 'licensee_id', '')):
+            license_obj = (
+                License.objects.filter(license_id__iexact=license_id)
+                .select_related('source_content_type')
+                .first()
+            )
+            if not license_obj:
+                continue
+
+            source = getattr(license_obj, 'source_application', None)
+            if not source:
+                continue
+
+            establishment_name = str(getattr(source, 'establishment_name', '') or '').strip()
+            if establishment_name:
+                return establishment_name
+
+            company_name = str(getattr(source, 'company_name', '') or '').strip()
+            if company_name:
+                return company_name
+
+        return ''
     
     def _derive_status_code_from_stage(self, instance):
         """
