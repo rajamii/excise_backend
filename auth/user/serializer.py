@@ -318,6 +318,7 @@ class OICOfficerAssignmentSerializer(serializers.ModelSerializer):
     phoneNumber = serializers.CharField(source='officer.phone_number', read_only=True)
     applicationId = serializers.CharField(source='approved_application.application_id', read_only=True)
     licenseId = serializers.CharField(source='license.license_id', read_only=True)
+    officer_created_at = serializers.DateTimeField(source='officer.date_joined', read_only=True)
 
     class Meta:
         model = OICOfficerAssignment
@@ -333,6 +334,7 @@ class OICOfficerAssignmentSerializer(serializers.ModelSerializer):
             'licensee_id',
             'establishment_name',
             'created_at',
+            'officer_created_at',
         ]
 
     def get_name(self, obj):
