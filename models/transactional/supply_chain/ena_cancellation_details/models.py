@@ -5,6 +5,7 @@ from auth.workflow.models import Transaction, Objection, Workflow, WorkflowStage
 
 class EnaCancellationDetail(models.Model):
     our_ref_no = models.CharField(max_length=50)
+    requisition_ref_no = models.CharField(max_length=50, blank=True, null=True)
     requisition_date = models.DateTimeField()
     grain_ena_number = models.DecimalField(max_digits=18, decimal_places=2)
     bulk_spirit_type = models.CharField(max_length=255, blank=True, null=True)
@@ -23,9 +24,13 @@ class EnaCancellationDetail(models.Model):
     cancellation_date = models.DateTimeField()
     cancellation_br_amount = models.DecimalField(max_digits=18, decimal_places=2)
     cancelled_permit_number = models.CharField(max_length=100, blank=True, null=True)
+    cancelled_permit_numbers = models.CharField(max_length=500, blank=True, null=True)
     total_cancellation_amount = models.DecimalField(max_digits=18, decimal_places=2)
     permit_nocount = models.CharField(max_length=500, blank=True, null=True)
+    details_permits_number = models.CharField(max_length=500, blank=True, null=True)
     licensee_id = models.CharField(max_length=50)
+    license_id = models.CharField(max_length=100, blank=True, null=True)
+    establishment_name = models.CharField(max_length=255, blank=True, null=True)
     cancellation_each_permit_date = models.DateTimeField(blank=True, null=True)
     refund_processed_date = models.DateTimeField(blank=True, null=True)
     refund_approved_by = models.CharField(max_length=255, blank=True, null=True)

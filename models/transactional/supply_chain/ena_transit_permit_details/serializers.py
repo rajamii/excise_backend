@@ -1,10 +1,12 @@
 from rest_framework import serializers
 from .models import EnaTransitPermitDetail
 from auth.workflow.constants import WORKFLOW_IDS
+from models.transactional.supply_chain.access_control import condition_role_matches
 
 class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
+    current_stage_description = serializers.CharField(source='current_stage.description', read_only=True)
     workflow_name = serializers.CharField(source='workflow.name', read_only=True)
 
     class Meta:
@@ -28,12 +30,15 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
         
         # Determine Role (Matching Frontend Logic)
         role = None
-        oic_roles = ['level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'Site-Admin', 'site_admin', 
-                     'officer-in-charge', 'Officer-In-Charge', 'oic', 'OIC']
-        
-        if user_role_name in oic_roles:
+        normalized_role = ''.join(ch for ch in str(user_role_name or '').lower() if ch.isalnum())
+        officer_aliases = {
+            'level1', 'level2', 'level3', 'level4', 'level5', 'siteadmin',
+            'officerincharge', 'offcierincharge', 'oic', 'officer'
+        }
+
+        if normalized_role in officer_aliases or hasattr(request.user, 'oic_assignment'):
             role = 'officer'
-        elif user_role_name in ['licensee', 'Licensee']:
+        elif normalized_role in {'licensee', 'licenseeuser', 'licenseuser'}:
             role = 'licensee'
         
         if not role:
@@ -57,13 +62,23 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
         actions = []
         for t in transitions:
             cond = t.condition or {}
-            # Check if role matches (or no role restriction)
-            cond_role = cond.get('role')
-            if cond_role == role or cond_role is None:
-                action = cond.get('action')
-                if action:
-                    actions.append(action)
-        
+            if not condition_role_matches(cond, request.user):
+                continue
+
+            action = cond.get('action')
+            if not action:
+                stage_name = str(getattr(t.to_stage, 'name', '') or '').lower()
+                if 'approved' in stage_name:
+                    action = 'APPROVE'
+                elif 'rejected' in stage_name or 'cancelled' in stage_name:
+                    action = 'REJECT'
+                elif 'payment' in stage_name and 'successful' in stage_name:
+                    action = 'PAY'
+                elif stage_name:
+                    action = 'FORWARD'
+            if action:
+                actions.append(str(action).upper())
+
         return list(set(actions))  # Unique actions
     
     # New Field: Returns Full UI Config for Actions
@@ -106,7 +121,7 @@ class TransitPermitSubmissionSerializer(serializers.Serializer):
     Serializer to validate the full submission payload.
     CamelCaseJSONParser will convert incoming camelCase keys to snake_case.
     """
-    bill_no = serializers.CharField()
+    bill_no = serializers.CharField(required=False, allow_blank=True)
     sole_distributor = serializers.CharField() # maps from soleDistributor
     date = serializers.DateField()
     depot_address = serializers.CharField()

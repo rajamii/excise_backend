@@ -9,4 +9,12 @@ class SiteEnquiryReportSerializer(serializers.ModelSerializer):
     class Meta:
         model = SiteEnquiryReport
         fields = '__all__'
-        read_only_fields = ['created_at', 'updated_at', 'application_id', 'application_type']
+        read_only_fields = [
+            'created_at',
+            'updated_at',
+            'application_id',
+            'application_type',
+            'license_id',
+            'content_type',
+            'object_id',
+        ]

@@ -1,4 +1,6 @@
 from rest_framework import serializers
+from datetime import timedelta
+from django.utils import timezone
 from .models import HologramProcurement, HologramRequest
 from auth.workflow.models import Transaction, Objection
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile
@@ -47,6 +49,7 @@ def _condition_role_matches(cond, request):
 
 class HologramProcurementSerializer(serializers.ModelSerializer):
     licensee_name = serializers.CharField(source='licensee.manufacturing_unit_name', read_only=True)
+    license_id = serializers.CharField(source='license.license_id', read_only=True)
     status = serializers.CharField(source='current_stage.name', read_only=True)
     stage_id = serializers.IntegerField(source='current_stage.id', read_only=True)
     allowed_actions = serializers.SerializerMethodField()
@@ -58,7 +61,7 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
     class Meta:
         model = HologramProcurement
         fields = '__all__'
-        read_only_fields = ('ref_no', 'date', 'workflow', 'current_stage', 'payment_status', 'manufacturing_unit', 'licensee')
+        read_only_fields = ('ref_no', 'date', 'workflow', 'current_stage', 'payment_status', 'manufacturing_unit', 'licensee', 'license', 'arrival_date')
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -91,6 +94,13 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
         Returns the most recent quantity update transaction
         """
         try:
+            # Primary source: structured history persisted on the procurement row.
+            payment_details = getattr(obj, 'payment_details', None) or {}
+            if isinstance(payment_details, dict):
+                persisted = payment_details.get('edit_history')
+                if isinstance(persisted, dict) and persisted.get('originalQuantities') and persisted.get('updatedQuantities'):
+                    return persisted
+
             # Find transaction with quantity update remarks
             edit_txn = obj.transactions.filter(
                 remarks__icontains='Quantities updated by Commissioner'
@@ -101,15 +111,16 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
             
             # Parse the remarks to extract quantities
             # Format: "Quantities updated by Commissioner: Local 30.00 → 50.00, Export 0.00 → 0.00, Defence 0.00 → 0.00. New payment amount: ₹7.50"
-            remarks = edit_txn.remarks
+            remarks = str(edit_txn.remarks or '')
             
             import re
             
             # Extract quantities using regex
-            local_match = re.search(r'Local ([\d.]+) → ([\d.]+)', remarks)
-            export_match = re.search(r'Export ([\d.]+) → ([\d.]+)', remarks)
-            defence_match = re.search(r'Defence ([\d.]+) → ([\d.]+)', remarks)
-            payment_match = re.search(r'New payment amount: ₹([\d.]+)', remarks)
+            transition_sep = r'[^0-9a-zA-Z]+'
+            local_match = re.search(rf'Local\s+([\d.]+)\s*{transition_sep}\s*([\d.]+)', remarks, re.IGNORECASE)
+            export_match = re.search(rf'Export\s+([\d.]+)\s*{transition_sep}\s*([\d.]+)', remarks, re.IGNORECASE)
+            defence_match = re.search(rf'(?:Defence|Defense)\s+([\d.]+)\s*{transition_sep}\s*([\d.]+)', remarks, re.IGNORECASE)
+            payment_match = re.search(r'New payment amount:\s*[^\d]*([\d.]+)', remarks, re.IGNORECASE)
             
             if not local_match:
                 return None
@@ -193,14 +204,26 @@ class HologramRequestSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = HologramRequest
-        fields = ['id', 'ref_no', 'submission_date', 'usage_date', 'quantity', 'hologram_type', 'issued_assets', 'rolls_assigned', 'licensee', 'licensee_name', 'workflow', 'workflow_name', 'current_stage', 'status', 'stage_id', 'allowed_actions', 'allowed_action_configs', 'available_cartons']
-        read_only_fields = ('ref_no', 'submission_date', 'workflow', 'current_stage', 'licensee')
+        fields = ['id', 'ref_no', 'submission_date', 'usage_date', 'quantity', 'hologram_type', 'issued_assets', 'rolls_assigned', 'licensee', 'license_id', 'licensee_name', 'workflow', 'workflow_name', 'current_stage', 'status', 'stage_id', 'allowed_actions', 'allowed_action_configs', 'available_cartons']
+        read_only_fields = ('ref_no', 'submission_date', 'workflow', 'current_stage', 'licensee', 'license_id')
     
     def to_representation(self, instance):
         """Add logging to debug issued_assets"""
         ret = super().to_representation(instance)
         # print(f"DEBUG SERIALIZER: Request {ret.get('ref_no')} - issued_assets: {ret.get('issued_assets')}")
         return ret
+
+    def validate_usage_date(self, value):
+        today = timezone.localdate()
+        tomorrow = today + timedelta(days=1)
+        day_after_tomorrow = today + timedelta(days=2)
+
+        if value not in {today, tomorrow, day_after_tomorrow}:
+            raise serializers.ValidationError(
+                f"Usage date must be between {today.strftime('%d-%m-%Y')} and {day_after_tomorrow.strftime('%d-%m-%Y')}."
+            )
+
+        return value
 
     # CRITICAL FIX: Dynamically fetch latest roll stats from HologramRollsDetails
     # This prevents stale JSON data from showing incorrect Available/Used counts in UI
@@ -373,7 +396,7 @@ class DailyHologramRegisterSerializer(serializers.ModelSerializer):
     class Meta:
         model = DailyHologramRegister
         fields = '__all__'
-        read_only_fields = ('submission_date', 'licensee', 'approved_by', 'approved_at')
+        read_only_fields = ('submission_date', 'licensee', 'license_id', 'approved_by', 'approved_at')
     
     def create(self, validated_data):
         # Extract allocated range fields before creating instance
@@ -443,7 +466,7 @@ class HologramUsageHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = HologramUsageHistory
         fields = '__all__'
-        read_only_fields = ('approved_by', 'approved_at')
+        read_only_fields = ('approved_by', 'approved_at', 'license_id')
 
 
 class HologramRollsDetailedSerializer(HologramRollsDetailsSerializer):
@@ -464,3 +487,5 @@ class HologramRollsSummarySerializer(serializers.Serializer):
     damaged = serializers.IntegerField()
     by_type = serializers.DictField()
     by_status = serializers.DictField()
+
+

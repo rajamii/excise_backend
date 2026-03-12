@@ -2,9 +2,17 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils import timezone
+from django.db import transaction, models
+from decimal import Decimal
+import re
 from .models import EnaCancellationDetail
 from .serializers import EnaCancellationDetailSerializer, CancellationCreateSerializer
 from auth.workflow.constants import WORKFLOW_IDS
+from models.transactional.supply_chain.access_control import (
+    has_workflow_access,
+    scope_by_profile_or_workflow,
+    transition_matches,
+)
 
 class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     """
@@ -13,6 +21,181 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     queryset = EnaCancellationDetail.objects.all().order_by('-created_at')
     serializer_class = EnaCancellationDetailSerializer
     permission_classes = [permissions.IsAuthenticated]
+    CANCELLATION_FEE_AMOUNT = Decimal('1000.00')
+
+    def _is_rejected_cancellation(self, cancellation) -> bool:
+        current_stage_name = getattr(getattr(cancellation, 'current_stage', None), 'name', '')
+        merged = f"{getattr(cancellation, 'status', '')} {current_stage_name}".lower()
+        return 'reject' in merged
+
+    def _generate_cancellation_ref(self) -> str:
+        existing_refs = EnaCancellationDetail.objects.values_list('our_ref_no', flat=True)
+        pattern = r'CAN/(\d+)/EXCISE'
+        numbers = []
+
+        for ref in existing_refs:
+            match = re.match(pattern, str(ref or ''))
+            if match:
+                numbers.append(int(match.group(1)))
+
+        next_number = (max(numbers) + 1) if numbers else 1
+        return f"CAN/{next_number:02d}/EXCISE"
+
+    def _expand_license_aliases(self, license_id: str):
+        normalized = str(license_id or '').strip()
+        if not normalized:
+            return []
+
+        candidates = [normalized]
+        if normalized.startswith('NLI/'):
+            candidates.append(f"NA/{normalized[4:]}")
+        if normalized.startswith('NA/'):
+            candidates.append(f"NLI/{normalized[3:]}")
+
+        seen = set()
+        ordered = []
+        for value in candidates:
+            if value and value not in seen:
+                seen.add(value)
+                ordered.append(value)
+        return ordered
+
+    def _resolve_wallet_license_candidates(self, cancellation, user):
+        candidates = []
+
+        cancellation_license_id = str(getattr(cancellation, 'license_id', '') or '').strip()
+        candidates.extend(self._expand_license_aliases(cancellation_license_id))
+
+        req_licensee = str(getattr(cancellation, 'licensee_id', '') or '').strip()
+        candidates.extend(self._expand_license_aliases(req_licensee))
+
+        profile_license = ''
+        if hasattr(user, 'supply_chain_profile'):
+            profile_license = str(getattr(user.supply_chain_profile, 'licensee_id', '') or '').strip()
+        candidates.extend(self._expand_license_aliases(profile_license))
+
+        try:
+            from models.masters.license.models import License
+            active_licenses = License.objects.filter(
+                applicant=user,
+                source_type='new_license_application',
+                is_active=True
+            ).order_by('-issue_date')
+
+            for cid in list(candidates):
+                hit = active_licenses.filter(
+                    models.Q(license_id=cid) | models.Q(source_object_id=cid)
+                ).first()
+                if hit and hit.license_id:
+                    candidates.extend(self._expand_license_aliases(str(hit.license_id)))
+
+            latest = active_licenses.first()
+            if latest and latest.license_id:
+                candidates.extend(self._expand_license_aliases(str(latest.license_id)))
+        except Exception:
+            pass
+
+        seen = set()
+        ordered = []
+        for cid in candidates:
+            if cid and cid not in seen:
+                seen.add(cid)
+                ordered.append(cid)
+        return ordered
+
+    def _debit_wallet_for_cancellation_submission(self, cancellation, user, amount):
+        from models.transactional.payment.models import WalletBalance, WalletTransaction
+
+        amount_decimal = Decimal(str(amount or 0))
+        if amount_decimal <= 0:
+            return {'debited': False, 'reason': 'zero_amount'}
+
+        reference_no = str(getattr(cancellation, 'our_ref_no', '') or f"CAN-{cancellation.pk}")
+        transaction_id = f"CAN-{cancellation.pk}-PAYMENT"
+
+        already_debited = WalletTransaction.objects.filter(
+            transaction_id=transaction_id,
+            source_module='ena_cancellation',
+            entry_type='DR'
+        ).exists()
+        if already_debited:
+            return {'debited': False, 'reason': 'already_debited'}
+
+        candidates = self._resolve_wallet_license_candidates(cancellation, user)
+        if not candidates:
+            raise ValueError("Unable to resolve license id for wallet deduction.")
+
+        wallet = None
+        resolved_license_id = ''
+
+        for cid in candidates:
+            wallet = (
+                WalletBalance.objects.select_for_update()
+                .filter(licensee_id=cid, wallet_type__iexact='excise')
+                .order_by('wallet_balance_id')
+                .first()
+            )
+            if wallet:
+                resolved_license_id = cid
+                break
+
+        if not wallet:
+            for cid in candidates:
+                wallet = (
+                    WalletBalance.objects.select_for_update()
+                    .filter(licensee_id=cid, wallet_type__iexact='brewery')
+                    .order_by('wallet_balance_id')
+                    .first()
+                )
+                if wallet:
+                    resolved_license_id = cid
+                    break
+
+        if not wallet:
+            raise ValueError(
+                f"Wallet not found for license id. Tried: {', '.join(candidates)}"
+            )
+
+        current_balance = Decimal(str(wallet.current_balance or 0))
+        if current_balance < amount_decimal:
+            raise ValueError(
+                f"Insufficient wallet balance. Available: {current_balance}, Required: {amount_decimal}"
+            )
+
+        now_ts = timezone.now()
+        after = current_balance - amount_decimal
+        wallet.current_balance = after
+        wallet.total_debit = Decimal(str(wallet.total_debit or 0)) + amount_decimal
+        wallet.last_updated_at = now_ts
+        wallet.save(update_fields=['current_balance', 'total_debit', 'last_updated_at'])
+
+        WalletTransaction.objects.create(
+            wallet_balance=wallet,
+            transaction_id=transaction_id,
+            licensee_id=resolved_license_id,
+            licensee_name=wallet.licensee_name,
+            user_id=str(getattr(user, 'username', '') or wallet.user_id or ''),
+            module_type=wallet.module_type,
+            wallet_type=wallet.wallet_type,
+            head_of_account=wallet.head_of_account,
+            entry_type='DR',
+            transaction_type='debit',
+            amount=amount_decimal,
+            balance_before=current_balance,
+            balance_after=after,
+            reference_no=reference_no,
+            source_module='ena_cancellation',
+            payment_status='success',
+            remarks='Cancellation submission fee debit',
+            created_at=now_ts,
+        )
+
+        return {
+            'debited': True,
+            'license_id': resolved_license_id,
+            'wallet_type': wallet.wallet_type,
+            'amount': str(amount_decimal)
+        }
 
     def get_queryset(self):
         """
@@ -20,19 +203,21 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         query parameters in the URL and the current user's licensee profile.
         """
         queryset = EnaCancellationDetail.objects.all().order_by('-created_at')
-        
-        try:
-            if hasattr(self.request.user, 'supply_chain_profile'):
-                 profile = self.request.user.supply_chain_profile
-                 queryset = queryset.filter(licensee_id=profile.licensee_id)
-        except Exception:
-            pass
+        queryset = scope_by_profile_or_workflow(
+            self.request.user,
+            queryset,
+            WORKFLOW_IDS['ENA_CANCELLATION'],
+            licensee_field='licensee_id'
+        )
 
         our_ref_no = self.request.query_params.get('our_ref_no', None)
+        requisition_ref_no = self.request.query_params.get('requisition_ref_no', None)
         status_param = self.request.query_params.get('status', None)
         
         if our_ref_no is not None:
             queryset = queryset.filter(our_ref_no__icontains=our_ref_no)
+        if requisition_ref_no is not None:
+            queryset = queryset.filter(requisition_ref_no__icontains=requisition_ref_no)
         if status_param is not None:
             queryset = queryset.filter(status=status_param)
             
@@ -40,52 +225,113 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], url_path='submit', serializer_class=CancellationCreateSerializer)
     def submit_cancellation(self, request):
-        print("Received Data:", request.data)
+        print("=" * 80)
+        print("CANCELLATION SUBMIT - Received Data:", request.data)
+        print("=" * 80)
+        
         serializer = CancellationCreateSerializer(data=request.data)
-        if serializer.is_valid():
-            ref_no = serializer.validated_data['reference_no']
-            permit_numbers = serializer.validated_data['permit_numbers']
-            licensee_id = serializer.validated_data['licensee_id']
+        
+        if not serializer.is_valid():
+            print("❌ Serializer validation FAILED:")
+            print("Errors:", serializer.errors)
+            return Response({'error': 'Validation failed', 'details': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        
+        print("✅ Serializer validation PASSED")
+        
+        ref_no = serializer.validated_data['reference_no']
+        permit_numbers = serializer.validated_data['permit_numbers']
+        normalized_permit_numbers = [str(num).strip() for num in permit_numbers if str(num).strip()]
+        
+        print(f"Reference No: {ref_no}")
+        print(f"Permit Numbers: {normalized_permit_numbers}")
+        
+        # Never trust client-provided licensee_id for authenticated licensee users.
+        if hasattr(request.user, 'supply_chain_profile'):
+            licensee_id = request.user.supply_chain_profile.licensee_id
+            print(f"Using licensee_id from profile: {licensee_id}")
+        else:
+            licensee_id = serializer.validated_data.get('licensee_id')
+            if not licensee_id:
+                return Response(
+                    {'error': 'licensee_id is required when no supply-chain profile is active'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            print(f"Using licensee_id from request: {licensee_id}")
 
+        try:
+            # Fetch Requisition Data
+            from models.transactional.supply_chain.ena_requisition_details.models import EnaRequisitionDetail
+            req = EnaRequisitionDetail.objects.filter(our_ref_no=ref_no).first()
+
+            if not req:
+                print(f"❌ Requisition not found for ref_no: {ref_no}")
+                return Response({'error': 'Requisition not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+            print(f"✅ Found requisition: {req.id}")
+
+            existing_cancellations = EnaCancellationDetail.objects.filter(requisition_ref_no=ref_no)
+            blocked_permits = set()
+            for existing in existing_cancellations:
+                if self._is_rejected_cancellation(existing):
+                    continue
+
+                existing_numbers_raw = (
+                    existing.cancelled_permit_numbers
+                    or existing.cancelled_permit_number
+                    or ''
+                )
+                existing_numbers = [
+                    num.strip() for num in str(existing_numbers_raw).split(',') if num.strip()
+                ]
+                blocked_permits.update(existing_numbers)
+
+            duplicate_permits = sorted(
+                set(normalized_permit_numbers) & blocked_permits,
+                key=lambda value: int(value) if value.isdigit() else value
+            )
+            if duplicate_permits:
+                return Response({
+                    'error': 'Some selected permits are already submitted for cancellation.',
+                    'duplicate_permits': duplicate_permits
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Charge per selected permit, so wallet deduction matches the UI selection.
+            total_amount = self.CANCELLATION_FEE_AMOUNT * Decimal(len(normalized_permit_numbers))
+            print(f"Total amount: {total_amount}")
+            license_id = str(getattr(req, 'licensee_id', '') or '').strip()
+            if not license_id:
+                license_id = str(licensee_id or '').strip()
+
+            # Fetch Workflow/Stage for Cancellation (CN_00)
+            from auth.workflow.models import Workflow, WorkflowStage
+            
+            status_name = 'ForwardedCancellationToCommissioner' # Default Initial Status
+            wf_obj = None
+            current_stage = None
+            
             try:
-                # Fetch Requisition Data
-                from models.transactional.supply_chain.ena_requisition_details.models import EnaRequisitionDetail
-                req = EnaRequisitionDetail.objects.filter(our_ref_no=ref_no).first()
+                 workflow = Workflow.objects.get(id=WORKFLOW_IDS['ENA_CANCELLATION'])
+                 stage = WorkflowStage.objects.get(workflow=workflow, name=status_name)
+                 
+                 current_stage = stage
+                 wf_obj = workflow
+                 print(f"✅ Workflow setup successful: {workflow.name}, Stage: {stage.name}")
+            except Exception as e:
+                 print(f"⚠️ Workflow setup warning: {e}")
+                 # Fallback to defaults already set
 
-                if not req:
-                    return Response({'error': 'Requisition not found'}, status=status.HTTP_404_NOT_FOUND)
+            # Generate cancellation reference
+            cancel_ref = self._generate_cancellation_ref()
+            print(f"Generated cancellation ref: {cancel_ref}")
 
-                # Calculate Amount
-                cancellation_charge_per_permit = 1000
-                total_amount = len(permit_numbers) * cancellation_charge_per_permit
-
-                # Fetch Workflow/Stage for Cancellation (CN_00)
-                from auth.workflow.models import Workflow, WorkflowStage
-                # from models.masters.supply_chain.status_master.models import StatusMaster # Removed
-                
-                status_name = 'ForwardedCancellationToCommissioner' # Default Initial Status
-                wf_obj = None
-                current_stage = None
-                
-                try:
-                     # status_obj = StatusMaster.objects.get(status_code='CN_00') # Removed
-                     # status_name = status_obj.status_name
-                     
-                     workflow = Workflow.objects.get(id=WORKFLOW_IDS['ENA_CANCELLATION'])
-                     stage = WorkflowStage.objects.get(workflow=workflow, name=status_name)
-                     
-                     current_stage = stage
-                     wf_obj = workflow
-                except Exception as e:
-                     print(f"Workflow setup warning: {e}")
-                     # Fallback to defaults already set
-
+            with transaction.atomic():
                 # Prepare Cancellation Data
                 cancellation = EnaCancellationDetail(
-                    our_ref_no=req.our_ref_no,
+                    our_ref_no=cancel_ref,
+                    requisition_ref_no=ref_no,
                     requisition_date=req.requisition_date,
-                    grain_ena_number=req.grain_ena_number,         
-                    bulk_spirit_type=req.bulk_spirit_type, 
+                    grain_ena_number=req.grain_ena_number,
+                    bulk_spirit_type=req.bulk_spirit_type,
                     strength=req.strength,
                     lifted_from=req.lifted_from,
                     via_route=req.via_route,
@@ -95,32 +341,51 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                     # Legacy fields
                     status=status_name,
                     status_code='CN_00',
-                    
+
                     total_bl=req.totalbl,
                     requisiton_number_of_permits=req.requisiton_number_of_permits,
+                    details_permits_number=req.details_permits_number,  # Copy from requisition
                     # Fields potentially missing in Requisition Model:
-                    branch_name=req.lifted_from_distillery_name, 
-                    branch_address="N/A", 
+                    branch_name=req.lifted_from_distillery_name,
+                    branch_address="N/A",
                     branch_purpose=req.branch_purpose,
-                    govt_officer="N/A", 
+                    govt_officer="N/A",
                     state=req.state,
                     cancellation_date=timezone.now(),
-                    cancellation_br_amount=0.00,
-                    cancelled_permit_number=",".join(permit_numbers),
-                    total_cancellation_amount=total_amount,
-                    permit_nocount=str(len(permit_numbers)),
+                    cancellation_br_amount=Decimal(str(total_amount)),
+                    cancelled_permit_number=",".join(normalized_permit_numbers),
+                    cancelled_permit_numbers=",".join(normalized_permit_numbers),
+                    total_cancellation_amount=Decimal(str(total_amount)),
+                    permit_nocount=str(len(normalized_permit_numbers)),
                     licensee_id=licensee_id,
+                    license_id=license_id,
                     distillery_name=req.lifted_from_distillery_name
                 )
-                
-                cancellation.save()
-                
-                return Response({'message': 'Cancellation request submitted successfully!', 'id': cancellation.id}, status=status.HTTP_201_CREATED)
 
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                print(f"✅ Copied details_permits_number from requisition: {req.details_permits_number}")
+                print("Attempting to save cancellation...")
+                cancellation.save()
+                wallet_result = self._debit_wallet_for_cancellation_submission(
+                    cancellation=cancellation,
+                    user=request.user,
+                    amount=Decimal(str(total_amount))
+                )
+            print(f"✅ Cancellation saved successfully with ID: {cancellation.id}")
+            print("=" * 80)
+            
+            response_payload = {
+                'message': 'Cancellation request submitted successfully!',
+                'id': cancellation.id,
+                'wallet_deduction': wallet_result
+            }
+            return Response(response_payload, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            import traceback
+            print("❌ ERROR occurred:")
+            print(traceback.format_exc())
+            print("=" * 80)
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -132,17 +397,15 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         try:
             cancellation = self.get_object()
             
-            # Get the original requisition to fetch permit details
-            from models.transactional.supply_chain.ena_requisition_details.models import EnaRequisitionDetail
-            requisition = EnaRequisitionDetail.objects.filter(our_ref_no=cancellation.our_ref_no).first()
-            
-            if not requisition:
-                return Response({'error': 'Original requisition not found'}, status=status.HTTP_404_NOT_FOUND)
-            
             # Parse cancelled permit numbers
             cancelled_permits = []
-            if cancellation.cancelled_permit_number:
-                cancelled_permits = [p.strip() for p in cancellation.cancelled_permit_number.split(',') if p.strip()]
+            cancelled_permits_raw = (
+                cancellation.cancelled_permit_numbers
+                or cancellation.cancelled_permit_number
+                or ''
+            )
+            if cancelled_permits_raw:
+                cancelled_permits = [p.strip() for p in cancelled_permits_raw.split(',') if p.strip()]
             
             # Generate letter data
             letter_data = {
@@ -155,15 +418,15 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                 },
                 'subject': {
                     'permit_numbers': cancelled_permits,
-                    'permit_date': requisition.requisition_date.strftime('%d.%m.%Y') if requisition.requisition_date else 'Date not available'
+                    'permit_date': cancellation.requisition_date.strftime('%d.%m.%Y') if cancellation.requisition_date else 'Date not available'
                 },
                 'reference': {
-                    'letter_date': cancellation.cancellation_each_permit_date.strftime('%d.%m.%Y') if cancellation.cancellation_each_permit_date else requisition.requisition_date.strftime('%d.%m.%Y') if requisition.requisition_date else 'Date not available'
+                    'letter_date': cancellation.cancellation_each_permit_date.strftime('%d.%m.%Y') if cancellation.cancellation_each_permit_date else cancellation.requisition_date.strftime('%d.%m.%Y') if cancellation.requisition_date else 'Date not available'
                 },
                 'cancellation_details': {
                     'reference_no': cancellation.our_ref_no,
                     'original_permit_numbers': cancelled_permits,
-                    'original_permit_date': requisition.requisition_date.strftime('%d.%m.%Y') if requisition.requisition_date else 'Date not available',
+                    'original_permit_date': cancellation.requisition_date.strftime('%d.%m.%Y') if cancellation.requisition_date else 'Date not available',
                     'cancellation_date': cancellation.cancellation_date.strftime('%d.%m.%Y') if cancellation.cancellation_date else timezone.now().strftime('%d.%m.%Y'),
                     'distillery_name': cancellation.distillery_name,
                     'quantity': float(cancellation.grain_ena_number) if cancellation.grain_ena_number else 0,
@@ -203,19 +466,8 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             if not action_type:
                 return Response({'error': 'Action is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-             # Determine Role
-            user_role_name = user.role.name if hasattr(user, 'role') and user.role else None
-            role_mapped = None
-            commissioner_roles = ['level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'Site-Admin', 'site_admin', 'commissioner', 'Commissioner']
-            
-            if user_role_name in commissioner_roles:
-                role_mapped = 'commissioner'
-            elif user_role_name in ['permit-section', 'Permit-Section', 'Permit Section']:
-                role_mapped = 'permit-section'
-            elif user_role_name in ['licensee', 'Licensee']:
-                role_mapped = 'licensee'
-            else:
-                role_mapped = user_role_name
+            if not has_workflow_access(user, WORKFLOW_IDS['ENA_CANCELLATION']) and not hasattr(user, 'supply_chain_profile'):
+                return Response({'error': 'Unauthorized role for this workflow'}, status=status.HTTP_403_FORBIDDEN)
             
             from auth.workflow.services import WorkflowService
             
@@ -238,25 +490,13 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                 transitions = WorkflowService.get_next_stages(cancellation)
                 
                 for t in transitions:
-                    # check role matches
-                    role_match = False
-                    if 'role' in t.condition:
-                        if t.condition['role'] == role_mapped:
-                            role_match = True
-                    
-                    # check action matches
-                    action_match = False
-                    if 'action' in t.condition:
-                        if str(t.condition['action']).upper() == str(action_type).upper():
-                            action_match = True
-                            
-                    if role_match and action_match:
+                    if transition_matches(t, user, action_type):
                         target_transition = t
                         break
                 
                 if not target_transition:
                     return Response({
-                        'error': f'Invalid action {action_type} for role {role_mapped} at stage {cancellation.current_stage.name}'
+                        'error': f'Invalid action {action_type} at stage {cancellation.current_stage.name}'
                     }, status=status.HTTP_400_BAD_REQUEST)
 
                 # Use values from the matching transition condition to ensure validation passes

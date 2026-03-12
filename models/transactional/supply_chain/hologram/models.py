@@ -17,6 +17,7 @@ class HologramProcurement(models.Model):
 
     ref_no = models.CharField(max_length=50, unique=True)
     licensee = models.ForeignKey(SupplyChainUserProfile, on_delete=models.CASCADE, related_name='hologram_procurements')
+    license = models.ForeignKey('license.License', on_delete=models.PROTECT, related_name='hologram_procurements_by_license', null=True, blank=True, help_text='License associated with this hologram procurement')
     manufacturing_unit = models.CharField(max_length=255) # Storing name for display
     date = models.DateTimeField(default=timezone.now)
     
@@ -27,6 +28,12 @@ class HologramProcurement(models.Model):
     payment_status = models.CharField(max_length=50, blank=True, null=True)
     payment_details = models.JSONField(default=dict, blank=True)
     carton_details = models.JSONField(default=list, blank=True) # Stores assigned cartons and serials
+    arrival_date = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='Timestamp when OIC confirms carton arrival'
+    )
     remarks = models.TextField(blank=True, null=True)
     
     # Workflow Integration
@@ -49,6 +56,10 @@ class HologramProcurement(models.Model):
     class Meta:
         db_table = 'hologram_procurement'
         ordering = ['-date']
+        indexes = [
+            models.Index(fields=['licensee']),
+            models.Index(fields=['current_stage']),
+        ]
 
     def __str__(self):
         return f"{self.ref_no} - {self.licensee.manufacturing_unit_name}"
@@ -56,10 +67,12 @@ class HologramProcurement(models.Model):
 
 class HologramRequest(models.Model):
     STATUS_SUBMITTED = 'Submitted'
-    STATUS_APPROVED = 'Approved by Permit Section'
+    STATUS_APPROVED = 'Approved by OIC'
     
     ref_no = models.CharField(max_length=50, unique=True)
     licensee = models.ForeignKey(SupplyChainUserProfile, on_delete=models.CASCADE, related_name='hologram_requests')
+    # Denormalized license for strict OIC/licensee ownership scoping.
+    license_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     submission_date = models.DateTimeField(default=timezone.now)
     usage_date = models.DateField()
     quantity = models.IntegerField()
@@ -115,6 +128,8 @@ class HologramRollsDetails(models.Model):
     ]
     
     procurement = models.ForeignKey(HologramProcurement, on_delete=models.CASCADE, related_name='rolls_details')
+    # Denormalized license for direct ownership filtering in OIC/licensee dashboards.
+    license_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     received_date = models.DateTimeField(default=timezone.now)
     carton_number = models.CharField(max_length=100, unique=True)
     type = models.CharField(max_length=50, choices=TYPE_CHOICES, blank=True, null=True)
@@ -271,6 +286,8 @@ class DailyHologramRegister(models.Model):
     
     # Link to Licensee
     licensee = models.ForeignKey(SupplyChainUserProfile, on_delete=models.CASCADE, related_name='daily_register_entries')
+    # Denormalized license for strict user/OIC ownership scoping.
+    license_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     
     # Core Data
     reference_no = models.CharField(max_length=100)
@@ -329,12 +346,23 @@ class DailyHologramRegister(models.Model):
         ordering = ['-usage_date', '-id']
         indexes = [
             models.Index(fields=['licensee', 'approval_status']),
+            models.Index(fields=['license_id', 'approval_status']),
             models.Index(fields=['cartoon_number', 'hologram_type']),
             models.Index(fields=['usage_date']),
         ]
 
     def __str__(self):
         return f"{self.reference_no} ({self.usage_date})"
+
+    def save(self, *args, **kwargs):
+        if not self.license_id:
+            resolved = (
+                str(getattr(getattr(self, 'hologram_request', None), 'license_id', '') or '').strip()
+                or str(getattr(getattr(self, 'licensee', None), 'licensee_id', '') or '').strip()
+            )
+            if resolved:
+                self.license_id = resolved
+        super().save(*args, **kwargs)
 
 
 class HologramSerialRange(models.Model):
@@ -349,6 +377,8 @@ class HologramSerialRange(models.Model):
     ]
     
     roll = models.ForeignKey(HologramRollsDetails, on_delete=models.CASCADE, related_name='ranges')
+    # Denormalized license for direct user/OIC ownership filtering.
+    license_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     from_serial = models.CharField(max_length=100)
     to_serial = models.CharField(max_length=100)
     count = models.IntegerField()
@@ -376,11 +406,23 @@ class HologramSerialRange(models.Model):
         ordering = ['from_serial']
         indexes = [
             models.Index(fields=['roll', 'status']),
+            models.Index(fields=['license_id', 'status']),
             models.Index(fields=['from_serial', 'to_serial']),
         ]
     
     def __str__(self):
         return f"{self.from_serial} - {self.to_serial} ({self.status})"
+
+    def save(self, *args, **kwargs):
+        if not self.license_id and self.roll_id:
+            resolved = (
+                str(getattr(getattr(self.roll, 'procurement', None), 'license_id', '') or '').strip()
+                or str(getattr(self.roll, 'license_id', '') or '').strip()
+                or str(getattr(getattr(getattr(self.roll, 'procurement', None), 'licensee', None), 'licensee_id', '') or '').strip()
+            )
+            if resolved:
+                self.license_id = resolved
+        super().save(*args, **kwargs)
 
 
 class HologramUsageHistory(models.Model):
@@ -418,14 +460,29 @@ class HologramUsageHistory(models.Model):
     
     # Link to daily register
     daily_register_entry = models.ForeignKey('DailyHologramRegister', null=True, blank=True, on_delete=models.SET_NULL, related_name='usage_history')
+    # Denormalized license for strict user/OIC ownership scoping.
+    license_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     
     class Meta:
         db_table = 'hologram_usage_history'
         ordering = ['-date', '-approved_at']
         indexes = [
             models.Index(fields=['roll', 'usage_type']),
+            models.Index(fields=['license_id', 'usage_type']),
             models.Index(fields=['date']),
         ]
-    
+
     def __str__(self):
         return f"{self.usage_type} - {self.from_serial} to {self.to_serial} ({self.date})"
+
+    def save(self, *args, **kwargs):
+        if not self.license_id:
+            resolved = (
+                str(getattr(getattr(self, 'daily_register_entry', None), 'license_id', '') or '').strip()
+                or str(getattr(getattr(self, 'roll', None), 'license_id', '') or '').strip()
+                or str(getattr(getattr(getattr(self, 'roll', None), 'procurement', None), 'license_id', '') or '').strip()
+                or str(getattr(getattr(getattr(getattr(self, 'roll', None), 'procurement', None), 'licensee', None), 'licensee_id', '') or '').strip()
+            )
+            if resolved:
+                self.license_id = resolved
+        super().save(*args, **kwargs)

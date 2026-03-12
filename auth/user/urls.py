@@ -14,7 +14,13 @@ from .views import (
     LogoutAPI,
     send_otp_api,
     verify_otp_for_registration,
-    verify_otp_api
+    verify_otp_api,
+    oic_approved_establishments,
+    oic_officer_list,
+    oic_officer_create,
+    oic_officer_update,
+    oic_officer_set_active,
+    oic_officer_delete,
 )
 
 urlpatterns = [
@@ -41,4 +47,10 @@ urlpatterns = [
     path('me/', CurrentUserAPI.as_view(), name='current-user'),
     path('<int:pk>/update/', UserUpdateView.as_view(), name='user-update'),
     path('<int:pk>/delete/', UserDeleteView.as_view(), name='user-delete'),
+    path('oic/approved-establishments/', oic_approved_establishments, name='oic-approved-establishments'),
+    path('oic/officers/', oic_officer_list, name='oic-officer-list'),
+    path('oic/officers/create/', oic_officer_create, name='oic-officer-create'),
+    path('oic/officers/<int:assignment_id>/update/', oic_officer_update, name='oic-officer-update'),
+    path('oic/officers/<int:assignment_id>/set-active/', oic_officer_set_active, name='oic-officer-set-active'),
+    path('oic/officers/<int:assignment_id>/delete/', oic_officer_delete, name='oic-officer-delete'),
 ]

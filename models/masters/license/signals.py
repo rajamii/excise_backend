@@ -69,6 +69,7 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
     # Extract required fields — with fallbacks
     try:
         license_category = getattr(application, 'license_category', None)
+        license_sub_category = getattr(application, 'license_sub_category', None)
         excise_district = getattr(application, 'excise_district', None) or getattr(application, 'site_district', None)
         applicant = getattr(application, 'applicant', None)
         
@@ -126,19 +127,34 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
     new_license_id = f"{base_prefix}/{str(seq).zfill(4)}"
 
     try:
-        License.objects.create(
+        created_license = License.objects.create(
             license_id=new_license_id,
             source_content_type=ct,
             source_object_id=str(application.pk),
             source_type=source_type,
             applicant=applicant,
             license_category=license_category,
+            license_sub_category=license_sub_category,
             excise_district=excise_district,
             issue_date=issue_date,
             valid_up_to=valid_up_to,
             is_active=True
         )
         logger.info(f"License created for application {application.pk}")
+
+        # Initialize module wallets for newly issued license.
+        try:
+            from models.transactional.payment.wallet_initializer import (
+                initialize_wallet_balances_for_license,
+            )
+
+            initialize_wallet_balances_for_license(created_license)
+        except Exception as wallet_error:
+            logger.error(
+                "License created but wallet initialization failed for license_id=%s: %s",
+                created_license.license_id,
+                wallet_error,
+            )
 
         # === NEW: If this is a renewal, deactivate the old license ===
         if hasattr(application, 'renewal_of') and application.renewal_of:
@@ -147,6 +163,53 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
                 old_license.is_active = False
                 old_license.save(update_fields=['is_active'])
                 logger.info(f"Deactivated previous license {old_license.license_id} due to renewal")
+
+        # === NEW: Create/Update Supply Chain User Profile ===
+        try:
+            establishment_name = str(getattr(application, 'establishment_name', '') or '').strip()
+            if establishment_name and applicant:
+                from models.masters.supply_chain.profile.models import (
+                    SupplyChainUserProfile,
+                    UserManufacturingUnit
+                )
+                
+                # Determine license type
+                license_type = 'Distillery'  # Default
+                if license_category:
+                    category_name = str(license_category.category_name or '').lower()
+                    if 'beer' in category_name or 'brewery' in category_name:
+                        license_type = 'Brewery'
+                
+                # Create/Update in permanent history
+                UserManufacturingUnit.objects.update_or_create(
+                    user=applicant,
+                    licensee_id=created_license.license_id,
+                    defaults={
+                        'manufacturing_unit_name': establishment_name,
+                        'license_type': license_type,
+                        'address': getattr(application, 'site_address', '') or ''
+                    }
+                )
+                
+                # Create/Update active profile (only if user doesn't have one yet)
+                if not SupplyChainUserProfile.objects.filter(user=applicant).exists():
+                    SupplyChainUserProfile.objects.create(
+                        user=applicant,
+                        manufacturing_unit_name=establishment_name,
+                        licensee_id=created_license.license_id,
+                        license_type=license_type,
+                        address=getattr(application, 'site_address', '') or ''
+                    )
+                    logger.info(f"Created supply chain profile for user {applicant.id} with license {created_license.license_id}")
+                else:
+                    logger.info(f"User {applicant.id} already has supply chain profile, skipping creation")
+                    
+        except Exception as profile_error:
+            logger.error(
+                "License created but supply chain profile creation failed for license_id=%s: %s",
+                created_license.license_id,
+                profile_error,
+            )
 
     except Exception as e:
         logger.error(f"Failed to create license for {application.pk}: {e}")
