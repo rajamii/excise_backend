@@ -1,4 +1,6 @@
 from rest_framework import serializers
+from datetime import timedelta
+from django.utils import timezone
 from .models import HologramProcurement, HologramRequest
 from auth.workflow.models import Transaction, Objection
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile
@@ -210,6 +212,18 @@ class HologramRequestSerializer(serializers.ModelSerializer):
         ret = super().to_representation(instance)
         # print(f"DEBUG SERIALIZER: Request {ret.get('ref_no')} - issued_assets: {ret.get('issued_assets')}")
         return ret
+
+    def validate_usage_date(self, value):
+        today = timezone.localdate()
+        tomorrow = today + timedelta(days=1)
+        day_after_tomorrow = today + timedelta(days=2)
+
+        if value not in {today, tomorrow, day_after_tomorrow}:
+            raise serializers.ValidationError(
+                f"Usage date must be between {today.strftime('%d-%m-%Y')} and {day_after_tomorrow.strftime('%d-%m-%Y')}."
+            )
+
+        return value
 
     # CRITICAL FIX: Dynamically fetch latest roll stats from HologramRollsDetails
     # This prevents stale JSON data from showing incorrect Available/Used counts in UI
