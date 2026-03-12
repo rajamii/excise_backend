@@ -1248,6 +1248,17 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         if not action_name:
             return Response({'error': 'Action is required'}, status=status.HTTP_400_BAD_REQUEST)
 
+        normalized_action = str(action_name or '').strip().lower()
+        if normalized_action in {'issue', 'approve'}:
+            today = timezone.localdate()
+            if instance.usage_date != today:
+                return Response(
+                    {
+                        'error': f"Allocation can be approved only on the usage date ({instance.usage_date.strftime('%d-%m-%Y')})."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
         transitions = WorkflowTransition.objects.filter(
             workflow=instance.workflow,
             from_stage=instance.current_stage
