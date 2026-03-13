@@ -82,15 +82,17 @@ INSTALLED_APPS = [
     # transcational models
     'models.transactional',
     'models.transactional.company_registration',
+    'models.transactional.company_collaboration',
     'models.transactional.license_application',
     'models.transactional.site_enquiry',
     'models.transactional.new_license_application',
+    'models.transactional.label_registration',
     'models.transactional.salesman_barman',
     'models.transactional.logs',
     'models.transactional.payment',
     'models.transactional.supply_chain.ena_transit_permit_details',
     'models.transactional.supply_chain.ena_revalidation_details',
-    'models.transactional.supply_chain.ena_requisition_details',  # Added missing app
+    'models.transactional.supply_chain.ena_requisition_details',  
     'models.transactional.supply_chain.ena_cancellation_details',
     'models.transactional.supply_chain.hologram',
     'models.transactional.supply_chain.brand_warehouse',
