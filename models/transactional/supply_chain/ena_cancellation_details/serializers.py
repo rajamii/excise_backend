@@ -6,6 +6,7 @@ import re
 class EnaCancellationDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
     establishment_name = serializers.SerializerMethodField()
+    payment_completed = serializers.SerializerMethodField()
 
     class Meta:
         model = EnaCancellationDetail
@@ -40,6 +41,20 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
             print(f"❌ Error fetching from License: {e}")
         
         return obj.distillery_name or ''
+
+    def get_payment_completed(self, obj):
+        try:
+            from models.transactional.payment.models import WalletTransaction
+
+            return WalletTransaction.objects.filter(
+                source_module='ena_cancellation',
+                reference_no=obj.our_ref_no,
+                entry_type='DR',
+                payment_status__iexact='success'
+            ).exists()
+        except Exception as e:
+            print(f"Payment completion lookup failed for cancellation {obj.id}: {e}")
+            return False
 
     def get_allowed_actions(self, obj):
         request = self.context.get('request')

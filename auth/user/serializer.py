@@ -27,13 +27,13 @@ class UserSerializer(serializers.ModelSerializer):
     phoneNumber = serializers.CharField(source='phone_number', read_only=True)
     panNumber = serializers.SerializerMethodField()
     hasActiveLicense = serializers.SerializerMethodField()
-
+    isActive = serializers.BooleanField(source='is_active', read_only=True)
+    
     class Meta:
         model = CustomUser
-        fields = [
-            'id', 'email', 'username', 'firstName', 'middleName', 'lastName',
-            'phoneNumber', 'panNumber', 'district', 'subdivision', 'address', 'role',
-            'created_by', 'hasActiveLicense'
+        fields = ['id', 'email', 'username', 'firstName', 'middleName', 'lastName',
+                 'phoneNumber', 'panNumber', 'district', 'subdivision', 'address', 'role',
+                 'created_by', 'hasActiveLicense', 'isActive'
         ]
         extra_kwargs = {
             'password': {'write_only': True},
@@ -76,7 +76,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
         model = CustomUser
         fields = [
             'email', 'first_name', 'middle_name', 'last_name', 'phone_number',
-            'district', 'subdivision', 'address', 'role', 'password'
+            'district', 'subdivision', 'address', 'role', 'password', 'is_active'
         ]
         extra_kwargs = {'password': {'write_only': True}}
 
@@ -107,12 +107,13 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         queryset=Subdivision.objects.all(),
         required=False
     )
+    isActive = serializers.BooleanField(source='is_active', required=False)
 
     class Meta:
         model = CustomUser
         fields = [
             'email', 'firstName', 'middleName', 'lastName',
-            'phoneNumber', 'district', 'subdivision', 'address', 'role'
+            'phoneNumber', 'district', 'subdivision', 'address', 'role', 'isActive'
         ]
 
     def to_internal_value(self, data):
@@ -135,6 +136,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             'last_name': 'lastName',
             'phone_number': 'phoneNumber',
             'role_id': 'role',
+            'is_active': 'isActive',
         }
         for source_key, target_key in aliases.items():
             if source_key in incoming and target_key not in incoming:
@@ -204,6 +206,11 @@ class LoginSerializer(serializers.Serializer):
         if not username or not password or not hashkey or not response:
             raise serializers.ValidationError("All fields are required.")
 
+        existing_user = CustomUser.objects.filter(username=username).first()
+        if existing_user and not existing_user.is_active:
+            raise serializers.ValidationError("Your account is inactive. Contact administrator for login.")
+
+        # Authenticate user
         user = authenticate(username=username, password=password)
         if not user:
             raise serializers.ValidationError("Invalid login credentials.")
@@ -428,6 +435,29 @@ class OICOfficerCreateSerializer(serializers.Serializer):
         return value
 
 
+class OICOfficerUpdateSerializer(serializers.Serializer):
+    approved_application_id = serializers.CharField()
+    name = serializers.CharField(max_length=150)
+    email = serializers.EmailField()
+    phone_number = serializers.CharField(max_length=10)
+
+    def validate(self, attrs):
+        officer = self.context.get('officer')
+        if officer is None:
+            raise serializers.ValidationError("Officer context is required.")
+
+        email = attrs.get('email')
+        phone_number = attrs.get('phone_number')
+
+        if CustomUser.objects.exclude(pk=officer.pk).filter(email=email).exists():
+            raise serializers.ValidationError({'email': ["This email is already registered."]})
+
+        if CustomUser.objects.exclude(pk=officer.pk).filter(phone_number=phone_number).exists():
+            raise serializers.ValidationError({'phone_number': ["This phone number is already registered."]})
+
+        return attrs
+
+
 class OICOfficerAssignmentSerializer(serializers.ModelSerializer):
     officerId = serializers.IntegerField(source='officer.id', read_only=True)
     username = serializers.CharField(source='officer.username', read_only=True)
@@ -436,6 +466,8 @@ class OICOfficerAssignmentSerializer(serializers.ModelSerializer):
     phoneNumber = serializers.CharField(source='officer.phone_number', read_only=True)
     applicationId = serializers.CharField(source='approved_application.application_id', read_only=True)
     licenseId = serializers.CharField(source='license.license_id', read_only=True)
+    officer_created_at = serializers.DateTimeField(source='officer.date_joined', read_only=True)
+    isActive = serializers.BooleanField(source='officer.is_active', read_only=True)
 
     class Meta:
         model = OICOfficerAssignment
@@ -451,6 +483,8 @@ class OICOfficerAssignmentSerializer(serializers.ModelSerializer):
             'licensee_id',
             'establishment_name',
             'created_at',
+            'officer_created_at',
+            'isActive',
         ]
 
     def get_name(self, obj):

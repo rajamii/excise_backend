@@ -14,7 +14,7 @@ from auth.workflow.constants import WORKFLOW_IDS
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
 from models.transactional.supply_chain.access_control import scope_by_profile_or_workflow
 
-HOLOGRAM_REF_PREFIX = 'NHP'
+HOLOGRAM_REF_PREFIX = 'HQR'
 HOLOGRAM_REF_DISTRICT_CODE = '1101'
 
 def _normalize_role_name(role_name):
@@ -564,6 +564,13 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         text = re.sub(r'\([a-z]+\)$', '', text).strip()
         return re.sub(r'\s+', '', text)
 
+    def _normalize_exact_carton_key(self, value):
+        text = str(value or '').strip().lower()
+        if not text:
+            return ''
+        text = text.split('/')[-1].strip()
+        return re.sub(r'\s+', '', text)
+
     def _normalize_serial_key(self, value):
         text = str(value or '').strip()
         if not text:
@@ -577,25 +584,41 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         if not isinstance(carton_details, list):
             raise serializers.ValidationError({'detail': 'Invalid carton details payload.'})
 
-        incoming_carton_keys = set()
+        instance_license_id = str(
+            getattr(getattr(instance, 'license', None), 'license_id', '') or
+            getattr(getattr(instance, 'licensee', None), 'licensee_id', '') or
+            ''
+        ).strip()
+
+        incoming_exact_carton_keys = set()
+        incoming_base_carton_keys = set()
         incoming_range_keys = set()
 
         for item in carton_details:
-            carton_key = self._normalize_carton_key(
-                item.get('baseCartoonNumber') or
+            exact_carton_key = self._normalize_exact_carton_key(
                 item.get('cartoonNumber') or
                 item.get('cartoon_number') or
-                item.get('carton_number')
+                item.get('carton_number') or
+                item.get('baseCartoonNumber')
+            )
+            base_carton_key = self._normalize_carton_key(
+                item.get('cartoonNumber') or
+                item.get('cartoon_number') or
+                item.get('carton_number') or
+                item.get('baseCartoonNumber')
             )
             from_key = self._normalize_serial_key(item.get('fromSerial') or item.get('from_serial'))
             to_key = self._normalize_serial_key(item.get('toSerial') or item.get('to_serial'))
 
-            if carton_key:
-                if carton_key in incoming_carton_keys:
+            if exact_carton_key:
+                if exact_carton_key in incoming_exact_carton_keys:
                     raise serializers.ValidationError({
                         'detail': 'Carton number already exists. Please use another carton number.'
                     })
-                incoming_carton_keys.add(carton_key)
+                incoming_exact_carton_keys.add(exact_carton_key)
+
+            if base_carton_key:
+                incoming_base_carton_keys.add(base_carton_key)
 
             if from_key and to_key:
                 range_key = f'{from_key}-{to_key}'
@@ -605,9 +628,17 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     })
                 incoming_range_keys.add(range_key)
 
-        existing_rolls = HologramRollsDetails.objects.filter(
-            procurement__licensee=instance.licensee
-        ).exclude(procurement=instance).values(
+        existing_rolls = HologramRollsDetails.objects.exclude(procurement=instance)
+
+        if instance_license_id:
+            existing_rolls = existing_rolls.filter(license_id=instance_license_id)
+        else:
+            existing_rolls = existing_rolls.filter(
+                procurement__licensee=instance.licensee,
+                procurement__manufacturing_unit=instance.manufacturing_unit
+            )
+
+        existing_rolls = existing_rolls.values(
             'carton_number', 'from_serial', 'to_serial'
         )
 
@@ -622,7 +653,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             if from_key and to_key:
                 existing_range_keys.add(f'{from_key}-{to_key}')
 
-        if any(key in existing_carton_keys for key in incoming_carton_keys):
+        if any(key in existing_carton_keys for key in incoming_base_carton_keys):
             raise serializers.ValidationError({
                 'detail': 'Carton number already exists for this distillery/brewery. Try another carton number.'
             })
@@ -1216,6 +1247,17 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         
         if not action_name:
             return Response({'error': 'Action is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        normalized_action = str(action_name or '').strip().lower()
+        if normalized_action in {'issue', 'approve'}:
+            today = timezone.localdate()
+            if instance.usage_date != today:
+                return Response(
+                    {
+                        'error': f"Allocation can be approved only on the usage date ({instance.usage_date.strftime('%d-%m-%Y')})."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
         transitions = WorkflowTransition.objects.filter(
             workflow=instance.workflow,

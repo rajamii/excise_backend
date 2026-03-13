@@ -23,6 +23,11 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     CANCELLATION_FEE_AMOUNT = Decimal('1000.00')
 
+    def _is_rejected_cancellation(self, cancellation) -> bool:
+        current_stage_name = getattr(getattr(cancellation, 'current_stage', None), 'name', '')
+        merged = f"{getattr(cancellation, 'status', '')} {current_stage_name}".lower()
+        return 'reject' in merged
+
     def _generate_cancellation_ref(self) -> str:
         existing_refs = EnaCancellationDetail.objects.values_list('our_ref_no', flat=True)
         pattern = r'CAN/(\d+)/EXCISE'
@@ -235,9 +240,10 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         
         ref_no = serializer.validated_data['reference_no']
         permit_numbers = serializer.validated_data['permit_numbers']
+        normalized_permit_numbers = [str(num).strip() for num in permit_numbers if str(num).strip()]
         
         print(f"Reference No: {ref_no}")
-        print(f"Permit Numbers: {permit_numbers}")
+        print(f"Permit Numbers: {normalized_permit_numbers}")
         
         # Never trust client-provided licensee_id for authenticated licensee users.
         if hasattr(request.user, 'supply_chain_profile'):
@@ -263,8 +269,34 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             
             print(f"✅ Found requisition: {req.id}")
 
-            # Fixed fee per cancellation submission (aligned with revalidation style)
-            total_amount = self.CANCELLATION_FEE_AMOUNT
+            existing_cancellations = EnaCancellationDetail.objects.filter(requisition_ref_no=ref_no)
+            blocked_permits = set()
+            for existing in existing_cancellations:
+                if self._is_rejected_cancellation(existing):
+                    continue
+
+                existing_numbers_raw = (
+                    existing.cancelled_permit_numbers
+                    or existing.cancelled_permit_number
+                    or ''
+                )
+                existing_numbers = [
+                    num.strip() for num in str(existing_numbers_raw).split(',') if num.strip()
+                ]
+                blocked_permits.update(existing_numbers)
+
+            duplicate_permits = sorted(
+                set(normalized_permit_numbers) & blocked_permits,
+                key=lambda value: int(value) if value.isdigit() else value
+            )
+            if duplicate_permits:
+                return Response({
+                    'error': 'Some selected permits are already submitted for cancellation.',
+                    'duplicate_permits': duplicate_permits
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Charge per selected permit, so wallet deduction matches the UI selection.
+            total_amount = self.CANCELLATION_FEE_AMOUNT * Decimal(len(normalized_permit_numbers))
             print(f"Total amount: {total_amount}")
             license_id = str(getattr(req, 'licensee_id', '') or '').strip()
             if not license_id:
@@ -320,11 +352,11 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                     govt_officer="N/A",
                     state=req.state,
                     cancellation_date=timezone.now(),
-                    cancellation_br_amount=Decimal('0.00'),
-                    cancelled_permit_number=",".join(permit_numbers),
-                    cancelled_permit_numbers=",".join(permit_numbers),
+                    cancellation_br_amount=Decimal(str(total_amount)),
+                    cancelled_permit_number=",".join(normalized_permit_numbers),
+                    cancelled_permit_numbers=",".join(normalized_permit_numbers),
                     total_cancellation_amount=Decimal(str(total_amount)),
-                    permit_nocount=str(len(permit_numbers)),
+                    permit_nocount=str(len(normalized_permit_numbers)),
                     licensee_id=licensee_id,
                     license_id=license_id,
                     distillery_name=req.lifted_from_distillery_name

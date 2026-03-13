@@ -13,7 +13,7 @@ from .models import Workflow, WorkflowStage, WorkflowTransition, StagePermission
 from .serializers import WorkflowSerializer, WorkflowStageSerializer, WorkflowTransitionSerializer, WorkflowObjectionSerializer, WorkflowRejectionSerializer, StagePermissionSerializer
 from auth.roles.permissions import HasAppPermission
 from .permissions import HasStagePermission
-from .services import WorkflowService
+from .services import SERIALIZER_MAPPING, WorkflowService
 from models.transactional.license_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
 from models.transactional.salesman_barman.models import SalesmanBarmanModel
@@ -184,16 +184,9 @@ def stage_permission_delete(request, pk):
 @api_view(['GET'])
 @permission_classes([HasStagePermission])
 def get_next_stages(request, application_id):
-    try:
-        application = NewLicenseApplication.objects.get(application_id = application_id)
-    except NewLicenseApplication.DoesNotExist:
-        try:
-            application = LicenseApplication.objects.get(application_id = application_id)
-        except LicenseApplication.DoesNotExist:
-            try:
-                application = SalesmanBarmanModel.objects.get(application_id = application_id)
-            except LicenseApplication.DoesNotExist:
-                return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+    application = _get_application_by_id(application_id)
+    if not application:
+        return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
         
     # Enforce stage-level processing permission for action discovery.
     # Without this, non-processing users can still fetch next actions on GET.
@@ -491,6 +484,8 @@ def _get_application_by_id(application_id):
     Returns the instance or None
     """
     model_configs = [
+        ("company_registration", "CompanyRegistration"),
+        ("company_collaboration", "CompanyCollaboration"),
         ("license_application", "LicenseApplication"),
         ("new_license_application", "NewLicenseApplication"),
         ("salesman_barman", "SalesmanBarmanModel"),
@@ -523,9 +518,17 @@ def _serialize_application(application, requesting_user=None):
     Falls back gracefully if serializer is missing.
     """
     try:
-        # Try to load the correct app-specific serializer
-        module = import_module(f"{application._meta.app_label}.serializers")
-        serializer_class = getattr(module, f"{application.__class__.__name__}Serializer")
+        key = (application._meta.app_label, application._meta.model_name.lower())
+        serializer_path = SERIALIZER_MAPPING.get(key)
+
+        if serializer_path:
+            module_path, serializer_name = serializer_path.rsplit('.', 1)
+            module = import_module(module_path)
+            serializer_class = getattr(module, serializer_name)
+        else:
+            module = import_module(f"models.transactional.{application._meta.app_label}.serializers")
+            serializer_class = getattr(module, f"{application.__class__.__name__}Serializer")
+
         serializer = serializer_class(application)
         return Response(serializer.data)
     except (ImportError, AttributeError):

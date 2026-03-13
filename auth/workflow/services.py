@@ -142,6 +142,8 @@ ACTION_CONFIGS = {
 # Mapping: (app_label, model_name) -> Serializer class
 SERIALIZER_MAPPING = {
     # (app_label, model_name_lower): 'full.import.path.to.Serializer'
+    ('company_registration', 'companyregistration'): 'models.transactional.company_registration.serializers.CompanyRegistrationSerializer',
+    ('company_collaboration', 'companycollaboration'): 'models.transactional.company_collaboration.serializers.CompanyCollaborationSerializer',
     ('license_application', 'licenseapplication'): 'models.transactional.license_application.serializers.LicenseApplicationSerializer',
     ('new_license_application', 'newlicenseapplication'): 'models.transactional.new_license_application.serializers.NewLicenseApplicationSerializer',
     ('salesman_barman', 'salesmanbarmanmodel'): 'models.transactional.salesman_barman.serializers.SalesmanBarmanSerializer',
