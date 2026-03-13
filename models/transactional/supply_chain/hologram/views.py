@@ -14,7 +14,7 @@ from auth.workflow.constants import WORKFLOW_IDS
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
 from models.transactional.supply_chain.access_control import scope_by_profile_or_workflow
 
-HOLOGRAM_REF_PREFIX = 'NHP'
+HOLOGRAM_REF_PREFIX = 'HQR'
 HOLOGRAM_REF_DISTRICT_CODE = '1101'
 
 def _normalize_role_name(role_name):
