@@ -48,9 +48,10 @@ class EnaRequisitionDetail(models.Model):
         db_table = 'ena_requisition_detail'
         ordering = ['-created_at']
 
-    def __str__(self) -> str:
-        return f"ENA Req {self.requisition_number} ({self.application_id})"
-
+    # def __str__(self) -> str:
+    #     return f"ENA Req {self.requisition_number} ({self.application_id})"
+def __str__(self) -> str:
+    return f"ENA Req {self.our_ref_no or self.pk}"
 
 class RequisitionBulkLiterDetail(models.Model):
     requisition = models.OneToOneField(

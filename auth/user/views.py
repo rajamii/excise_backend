@@ -8,14 +8,9 @@ from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework_simplejwt.views import TokenRefreshView
 from django.shortcuts import get_object_or_404
 from django.contrib.contenttypes.models import ContentType
-from django.db import transaction
-from captcha.helpers import captcha_image_url
-from captcha.models import CaptchaStore
-from typing import cast
-
-from auth.roles.models import Role
-from auth.roles.permissions import make_permission, HasAppPermission
-from auth.user.models import CustomUser, LicenseeProfile, OICOfficerAssignment
+from django.db import transaction, IntegrityError
+from django.db.models.deletion import ProtectedError
+from auth.user.models import CustomUser, OICOfficerAssignment
 from auth.user.serializer import (
     UserSerializer,
     UserCreateSerializer,
@@ -24,6 +19,7 @@ from auth.user.serializer import (
     LicenseeSignupSerializer,
     LicenseeProfileSerializer,
     OICOfficerCreateSerializer,
+    OICOfficerUpdateSerializer,
     OICOfficerAssignmentSerializer,
     OICApprovedEstablishmentSerializer,
 )
@@ -38,6 +34,7 @@ from models.masters.license.models import License
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
 import secrets
 import string
+from django.utils import timezone
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -229,6 +226,29 @@ def _generate_temp_password(length: int = 12):
     return ''.join(password)
 
 
+def _soft_delete_oic_officer(officer: CustomUser) -> None:
+    timestamp_token = timezone.now().strftime('%Y%m%d%H%M%S')
+    unique_suffix = str(officer.pk)
+
+    officer.is_active = False
+
+    if officer.email:
+        local_part, _, domain_part = officer.email.partition('@')
+        sanitized_local = local_part[:20] if local_part else 'deleted'
+        domain_value = domain_part or 'deleted.local'
+        officer.email = f"{sanitized_local}.deleted.{timestamp_token}.{unique_suffix}@{domain_value}"
+
+    if officer.username:
+        officer.username = f"deleted_oic_{timestamp_token}_{unique_suffix}"[:30]
+
+    replacement_phone = f"9{str(officer.pk).zfill(9)[-9:]}"
+    if CustomUser.objects.exclude(pk=officer.pk).filter(phone_number=replacement_phone).exists():
+        replacement_phone = f"8{timestamp_token[-9:]}"
+    officer.phone_number = replacement_phone
+
+    officer.save(update_fields=['is_active', 'email', 'username', 'phone_number'])
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def oic_approved_establishments(request):
@@ -401,6 +421,181 @@ def oic_officer_create(request):
     )
 
 
+@api_view(['PUT', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def oic_officer_update(request, assignment_id):
+    _ensure_site_admin(request)
+
+    assignment = get_object_or_404(
+        OICOfficerAssignment.objects.select_related('officer', 'approved_application', 'license'),
+        pk=assignment_id
+    )
+    officer = assignment.officer
+
+    serializer = OICOfficerUpdateSerializer(
+        data=request.data,
+        context={'officer': officer}
+    )
+    serializer.is_valid(raise_exception=True)
+    payload = serializer.validated_data
+
+    application = get_object_or_404(
+        NewLicenseApplication,
+        application_id=payload['approved_application_id']
+    )
+    content_type = ContentType.objects.get_for_model(NewLicenseApplication)
+    license_obj = (
+        License.objects.filter(
+            source_type='new_license_application',
+            source_content_type=content_type,
+            source_object_id=str(application.application_id),
+            is_active=True,
+        )
+        .order_by('-issue_date')
+        .first()
+    )
+    if not license_obj:
+        return Response(
+            {'detail': 'No active license found for selected approved application.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    first_name, last_name = _split_full_name(payload['name'])
+    address = (
+        str(getattr(application, 'business_address', '') or '').strip()
+        or str(getattr(application, 'present_address', '') or '').strip()
+        or officer.address
+        or 'N/A'
+    )
+    licensee_id = _derive_licensee_id(application, license_obj)
+    license_type_name = (
+        str(getattr(getattr(application, 'license_type', None), 'license_type', '') or '').strip()
+        or None
+    )
+
+    with transaction.atomic():
+        officer.first_name = first_name
+        officer.last_name = last_name
+        officer.email = payload['email']
+        officer.phone_number = payload['phone_number']
+        officer.district = application.site_district
+        officer.subdivision = application.site_subdivision
+        officer.address = address
+        officer.save(update_fields=[
+            'first_name',
+            'last_name',
+            'email',
+            'phone_number',
+            'district',
+            'subdivision',
+            'address',
+        ])
+
+        assignment.approved_application = application
+        assignment.license = license_obj
+        assignment.licensee_id = licensee_id
+        assignment.establishment_name = application.establishment_name
+        assignment.save(update_fields=[
+            'approved_application',
+            'license',
+            'licensee_id',
+            'establishment_name',
+        ])
+
+        SupplyChainUserProfile.objects.update_or_create(
+            user=officer,
+            defaults={
+                'manufacturing_unit_name': application.establishment_name,
+                'licensee_id': licensee_id,
+                'license_type': license_type_name,
+                'address': address,
+            }
+        )
+
+        UserManufacturingUnit.objects.update_or_create(
+            user=officer,
+            licensee_id=licensee_id,
+            defaults={
+                'manufacturing_unit_name': application.establishment_name,
+                'license_type': license_type_name,
+                'address': address,
+            }
+        )
+
+    assignment_serializer = OICOfficerAssignmentSerializer(assignment)
+    return Response(
+        {
+            'message': 'Officer updated successfully.',
+            'officer': assignment_serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def oic_officer_set_active(request, assignment_id):
+    _ensure_site_admin(request)
+
+    assignment = get_object_or_404(
+        OICOfficerAssignment.objects.select_related('officer'),
+        pk=assignment_id
+    )
+    officer = assignment.officer
+
+    is_active = request.data.get('is_active', request.data.get('isActive'))
+    if is_active in [True, False]:
+        normalized = bool(is_active)
+    elif isinstance(is_active, str):
+        normalized = is_active.strip().lower() in {'true', '1', 'yes', 'active'}
+    else:
+        return Response(
+            {'detail': 'is_active is required.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    officer.is_active = normalized
+    officer.save(update_fields=['is_active'])
+
+    assignment_serializer = OICOfficerAssignmentSerializer(assignment)
+    return Response(
+        {
+            'message': f"Officer {'activated' if normalized else 'deactivated'} successfully.",
+            'officer': assignment_serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def oic_officer_delete(request, assignment_id):
+    _ensure_site_admin(request)
+
+    assignment = get_object_or_404(
+        OICOfficerAssignment.objects.select_related('officer'),
+        pk=assignment_id
+    )
+    officer = assignment.officer
+
+    try:
+        with transaction.atomic():
+            officer.delete()
+        return Response({'message': 'Officer deleted successfully.'}, status=status.HTTP_204_NO_CONTENT)
+    except Exception:
+        with transaction.atomic():
+            _soft_delete_oic_officer(officer)
+            UserManufacturingUnit.objects.filter(user=officer).delete()
+            SupplyChainUserProfile.objects.filter(user=officer).delete()
+            assignment.delete()
+        return Response(
+            {
+                'message': 'Officer could not be hard deleted due to linked records. Officer has been deactivated and removed from the OIC list.'
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 # Licensee self-signup (public endpoint)
 @api_view(['POST'])
 @permission_classes([])
@@ -433,7 +628,7 @@ class UserListView(generics.ListAPIView):
     """
     Lists all users. Requires 'user.view' permission.
     """
-    queryset = CustomUser.objects.filter(is_oic_managed=False)
+    queryset = CustomUser.objects.filter(is_oic_managed=False, is_active=True)
     serializer_class = UserSerializer
     permission_classes = [make_permission('user', 'view')]
 
@@ -448,9 +643,14 @@ class CurrentUserAPI(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        serializer = UserSerializer(request.user)
-        return Response(serializer.data)
-
+        user = request.user
+        if not user.is_active:
+            return Response(
+                {'detail': 'Your account is inactive. Contact administrator for login.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        serializer = UserSerializer(user)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 class UserUpdateView(generics.UpdateAPIView):
     queryset = CustomUser.objects.all()
@@ -489,6 +689,29 @@ class UserDeleteView(generics.DestroyAPIView):
     queryset = CustomUser.objects.all()
     serializer_class = UserSerializer
     permission_classes = [make_permission('user', 'delete')]
+
+    def _soft_delete_user(self, instance: CustomUser) -> None:
+        timestamp_token = timezone.now().strftime('%Y%m%d%H%M%S')
+        unique_suffix = str(instance.pk)
+
+        instance.is_active = False
+
+        if instance.email:
+            local_part, _, domain_part = instance.email.partition('@')
+            sanitized_local = local_part[:20] if local_part else 'deleted'
+            domain_value = domain_part or 'deleted.local'
+            instance.email = f"{sanitized_local}.deleted.{timestamp_token}.{unique_suffix}@{domain_value}"
+
+        if instance.username:
+            instance.username = f"deleted_{timestamp_token}_{unique_suffix}"[:30]
+
+        # Keep phone unique after soft delete to allow reuse for new user creation.
+        replacement_phone = f"9{str(instance.pk).zfill(9)[-9:]}"
+        if CustomUser.objects.exclude(pk=instance.pk).filter(phone_number=replacement_phone).exists():
+            replacement_phone = f"8{timestamp_token[-9:]}"
+        instance.phone_number = replacement_phone
+
+        instance.save(update_fields=['is_active', 'email', 'username', 'phone_number'])
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -671,9 +894,11 @@ def send_otp_api(request):
         try:
             CustomUser.objects.get(phone_number=phone_number)
         except CustomUser.DoesNotExist:
+            return Response({'error': 'User with this phone number does not exist'}, status=status.HTTP_404_NOT_FOUND)
+        if not user.is_active:
             return Response(
-                {'error': 'User with this phone number does not exist'},
-                status=status.HTTP_404_NOT_FOUND
+                {'error': 'Your account is inactive. Contact administrator for login.'},
+                status=status.HTTP_403_FORBIDDEN
             )
 
     if purpose == 'register':
@@ -711,10 +936,14 @@ def verify_otp_api(request):
         try:
             user = CustomUser.objects.get(phone_number=phone_number)
         except CustomUser.DoesNotExist:
+            return Response({'error': 'User does not exist in the database'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not user.is_active:
             return Response(
-                {'error': 'User does not exist in the database'},
-                status=status.HTTP_404_NOT_FOUND
+                {'error': 'Your account is inactive. Contact administrator for login.'},
+                status=status.HTTP_403_FORBIDDEN
             )
+
         refresh = RefreshToken.for_user(user)
         return Response({
             'success': True,

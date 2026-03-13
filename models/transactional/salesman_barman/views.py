@@ -284,7 +284,7 @@ def initiate_renewal(request, license_id):
     }, status=status.HTTP_201_CREATED)
 
 
-@permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('salesman_barman_registration', 'view'), HasStagePermission])
 @api_view(['GET'])
 def list_salesman_barman(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
@@ -303,7 +303,7 @@ def list_salesman_barman(request):
     return Response(serializer.data)
 
 
-@permission_classes([HasAppPermission('salesman_barman', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('salesman_barman_registration', 'view'), HasStagePermission])
 @api_view(['GET'])
 def salesman_barman_detail(request, application_id):
     app = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
@@ -312,7 +312,7 @@ def salesman_barman_detail(request, application_id):
 
 
 # Dashboard Counts
-@permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('salesman_barman_registration', 'view'), HasStagePermission])
 @api_view(['GET'])
 def dashboard_counts(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
@@ -327,17 +327,17 @@ def dashboard_counts(request):
         return Response({
             "applied": base_qs.filter(current_stage__name__in=applied_stages).count(),
             "pending": base_qs.filter(current_stage__name__in=pending_stages).count(),
-            "approved": base_qs.filter(current_stage__name__in=stage_sets['approved'], is_approved=True).count(),
+            "approved": base_qs.filter(current_stage__name__in=stage_sets['approved']).count(),
             "rejected": base_qs.filter(current_stage__name__in=stage_sets['rejected']).count(),
         })
 
     if role in ['site_admin', 'single_window']:
-        applied_stages = stage_sets['initial'] | stage_sets['level']
-        pending_stages = stage_sets['objection'] | stage_sets['payment']
+        applied_stages = set(stage_sets['initial'])
+        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
         return Response({
             "applied": all_qs.filter(current_stage__name__in=applied_stages).count(),
             "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
-            "approved": all_qs.filter(current_stage__name__in=stage_sets['approved'], is_approved=True).count(),
+            "approved": all_qs.filter(current_stage__name__in=stage_sets['approved']).count(),
             "rejected": all_qs.filter(current_stage__name__in=stage_sets['rejected']).count(),
         })
 
@@ -352,7 +352,7 @@ def dashboard_counts(request):
         "objection": all_qs.filter(current_stage__name__in=buckets['objection']).count(),
     })
 
-@permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('salesman_barman_registration', 'view'), HasStagePermission])
 @api_view(['GET'])
 @parser_classes([JSONParser])
 def application_group(request):
@@ -386,8 +386,8 @@ def application_group(request):
         return Response(result)
 
     if role in ['site_admin', 'single_window']:
-        applied_stages = stage_sets['initial'] | stage_sets['level']
-        pending_stages = stage_sets['objection'] | stage_sets['payment']
+        applied_stages = set(stage_sets['initial'])
+        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
         return Response({
             "applied": SalesmanBarmanSerializer(
                 all_qs.filter(current_stage__name__in=applied_stages), many=True
