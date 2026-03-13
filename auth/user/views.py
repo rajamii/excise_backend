@@ -10,7 +10,10 @@ from django.shortcuts import get_object_or_404
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction, IntegrityError
 from django.db.models.deletion import ProtectedError
-from auth.user.models import CustomUser, OICOfficerAssignment
+from captcha.helpers import captcha_image_url
+from captcha.models import CaptchaStore
+from auth.roles.permissions import HasAppPermission, make_permission
+from auth.user.models import CustomUser, LicenseeProfile, OICOfficerAssignment
 from auth.user.serializer import (
     UserSerializer,
     UserCreateSerializer,
@@ -892,7 +895,7 @@ def send_otp_api(request):
 
     if purpose != 'register':
         try:
-            CustomUser.objects.get(phone_number=phone_number)
+            user = CustomUser.objects.get(phone_number=phone_number)
         except CustomUser.DoesNotExist:
             return Response({'error': 'User with this phone number does not exist'}, status=status.HTTP_404_NOT_FOUND)
         if not user.is_active:
