@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.utils import timezone
+from django.db.utils import DatabaseError, ProgrammingError
 from auth.user.models import CustomUser, LicenseeProfile, OICOfficerAssignment
 from auth.roles.models import Role
 from models.masters.core.models import District, Subdivision
@@ -62,8 +63,13 @@ class UserSerializer(serializers.ModelSerializer):
         return False
 
     def get_panNumber(self, obj):
-        profile = getattr(obj, 'licensee_profile', None)
-        return getattr(profile, 'pan_number', None)
+        try:
+            profile = getattr(obj, 'licensee_profile', None)
+            return getattr(profile, 'pan_number', None)
+        except (DatabaseError, ProgrammingError):
+            # Older databases may not yet have the full licensee_profile schema.
+            # Do not fail /auth/users/me/ for login/session bootstrap in that case.
+            return None
 
 class UserCreateSerializer(serializers.ModelSerializer):
     class Meta:

@@ -153,9 +153,9 @@ REST_FRAMEWORK = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'eAbkari',       # Database name
+        'NAME': 'eAbkari_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': os.getenv('DB_PASSWORD', 'postgres'),  # Your PostgreSQL password
+        'PASSWORD': 'sameer123',  # Your PostgreSQL password
         'HOST': 'localhost',        # Default host
         'PORT': '5433',             # Default PostgreSQL port
     }
