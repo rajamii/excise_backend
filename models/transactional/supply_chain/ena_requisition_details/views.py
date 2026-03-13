@@ -30,6 +30,15 @@ def _is_commissioner_user(user):
     }
 
 
+def _is_oic_user(user):
+    role_token = _normalize_role_token(getattr(getattr(user, 'role', None), 'name', ''))
+    return (
+        bool(getattr(user, 'is_oic_managed', False))
+        or hasattr(user, 'oic_assignment')
+        or role_token in {'officerincharge', 'offcierincharge', 'oic'}
+    )
+
+
 def _filter_commissioner_visible_requisitions(user, queryset):
     if not _is_commissioner_user(user):
         return queryset
@@ -227,12 +236,17 @@ class RequisitionArrivalBulkLiterDetailAPIView(APIView):
             serializer.is_valid(raise_exception=True)
             record = serializer.save(
                 reference_no=requisition.our_ref_no,
-                licensee_id=requisition.licensee_id
+                licensee_id=requisition.licensee_id,
+                approval_status=RequisitionBulkLiterDetail.ApprovalStatus.PENDING,
+                submitted_at=timezone.now(),
+                reviewed_at=None,
+                reviewed_by='',
+                review_remarks=''
             )
 
             return Response({
                 'status': 'success',
-                'message': 'Arrival details saved successfully.',
+                'message': 'Arrival details submitted successfully and sent to OIC for approval.',
                 'data': RequisitionBulkLiterDetailSerializer(record).data
             }, status=status.HTTP_200_OK if existing else status.HTTP_201_CREATED)
 
@@ -289,9 +303,16 @@ class RequisitionArrivalBulkLiterDetailsListAPIView(APIView):
                     for alias in self._expand_license_aliases(raw_id):
                         licensee_candidates.add(alias)
 
+            review_status = str(request.query_params.get('review_status', '') or '').strip().upper()
             rows_qs = RequisitionBulkLiterDetail.objects.select_related('requisition').filter(
                 requisition_id__in=requisition_ids
             ).order_by('-updated_at')
+            if review_status and review_status != 'ALL':
+                rows_qs = rows_qs.filter(approval_status=review_status)
+            elif not review_status:
+                rows_qs = rows_qs.filter(
+                    approval_status=RequisitionBulkLiterDetail.ApprovalStatus.APPROVED
+                )
             if licensee_candidates:
                 license_q = models.Q()
                 for cid in licensee_candidates:
@@ -309,20 +330,36 @@ class RequisitionArrivalBulkLiterDetailsListAPIView(APIView):
                             requisition_id__in=requisition_ids,
                             reference_no__in=ref_nos
                         ).select_related('requisition').order_by('-updated_at')
+                        if review_status and review_status != 'ALL':
+                            rows_qs = rows_qs.filter(approval_status=review_status)
+                        elif not review_status:
+                            rows_qs = rows_qs.filter(approval_status=RequisitionBulkLiterDetail.ApprovalStatus.APPROVED)
             rows = rows_qs
 
             data = []
             for row in rows:
                 req = getattr(row, 'requisition', None)
+                tanker_rows = row.tanker_details or []
+                tanker_numbers = ', '.join(
+                    str(item.get('tanker_no', '')).strip()
+                    for item in tanker_rows
+                    if isinstance(item, dict) and str(item.get('tanker_no', '')).strip()
+                )
                 data.append({
                     'id': row.id,
                     'requisition_id': req.id if req else None,
                     'reference_no': row.reference_no,
                     'licensee_id': row.licensee_id,
                     'tanker_count': row.tanker_count,
-                    'tanker_details': row.tanker_details or [],
+                    'tanker_details': tanker_rows,
+                    'tanker_numbers': tanker_numbers,
                     'total_bulk_liter': str(row.total_bulk_liter or 0),
-                    'arrival_date': row.updated_at.date().isoformat() if row.updated_at else '',
+                    'approval_status': row.approval_status,
+                    'submitted_at': row.submitted_at.isoformat() if row.submitted_at else None,
+                    'reviewed_at': row.reviewed_at.isoformat() if row.reviewed_at else None,
+                    'reviewed_by': row.reviewed_by or '',
+                    'review_remarks': row.review_remarks or '',
+                    'arrival_date': row.submitted_at.date().isoformat() if row.submitted_at else (row.updated_at.date().isoformat() if row.updated_at else ''),
                     'requisition_total_quantity': str(getattr(req, 'totalbl', 0) or 0) if req else '0',
                     'distillery_name': (getattr(req, 'lifted_from_distillery_name', '') or '') if req else '',
                     'approval_date': getattr(req, 'approval_date', None) if req else None,
@@ -332,6 +369,65 @@ class RequisitionArrivalBulkLiterDetailsListAPIView(APIView):
                 'status': 'success',
                 'data': data
             }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({
+                'status': 'error',
+                'message': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class RequisitionArrivalBulkLiterReviewAPIView(APIView):
+    def post(self, request, detail_id):
+        try:
+            if not _is_oic_user(request.user):
+                return Response({
+                    'status': 'error',
+                    'message': 'Only OIC users can review BL details.'
+                }, status=status.HTTP_403_FORBIDDEN)
+
+            action = str(request.data.get('action', '') or '').strip().upper()
+            if action not in {'APPROVE', 'REJECT'}:
+                return Response({
+                    'status': 'error',
+                    'message': 'Invalid action. Use APPROVE or REJECT.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            requisitions = scope_by_profile_or_workflow(
+                request.user,
+                EnaRequisitionDetail.objects.all(),
+                WORKFLOW_IDS['ENA_REQUISITION'],
+                licensee_field='licensee_id'
+            )
+            detail = RequisitionBulkLiterDetail.objects.select_related('requisition').get(
+                pk=detail_id,
+                requisition_id__in=requisitions.values_list('id', flat=True)
+            )
+
+            remarks = str(request.data.get('remarks', '') or '').strip()
+            detail.approval_status = (
+                RequisitionBulkLiterDetail.ApprovalStatus.APPROVED
+                if action == 'APPROVE'
+                else RequisitionBulkLiterDetail.ApprovalStatus.REJECTED
+            )
+            detail.reviewed_at = timezone.now()
+            detail.reviewed_by = str(getattr(request.user, 'username', '') or '')
+            detail.review_remarks = remarks
+            detail.save(update_fields=['approval_status', 'reviewed_at', 'reviewed_by', 'review_remarks', 'updated_at'])
+
+            return Response({
+                'status': 'success',
+                'message': (
+                    'BL details approved successfully.'
+                    if action == 'APPROVE'
+                    else 'BL details rejected successfully.'
+                ),
+                'data': RequisitionBulkLiterDetailSerializer(detail).data
+            }, status=status.HTTP_200_OK)
+        except RequisitionBulkLiterDetail.DoesNotExist:
+            return Response({
+                'status': 'error',
+                'message': 'BL details not found.'
+            }, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({
                 'status': 'error',

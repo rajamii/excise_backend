@@ -54,6 +54,11 @@ def __str__(self) -> str:
     return f"ENA Req {self.our_ref_no or self.pk}"
 
 class RequisitionBulkLiterDetail(models.Model):
+    class ApprovalStatus(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        APPROVED = 'APPROVED', 'Approved'
+        REJECTED = 'REJECTED', 'Rejected'
+
     requisition = models.OneToOneField(
         EnaRequisitionDetail,
         on_delete=models.CASCADE,
@@ -64,6 +69,16 @@ class RequisitionBulkLiterDetail(models.Model):
     tanker_count = models.PositiveIntegerField(default=0)
     tanker_details = models.JSONField(default=list, blank=True)
     total_bulk_liter = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    approval_status = models.CharField(
+        max_length=20,
+        choices=ApprovalStatus.choices,
+        default=ApprovalStatus.PENDING,
+        db_index=True
+    )
+    submitted_at = models.DateTimeField(default=timezone.now)
+    reviewed_at = models.DateTimeField(blank=True, null=True)
+    reviewed_by = models.CharField(max_length=150, blank=True, default='')
+    review_remarks = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 

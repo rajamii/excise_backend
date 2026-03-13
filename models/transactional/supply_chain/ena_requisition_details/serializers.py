@@ -62,10 +62,20 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             data['has_arrival_details'] = True
             data['arrival_total_bulk_liter'] = str(arrival.total_bulk_liter or '0')
             data['arrival_tanker_count'] = int(arrival.tanker_count or 0)
+            data['arrival_approval_status'] = arrival.approval_status or 'PENDING'
+            data['arrival_submitted_at'] = arrival.submitted_at.isoformat() if arrival.submitted_at else None
+            data['arrival_reviewed_at'] = arrival.reviewed_at.isoformat() if arrival.reviewed_at else None
+            data['arrival_reviewed_by'] = arrival.reviewed_by or ''
+            data['arrival_review_remarks'] = arrival.review_remarks or ''
         except ObjectDoesNotExist:
             data['has_arrival_details'] = False
             data['arrival_total_bulk_liter'] = '0'
             data['arrival_tanker_count'] = 0
+            data['arrival_approval_status'] = ''
+            data['arrival_submitted_at'] = None
+            data['arrival_reviewed_at'] = None
+            data['arrival_reviewed_by'] = ''
+            data['arrival_review_remarks'] = ''
         
         # Ensure status_code is set - derive from stage if not set
         if not instance.status_code or instance.status_code == 'RQ_00':
@@ -645,7 +655,18 @@ class RequisitionBulkLiterDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = RequisitionBulkLiterDetail
         fields = '__all__'
-        read_only_fields = ['reference_no', 'licensee_id', 'total_bulk_liter', 'created_at', 'updated_at']
+        read_only_fields = [
+            'reference_no',
+            'licensee_id',
+            'total_bulk_liter',
+            'approval_status',
+            'submitted_at',
+            'reviewed_at',
+            'reviewed_by',
+            'review_remarks',
+            'created_at',
+            'updated_at'
+        ]
 
     def validate(self, attrs):
         tanker_details = attrs.get('tanker_details')
