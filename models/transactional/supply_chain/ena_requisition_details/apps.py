@@ -49,9 +49,13 @@ class EnaRequisitionDetailsConfig(AppConfig):
         if not should_run:
             return
 
-        # Only run in the main worker process, not the autoreloader helper.
-        if os.environ.get('RUN_MAIN') == 'true':
-            t = threading.Thread(target=run_expiry_loop, daemon=True)
-            t.start()
-            print(" >> Excise Automation: Expiry Scheduler ACTIVATED << ")
+        # In local runserver, only run in the main worker process, not the autoreloader helper.
+        # In hosted/non-debug environments RUN_MAIN is usually unset, so allow explicit opt-in.
+        is_dev_autoreload_main = os.environ.get('RUN_MAIN') == 'true'
+        if settings.DEBUG and not is_dev_autoreload_main:
+            return
+
+        t = threading.Thread(target=run_expiry_loop, daemon=True)
+        t.start()
+        print(" >> Excise Automation: Expiry Scheduler ACTIVATED << ")
 
