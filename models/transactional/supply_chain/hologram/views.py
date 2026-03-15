@@ -103,6 +103,51 @@ def _get_visible_stage_ids_for_user(user, workflow_id):
     visible.update(_collect_role_stage_ids(workflow_id, user))
     return visible
 
+def _apply_transition_by_action(instance, acting_user, action_name, remarks=''):
+    """
+    Move an instance through workflow transition graph using action from DB conditions.
+    Avoids hardcoded stage-name checks.
+    """
+    if not instance or not instance.workflow or not instance.current_stage:
+        return None
+
+    normalized_action = str(action_name or '').strip().lower()
+    if not normalized_action:
+        return None
+
+    transitions = WorkflowTransition.objects.filter(
+        workflow=instance.workflow,
+        from_stage=instance.current_stage
+    ).order_by('id')
+
+    selected = None
+    for transition in transitions:
+        cond = transition.condition or {}
+        cond_action = str(cond.get('action') or '').strip().lower()
+        if cond_action != normalized_action:
+            continue
+        if _condition_role_matches(cond, acting_user):
+            selected = transition
+            break
+        if selected is None:
+            # Backward compatible fallback when role info is missing/inconsistent.
+            selected = transition
+
+    if not selected:
+        return None
+
+    instance.current_stage = selected.to_stage
+    instance.save(update_fields=['current_stage'])
+
+    Transaction.objects.create(
+        application=instance,
+        stage=selected.to_stage,
+        performed_by=acting_user,
+        remarks=remarks or f"Action '{normalized_action}' performed"
+    )
+
+    return selected.to_stage
+
 def _get_or_create_active_supply_chain_profile(user):
     profile = SupplyChainUserProfile.objects.filter(user=user).first()
     active_license, establishment_name, site_address, license_type = _resolve_license_context(user)
@@ -1617,29 +1662,18 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
             self._update_procurement_usage(instance)
             self._sync_brand_warehouse_stock(instance)
             
-            # CRITICAL: Update Request Status to 'Production Completed'
+            # CRITICAL: Move linked request using workflow transition graph (DB-driven).
             if instance.hologram_request:
                 try:
                     req = instance.hologram_request
-                    # Transition to 'Production Completed'
-                    from auth.workflow.models import WorkflowStage, WorkflowTransition, Transaction
-                    
-                    if req.current_stage and req.current_stage.name == 'In Use':
-                        # Find the next stage
-                        completed_stage = WorkflowStage.objects.filter(workflow=req.workflow, name='Production Completed').first()
-                        
-                        if completed_stage:
-                            req.current_stage = completed_stage
-                            req.save()
-                            print(f"DEBUG: Auto-completed HologramRequest {req.ref_no}")
-                            
-                            # Log Transaction
-                            Transaction.objects.create(
-                                application=req,
-                                stage=completed_stage,
-                                performed_by=self.request.user,
-                                remarks='Hologram Production Completed via Daily Register'
-                            )
+                    moved_to = _apply_transition_by_action(
+                        instance=req,
+                        acting_user=self.request.user,
+                        action_name='complete',
+                        remarks='Hologram Production Completed via Daily Register'
+                    )
+                    if moved_to:
+                        print(f"DEBUG: Auto-completed HologramRequest {req.ref_no} to stage {moved_to.name}")
                 except Exception as e:
                     print(f"ERROR: Failed to update request status: {e}")
             else:
@@ -1653,23 +1687,14 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             instance.hologram_request = req
                             instance.save(update_fields=['hologram_request'])
                             
-                            # Update request status
-                            from auth.workflow.models import WorkflowStage, WorkflowTransition, Transaction
-                            
-                            if req.current_stage and req.current_stage.name == 'In Use':
-                                completed_stage = WorkflowStage.objects.filter(workflow=req.workflow, name='Production Completed').first()
-                                
-                                if completed_stage:
-                                    req.current_stage = completed_stage
-                                    req.save()
-                                    print(f"DEBUG: Auto-completed HologramRequest {req.ref_no} (via reference_no match)")
-                                    
-                                    Transaction.objects.create(
-                                        application=req,
-                                        stage=completed_stage,
-                                        performed_by=self.request.user,
-                                        remarks='Hologram Production Completed via Daily Register'
-                                    )
+                            moved_to = _apply_transition_by_action(
+                                instance=req,
+                                acting_user=self.request.user,
+                                action_name='complete',
+                                remarks='Hologram Production Completed via Daily Register'
+                            )
+                            if moved_to:
+                                print(f"DEBUG: Auto-completed HologramRequest {req.ref_no} (via reference_no match) to stage {moved_to.name}")
                         else:
                             print(f"WARNING: No request found with ref_no={instance.reference_no}")
                 except Exception as e:

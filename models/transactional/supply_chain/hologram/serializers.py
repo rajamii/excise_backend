@@ -200,6 +200,10 @@ class HologramRequestSerializer(serializers.ModelSerializer):
     licensee_name = serializers.CharField(source='licensee.manufacturing_unit_name', read_only=True)
     status = serializers.CharField(source='current_stage.name', read_only=True)
     stage_id = serializers.IntegerField(source='current_stage.id', read_only=True)
+    current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
+    current_stage_is_initial = serializers.BooleanField(source='current_stage.is_initial', read_only=True)
+    current_stage_is_final = serializers.BooleanField(source='current_stage.is_final', read_only=True)
+    current_stage_entry_actions = serializers.SerializerMethodField()
     allowed_actions = serializers.SerializerMethodField()
     workflow_name = serializers.CharField(source='workflow.name', read_only=True)
     rolls_assigned = serializers.SerializerMethodField()
@@ -207,7 +211,14 @@ class HologramRequestSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = HologramRequest
-        fields = ['id', 'ref_no', 'submission_date', 'usage_date', 'quantity', 'hologram_type', 'issued_assets', 'rolls_assigned', 'licensee', 'license_id', 'licensee_name', 'workflow', 'workflow_name', 'current_stage', 'status', 'stage_id', 'allowed_actions', 'allowed_action_configs', 'available_cartons']
+        fields = [
+            'id', 'ref_no', 'submission_date', 'usage_date', 'quantity', 'hologram_type',
+            'issued_assets', 'rolls_assigned', 'licensee', 'license_id', 'licensee_name',
+            'workflow', 'workflow_name', 'current_stage', 'status', 'stage_id',
+            'current_stage_name', 'current_stage_is_initial', 'current_stage_is_final',
+            'current_stage_entry_actions', 'allowed_actions', 'allowed_action_configs',
+            'available_cartons'
+        ]
         read_only_fields = ('ref_no', 'submission_date', 'workflow', 'current_stage', 'licensee', 'license_id')
     
     def to_representation(self, instance):
@@ -337,6 +348,20 @@ class HologramRequestSerializer(serializers.ModelSerializer):
         except Exception as e:
             print(f"Error fetching available cartons: {e}")
             return []
+
+    def get_current_stage_entry_actions(self, obj):
+        if not obj.current_stage:
+            return []
+
+        from auth.workflow.models import WorkflowTransition
+        transitions = WorkflowTransition.objects.filter(to_stage=obj.current_stage)
+        actions = []
+        for t in transitions:
+            cond = t.condition or {}
+            action = cond.get('action')
+            if action:
+                actions.append(str(action).upper())
+        return list(dict.fromkeys(actions))
 
     def get_allowed_actions(self, obj):
         request = self.context.get('request')
