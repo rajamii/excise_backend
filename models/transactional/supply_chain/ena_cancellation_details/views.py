@@ -23,6 +23,39 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     CANCELLATION_FEE_AMOUNT = Decimal('1000.00')
 
+    def _normalize_stage_text(self, value: str) -> str:
+        return re.sub(r'[^a-z0-9]+', '', str(value or '').lower())
+
+    def _resolve_stage_for_workflow(self, workflow, status_hint: str = ''):
+        from auth.workflow.models import WorkflowStage
+
+        stages = list(WorkflowStage.objects.filter(workflow=workflow))
+        if not stages:
+            return None
+
+        hint = self._normalize_stage_text(status_hint)
+        if hint:
+            for stage in stages:
+                if self._normalize_stage_text(stage.name) == hint:
+                    return stage
+
+            keywords = [
+                key for key in ['forward', 'approve', 'reject', 'payslip', 'payment', 'commissioner']
+                if key in hint
+            ]
+            if keywords:
+                scored = []
+                for stage in stages:
+                    stage_text = self._normalize_stage_text(stage.name)
+                    score = sum(1 for key in keywords if key in stage_text)
+                    scored.append((score, stage))
+                best_score, best_stage = max(scored, key=lambda item: item[0])
+                if best_score > 0:
+                    return best_stage
+
+        initial_stage = next((stage for stage in stages if stage.is_initial), None)
+        return initial_stage or stages[0]
+
     def _is_rejected_cancellation(self, cancellation) -> bool:
         current_stage_name = getattr(getattr(cancellation, 'current_stage', None), 'name', '')
         merged = f"{getattr(cancellation, 'status', '')} {current_stage_name}".lower()
@@ -302,22 +335,23 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             if not license_id:
                 license_id = str(licensee_id or '').strip()
 
-            # Fetch Workflow/Stage for Cancellation (CN_00)
-            from auth.workflow.models import Workflow, WorkflowStage
-            
-            status_name = 'ForwardedCancellationToCommissioner' # Default Initial Status
+            # Fetch workflow/stage dynamically (works even after stage label renames).
+            from auth.workflow.models import Workflow
+
+            status_name = 'CancellationPending'
             wf_obj = None
             current_stage = None
             
             try:
                  workflow = Workflow.objects.get(id=WORKFLOW_IDS['ENA_CANCELLATION'])
-                 stage = WorkflowStage.objects.get(workflow=workflow, name=status_name)
-                 
-                 current_stage = stage
+                 stage = self._resolve_stage_for_workflow(workflow=workflow)
+                 if stage:
+                     current_stage = stage
+                     status_name = stage.name
                  wf_obj = workflow
-                 print(f"✅ Workflow setup successful: {workflow.name}, Stage: {stage.name}")
+                 print(f"Workflow setup successful: {workflow.name}, Stage: {getattr(stage, 'name', 'N/A')}")
             except Exception as e:
-                 print(f"⚠️ Workflow setup warning: {e}")
+                 print(f"Workflow setup warning: {e}")
                  # Fallback to defaults already set
 
             # Generate cancellation reference
@@ -471,15 +505,26 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             
             from auth.workflow.services import WorkflowService
             
-            # Ensure workflow/stage is set
-            if not cancellation.workflow or not cancellation.current_stage:
-                 from auth.workflow.models import Workflow, WorkflowStage
+            # Ensure workflow/stage is set (with compatibility for renamed stage labels).
+            if not cancellation.workflow:
+                 from auth.workflow.models import Workflow
                  try:
-                     wf = Workflow.objects.get(id=WORKFLOW_IDS['ENA_CANCELLATION'])
-                     stage = WorkflowStage.objects.get(workflow=wf, name=cancellation.status)
-                     cancellation.workflow = wf
+                     cancellation.workflow = Workflow.objects.get(id=WORKFLOW_IDS['ENA_CANCELLATION'])
+                 except Exception as e:
+                     return Response({'error': f'Workflow state error: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            if not cancellation.current_stage:
+                 try:
+                     stage = self._resolve_stage_for_workflow(
+                         workflow=cancellation.workflow,
+                         status_hint=cancellation.status
+                     )
+                     if not stage:
+                         return Response({'error': 'Workflow stage resolution failed'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
                      cancellation.current_stage = stage
-                     cancellation.save()
+                     cancellation.status = stage.name
+                     cancellation.save(update_fields=['workflow', 'current_stage', 'status', 'updated_at'])
                  except Exception as e:
                      return Response({'error': f'Workflow state error: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -530,3 +575,4 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             import traceback
             traceback.print_exc()
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
