@@ -257,8 +257,14 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
             actions.append('REQUEST_REVALIDATION')
 
         workflow_id = getattr(obj, 'workflow_id', None)
-        if role in ['commissioner', 'officer-in-charge']:
-            if current_stage.name == 'ApprovedRevalidationByCommissioner' and workflow_id == 4:
+        if role in ['commissioner', 'officer-in-charge'] and workflow_id == WORKFLOW_IDS['ENA_REVALIDATION']:
+            stage_token = self._normalize_status_token(current_stage.name)
+            is_approved_by_commissioner = (
+                ('approv' in stage_token)
+                and ('commissioner' in stage_token)
+                and ('reject' not in stage_token)
+            )
+            if is_approved_by_commissioner:
                 actions.append('VIEW_PERMIT_SLIP')
 
         return list(set(actions))
