@@ -485,10 +485,6 @@ class PerformRequisitionActionAPIView(APIView):
                 ).first()
                 if hit and hit.license_id:
                     candidates.extend(self._expand_license_aliases(str(hit.license_id)))
-
-            latest = active_licenses.first()
-            if latest and latest.license_id:
-                candidates.extend(self._expand_license_aliases(str(latest.license_id)))
         except Exception:
             pass
 
@@ -504,9 +500,40 @@ class PerformRequisitionActionAPIView(APIView):
     def _is_forwarded_payslip_stage(self, stage_name: str) -> bool:
         token = ''.join(ch for ch in str(stage_name or '').lower() if ch.isalnum())
         return (
-            token == 'forwardedpaysliptopermitsection'
-            or ('forwarded' in token and 'payslip' in token and 'permitsection' in token)
+            ('forward' in token and 'payslip' in token and ('permitsection' in token or 'permit' in token))
         )
+
+    def _resolve_stage_for_requisition(self, requisition):
+        from auth.workflow.models import WorkflowStage
+
+        workflow_id = requisition.workflow_id or WORKFLOW_IDS['ENA_REQUISITION']
+        stages = list(WorkflowStage.objects.filter(workflow_id=workflow_id))
+        if not stages:
+            return None
+
+        hint = ''.join(ch for ch in str(requisition.status or '').lower() if ch.isalnum())
+        if hint:
+            for stage in stages:
+                token = ''.join(ch for ch in str(stage.name or '').lower() if ch.isalnum())
+                if token == hint:
+                    return stage
+
+            keywords = [
+                key for key in ['pending', 'submit', 'review', 'forward', 'permitsection', 'commissioner', 'payslip', 'approve', 'reject']
+                if key in hint
+            ]
+            if keywords:
+                scored = []
+                for stage in stages:
+                    stage_token = ''.join(ch for ch in str(stage.name or '').lower() if ch.isalnum())
+                    score = sum(1 for key in keywords if key in stage_token)
+                    scored.append((score, stage))
+                best_score, best_stage = max(scored, key=lambda item: item[0])
+                if best_score > 0:
+                    return best_stage
+
+        initial_stage = next((s for s in stages if getattr(s, 'is_initial', False)), None)
+        return initial_stage or stages[0]
 
     def _resolve_requisition_payment_amount(self, requisition) -> Decimal:
         """
@@ -551,17 +578,28 @@ class PerformRequisitionActionAPIView(APIView):
         reference_no = str(getattr(requisition, 'our_ref_no', '') or f"REQ-{requisition.pk}")
         transaction_id = f"REQ-{requisition.pk}-PAYMENT"
 
+        candidates = self._resolve_wallet_license_candidates(requisition, user)
+        if not candidates:
+            raise ValueError("Unable to resolve licensee_id for wallet deduction.")
+
         already_debited = WalletTransaction.objects.filter(
-            transaction_id=transaction_id,
             source_module='ena_requisition',
-            entry_type='DR'
+            entry_type='DR',
+            reference_no=reference_no,
+            licensee_id__in=candidates,
         ).exists()
         if already_debited:
             return {'debited': False, 'reason': 'already_debited'}
 
-        candidates = self._resolve_wallet_license_candidates(requisition, user)
-        if not candidates:
-            raise ValueError("Unable to resolve licensee_id for wallet deduction.")
+        # Guard against historical mismatches where same requisition transaction_id
+        # was posted under a different license wallet.
+        conflicting_debit = WalletTransaction.objects.filter(
+            source_module='ena_requisition',
+            entry_type='DR',
+            transaction_id=transaction_id,
+        ).exclude(licensee_id__in=candidates).exists()
+        if conflicting_debit:
+            return {'debited': False, 'reason': 'already_debited_conflict'}
 
         wallet = None
         resolved_licensee_id = ''
@@ -662,22 +700,15 @@ class PerformRequisitionActionAPIView(APIView):
 
             # --- Use WorkflowService to advance stage ---
             from auth.workflow.services import WorkflowService
-            from auth.workflow.models import WorkflowStage
             
             # Ensure current_stage is set (if missing for some reason)
             if not requisition.current_stage:
-                 try:
-                     if requisition.workflow_id:
-                         current_stage = WorkflowStage.objects.get(workflow_id=requisition.workflow_id, name=requisition.status)
-                     else:
-                         current_stage = WorkflowStage.objects.get(
-                             workflow_id=WORKFLOW_IDS['ENA_REQUISITION'],
-                             name=requisition.status
-                         )
-                     requisition.current_stage = current_stage
-                     requisition.save()
-                 except WorkflowStage.DoesNotExist:
+                 current_stage = self._resolve_stage_for_requisition(requisition)
+                 if not current_stage:
                      return Response({'status': 'error', 'message': f'Current stage undefined and could not be inferred from status {requisition.status}'}, status=400)
+                 requisition.current_stage = current_stage
+                 requisition.status = current_stage.name
+                 requisition.save(update_fields=['current_stage', 'status'])
             
             # Context for validation (if rules use condition)
             context = {
