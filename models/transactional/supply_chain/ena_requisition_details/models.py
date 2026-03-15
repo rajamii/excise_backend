@@ -90,3 +90,36 @@ class RequisitionBulkLiterDetail(models.Model):
         return f"{self.reference_no} ({self.licensee_id or 'NA'})"
 
 
+class EnaRevalidationActivationSchedule(models.Model):
+    STATUS_PENDING = 'pending'
+    STATUS_PROCESSED = 'processed'
+    STATUS_CANCELLED = 'cancelled'
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_PROCESSED, 'Processed'),
+        (STATUS_CANCELLED, 'Cancelled'),
+    ]
+
+    requisition = models.OneToOneField(
+        EnaRequisitionDetail,
+        on_delete=models.CASCADE,
+        related_name='revalidation_activation_schedule'
+    )
+    requisition_ref_no = models.CharField(max_length=50, db_index=True)
+    approval_date = models.DateTimeField()
+    activation_due_at = models.DateTimeField(db_index=True)
+    activated_at = models.DateTimeField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
+    notes = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'ena_revalidation_activation_schedule'
+        ordering = ['activation_due_at', '-updated_at']
+
+    def __str__(self) -> str:
+        return f"{self.requisition_ref_no} -> {self.activation_due_at}"
+
+
