@@ -2863,6 +2863,17 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
         from django.utils import timezone as django_timezone
         
         try:
+            workflow_id = WORKFLOW_IDS['HOLOGRAM_REQUEST']
+            request_transitions = WorkflowTransition.objects.filter(workflow_id=workflow_id).only('to_stage_id', 'condition')
+            approval_to_stage_ids = set()
+            reject_to_stage_ids = set()
+            for transition in request_transitions:
+                action_name = str((transition.condition or {}).get('action') or '').strip().lower()
+                if action_name in {'issue', 'approve'}:
+                    approval_to_stage_ids.add(transition.to_stage_id)
+                elif action_name == 'reject':
+                    reject_to_stage_ids.add(transition.to_stage_id)
+
             # Get all hologram requests
             requests = HologramRequest.objects.select_related(
                 'licensee', 'workflow', 'current_stage'
@@ -2879,12 +2890,13 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                     stage__is_initial=True
                 ).order_by('timestamp').first()
                 
-                # Get approval transaction - check multiple possible stage names
-                approval_txn = req.transactions.filter(
-                    Q(stage__name__icontains='Approved') | 
-                    Q(stage__name__icontains='In Use') |
-                    Q(stage__name='Approved by OIC')
-                ).order_by('timestamp').first()
+                # DB-driven approval transaction: any transition entering a stage via ISSUE/APPROVE action.
+                if approval_to_stage_ids:
+                    approval_txn = req.transactions.filter(
+                        stage_id__in=approval_to_stage_ids
+                    ).order_by('timestamp').first()
+                else:
+                    approval_txn = req.transactions.exclude(stage__is_initial=True).order_by('timestamp').first()
                 
                 print(f"Approval Transaction: {approval_txn.stage.name if approval_txn else 'None'}")
                 
@@ -2895,8 +2907,8 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 
                 print(f"Daily Register Entries: {daily_entries.count()}")
                 
-                # Determine status based on current stage
-                status = 'APPLIED'
+                # Determine status using stage metadata + transition-derived action mapping.
+                status = 'UNDER_PROCESS'
                 completed_on_time = None
                 is_overdue = False
                 time_remaining = None
@@ -2906,27 +2918,17 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 officer_name = None
                 brands_entered = []
                 
-                # Check current stage to determine status
-                if req.current_stage:
-                    stage_name = req.current_stage.name.lower()
-                    
-                    # Check if completed
-                    if 'completed' in stage_name or 'production completed' in stage_name:
-                        status = 'COMPLETED'
-                        print(f"Status: COMPLETED (from stage name)")
-                    # Check if approved/in use
-                    elif 'approved' in stage_name or 'in use' in stage_name:
-                        status = 'UNDER_PROCESS'
-                        print(f"Status: UNDER_PROCESS (from stage name)")
-                    # Check if submitted/initial
-                    elif 'submitted' in stage_name or req.current_stage.is_initial:
-                        status = 'APPLIED'
-                        print(f"Status: APPLIED (from stage name)")
+                if req.current_stage and req.current_stage.is_initial:
+                    status = 'APPLIED'
+                elif req.current_stage_id and req.current_stage_id in reject_to_stage_ids:
+                    status = 'REJECTED'
+                elif req.current_stage and req.current_stage.is_final:
+                    status = 'COMPLETED'
                 
                 # Override status if we have daily register entries (means it's completed)
                 if daily_entries.exists():
                     status = 'COMPLETED'
-                    print(f"Status: COMPLETED (has daily register entries)")
+                    print("Status: COMPLETED (has daily register entries)")
                 
                 # Calculate deadline and SLA if approved
                 if approval_txn:
