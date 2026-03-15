@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import models, transaction, connection, IntegrityError
 from django.utils import timezone
 
 # Import production models to make them available to Django
@@ -518,6 +518,24 @@ class BrandWarehouseUtilization(models.Model):
     def __str__(self):
         return f"{self.permit_no} - {self.brand_warehouse.distillery_name} ({self.quantity} units)"
 
+    @classmethod
+    def sync_pk_sequence(cls):
+        """
+        Ensure Postgres sequence for PK `id` is aligned with MAX(id).
+        Prevents duplicate key on inserts when sequence lags behind table data.
+        """
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT setval(
+                    pg_get_serial_sequence(%s, 'id'),
+                    COALESCE((SELECT MAX(id) FROM brand_warehouse_utilization), 1),
+                    true
+                )
+                """,
+                [cls._meta.db_table]
+            )
+
     @property
     def total_bottles(self):
         """Calculate total bottles from cases and bottles per case"""
@@ -532,7 +550,23 @@ class BrandWarehouseUtilization(models.Model):
             old_instance = BrandWarehouseUtilization.objects.get(pk=self.pk)
             old_quantity = old_instance.quantity if old_instance.status in ['APPROVED', 'IN_TRANSIT', 'DELIVERED'] else 0
         
-        super().save(*args, **kwargs)
+        # Save with one retry after sequence sync for duplicate-PK collisions.
+        saved = False
+        try:
+            with transaction.atomic():
+                super().save(*args, **kwargs)
+                saved = True
+        except IntegrityError as exc:
+            if is_new and 'brand_warehouse_utilization_pkey' in str(exc):
+                self.__class__.sync_pk_sequence()
+                with transaction.atomic():
+                    super().save(*args, **kwargs)
+                    saved = True
+            else:
+                raise
+
+        if not saved:
+            return
         
         # Update brand warehouse stock
         if self.status in ['APPROVED', 'IN_TRANSIT', 'DELIVERED']:

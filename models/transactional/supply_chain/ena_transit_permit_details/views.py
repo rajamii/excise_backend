@@ -24,33 +24,66 @@ class SubmitTransitPermitAPIView(views.APIView):
     def _resolve_submit_target_stage(self):
         """
         Resolve submit target stage from workflow table dynamically.
-        Prefers the stage that represents "payment successful, forwarded to officer".
+        Resolves the target stage by DB transition: initial_stage --PAY--> next_stage.
         """
-        from auth.workflow.models import Workflow, WorkflowStage
+        from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition
 
         workflow_obj = Workflow.objects.filter(id=WORKFLOW_IDS['TRANSIT_PERMIT']).first()
         if not workflow_obj:
             return None, None
 
-        stage_qs = WorkflowStage.objects.filter(workflow=workflow_obj)
+        initial_stage = WorkflowStage.objects.filter(workflow=workflow_obj, is_initial=True).first()
+        if not initial_stage:
+            return workflow_obj, None
 
-        preferred_stage = stage_qs.filter(
-            Q(name='PaymentSuccessfulandForwardedToOfficerincharge')
-        ).first()
-        if preferred_stage:
-            return workflow_obj, preferred_stage
-
-        for stage in stage_qs:
-            normalized_name = ''.join(ch for ch in str(stage.name or '').lower() if ch.isalnum())
-            normalized_desc = ''.join(ch for ch in str(stage.description or '').lower() if ch.isalnum())
-            if (
-                'paymentsuccessful' in normalized_name and 'forwardedtoofficer' in normalized_name
-            ) or (
-                'paymentsuccessful' in normalized_desc and 'forwardedtoofficer' in normalized_desc
-            ):
-                return workflow_obj, stage
+        pay_transitions = WorkflowTransition.objects.filter(
+            workflow=workflow_obj,
+            from_stage=initial_stage
+        )
+        for transition in pay_transitions:
+            cond = transition.condition or {}
+            if str(cond.get('action') or '').strip().upper() == 'PAY':
+                return workflow_obj, transition.to_stage
 
         return workflow_obj, None
+
+    def _resolve_stage_from_status_code(self, workflow_obj, status_code):
+        """
+        Resolve a stage by status_code using workflow graph/actions, not stage names.
+        """
+        from auth.workflow.models import WorkflowStage, WorkflowTransition
+
+        normalized = str(status_code or '').strip().upper()
+        initial_stage = WorkflowStage.objects.filter(workflow=workflow_obj, is_initial=True).first()
+        if not initial_stage:
+            return None
+
+        if normalized == 'TRP_01':
+            return initial_stage
+
+        outgoing = WorkflowTransition.objects.filter(workflow=workflow_obj, from_stage=initial_stage)
+        if normalized == 'TRP_02':
+            for t in outgoing:
+                if str((t.condition or {}).get('action') or '').strip().upper() == 'PAY':
+                    return t.to_stage
+
+        if normalized in {'TRP_03', 'TRP_04'}:
+            pay_stage = None
+            for t in outgoing:
+                if str((t.condition or {}).get('action') or '').strip().upper() == 'PAY':
+                    pay_stage = t.to_stage
+                    break
+            if not pay_stage:
+                return None
+            second_hop = WorkflowTransition.objects.filter(workflow=workflow_obj, from_stage=pay_stage)
+            for t in second_hop:
+                action = str((t.condition or {}).get('action') or '').strip().upper()
+                if normalized == 'TRP_03' and action == 'APPROVE':
+                    return t.to_stage
+                if normalized == 'TRP_04' and action == 'REJECT':
+                    return t.to_stage
+
+        return None
 
     def _generate_transit_ref(self) -> str:
         existing_refs = list(EnaTransitPermitDetail.objects.values_list('bill_no', flat=True))
@@ -356,6 +389,11 @@ class SubmitTransitPermitAPIView(views.APIView):
             try:
                 with transaction.atomic():
                     workflow_obj, paid_stage = self._resolve_submit_target_stage()
+                    if not paid_stage:
+                        return Response({
+                            "status": "error",
+                            "message": "Transit workflow misconfigured: missing PAY transition from initial stage."
+                        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
                     submit_message = (
                         str(getattr(paid_stage, 'description', '') or '').strip()
                         if paid_stage else
@@ -406,12 +444,12 @@ class SubmitTransitPermitAPIView(views.APIView):
                             obj.status = paid_stage.name
                             obj.status_code = 'TRP_02'
                             obj.current_stage = paid_stage
-                        else:
-                            obj.status = 'PaymentSuccessfulandForwardedToOfficerincharge'
-                            obj.status_code = 'TRP_02'
                         if workflow_obj:
                             obj.workflow = workflow_obj
                         obj.save()
+                        if obj.current_stage and obj.status != obj.current_stage.name:
+                            obj.status = obj.current_stage.name
+                            obj.save(update_fields=['status'])
                         created_records.append(obj)
 
                     # Deduct wallet immediately on submit from excise + education wallets.
@@ -672,10 +710,10 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 or request.data.get('comments')
                 or ''
             ).strip()
-            if not action or action not in ['PAY', 'APPROVE', 'REJECT']:
+            if not action:
                 return Response({
                     'status': 'error',
-                    'message': 'Valid action (PAY, APPROVE, or REJECT) is required'
+                    'message': 'Action is required'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
             # Get the transit permit
@@ -697,12 +735,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
             else:
                 raise PermissionDenied("You are not allowed to modify this transit permit.")
             
-            # Determine User Role
-            # Simplified logic: In real app, check request.user.role.name
-            role = 'licensee' # default to licensee for PAY
-            if action in ['APPROVE', 'REJECT']:
-                 role = 'officer' # default to officer actions
-
             # --- Use WorkflowService to advance stage ---
             from auth.workflow.services import WorkflowService
             from auth.workflow.models import WorkflowStage
@@ -710,18 +742,21 @@ class PerformTransitPermitActionAPIView(views.APIView):
             # Ensure current_stage is set (if missing)
             if not permit.current_stage or not permit.workflow:
                  try:
-                     # Try to find by name if stage ID missing
                      from auth.workflow.models import Workflow
                      workflow_obj = Workflow.objects.get(id=WORKFLOW_IDS['TRANSIT_PERMIT'])
                      permit.workflow = workflow_obj
-                     
-                     current_stage = WorkflowStage.objects.get(workflow=workflow_obj, name=permit.status)
+                     current_stage = self._resolve_stage_from_status_code(workflow_obj, permit.status_code)
+                     if not current_stage:
+                         current_stage = WorkflowStage.objects.filter(workflow=workflow_obj, is_initial=True).first()
+                     if not current_stage:
+                         raise WorkflowStage.DoesNotExist("Initial workflow stage not found")
                      permit.current_stage = current_stage
+                     permit.status = current_stage.name
                      permit.save()
                  except (Workflow.DoesNotExist, WorkflowStage.DoesNotExist):
-                     return Response({
-                        'status': 'error',
-                        'message': 'Workflow configuration not found. Please run "python manage.py populate_transit_permit_workflow".'
+                      return Response({
+                         'status': 'error',
+                         'message': 'Workflow configuration not found. Please run "python manage.py populate_transit_permit_workflow".'
                      }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
                  except Exception as e:
                      return Response({
@@ -738,7 +773,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
 
             # Context for validation
             context = {
-                "role": role,
                 "action": action
             }
 
@@ -750,18 +784,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
                     target_transition = t
                     break
 
-            if not target_transition:
-                # Fallback for OIC/officer role token mismatches in transition.condition role text.
-                for t in transitions:
-                    cond = t.condition or {}
-                    cond_action = str(cond.get('action') or '').upper().strip()
-                    cond_role = ''.join(ch for ch in str(cond.get('role') or '').lower() if ch.isalnum())
-                    if cond_action and cond_action != str(action or '').upper().strip():
-                        continue
-                    if not cond_role or cond_role in {'officer', 'officerincharge', 'offcierincharge', 'oic'}:
-                        target_transition = t
-                        break
-            
             if not target_transition:
                 return Response({
                     'status': 'error',
@@ -779,11 +801,15 @@ class PerformTransitPermitActionAPIView(views.APIView):
             # Sync back to status/status_code
             new_stage_name = target_transition.to_stage.name
             permit.status = new_stage_name
-            # Update status code based on name map (simplified)
-            if new_stage_name == 'Ready for Payment': permit.status_code = 'TRP_01'
-            elif new_stage_name == 'PaymentSuccessfulandForwardedToOfficerincharge': permit.status_code = 'TRP_02'
-            elif new_stage_name == 'TransitPermitSucessfulyApproved': permit.status_code = 'TRP_03'
-            elif new_stage_name == 'Cancelled by Officer In-Charge - Refund Initiated Successfully': permit.status_code = 'TRP_04'
+            # Keep status_code compatibility without relying on stage names.
+            if target_transition.to_stage.is_initial:
+                permit.status_code = 'TRP_01'
+            elif action == 'PAY':
+                permit.status_code = 'TRP_02'
+            elif action == 'APPROVE':
+                permit.status_code = 'TRP_03'
+            elif action == 'REJECT':
+                permit.status_code = 'TRP_04'
             
             permit.save()
             
@@ -942,12 +968,8 @@ class PerformTransitPermitActionAPIView(views.APIView):
             
             # Count items that are NOT in a paid/approved state
             # "Ready for Payment" is the state BEFORE payment. 
-            unpaid_count = bill_items.exclude(
-                status__in=[
-                    'PaymentSuccessfulandForwardedToOfficerincharge', 
-                    'TransitPermitSucessfulyApproved',
-                    # Add other post-payment statuses if any
-                ]
+            unpaid_count = bill_items.filter(
+                Q(current_stage__isnull=True) | Q(current_stage__is_initial=True)
             ).count()
             
             print(f"DEBUG Stock Deduction: Bill {permit.bill_no} has {unpaid_count} unpaid items")
