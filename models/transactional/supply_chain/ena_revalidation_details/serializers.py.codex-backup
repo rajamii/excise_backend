@@ -1,8 +1,6 @@
 import logging
 import re
-from datetime import timedelta
 
-from django.db import connection
 from rest_framework import serializers
 
 from auth.workflow.constants import WORKFLOW_IDS
@@ -112,67 +110,7 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
         effective_status = self._get_effective_status(instance)
         data['status'] = effective_status
         data['current_stage_name'] = effective_status if getattr(instance, 'current_stage_id', None) else ''
-
-        validity_days = self._get_revalidation_validity_period_days()
-        data['validity_period_days'] = validity_days
-
-        approval_anchor = self._resolve_revalidation_approval_anchor(instance, effective_status)
-        if approval_anchor is not None:
-            data['approval_date'] = approval_anchor.isoformat()
-            data['expiry_date'] = (approval_anchor + timedelta(days=validity_days)).isoformat()
-
         return data
-
-    def _get_revalidation_validity_period_days(self) -> int:
-        cached = getattr(self, '_cached_revalidation_validity_days', None)
-        if cached is not None:
-            return cached
-
-        default_days = 45
-        resolved_days = default_days
-        try:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT COALESCE(validity_period_days, %s)
-                    FROM public.timer
-                    WHERE code = %s
-                      AND is_active = TRUE
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    [default_days, 'ENA_REVALIDATION_ACTIVATION']
-                )
-                row = cursor.fetchone()
-                if row and row[0] is not None:
-                    candidate = int(row[0])
-                    if candidate >= 0:
-                        resolved_days = candidate
-        except Exception as exc:
-            logger.warning(
-                "Unable to resolve revalidation validity_period_days from public.timer. Using default=%s. Error=%s",
-                default_days,
-                exc,
-            )
-
-        self._cached_revalidation_validity_days = resolved_days
-        return resolved_days
-
-    def _resolve_revalidation_approval_anchor(self, obj, effective_status):
-        status_token = self._normalize_status_token(effective_status)
-        is_approved = ('approv' in status_token) and ('reject' not in status_token)
-
-        if is_approved:
-            return (
-                getattr(obj, 'updated_at', None)
-                or getattr(obj, 'revalidation_date', None)
-                or getattr(obj, 'created_at', None)
-            )
-
-        return (
-            getattr(obj, 'revalidation_date', None)
-            or getattr(obj, 'created_at', None)
-        )
 
     def get_establishment_name(self, obj):
         if obj.establishment_name:
@@ -257,14 +195,8 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
             actions.append('REQUEST_REVALIDATION')
 
         workflow_id = getattr(obj, 'workflow_id', None)
-        if role in ['commissioner', 'officer-in-charge'] and workflow_id == WORKFLOW_IDS['ENA_REVALIDATION']:
-            stage_token = self._normalize_status_token(current_stage.name)
-            is_approved_by_commissioner = (
-                ('approv' in stage_token)
-                and ('commissioner' in stage_token)
-                and ('reject' not in stage_token)
-            )
-            if is_approved_by_commissioner:
+        if role in ['commissioner', 'officer-in-charge']:
+            if current_stage.name == 'ApprovedRevalidationByCommissioner' and workflow_id == 4:
                 actions.append('VIEW_PERMIT_SLIP')
 
         return list(set(actions))

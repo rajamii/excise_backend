@@ -175,6 +175,17 @@ class WorkflowService:
         if user_role_token in officer_aliases and cond_role_token in officer_aliases:
             return True
 
+        permit_aliases = {
+            'permitsection',
+            'permit',
+            'permitcell',
+            'permitoffice',
+            'permitexcise',
+            'permitsectionofficer',
+        }
+        if user_role_token in permit_aliases and cond_role_token in permit_aliases:
+            return True
+
         return False
 
     @staticmethod

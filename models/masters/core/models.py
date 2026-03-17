@@ -1,12 +1,18 @@
 from django.db import models
 from django.core.exceptions import ValidationError
 from .validators import validate_name, validate_name_extended
+# models.py
 from typing import TYPE_CHECKING
+
+from django.core.exceptions import ValidationError
+from django.db import models
+
 from .helper import ROAD_TYPE_CHOICES
+from .validators import validate_name, validate_name_extended
 
 if TYPE_CHECKING:
     from django.db.models.manager import Manager
-    from .models import District, PoliceStation, Subdivision
+
 
 
 class LicenseCategory(models.Model):
@@ -41,9 +47,19 @@ class LicenseType(models.Model):
 
 
 class State(models.Model):
-    state = models.CharField(max_length=50, default='Sikkim', null=False, blank=False)
-    state_code = models.IntegerField(unique=True, default=11)
-    is_active = models.BooleanField(default=True)
+    state = models.CharField(
+        max_length=50,
+        default='Sikkim',
+        null=False,
+        blank=False
+    )
+    state_code = models.IntegerField(
+        unique=True,
+        default=11
+    )
+    is_active = models.BooleanField(
+        default=True
+    )
 
     if TYPE_CHECKING:
         districts: 'Manager[District]'
@@ -134,10 +150,10 @@ class Subdivision(models.Model):
 
     def clean(self):
         if self.subdivision and len(self.subdivision.strip()) < 2:
-            raise ValidationError("Subdivision name must be ≥2 characters")
+            raise ValidationError("Subdivision name must be >=2 characters")
 
     @property
-    def active_police_stations(self) -> 'models.QuerySet[PoliceStation]':
+    def active_police_stations(self):
         return self.police_stations.filter(is_active=True)
 
 
@@ -236,6 +252,9 @@ class LocationCategory(models.Model):
         related_name='created_location_categories'
     )
     operation_date = models.DateTimeField(auto_now_add=True)
+class LocationFee(models.Model):
+    location_name = models.CharField(max_length=100, unique=True)
+    fee_amount = models.DecimalField(max_digits=10, decimal_places=2)
 
     class Meta:
         db_table = 'masters_locationcategory'
@@ -431,9 +450,34 @@ class LicenseFee(models.Model):
         ]
 
     def __str__(self):
-        return (
-            f"{self.license_category} - {self.license_subcategory} "
-            f"- Location {self.location_code} - ₹{self.license_fee}"
-        )
+        return f"{self.location_name} - Rs {self.fee_amount}"
 
 
+class SupplyChainTimerConfig(models.Model):
+    TIMER_UNIT_SECOND = 'second'
+    TIMER_UNIT_MINUTE = 'minute'
+    TIMER_UNIT_HOUR = 'hour'
+    TIMER_UNIT_DAY = 'day'
+
+    TIMER_UNIT_CHOICES = [
+        (TIMER_UNIT_SECOND, 'Second'),
+        (TIMER_UNIT_MINUTE, 'Minute'),
+        (TIMER_UNIT_HOUR, 'Hour'),
+        (TIMER_UNIT_DAY, 'Day'),
+    ]
+
+    code = models.CharField(max_length=100, unique=True)
+    description = models.CharField(max_length=255, blank=True)
+    delay_value = models.PositiveIntegerField(default=10)
+    delay_unit = models.CharField(max_length=10, choices=TIMER_UNIT_CHOICES, default=TIMER_UNIT_SECOND)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'timer'
+        verbose_name = 'Supply Chain Timer Config'
+        verbose_name_plural = 'Supply Chain Timer Configs'
+
+    def __str__(self):
+        return f"{self.code}: {self.delay_value} {self.delay_unit}(s)"
