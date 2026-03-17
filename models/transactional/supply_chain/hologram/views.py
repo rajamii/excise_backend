@@ -14,7 +14,7 @@ from auth.workflow.constants import WORKFLOW_IDS
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
 from models.transactional.supply_chain.access_control import scope_by_profile_or_workflow
 
-HOLOGRAM_REF_PREFIX = 'NHP'
+HOLOGRAM_REF_PREFIX = 'HQR'
 HOLOGRAM_REF_DISTRICT_CODE = '1101'
 
 def _normalize_role_name(role_name):
@@ -102,6 +102,51 @@ def _get_visible_stage_ids_for_user(user, workflow_id):
     # Transition-role graph grants workflow-driven visibility including downstream history
     visible.update(_collect_role_stage_ids(workflow_id, user))
     return visible
+
+def _apply_transition_by_action(instance, acting_user, action_name, remarks=''):
+    """
+    Move an instance through workflow transition graph using action from DB conditions.
+    Avoids hardcoded stage-name checks.
+    """
+    if not instance or not instance.workflow or not instance.current_stage:
+        return None
+
+    normalized_action = str(action_name or '').strip().lower()
+    if not normalized_action:
+        return None
+
+    transitions = WorkflowTransition.objects.filter(
+        workflow=instance.workflow,
+        from_stage=instance.current_stage
+    ).order_by('id')
+
+    selected = None
+    for transition in transitions:
+        cond = transition.condition or {}
+        cond_action = str(cond.get('action') or '').strip().lower()
+        if cond_action != normalized_action:
+            continue
+        if _condition_role_matches(cond, acting_user):
+            selected = transition
+            break
+        if selected is None:
+            # Backward compatible fallback when role info is missing/inconsistent.
+            selected = transition
+
+    if not selected:
+        return None
+
+    instance.current_stage = selected.to_stage
+    instance.save(update_fields=['current_stage'])
+
+    Transaction.objects.create(
+        application=instance,
+        stage=selected.to_stage,
+        performed_by=acting_user,
+        remarks=remarks or f"Action '{normalized_action}' performed"
+    )
+
+    return selected.to_stage
 
 def _get_or_create_active_supply_chain_profile(user):
     profile = SupplyChainUserProfile.objects.filter(user=user).first()
@@ -1617,29 +1662,18 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
             self._update_procurement_usage(instance)
             self._sync_brand_warehouse_stock(instance)
             
-            # CRITICAL: Update Request Status to 'Production Completed'
+            # CRITICAL: Move linked request using workflow transition graph (DB-driven).
             if instance.hologram_request:
                 try:
                     req = instance.hologram_request
-                    # Transition to 'Production Completed'
-                    from auth.workflow.models import WorkflowStage, WorkflowTransition, Transaction
-                    
-                    if req.current_stage and req.current_stage.name == 'In Use':
-                        # Find the next stage
-                        completed_stage = WorkflowStage.objects.filter(workflow=req.workflow, name='Production Completed').first()
-                        
-                        if completed_stage:
-                            req.current_stage = completed_stage
-                            req.save()
-                            print(f"DEBUG: Auto-completed HologramRequest {req.ref_no}")
-                            
-                            # Log Transaction
-                            Transaction.objects.create(
-                                application=req,
-                                stage=completed_stage,
-                                performed_by=self.request.user,
-                                remarks='Hologram Production Completed via Daily Register'
-                            )
+                    moved_to = _apply_transition_by_action(
+                        instance=req,
+                        acting_user=self.request.user,
+                        action_name='complete',
+                        remarks='Hologram Production Completed via Daily Register'
+                    )
+                    if moved_to:
+                        print(f"DEBUG: Auto-completed HologramRequest {req.ref_no} to stage {moved_to.name}")
                 except Exception as e:
                     print(f"ERROR: Failed to update request status: {e}")
             else:
@@ -1653,23 +1687,14 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             instance.hologram_request = req
                             instance.save(update_fields=['hologram_request'])
                             
-                            # Update request status
-                            from auth.workflow.models import WorkflowStage, WorkflowTransition, Transaction
-                            
-                            if req.current_stage and req.current_stage.name == 'In Use':
-                                completed_stage = WorkflowStage.objects.filter(workflow=req.workflow, name='Production Completed').first()
-                                
-                                if completed_stage:
-                                    req.current_stage = completed_stage
-                                    req.save()
-                                    print(f"DEBUG: Auto-completed HologramRequest {req.ref_no} (via reference_no match)")
-                                    
-                                    Transaction.objects.create(
-                                        application=req,
-                                        stage=completed_stage,
-                                        performed_by=self.request.user,
-                                        remarks='Hologram Production Completed via Daily Register'
-                                    )
+                            moved_to = _apply_transition_by_action(
+                                instance=req,
+                                acting_user=self.request.user,
+                                action_name='complete',
+                                remarks='Hologram Production Completed via Daily Register'
+                            )
+                            if moved_to:
+                                print(f"DEBUG: Auto-completed HologramRequest {req.ref_no} (via reference_no match) to stage {moved_to.name}")
                         else:
                             print(f"WARNING: No request found with ref_no={instance.reference_no}")
                 except Exception as e:
@@ -2838,6 +2863,17 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
         from django.utils import timezone as django_timezone
         
         try:
+            workflow_id = WORKFLOW_IDS['HOLOGRAM_REQUEST']
+            request_transitions = WorkflowTransition.objects.filter(workflow_id=workflow_id).only('to_stage_id', 'condition')
+            approval_to_stage_ids = set()
+            reject_to_stage_ids = set()
+            for transition in request_transitions:
+                action_name = str((transition.condition or {}).get('action') or '').strip().lower()
+                if action_name in {'issue', 'approve'}:
+                    approval_to_stage_ids.add(transition.to_stage_id)
+                elif action_name == 'reject':
+                    reject_to_stage_ids.add(transition.to_stage_id)
+
             # Get all hologram requests
             requests = HologramRequest.objects.select_related(
                 'licensee', 'workflow', 'current_stage'
@@ -2854,12 +2890,13 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                     stage__is_initial=True
                 ).order_by('timestamp').first()
                 
-                # Get approval transaction - check multiple possible stage names
-                approval_txn = req.transactions.filter(
-                    Q(stage__name__icontains='Approved') | 
-                    Q(stage__name__icontains='In Use') |
-                    Q(stage__name='Approved by OIC')
-                ).order_by('timestamp').first()
+                # DB-driven approval transaction: any transition entering a stage via ISSUE/APPROVE action.
+                if approval_to_stage_ids:
+                    approval_txn = req.transactions.filter(
+                        stage_id__in=approval_to_stage_ids
+                    ).order_by('timestamp').first()
+                else:
+                    approval_txn = req.transactions.exclude(stage__is_initial=True).order_by('timestamp').first()
                 
                 print(f"Approval Transaction: {approval_txn.stage.name if approval_txn else 'None'}")
                 
@@ -2870,8 +2907,8 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 
                 print(f"Daily Register Entries: {daily_entries.count()}")
                 
-                # Determine status based on current stage
-                status = 'APPLIED'
+                # Determine status using stage metadata + transition-derived action mapping.
+                status = 'UNDER_PROCESS'
                 completed_on_time = None
                 is_overdue = False
                 time_remaining = None
@@ -2881,27 +2918,17 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 officer_name = None
                 brands_entered = []
                 
-                # Check current stage to determine status
-                if req.current_stage:
-                    stage_name = req.current_stage.name.lower()
-                    
-                    # Check if completed
-                    if 'completed' in stage_name or 'production completed' in stage_name:
-                        status = 'COMPLETED'
-                        print(f"Status: COMPLETED (from stage name)")
-                    # Check if approved/in use
-                    elif 'approved' in stage_name or 'in use' in stage_name:
-                        status = 'UNDER_PROCESS'
-                        print(f"Status: UNDER_PROCESS (from stage name)")
-                    # Check if submitted/initial
-                    elif 'submitted' in stage_name or req.current_stage.is_initial:
-                        status = 'APPLIED'
-                        print(f"Status: APPLIED (from stage name)")
+                if req.current_stage and req.current_stage.is_initial:
+                    status = 'APPLIED'
+                elif req.current_stage_id and req.current_stage_id in reject_to_stage_ids:
+                    status = 'REJECTED'
+                elif req.current_stage and req.current_stage.is_final:
+                    status = 'COMPLETED'
                 
                 # Override status if we have daily register entries (means it's completed)
                 if daily_entries.exists():
                     status = 'COMPLETED'
-                    print(f"Status: COMPLETED (has daily register entries)")
+                    print("Status: COMPLETED (has daily register entries)")
                 
                 # Calculate deadline and SLA if approved
                 if approval_txn:

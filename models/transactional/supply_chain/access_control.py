@@ -23,6 +23,17 @@ def _role_token_matches_cond(user_role_token, cond_role_token):
     if user_role_token in officer_aliases and cond_role_token in officer_aliases:
         return True
 
+    permit_aliases = {
+        'permitsection',
+        'permit',
+        'permitcell',
+        'permitoffice',
+        'permitexcise',
+        'permitsectionofficer',
+    }
+    if user_role_token in permit_aliases and cond_role_token in permit_aliases:
+        return True
+
     return False
 
 

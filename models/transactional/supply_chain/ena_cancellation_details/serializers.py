@@ -126,24 +126,31 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
                 action = cond.get('action')
                 if action:
                     actions.append(action)
-        
-        # Add VIEW_PERMIT_SLIP for commissioner/OIC at final stage
-        # Cancellation final stage: current_stage_id = 72, workflow_id = 5
-        current_stage_id = obj.current_stage.id if obj.current_stage else None
+
+        # Add VIEW_PERMIT_SLIP using stage semantics instead of hardcoded stage id.
+        current_stage_obj = obj.current_stage
         workflow_id = obj.workflow_id if hasattr(obj, 'workflow_id') else None
-        
-        print(f"Checking VIEW_PERMIT_SLIP conditions:")
+        stage_name_lower = str(getattr(current_stage_obj, 'name', '') or '').lower()
+        is_stage_final = bool(getattr(current_stage_obj, 'is_final', False))
+
+        is_rejected = 'reject' in stage_name_lower
+        is_commissioner_approved = 'commissioner' in stage_name_lower and 'approv' in stage_name_lower
+        # Permit slip must be visible only after commissioner approval stage.
+        is_viewable_stage = is_commissioner_approved or (is_stage_final and not is_rejected and 'approv' in stage_name_lower)
+
+        print("Checking VIEW_PERMIT_SLIP conditions:")
         print(f"  - Role: {role} (need: commissioner or officer-in-charge)")
-        print(f"  - Current Stage ID: {current_stage_id} (need: 72)")
-        print(f"  - Workflow ID: {workflow_id} (need: 5)")
-        
-        if role in ['commissioner', 'officer-in-charge']:
-            if current_stage_id == 72 and workflow_id == 5:
-                print("✅ Adding VIEW_PERMIT_SLIP action")
-                actions.append('VIEW_PERMIT_SLIP')
-            else:
-                print("❌ Not at final stage for VIEW_PERMIT_SLIP")
-        
+        print(f"  - Workflow ID: {workflow_id} (need: {WORKFLOW_IDS['ENA_CANCELLATION']})")
+        print(f"  - Stage: {getattr(current_stage_obj, 'name', 'N/A')}, final={is_stage_final}, viewable={is_viewable_stage}")
+
+        if (
+            role in ['commissioner', 'officer-in-charge']
+            and workflow_id == WORKFLOW_IDS['ENA_CANCELLATION']
+            and is_viewable_stage
+        ):
+            print("Adding VIEW_PERMIT_SLIP action")
+            actions.append('VIEW_PERMIT_SLIP')
+
         return list(set(actions))
 
     # New Field: Returns Full UI Config for Actions
@@ -197,4 +204,5 @@ class CancellationCreateSerializer(serializers.Serializer):
     reference_no = serializers.CharField(max_length=100)
     permit_numbers = serializers.ListField(child=serializers.CharField(max_length=100))
     licensee_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
+
 

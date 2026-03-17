@@ -54,7 +54,13 @@ class Command(BaseCommand):
                 # 3. Create Transitions from WorkflowRule
                 # We need to map WorkflowRule (which links StatusMaster) to WorkflowTransition (which links WorkflowStage)
                 
-                rules = WorkflowRule.objects.filter(current_status__status_code__startswith='RQ_')
+                # Requisition "VIEW" is handled as a UI-safe fallback, so seeding
+                # self-loop VIEW transitions only bloats workflow_transition rows.
+                rules = (
+                    WorkflowRule.objects
+                    .filter(current_status__status_code__startswith='RQ_')
+                    .exclude(action__iexact='VIEW')
+                )
                 
                 for rule in rules:
                     from_stage = status_stage_map.get(rule.current_status_id)
