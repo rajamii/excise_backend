@@ -18,6 +18,18 @@ from models.transactional.supply_chain.access_control import (
 )
 
 
+def _get_user_display_name(user) -> str:
+    """Return a human-readable display name for a user (first + middle + last name, falling back to username)."""
+    if user is None:
+        return 'System'
+    first = (getattr(user, 'first_name', '') or '').strip()
+    middle = (getattr(user, 'middle_name', '') or '').strip()
+    last = (getattr(user, 'last_name', '') or '').strip()
+    parts = [p for p in [first, middle, last] if p]
+    full = ' '.join(parts)
+    return full if full else (getattr(user, 'username', None) or 'System')
+
+
 class SubmitTransitPermitAPIView(views.APIView):
     permission_classes = [IsAuthenticated]
 
@@ -285,7 +297,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                     created_at=now_ts,
                 )
 
-    def _create_utilization_and_deduct_stock_for_submit(self, permit_rows, license_id: str):
+    def _create_utilization_and_deduct_stock_for_submit(self, permit_rows, license_id: str, user=None):
         """
         Create BrandWarehouseUtilization rows immediately on submit and deduct stock.
         This keeps OIC utilization dashboard in sync without waiting for a separate PAY action.
@@ -349,7 +361,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                 cases=item.cases,
                 bottles_per_case=bottles_per_case,
                 status='APPROVED',
-                approved_by='System (Submit Auto-Deduction)',
+                approved_by=_get_user_display_name(user) if user else 'System (Submit Auto-Deduction)',
                 approval_date=timezone.now(),
             )
 
@@ -464,6 +476,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                     self._create_utilization_and_deduct_stock_for_submit(
                         permit_rows=created_records,
                         license_id=licensee_id,
+                        user=request.user,
                     )
                 
                 return Response({
@@ -817,7 +830,11 @@ class PerformTransitPermitActionAPIView(views.APIView):
             if action == 'PAY':
                 # Wallet is already debited at submit time.
                 # On PAY we only continue stock/workflow processing.
-                self._handle_stock_deduction(permit)
+                self._handle_stock_deduction(permit, user=request.user)
+
+            elif action == 'APPROVE':
+                # Update utilization records with OIC's full name as approved_by
+                self._update_utilization_approved_by(permit, request.user)
 
             elif action == 'REJECT':
                 self._handle_rejection(request, permit, remarks=remarks)
@@ -904,7 +921,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                     BrandWarehouseTpCancellation.objects.create(
                         brand_warehouse=warehouse,
                         reference_no=permit.bill_no,
-                        cancelled_by=request.user.username,
+                        cancelled_by=_get_user_display_name(request.user),
                         quantity_cases=utilization.cases,
                         quantity_bottles=utilization.total_bottles,
                         amount_refunded=permit.total_amount,
@@ -940,7 +957,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 BrandWarehouseTpCancellation.objects.create(
                     brand_warehouse=warehouse,
                     reference_no=permit.bill_no,
-                    cancelled_by=request.user.username,
+                    cancelled_by=_get_user_display_name(request.user),
                     quantity_cases=int(item.cases or 0),
                     quantity_bottles=int(item.cases or 0) * int(item.bottles_per_case or 0),
                     amount_refunded=item.total_amount,
@@ -962,7 +979,15 @@ class PerformTransitPermitActionAPIView(views.APIView):
         except Exception as cancellation_error:
             print(f"ERROR cancellation logging during rejection for {permit.bill_no}: {cancellation_error}")
 
-    def _handle_stock_deduction(self, permit):
+    def _update_utilization_approved_by(self, permit, user):
+        """Update utilization records with OIC's full name when they approve."""
+        from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouseUtilization
+        full_name = _get_user_display_name(user)
+        BrandWarehouseUtilization.objects.filter(
+            permit_no=permit.bill_no
+        ).update(approved_by=full_name)
+
+    def _handle_stock_deduction(self, permit, user=None):
         """
         Check if all items in the bill are paid, and if so, deduct stock from BrandWarehouse
         """
@@ -1062,7 +1087,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                             cases=item.cases,
                             bottles_per_case=bottles_per_case,
                             status='APPROVED', # Setting directly to APPROVED to trigger deduction
-                            approved_by='System (Payment Auto-Deduction)',
+                            approved_by=_get_user_display_name(user) if user else 'System (Payment Auto-Deduction)',
                             approval_date=timezone.now()
                         )
                         print(f"DEBUG: Created utilization {utilization.id}, deducted {total_pieces} pieces")

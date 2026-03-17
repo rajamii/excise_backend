@@ -36,15 +36,20 @@ class BrandWarehouseTpCancellationSerializer(serializers.ModelSerializer):
     remarks = serializers.CharField(source='reason', read_only=True)
     previousStock = serializers.IntegerField(source='previous_stock', read_only=True)
     newStock = serializers.IntegerField(source='new_stock', read_only=True)
+    cancelled_by_display = serializers.SerializerMethodField()
+
+    def get_cancelled_by_display(self, obj):
+        """Return stored cancelled_by value (full name stored directly in DB)."""
+        return obj.cancelled_by or ''
 
     class Meta:
         model = BrandWarehouseTpCancellation
         fields = [
-            'id', 'brand_warehouse', 'reference_no', 'permit_no', 
-            'cancellation_date', 'cancelled_by', 'quantity_cases', 
-            'quantity_bottles', 'bottles_reversed', 'amount_refunded', 
-            'reason', 'remarks', 'previous_stock', 'previousStock', 
-            'new_stock', 'newStock', 'permit_date', 'destination', 
+            'id', 'brand_warehouse', 'reference_no', 'permit_no',
+            'cancellation_date', 'cancelled_by', 'cancelled_by_display', 'quantity_cases',
+            'quantity_bottles', 'bottles_reversed', 'amount_refunded',
+            'reason', 'remarks', 'previous_stock', 'previousStock',
+            'new_stock', 'newStock', 'permit_date', 'destination',
             'vehicle_no', 'depot_address', 'brand_name'
         ]
 
@@ -55,6 +60,11 @@ class BrandWarehouseUtilizationSerializer(serializers.ModelSerializer):
     """
     previousStock = serializers.IntegerField(source='previous_stock', read_only=True)
     newStock = serializers.IntegerField(source='new_stock', read_only=True)
+    approved_by_display = serializers.SerializerMethodField()
+
+    def get_approved_by_display(self, obj):
+        """Return stored approved_by value (full name stored directly in DB)."""
+        return obj.approved_by or ''
 
     class Meta:
         model = BrandWarehouseUtilization
@@ -73,13 +83,14 @@ class BrandWarehouseUtilizationSerializer(serializers.ModelSerializer):
             'total_bottles',
             'status',
             'approved_by',
+            'approved_by_display',
             'approval_date',
             'previousStock',
             'newStock',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'total_bottles', 'previousStock', 'newStock']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'total_bottles', 'previousStock', 'newStock', 'approved_by_display']
 
     def validate_quantity(self, value):
         """Validate that quantity is positive"""
