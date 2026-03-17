@@ -260,7 +260,7 @@ class LocationFee(models.Model):
         db_table = 'masters_locationcategory'
         verbose_name = 'Location Category'
         verbose_name_plural = 'Location Categories'
-        ordering = ['category_name']
+       
 
     def __str__(self) -> str:
         return self.category_name

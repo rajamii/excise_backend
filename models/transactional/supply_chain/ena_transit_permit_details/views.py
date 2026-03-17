@@ -878,6 +878,14 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 BrandWarehouseUtilization,
                 BrandWarehouseTpCancellation,
             )
+            from django.db import connection as _db_conn
+
+            # Reset sequence to avoid primary key conflicts from manual DB operations
+            with _db_conn.cursor() as _cur:
+                _cur.execute(
+                    "SELECT setval(pg_get_serial_sequence('brand_warehouse_tp_cancellation', 'id'), "
+                    "COALESCE((SELECT MAX(id) FROM brand_warehouse_tp_cancellation), 0) + 1, false)"
+                )
 
             utilizations = BrandWarehouseUtilization.objects.filter(permit_no=permit.bill_no)
             if utilizations.exists():
