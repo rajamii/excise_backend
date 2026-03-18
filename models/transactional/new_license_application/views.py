@@ -110,45 +110,59 @@ def _create_application(request, workflow_id: int, serializer_cls):
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    with transaction.atomic():
-        
-        workflow = get_object_or_404(Workflow, id=workflow_id)
-        
-        try:
-            initial_stage = workflow.stages.get(is_initial=True)
-        except WorkflowStage.DoesNotExist:
-            return Response(
-                {"detail": "Workflow has no initial stage (is_initial=True)."},
-                status=status.HTTP_400_BAD_REQUEST,
+    application_pk = None
+    try:
+        with transaction.atomic():
+            workflow = get_object_or_404(Workflow, id=workflow_id)
+
+            try:
+                initial_stage = workflow.stages.get(is_initial=True)
+            except WorkflowStage.DoesNotExist:
+                return Response(
+                    {"detail": "Workflow has no initial stage (is_initial=True)."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            district_code = serializer.validated_data['site_district'].district_code
+            prefix = f"NLI/{district_code}/{NewLicenseApplication.generate_fin_year()}"
+            last_app = NewLicenseApplication.objects.filter(
+                application_id__startswith=prefix
+            ).select_for_update().order_by('-application_id').first()
+
+            last_number = int(last_app.application_id.split('/')[-1]) if last_app else 0
+            new_number = str(last_number + 1).zfill(4)
+            new_application_id = f"{prefix}/{new_number}"
+
+            application = serializer.save(
+                workflow=workflow,
+                current_stage=initial_stage,
+                application_id=new_application_id,
+                applicant=request.user
             )
-        
-        district_code = serializer.validated_data['site_district'].district_code
-        prefix = f"NLI/{district_code}/{NewLicenseApplication.generate_fin_year()}"
-        last_app = NewLicenseApplication.objects.filter(
-            application_id__startswith=prefix
-        ).select_for_update().order_by('-application_id').first()
+            application_pk = application.pk
 
-        last_number = int(last_app.application_id.split('/')[-1]) if last_app else 0
-        new_number = str(last_number + 1).zfill(4)
-        new_application_id = f"{prefix}/{new_number}"
-
-        
-        application = serializer.save(
-            workflow=workflow,
-            current_stage=initial_stage,
-            application_id=new_application_id,
-            applicant=request.user
-        )   
-       
-        WorkflowService.submit_application(
-            application=application,
-            user=request.user,
-            remarks="Application submitted"
-        )
-
-        fresh = NewLicenseApplication.objects.get(pk=application.pk)
+            WorkflowService.submit_application(
+                application=application,
+                user=request.user,
+                remarks="Application submitted"
+            )
+        # Transaction committed — safe to query DB now
+        fresh = NewLicenseApplication.objects.get(pk=application_pk)
         fresh_serializer = serializer_cls(fresh)
         return Response(fresh_serializer.data, status=status.HTTP_201_CREATED)
+
+    except ValidationError as e:
+        return Response(
+            {"detail": str(e.message) if hasattr(e, 'message') else str(e)},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return Response(
+            {"detail": f"Submission failed: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
 
 @api_view(['POST'])

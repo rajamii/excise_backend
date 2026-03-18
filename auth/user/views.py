@@ -13,6 +13,7 @@ from django.db.models.deletion import ProtectedError
 from captcha.helpers import captcha_image_url
 from captcha.models import CaptchaStore
 from auth.roles.permissions import HasAppPermission, make_permission
+from auth.roles.models import Role
 from auth.user.models import CustomUser, LicenseeProfile, OICOfficerAssignment
 from auth.user.serializer import (
     UserSerializer,
@@ -33,8 +34,9 @@ from auth.user.otp import (
 from models.transactional.logs.models import UserActivity
 from models.transactional.logs.signals import get_client_ip
 from models.transactional.new_license_application.models import NewLicenseApplication
-from models.masters.license.models import License
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
+from models.masters.license.models import License
+from typing import cast
 import secrets
 import string
 from django.utils import timezone

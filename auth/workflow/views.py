@@ -202,12 +202,13 @@ def get_next_stages(request, application_id):
 
     current_stage = application.current_stage
     transitions = WorkflowTransition.objects.filter(workflow=application.workflow, from_stage=current_stage)
-    allowed_stages = [t.to_stage for t in transitions]
     data = [{
-            'id': stage.id,
-            'name': stage.name,
-            'description': stage.description or ""
-        } for stage in allowed_stages]
+            'id': t.to_stage.id,
+            'name': t.to_stage.name,
+            'description': t.to_stage.description or "",
+            'condition': t.condition or {},
+            'transition_id': t.id,
+        } for t in transitions]
     return Response(data)
 
 @api_view(['POST'])

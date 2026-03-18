@@ -252,15 +252,11 @@ class LocationCategory(models.Model):
         related_name='created_location_categories'
     )
     operation_date = models.DateTimeField(auto_now_add=True)
-class LocationFee(models.Model):
-    location_name = models.CharField(max_length=100, unique=True)
-    fee_amount = models.DecimalField(max_digits=10, decimal_places=2)
 
     class Meta:
         db_table = 'masters_locationcategory'
         verbose_name = 'Location Category'
         verbose_name_plural = 'Location Categories'
-       
 
     def __str__(self) -> str:
         return self.category_name

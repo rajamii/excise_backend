@@ -8,8 +8,8 @@ from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
 
 class CompanyRegistration(models.Model):
     application_id = models.CharField(max_length=30, primary_key=True, db_index=True)
-    workflow = models.ForeignKey(Workflow, on_delete=models.PROTECT, related_name='company_registrations')
-    current_stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name='company_registrations')
+    workflow = models.ForeignKey(Workflow, on_delete=models.PROTECT, null=True, blank=True, related_name='company_registrations')
+    current_stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, null=True, blank=True, related_name='company_registrations')
 
     is_approved = models.BooleanField(default=False)
 
@@ -52,6 +52,8 @@ class CompanyRegistration(models.Model):
     applicant = models.ForeignKey(
         CustomUser,
         on_delete=models.PROTECT,
+        null=True,
+        blank=True,
         related_name='company_registrations'
     )
 

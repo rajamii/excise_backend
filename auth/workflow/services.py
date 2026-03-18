@@ -310,7 +310,6 @@ class WorkflowService:
         return {**config, 'action': action_name}
 
     @staticmethod
-    @transaction.atomic
     def submit_application(application, user, remarks=None):
         initial_stage = application.current_stage
         if not initial_stage.is_initial:
