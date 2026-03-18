@@ -140,15 +140,21 @@ def _create_application(request, workflow_id: int, serializer_cls):
             applicant=request.user
         )   
        
-        WorkflowService.submit_application(
-            application=application,
-            user=request.user,
-            remarks="Application submitted"
-        )
+        # Don't automatically submit to workflow - require payment first
+        # WorkflowService.submit_application(
+        #     application=application,
+        #     user=request.user,
+        #     remarks="Application submitted"
+        # )
 
         fresh = NewLicenseApplication.objects.get(pk=application.pk)
         fresh_serializer = serializer_cls(fresh)
-        return Response(fresh_serializer.data, status=status.HTTP_201_CREATED)
+        return Response({
+            "application": fresh_serializer.data,
+            "payment_required": True,
+            "amount": "1.00",
+            "message": "Application created successfully. Please complete payment to proceed."
+        }, status=status.HTTP_201_CREATED)
 
 
 @api_view(['POST'])
@@ -450,3 +456,435 @@ def application_group(request):
         })
 
     return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([HasStagePermission])
+def initiate_license_application_payment(request, application_id):
+    """
+    Initiate payment for new license application with Rs 1/- fee
+    """
+    application = get_object_or_404(NewLicenseApplication, application_id=application_id)
+
+    # Check if user owns this application
+    if application.applicant != request.user:
+        return Response({"detail": "You can only pay for your own applications."},
+                       status=status.HTTP_403_FORBIDDEN)
+
+    # Check if payment already done
+    if application.is_license_fee_paid:
+        return Response({"detail": "Payment already completed for this application."},
+                       status=status.HTTP_400_BAD_REQUEST)
+
+    # Import payment models
+    from models.transactional.payment.models import (
+        PaymentGatewayParameter, PaymentModule, PaymentBilldeskTransaction,
+        PaymentHoaSplit
+    )
+    from models.transactional.payment.views import (
+        _generate_unique_utr, _generate_transaction_id,
+        _build_billdesk_request_message, _is_public_callback_url
+    )
+    from decimal import Decimal
+    from django.conf import settings
+
+    # Get active payment gateway
+    gateway = PaymentGatewayParameter.objects.filter(is_active="Y").order_by("sl_no").first()
+    if not gateway:
+        return Response({"detail": "No active payment gateway found."},
+                       status=status.HTTP_400_BAD_REQUEST)
+
+    # Get or create payment module for new license applications
+    module_code = "NLA"  # New License Application
+    module, created = PaymentModule.objects.get_or_create(
+        module_code=module_code,
+        defaults={
+            'module_desc': 'New License Application Fee',
+            'visibility_status': 'Y',
+            'active_payment_mode': 'O',
+            'payment_invoking_page': '/licensee/new-license-apply',
+            'payment_response_page': '/licensee/payment-callback',
+            'created_date': timezone.now()
+        }
+    )
+
+    # Fixed amount and HOA for new license applications
+    amount = Decimal('1.00')  # Rs 1/-
+    hoa = '0039-00-800-45-02'  # Common HOA
+
+    # Generate transaction details
+    transaction_id = _generate_transaction_id()
+    utr = _generate_unique_utr()
+
+    # Determine callback URL
+    frontend_base = getattr(settings, "FRONTEND_URL", "http://localhost:4200")
+    callback_path = "/licensee/payment-callback"
+    return_url = f"{frontend_base}{callback_path}"
+
+    # Validate callback URL for production
+    if not _is_public_callback_url(return_url):
+        return Response({
+            "detail": "Invalid callback URL. Configure a public callback URL.",
+            "callback_url": return_url
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # Build BillDesk request
+    request_msg_without_checksum, checksum = _build_billdesk_request_message(
+        gateway=gateway,
+        utr=utr,
+        amount=amount,
+        addl1=f"NLA-{application_id}",  # Application reference
+        addl2="New License Application Fee",
+        addl3=application.applicant_name[:30],
+        addl4=application.establishment_name[:30],
+        addl5="Rs 1 Application Fee",
+        addl6="NA",
+        addl7="NA",
+        return_url=return_url,
+    )
+    request_msg = f"{request_msg_without_checksum}|{checksum}"
+
+    # Create payment transaction
+    with transaction.atomic():
+        PaymentBilldeskTransaction.objects.create(
+            utr=utr,
+            transaction_id_no_hoa=transaction_id,
+            payer_id=application.applicant.username,
+            payment_module_code=module_code,
+            transaction_amount=amount,
+            request_merchantid=gateway.merchantid,
+            request_currencytype="INR",
+            request_typefield1="R",
+            request_securityid=gateway.securityid,
+            request_typefield2="F",
+            request_additionalinfo1=f"NLA-{application_id}",
+            request_additionalinfo2="New License Application Fee",
+            request_additionalinfo3=application.applicant_name[:30],
+            request_additionalinfo4=application.establishment_name[:30],
+            request_additionalinfo5="Rs 1 Application Fee",
+            request_additionalinfo6="NA",
+            request_additionalinfo7="NA",
+            request_return_url=return_url,
+            request_checksum=checksum,
+            request_string=request_msg,
+            payment_status="P",
+            user_id=request.user.username,
+            opr_date=timezone.now(),
+        )
+
+        # Create HOA split entry
+        PaymentHoaSplit.objects.create(
+            transaction_id_no=transaction_id,
+            head_of_account=hoa,
+            payer_id=application.applicant.username,
+            amount=amount,
+            payment_module_code=module_code,
+            requisition_id_no=application_id,
+            user_id=request.user.username,
+            opr_date=timezone.now(),
+        )
+
+    return Response({
+        "status": "ok",
+        "application_id": application_id,
+        "transaction_id": transaction_id,
+        "utr": utr,
+        "amount": amount,
+        "head_of_account": hoa,
+        "gateway": {
+            "sl_no": gateway.sl_no,
+            "name": gateway.payment_gateway_name,
+            "merchantid": gateway.merchantid,
+            "return_url": return_url,
+        },
+        "msg": request_msg,
+        "callback_url": return_url,
+        "billdesk_url": "https://pgi.billdesk.com/pgidsk/PGIMerchantPayment"
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([HasStagePermission])
+def confirm_license_application_payment(request, application_id):
+    """
+    Confirm payment and proceed with application submission
+    """
+    application = get_object_or_404(NewLicenseApplication, application_id=application_id)
+
+    # Check if user owns this application
+    if application.applicant != request.user:
+        return Response({"detail": "You can only confirm payment for your own applications."},
+                       status=status.HTTP_403_FORBIDDEN)
+
+    # Import payment models
+    from models.transactional.payment.models import PaymentBilldeskTransaction, PaymentHoaSplit
+
+    # Check if payment was successful
+    payment_transactions = PaymentBilldeskTransaction.objects.filter(
+        payer_id=application.applicant.username,
+        payment_module_code="NLA",
+        request_additionalinfo1=f"NLA-{application_id}",
+        payment_status="S"  # Successful
+    ).order_by('-transaction_date')
+
+    if not payment_transactions.exists():
+        return Response({
+            "detail": "No successful payment found for this application.",
+            "payment_required": True
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # Mark application as fee paid
+    application.is_license_fee_paid = True
+    application.save(update_fields=['is_license_fee_paid'])
+
+    # Now proceed with workflow submission
+    WorkflowService.submit_application(
+        application=application,
+        user=request.user,
+        remarks="Application submitted after payment confirmation"
+    )
+
+    # Refresh application data
+    fresh_application = NewLicenseApplication.objects.get(pk=application.pk)
+    serializer = NewLicenseApplicationSerializer(fresh_application)
+
+    return Response({
+        "status": "success",
+        "message": "Payment confirmed and application submitted successfully",
+        "application": serializer.data
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([HasStagePermission])
+def check_license_application_payment_status(request, application_id):
+    """
+    Check payment status for a license application
+    """
+    application = get_object_or_404(NewLicenseApplication, application_id=application_id)
+
+    # Check if user owns this application
+    if application.applicant != request.user:
+        return Response({"detail": "You can only check payment status for your own applications."},
+                       status=status.HTTP_403_FORBIDDEN)
+
+    # Import payment models
+    from models.transactional.payment.models import PaymentBilldeskTransaction
+
+    # Get payment transactions for this application
+    payment_transactions = PaymentBilldeskTransaction.objects.filter(
+        payer_id=application.applicant.username,
+        payment_module_code="NLA",
+        request_additionalinfo1=f"NLA-{application_id}"
+    ).order_by('-transaction_date')
+
+    payment_status = "not_initiated"
+    latest_transaction = None
+
+    if payment_transactions.exists():
+        latest_transaction = payment_transactions.first()
+        if latest_transaction.payment_status == "S":
+            payment_status = "success"
+        elif latest_transaction.payment_status == "F":
+            payment_status = "failed"
+        else:
+            payment_status = "pending"
+
+    response_data = {
+        "application_id": application_id,
+        "is_license_fee_paid": application.is_license_fee_paid,
+        "payment_status": payment_status,
+        "amount_required": "1.00",
+        "hoa": "0039-00-800-45-02"
+    }
+
+    if latest_transaction:
+        response_data.update({
+            "utr": latest_transaction.utr,
+            "transaction_date": latest_transaction.transaction_date,
+            "transaction_amount": latest_transaction.transaction_amount,
+            "response_authstatus": latest_transaction.response_authstatus,
+            "response_txnreferenceno": latest_transaction.response_txnreferenceno,
+            "response_bankreferenceno": latest_transaction.response_bankreferenceno
+        })
+
+    return Response(response_data, status=status.HTTP_200_OK)
+
+@api_view(['POST'])
+@permission_classes([HasStagePermission])
+def initiate_license_application_payment(request, application_id):
+    """
+    Initiate payment for new license application with Rs 1/- fee
+    """
+    application = get_object_or_404(NewLicenseApplication, application_id=application_id)
+    
+    # Check if user owns this application
+    if application.applicant != request.user:
+        return Response({"detail": "You can only pay for your own applications."}, 
+                       status=status.HTTP_403_FORBIDDEN)
+    
+    # Check if payment already done
+    if application.is_license_fee_paid:
+        return Response({"detail": "Payment already completed for this application."}, 
+                       status=status.HTTP_400_BAD_REQUEST)
+    
+    # Import payment models
+    from models.transactional.payment.models import (
+        PaymentGatewayParameter, PaymentModule, PaymentBilldeskTransaction, 
+        PaymentHoaSplit
+    )
+    from models.transactional.payment.views import (
+        _generate_unique_utr, _generate_transaction_id, 
+        _build_billdesk_request_message, _is_public_callback_url
+    )
+    from decimal import Decimal
+    from django.conf import settings
+    
+    # Get active payment gateway
+    gateway = PaymentGatewayParameter.objects.filter(is_active="Y").order_by("sl_no").first()
+    if not gateway:
+        return Response({"detail": "No active payment gateway found."}, 
+                       status=status.HTTP_400_BAD_REQUEST)
+    
+    # Get or create payment module for new license applications
+    module_code = "NLA"  # New License Application
+    module, created = PaymentModule.objects.get_or_create(
+        module_code=module_code,
+        defaults={
+            'module_desc': 'New License Application Fee',
+            'visibility_status': 'Y',
+            'active_payment_mode': 'O',
+            'payment_invoking_page': '/licensee/new-license-apply',
+            'payment_response_page': '/licensee/payment-callback',
+            'created_date': timezone.now()
+        }
+    )
+    
+    # Fixed amount and HOA for new license applications
+    amount = Decimal('1.00')  # Rs 1/-
+    hoa = '0039-00-800-45-02'  # Common HOA
+    
+    # Generate transaction details
+    transaction_id = _generate_transaction_id()
+    utr = _generate_unique_utr()
+    
+    # Determine callback URL
+    frontend_base = getattr(settings, "FRONTEND_URL", "http://localhost:4200")
+    callback_path = "/licensee/payment-callback"
+    return_url = f"{frontend_base}{callback_path}"
+    
+    # Validate callback URL for production
+    if not _is_public_callback_url(return_url):
+        return Response({
+            "detail": "Invalid callback URL. Configure a public callback URL.",
+            "callback_url": return_url
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Build BillDesk request
+    request_msg_without_checksum, checksum = _build_billdesk_request_message(
+        gateway=gateway,
+        utr=utr,
+        amount=amount,
+        addl1=f"NLA-{application_id}",  # Application reference
+        addl2="New License Application Fee",
+        addl3=application.applicant_name[:30],
+        addl4=application.establishment_name[:30],
+        addl5="Rs 1 Application Fee",
+        addl6="NA",
+        addl7="NA",
+        return_url=return_url,
+    )
+    request_msg = f"{request_msg_without_checksum}|{checksum}"
+    
+    # Create payment transaction
+    with transaction.atomic():
+        PaymentBilldeskTransaction.objects.create(
+            utr=utr,
+            transaction_id_no_hoa=transaction_id,
+            payer_id=application.applicant.username,
+            payment_module_code=module_code,
+            transaction_amount=amount,
+            request_merchantid=gateway.merchantid,
+            request_currencytype="INR",
+            request_typefield1="R",
+            request_securityid=gateway.securityid,
+            request_typefield2="F",
+            request_additionalinfo1=f"NLA-{application_id}",
+            request_additionalinfo2="New License Application Fee",
+            request_additionalinfo3=application.applicant_name[:30],
+            request_additionalinfo4=application.establishment_name[:30],
+            request_additionalinfo5="Rs 1 Application Fee",
+            request_additionalinfo6="NA",
+            request_additionalinfo7="NA",
+            request_return_url=return_url,
+            request_checksum=checksum,
+            request_string=request_msg,
+            payment_status="P",
+            user_id=request.user.username,
+            opr_date=timezone.now(),
+        )
+        
+        # Create HOA split entry
+        PaymentHoaSplit.objects.create(
+            transaction_id_no=transaction_id,
+            head_of_account=hoa,
+            payer_id=application.applicant.username,
+            amount=amount,
+            payment_module_code=module_code,
+            requisition_id_no=application_id,
+            user_id=request.user.username,
+            opr_date=timezone.now(),
+        )
+    
+    return Response({
+        "status": "ok",
+        "application_id": application_id,
+        "transaction_id": transaction_id,
+        "utr": utr,
+        "amount": amount,
+        "head_of_account": hoa,
+        "gateway": {
+            "sl_no": gateway.sl_no,
+            "name": gateway.payment_gateway_name,
+            "merchantid": gateway.merchantid,
+            "return_url": return_url,
+        },
+        "msg": request_msg,
+        "callback_url": return_url,
+        "billdesk_url": "https://pgi.billdesk.com/pgidsk/PGIMerchantPayment"
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([HasStagePermission])
+def confirm_license_application_payment(request, application_id):
+    """
+    Confirm payment and proceed with application submission
+    """
+    application = get_object_or_404(NewLicenseApplication, application_id=application_id)
+    
+    # Check if user owns this application
+    if application.applicant != request.user:
+        return Response({"detail": "You can only confirm payment for your own applications."}, 
+                       status=status.HTTP_403_FORBIDDEN)
+    
+    # Import payment models
+    from models.transactional.payment.models import PaymentBilldeskTransaction, PaymentHoaSplit
+    
+    # Check if payment was successful
+    payment_transactions = PaymentBilldeskTransaction.objects.filter(
+        payer_id=application.applicant.username,
+        payment_module_code="NLA",
+        request_additionalinfo1=f"NLA-{application_id}",
+        payment_status="S"  # Successful
+    ).order_by('-transaction_date')
+    
+    if not payment_transactions.exists():
+        return Response({
+            "detail": "No successful payment found for this application.",
+            "payment_required": True
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Mark application as fee paid
+    application.is_license_fee_paid = True
+    application.save(update_field
