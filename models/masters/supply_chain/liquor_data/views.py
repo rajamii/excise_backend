@@ -195,56 +195,109 @@ class GetUserEntitiesView(APIView):
 
 class ApprovedBrandDetailsView(APIView):
     """
-    Read-only API to fetch brand details for approved licensees
-    Shows only brands that were used in transit permits with their bottle types
+    Read-only API to fetch brand details for approved licensees only.
+    1. Validates license is approved (is_approved=True)
+    2. Gets distillery_name from brand_warehouse for that license_id
+    3. Returns transit permit brands where manufacturing_unit_name matches distillery_name
     """
     def get(self, request):
         try:
             license_id = request.query_params.get('license_id')
-            
+
             if not license_id:
                 return Response({
                     'success': False,
                     'error': 'license_id is required'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Fetch brands from transit permits submitted by this licensee
-            transit_permits = EnaTransitPermitDetail.objects.filter(
-                licensee_id=license_id
-            ).exclude(
-                brand__isnull=True
-            ).exclude(
-                brand=''
-            ).exclude(
-                liquor_type__isnull=True
-            ).exclude(
-                liquor_type=''
-            ).exclude(
-                size_ml__isnull=True
-            ).exclude(
-                bottle_type__isnull=True
-            ).exclude(
-                bottle_type=''
-            ).values(
-                'brand',
-                'liquor_type',
-                'size_ml',
-                'bottle_type',
-                'manufacturing_unit_name'
-            ).distinct().order_by('brand', 'size_ml')
+            # Step 1: Check is_approved=True in NewLicenseApplication
+            from models.transactional.new_license_application.models import NewLicenseApplication
+            is_approved = NewLicenseApplication.objects.filter(
+                application_id=license_id,
+                is_approved=True
+            ).exists()
 
-            # Format brand data
-            brand_data = []
-            for permit in transit_permits:
-                brand_data.append({
-                    'brandName': permit['brand'],
-                    'liquorType': permit['liquor_type'],
-                    'bottleSize': permit['size_ml'],
-                    'bottleType': permit['bottle_type'],
-                    'manufacturingUnit': permit['manufacturing_unit_name'] or ''
+            if not is_approved:
+                return Response({
+                    'success': False,
+                    'error': 'License is not approved or does not exist'
+                }, status=status.HTTP_403_FORBIDDEN)
+
+            # Step 2: Get distillery_name from brand_warehouse for this license_id
+            distillery_names = BrandWarehouse.objects.filter(
+                license_id=license_id
+            ).exclude(
+                distillery_name__isnull=True
+            ).exclude(
+                distillery_name=''
+            ).values_list('distillery_name', flat=True).distinct()
+
+            if not distillery_names:
+                return Response({
+                    'success': True,
+                    'data': [],
+                    'total': 0,
+                    'licenseId': license_id
                 })
 
-            logger.info(f"ApprovedBrandDetailsView: Returning {len(brand_data)} brands from transit permits for license_id: {license_id}")
+            # Step 3: Fetch ALL brands from brand_warehouse for that distillery_name
+            warehouse_brands = BrandWarehouse.objects.filter(
+                distillery_name__in=distillery_names
+            ).exclude(
+                brand_details__isnull=True
+            ).exclude(
+                brand_details=''
+            ).exclude(
+                brand_type__isnull=True
+            ).exclude(
+                brand_type=''
+            ).exclude(
+                capacity_size__isnull=True
+            ).values(
+                'brand_details',
+                'brand_type',
+                'capacity_size',
+                'distillery_name'
+            ).distinct().order_by('brand_details', 'capacity_size')
+
+            # Get approved status_code dynamically from workflow stage (is_final=True, approved stage)
+            from auth.workflow.models import WorkflowStage
+            from auth.workflow.constants import WORKFLOW_IDS
+            approved_stage = WorkflowStage.objects.filter(
+                workflow_id=WORKFLOW_IDS['TRANSIT_PERMIT'],
+                is_final=True,
+                name__icontains='Approved'
+            ).values_list('name', flat=True).first()
+
+            # Get bottle types from approved transit permits only
+            transit_bottle_map = {}
+            transit_permits = EnaTransitPermitDetail.objects.filter(
+                licensee_id=license_id,
+                manufacturing_unit_name__in=distillery_names,
+                status=approved_stage
+            ).exclude(
+                bottle_type=''
+            ).exclude(
+                bottle_type__isnull=True
+            ).values('brand', 'size_ml', 'bottle_type')
+
+            for permit in transit_permits:
+                key = (permit['brand'].strip().lower(), permit['size_ml'])
+                transit_bottle_map[key] = permit['bottle_type']
+
+            brand_data = []
+            for brand in warehouse_brands:
+                key = (brand['brand_details'].strip().lower(), brand['capacity_size'])
+                bottle_type = transit_bottle_map.get(key, None)
+                brand_data.append({
+                    'brandName': brand['brand_details'],
+                    'liquorType': brand['brand_type'],
+                    'bottleSize': brand['capacity_size'],
+                    'bottleType': bottle_type,
+                    'manufacturingUnit': brand['distillery_name']
+                })
+
+            logger.info(f"ApprovedBrandDetailsView: {len(brand_data)} brands for license_id: {license_id}")
 
             return Response({
                 'success': True,
