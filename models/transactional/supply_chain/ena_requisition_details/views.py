@@ -683,6 +683,20 @@ class PerformRequisitionActionAPIView(APIView):
                     'status': 'error',
                     'message': 'Valid action (APPROVE or REJECT) is required'
                 }, status=status.HTTP_400_BAD_REQUEST)
+            remarks = str(
+                request.data.get('remarks')
+                or request.data.get('reason')
+                or request.data.get('cancellation_reason')
+                or request.data.get('cancellationReason')
+                or request.data.get('reason_for_cancellation')
+                or request.data.get('reasonForCancellation')
+                or ''
+            ).strip()
+            if action == 'REJECT' and not remarks:
+                return Response({
+                    'status': 'error',
+                    'message': 'Reason is required while rejecting the requisition.'
+                }, status=status.HTTP_400_BAD_REQUEST)
 
             # Get the requisition
             requisition = EnaRequisitionDetail.objects.get(pk=pk)
@@ -745,19 +759,25 @@ class PerformRequisitionActionAPIView(APIView):
                         user=request.user,
                         target_stage=target_transition.to_stage,
                         context=context, # Context might be used for extra validation in service
-                        remarks=f"Action: {action}"
+                        remarks=remarks or f"Action: {action}"
                     )
 
                     # Sync back to status/status_code for legacy
                     # from models.masters.supply_chain.status_master.models import StatusMaster # Removed
                     new_stage_name = target_transition.to_stage.name
                     requisition.status = new_stage_name
+                    if action == 'REJECT':
+                        requisition.rejected_by_role = str(getattr(getattr(request.user, 'role', None), 'name', '') or '').strip()
+                        requisition.cancellation_reason = remarks
+                    else:
+                        requisition.rejected_by_role = ''
+                        requisition.cancellation_reason = ''
 
                     # status_obj = StatusMaster.objects.filter(status_name=new_stage_name).first() # Removed
                     # if status_obj:
                     #     requisition.status_code = status_obj.status_code
 
-                    requisition.save() # status update
+                    requisition.save() # status/rejected_by_role/cancellation_reason update
 
                     wallet_result = None
                     if action == 'APPROVE' and self._is_forwarded_payslip_stage(new_stage_name):

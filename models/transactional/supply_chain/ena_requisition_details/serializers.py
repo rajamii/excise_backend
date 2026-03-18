@@ -2,8 +2,10 @@ from rest_framework import serializers
 from django.db import transaction, models
 from decimal import Decimal, InvalidOperation
 from django.core.exceptions import ObjectDoesNotExist
+from django.contrib.contenttypes.models import ContentType
 from .models import EnaRequisitionDetail, RequisitionBulkLiterDetail
 from auth.workflow.constants import WORKFLOW_IDS
+from auth.workflow.models import Rejection
 from models.masters.license.models import License
 import re
 from models.transactional.supply_chain.access_control import condition_role_matches
@@ -14,6 +16,8 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
     can_initiate_cancellation = serializers.SerializerMethodField()
     has_active_revalidation = serializers.SerializerMethodField()
     establishment_name = serializers.SerializerMethodField()
+    rejected_by_display = serializers.SerializerMethodField()
+    cancellation_reason_display = serializers.SerializerMethodField()
     
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
     current_stage_is_final = serializers.SerializerMethodField()
@@ -132,6 +136,107 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
                 return company_name
 
         return ''
+
+    def get_rejected_by_display(self, obj):
+        """Return role label of the latest rejecting officer (e.g., Permit Section/Commissioner)."""
+        stored_role = str(getattr(obj, 'rejected_by_role', '') or '').strip()
+        if stored_role:
+            return self._humanize_role_name(stored_role)
+
+        try:
+            content_type = ContentType.objects.get_for_model(obj.__class__)
+            latest_rejection = (
+                Rejection.objects.filter(content_type=content_type, object_id=str(obj.pk))
+                .select_related('rejected_by__role')
+                .order_by('-rejected_on')
+                .first()
+            )
+            if latest_rejection:
+                role_name = str(getattr(getattr(latest_rejection.rejected_by, 'role', None), 'name', '') or '').strip()
+                if role_name:
+                    return self._humanize_role_name(role_name)
+
+                full_name = str(getattr(latest_rejection.rejected_by, 'full_name', '') or '').strip()
+                if full_name:
+                    return full_name
+
+                username = str(getattr(latest_rejection.rejected_by, 'username', '') or '').strip()
+                if username:
+                    return username
+        except Exception:
+            pass
+
+        # Fallback: requisition reject flow uses WorkflowService.advance_stage(),
+        # which always writes a Transaction with performed_by/forwarded_by role.
+        try:
+            latest_txn = (
+                obj.transactions.select_related('performed_by__role', 'forwarded_by', 'stage')
+                .order_by('-timestamp')
+                .first()
+            )
+            if not latest_txn:
+                return ''
+
+            role_name = str(getattr(getattr(latest_txn, 'forwarded_by', None), 'name', '') or '').strip()
+            if role_name:
+                return self._humanize_role_name(role_name)
+
+            actor_role = str(getattr(getattr(getattr(latest_txn, 'performed_by', None), 'role', None), 'name', '') or '').strip()
+            if actor_role:
+                return self._humanize_role_name(actor_role)
+
+            stage_name = str(getattr(getattr(latest_txn, 'stage', None), 'name', '') or '').strip()
+            stage_hint = self._role_from_stage_name(stage_name)
+            if stage_hint:
+                return stage_hint
+        except Exception:
+            return ''
+
+        return ''
+
+    def get_cancellation_reason_display(self, obj):
+        stored_reason = str(getattr(obj, 'cancellation_reason', '') or '').strip()
+        if stored_reason:
+            return stored_reason
+
+        # Fallback for historical rows where reason may only exist in workflow rejection remarks.
+        try:
+            content_type = ContentType.objects.get_for_model(obj.__class__)
+            latest_rejection = (
+                Rejection.objects.filter(content_type=content_type, object_id=str(obj.pk))
+                .order_by('-rejected_on')
+                .values_list('remarks', flat=True)
+                .first()
+            )
+            rejection_reason = str(latest_rejection or '').strip()
+            if rejection_reason:
+                return rejection_reason
+
+            latest_txn_remarks = (
+                obj.transactions.order_by('-timestamp')
+                .values_list('remarks', flat=True)
+                .first()
+            )
+            txn_reason = str(latest_txn_remarks or '').strip()
+            if txn_reason and txn_reason.lower() not in {'action: reject', 'reject'}:
+                return txn_reason
+            return ''
+        except Exception:
+            return ''
+
+    def _role_from_stage_name(self, value):
+        token = str(value or '').lower()
+        if 'permit' in token and 'section' in token:
+            return 'Permit Section'
+        if 'commissioner' in token:
+            return 'Commissioner'
+        return ''
+
+    def _humanize_role_name(self, value):
+        normalized = str(value or '').replace('_', ' ').replace('-', ' ').strip()
+        if not normalized:
+            return ''
+        return ' '.join(part.capitalize() for part in normalized.split())
     
     def _derive_status_code_from_stage(self, instance):
         """

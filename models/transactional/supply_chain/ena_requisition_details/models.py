@@ -16,6 +16,8 @@ class EnaRequisitionDetail(models.Model):
     bulk_spirit_type = models.CharField(max_length=255, default='', blank=True)
     strength = models.CharField(max_length=255, default='', blank=True)
     status = models.CharField(max_length=50)
+    rejected_by_role = models.CharField(max_length=100, blank=True, default='')
+    cancellation_reason = models.TextField(blank=True, default='')
     state = models.CharField(max_length=100)
     status_code = models.CharField(max_length=50, default='RQ_00')
     totalbl = models.DecimalField(max_digits=18, decimal_places=2)

@@ -13,6 +13,7 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
     current_stage_entry_actions = serializers.SerializerMethodField()
     approved_by_display = serializers.SerializerMethodField()
     cancelled_by_display = serializers.SerializerMethodField()
+    cancelled_reason_display = serializers.SerializerMethodField()
 
     def get_approved_by_display(self, obj):
         """Return the OIC name who approved this permit (from utilization record)."""
@@ -36,6 +37,19 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
             ).exclude(cancelled_by__isnull=True).exclude(cancelled_by='').first()
             if cancel:
                 return cancel.cancelled_by or ''
+        except Exception:
+            pass
+        return ''
+
+    def get_cancelled_reason_display(self, obj):
+        """Return cancellation reason entered by admin/OIC for this permit."""
+        try:
+            from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouseTpCancellation
+            cancel = BrandWarehouseTpCancellation.objects.filter(
+                reference_no=obj.bill_no
+            ).exclude(reason__isnull=True).exclude(reason='').first()
+            if cancel:
+                return str(cancel.reason or '').strip()
         except Exception:
             pass
         return ''
