@@ -89,7 +89,15 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
     def _debit_wallet_for_revalidation_submission(self, revalidation, user):
         from models.transactional.payment.models import WalletBalance, WalletTransaction
 
-        amount = self.REVALIDATION_FEE_AMOUNT
+        try:
+            amount = Decimal(
+                str(
+                    getattr(revalidation, 'revalidation_br_amount', None)
+                    or self.REVALIDATION_FEE_AMOUNT
+                )
+            )
+        except Exception:
+            amount = self.REVALIDATION_FEE_AMOUNT
         if amount <= 0:
             return {'debited': False, 'reason': 'zero_amount'}
 
@@ -100,14 +108,19 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         if not candidates:
             raise ValueError("Unable to resolve licensee_id for wallet deduction.")
 
+        # Use transaction_id as the primary idempotency key (licensee_id can be normalized on save).
         already_debited = WalletTransaction.objects.filter(
             transaction_id=transaction_id,
             source_module='ena_revalidation',
             entry_type='DR',
-            licensee_id__in=candidates
         ).exists()
         if already_debited:
-            return {'debited': False, 'reason': 'already_debited', 'licensee_id': candidates[0] if candidates else ''}
+            return {
+                'debited': False,
+                'reason': 'already_debited',
+                'transaction_id': transaction_id,
+                'reference_no': reference_no,
+            }
 
         wallet = None
         resolved_licensee_id = ''
@@ -148,12 +161,9 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
 
         now_ts = timezone.now()
         after = current_balance - amount
-        wallet.current_balance = after
-        wallet.total_debit = Decimal(str(wallet.total_debit or 0)) + amount
-        wallet.last_updated_at = now_ts
-        wallet.save(update_fields=['current_balance', 'total_debit', 'last_updated_at'])
 
         # Protect against duplicate-constraint collisions on (transaction_id, head_of_account, entry_type, source_module).
+        # Must be checked before applying the debit to avoid double-debit with no transaction row.
         duplicate_txn = WalletTransaction.objects.filter(
             transaction_id=transaction_id,
             head_of_account=wallet.head_of_account,
@@ -161,9 +171,21 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             source_module='ena_revalidation'
         ).exists()
         if duplicate_txn:
-            return {'debited': False, 'reason': 'already_debited', 'licensee_id': resolved_licensee_id}
+            return {
+                'debited': False,
+                'reason': 'already_debited',
+                'licensee_id': resolved_licensee_id,
+                'transaction_id': transaction_id,
+                'reference_no': reference_no,
+            }
 
+        sid = transaction.savepoint()
         try:
+            wallet.current_balance = after
+            wallet.total_debit = Decimal(str(wallet.total_debit or 0)) + amount
+            wallet.last_updated_at = now_ts
+            wallet.save(update_fields=['current_balance', 'total_debit', 'last_updated_at'])
+
             WalletTransaction.objects.create(
                 wallet_balance=wallet,
                 transaction_id=transaction_id,
@@ -185,13 +207,26 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                 created_at=now_ts,
             )
         except IntegrityError:
-            return {'debited': False, 'reason': 'already_debited', 'licensee_id': resolved_licensee_id}
+            transaction.savepoint_rollback(sid)
+            return {
+                'debited': False,
+                'reason': 'already_debited',
+                'licensee_id': resolved_licensee_id,
+                'transaction_id': transaction_id,
+                'reference_no': reference_no,
+            }
+        else:
+            transaction.savepoint_commit(sid)
 
         return {
             'debited': True,
             'licensee_id': resolved_licensee_id,
             'wallet_type': wallet.wallet_type,
-            'amount': str(amount)
+            'amount': str(amount),
+            'transaction_id': transaction_id,
+            'reference_no': reference_no,
+            'balance_before': str(current_balance),
+            'balance_after': str(after),
         }
 
     def get_queryset(self):
@@ -361,11 +396,10 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             if wallet_result is not None:
                 response_payload['wallet_deduction'] = wallet_result
             return Response(response_payload, status=status.HTTP_200_OK)
-            
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            return Response({
-                'error': str(e)
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=True, methods=['post'])
     def perform_action(self, request, pk=None):
