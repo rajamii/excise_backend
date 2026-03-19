@@ -7,8 +7,11 @@ from .models import EnaRequisitionDetail, RequisitionBulkLiterDetail
 from auth.workflow.constants import WORKFLOW_IDS
 from auth.workflow.models import Rejection
 from models.masters.license.models import License
+import logging
 import re
 from models.transactional.supply_chain.access_control import condition_role_matches
+
+logger = logging.getLogger(__name__)
 
 class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
@@ -86,18 +89,6 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             data['status_code'] = self._derive_status_code_from_stage(instance)
         else:
             data['status_code'] = instance.status_code
-        
-        print(f"DEBUG: Serializing requisition {instance.id}")
-        print(f"  - our_ref_no: '{instance.our_ref_no}' -> '{data['our_ref_no']}'")
-        print(f"  - lifted_from: '{instance.lifted_from}' -> '{data['lifted_from']}'")
-        print(f"  - via_route: '{instance.via_route}' -> '{data['via_route']}'")
-        print(f"  - check_post_name: '{instance.check_post_name}' -> '{data['check_post_name']}'")
-        print(f"  - branch_purpose: '{instance.branch_purpose}' -> '{data['branch_purpose']}'")
-        print(f"  - lifted_from_distillery_name: '{instance.lifted_from_distillery_name}' -> '{data['lifted_from_distillery_name']}'")
-        print(f"  - purpose_name: '{instance.purpose_name}' -> '{data['purpose_name']}'")
-        print(f"  - totalbl: {instance.totalbl} -> '{data['totalbl']}'")
-        print(f"  - status: '{instance.status}' -> '{data['status']}'")
-        print(f"  - status_code: '{instance.status_code}' -> '{data['status_code']}'")
         
         return data
 
@@ -468,7 +459,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
                 if config:
                     configs.append(config)
             except Exception as e:
-                print(f"Error getting config for action {action_name}: {e}")
+                logger.exception("Error getting UI config for action=%s", action_name)
                 # Add a basic config as fallback
                 configs.append({
                     'action': action_name,
@@ -482,21 +473,14 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
 
     def get_can_initiate_cancellation(self, obj):
         request = self.context.get('request')
-        
-        print(f"DEBUG get_can_initiate_cancellation: obj.id={obj.id}")
-        print(f"  - request: {request}")
-        print(f"  - request.user: {request.user if request else 'NO REQUEST'}")
-        
+
         if not request or not request.user.is_authenticated:
-            print(f"  - FAILED: No request or user not authenticated")
             return False
             
         # Only Licensee can initiate cancellation
         user_role_name = request.user.role.name if hasattr(request.user, 'role') and request.user.role else None
-        print(f"  - user_role_name: {user_role_name}")
-        
+
         if user_role_name not in ['licensee', 'Licensee']:
-            print(f"  - FAILED: User is not a licensee")
             return False
 
         status_lower = str(obj.status or '').lower()
@@ -510,45 +494,29 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         # Cancellation request should be allowed only at final approved requisition stage.
         is_final_approved = is_final_stage and looks_approved
 
-        print(f"  - current_stage: {current_stage_name}")
-        print(f"  - is_final_stage: {is_final_stage}")
-        print(f"  - status_code: {status_code}")
-        print(f"  - looks_approved: {looks_approved}")
-        print(f"  - is_final_approved: {is_final_approved}")
-
         if not is_final_approved:
-            print(f"  - FAILED: Not in final approved stage")
             return False
         
         # Check if it's approved (not rejected)
         
-        print(f"  - status: {obj.status}")
-        print(f"  - stage_name: {current_stage_name}")
-        
         # If status or stage name contains 'reject', it's not approved
         if 'reject' in status_lower or 'reject' in stage_name_lower:
-            print(f"  - FAILED: Status or stage contains 'reject'")
             return False
         
         # Check if there's an active revalidation - if yes, cannot cancel
         has_active_reval = self.get_has_active_revalidation(obj)
-        print(f"  - has_active_revalidation: {has_active_reval}")
-        
+
         if has_active_reval:
-            print(f"  - FAILED: Has active revalidation")
             return False
 
         # Check if all requisition permits are already cancelled by commissioner-approved cancellations
         if self._are_all_requisition_permits_cancelled(obj):
-            print(f"  - FAILED: All permits already cancelled for requisition")
             return False
         
         # Check if already cancelled or cancellation in progress
         if 'cancel' in status_lower or 'cancel' in stage_name_lower:
-            print(f"  - FAILED: Already cancelled or in progress")
             return False
         
-        print(f"  - SUCCESS: Can initiate cancellation!")
         return True
 
     def _parse_permit_tokens(self, value):
@@ -644,7 +612,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             return active_count > 0
             
         except Exception as e:
-            print(f"Error checking active revalidation: {e}")
+            logger.exception("Error checking active revalidation for requisition=%s", getattr(obj, "id", None))
             return False
 
     def create(self, validated_data):
@@ -710,7 +678,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             
         except Exception as e:
             # Fallback for robustness
-            print(f"Workflow initialization failed: {e}")
+            logger.exception("Workflow initialization failed for ENA requisition")
             validated_data['status'] = 'Pending'
             validated_data['status_code'] = 'RQ_00'
 

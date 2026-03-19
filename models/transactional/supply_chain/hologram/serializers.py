@@ -4,6 +4,9 @@ from django.utils import timezone
 from .models import HologramProcurement, HologramRequest
 from auth.workflow.models import Transaction, Objection
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile
+import logging
+
+logger = logging.getLogger(__name__)
 
 def _normalize_role_name(role_name):
     return ''.join(ch for ch in str(role_name or '').lower() if ch.isalnum())
@@ -154,7 +157,7 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
                 'updatedPayment': new_payment
             }
         except Exception as e:
-            print(f"Error extracting edit history: {e}")
+            logger.exception("Error extracting hologram edit history")
             return None
 
     def get_allowed_actions(self, obj):
@@ -223,7 +226,6 @@ class HologramRequestSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         """Add logging to debug issued_assets"""
         ret = super().to_representation(instance)
-        # print(f"DEBUG SERIALIZER: Request {ret.get('ref_no')} - issued_assets: {ret.get('issued_assets')}")
         return ret
 
     def validate_usage_date(self, value):
@@ -281,14 +283,13 @@ class HologramRequestSerializer(serializers.ModelSerializer):
                     updated_roll['used'] = db_roll.used
                     updated_roll['damaged'] = db_roll.damaged
                     updated_roll['status'] = db_roll.status
-                    # print(f"DEBUG: Dynamic updated {c_num}: Avail={db_roll.available}, Used={db_roll.used}")
                 
                 updated_rolls.append(updated_roll)
                 
             return updated_rolls
             
         except Exception as e:
-            print(f"ERROR in get_rolls_assigned: {e}")
+            logger.exception("Error in get_rolls_assigned")
             return assigned_rolls
 
     def get_available_cartons(self, obj):
@@ -345,7 +346,7 @@ class HologramRequestSerializer(serializers.ModelSerializer):
                         cartons.append(carton_copy)
             return cartons
         except Exception as e:
-            print(f"Error fetching available cartons: {e}")
+            logger.exception("Error fetching available cartons")
             return []
 
     def get_current_stage_entry_actions(self, obj):

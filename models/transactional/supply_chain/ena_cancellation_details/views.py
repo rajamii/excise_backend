@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django.db import transaction, models
 from decimal import Decimal
+import logging
 import re
 from .models import EnaCancellationDetail
 from .serializers import EnaCancellationDetailSerializer, CancellationCreateSerializer
@@ -13,6 +14,8 @@ from models.transactional.supply_chain.access_control import (
     scope_by_profile_or_workflow,
     transition_matches,
 )
+
+logger = logging.getLogger(__name__)
 
 class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     """
@@ -258,30 +261,23 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], url_path='submit', serializer_class=CancellationCreateSerializer)
     def submit_cancellation(self, request):
-        print("=" * 80)
-        print("CANCELLATION SUBMIT - Received Data:", request.data)
-        print("=" * 80)
+        logger.debug("ENA cancellation submit request received")
         
         serializer = CancellationCreateSerializer(data=request.data)
         
         if not serializer.is_valid():
-            print("❌ Serializer validation FAILED:")
-            print("Errors:", serializer.errors)
+            logger.debug("ENA cancellation submit validation failed: %s", serializer.errors)
             return Response({'error': 'Validation failed', 'details': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-        
-        print("✅ Serializer validation PASSED")
+        logger.debug("ENA cancellation submit validation passed")
         
         ref_no = serializer.validated_data['reference_no']
         permit_numbers = serializer.validated_data['permit_numbers']
         normalized_permit_numbers = [str(num).strip() for num in permit_numbers if str(num).strip()]
-        
-        print(f"Reference No: {ref_no}")
-        print(f"Permit Numbers: {normalized_permit_numbers}")
+        logger.debug("ENA cancellation submit: ref_no=%s permit_count=%s", ref_no, len(normalized_permit_numbers))
         
         # Never trust client-provided licensee_id for authenticated licensee users.
         if hasattr(request.user, 'supply_chain_profile'):
             licensee_id = request.user.supply_chain_profile.licensee_id
-            print(f"Using licensee_id from profile: {licensee_id}")
         else:
             licensee_id = serializer.validated_data.get('licensee_id')
             if not licensee_id:
@@ -289,7 +285,6 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                     {'error': 'licensee_id is required when no supply-chain profile is active'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            print(f"Using licensee_id from request: {licensee_id}")
 
         try:
             # Fetch Requisition Data
@@ -297,10 +292,10 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             req = EnaRequisitionDetail.objects.filter(our_ref_no=ref_no).first()
 
             if not req:
-                print(f"❌ Requisition not found for ref_no: {ref_no}")
+                logger.info("ENA cancellation submit: requisition not found for ref_no=%s", ref_no)
                 return Response({'error': 'Requisition not found'}, status=status.HTTP_404_NOT_FOUND)
             
-            print(f"✅ Found requisition: {req.id}")
+            logger.debug("ENA cancellation submit: requisition found id=%s", req.id)
 
             existing_cancellations = EnaCancellationDetail.objects.filter(requisition_ref_no=ref_no)
             blocked_permits = set()
@@ -330,7 +325,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
             # Charge per selected permit, so wallet deduction matches the UI selection.
             total_amount = self.CANCELLATION_FEE_AMOUNT * Decimal(len(normalized_permit_numbers))
-            print(f"Total amount: {total_amount}")
+            logger.debug("ENA cancellation submit: total_amount=%s", total_amount)
             license_id = str(getattr(req, 'licensee_id', '') or '').strip()
             if not license_id:
                 license_id = str(licensee_id or '').strip()
@@ -349,14 +344,18 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                      current_stage = stage
                      status_name = stage.name
                  wf_obj = workflow
-                 print(f"Workflow setup successful: {workflow.name}, Stage: {getattr(stage, 'name', 'N/A')}")
+                 logger.debug(
+                     "ENA cancellation submit: workflow setup ok workflow=%s stage=%s",
+                     getattr(workflow, "name", None),
+                     getattr(stage, "name", "N/A"),
+                 )
             except Exception as e:
-                 print(f"Workflow setup warning: {e}")
+                 logger.warning("ENA cancellation submit: workflow setup warning", exc_info=True)
                  # Fallback to defaults already set
 
             # Generate cancellation reference
             cancel_ref = self._generate_cancellation_ref()
-            print(f"Generated cancellation ref: {cancel_ref}")
+            logger.debug("ENA cancellation submit: generated cancellation ref=%s", cancel_ref)
 
             with transaction.atomic():
                 # Prepare Cancellation Data
@@ -396,16 +395,17 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                     distillery_name=req.lifted_from_distillery_name
                 )
 
-                print(f"✅ Copied details_permits_number from requisition: {req.details_permits_number}")
-                print("Attempting to save cancellation...")
+                logger.debug(
+                    "ENA cancellation submit: copying details_permits_number=%s",
+                    getattr(req, "details_permits_number", None),
+                )
                 cancellation.save()
                 wallet_result = self._debit_wallet_for_cancellation_submission(
                     cancellation=cancellation,
                     user=request.user,
                     amount=Decimal(str(total_amount))
                 )
-            print(f"✅ Cancellation saved successfully with ID: {cancellation.id}")
-            print("=" * 80)
+            logger.info("ENA cancellation submitted successfully (id=%s)", cancellation.id)
             
             response_payload = {
                 'message': 'Cancellation request submitted successfully!',
@@ -415,10 +415,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             return Response(response_payload, status=status.HTTP_201_CREATED)
 
         except Exception as e:
-            import traceback
-            print("❌ ERROR occurred:")
-            print(traceback.format_exc())
-            print("=" * 80)
+            logger.exception("Unhandled error during ENA cancellation submit")
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -483,8 +480,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             return Response(letter_data, status=status.HTTP_200_OK)
             
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            logger.exception("Unhandled error while generating cancellation letter")
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=True, methods=['post'], url_path='perform_action')
@@ -572,7 +568,6 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                 return Response({'error': str(e)}, status=status.HTTP_403_FORBIDDEN)
 
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            logger.exception("Unhandled error during cancellation perform_action")
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

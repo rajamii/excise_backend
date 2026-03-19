@@ -6,6 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.db import transaction, models
 from django.utils import timezone
 from decimal import Decimal
+import logging
 from .models import EnaRevalidationDetail
 from .serializers import EnaRevalidationDetailSerializer
 from auth.workflow.constants import WORKFLOW_IDS
@@ -15,6 +16,8 @@ from models.transactional.supply_chain.access_control import (
     transition_matches,
 )
 # from models.masters.supply_chain.status_master.models import StatusMaster, WorkflowRule # Removed
+
+logger = logging.getLogger(__name__)
 
 class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
     queryset = EnaRevalidationDetail.objects.all().order_by('-created_at')
@@ -227,7 +230,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                     revalidation.current_stage = stage
                 except Exception as e:
                     # Log warning but don't fail if workflow setup incomplete (though it should be complete)
-                    print(f"Warning: Workflow binding failed: {e}")
+                    logger.warning("Workflow binding failed for revalidation=%s", revalidation.id, exc_info=True)
 
                 revalidation.save()
             
@@ -324,8 +327,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                 'error': 'Revalidation not found'
             }, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            logger.exception("Unhandled error during revalidation action")
             return Response({
                 'error': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -4,6 +4,9 @@ from django.contrib.contenttypes.fields import GenericRelation
 from django.conf import settings
 from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile
+import logging
+
+logger = logging.getLogger(__name__)
 
 class HologramProcurement(models.Model):
     # Constants for status (can be used for filtering, but workflow stage is primary)
@@ -264,7 +267,11 @@ class HologramRollsDetails(models.Model):
             
             return ", ".join(available) if available else "None"
         except (ValueError, TypeError) as e:
-            print(f"Error calculating available range for {self.carton_number}: {e}")
+            logger.debug(
+                "Error calculating available range for carton_number=%s",
+                getattr(self, "carton_number", None),
+                exc_info=True,
+            )
             return "N/A"
     
     def update_available_range(self):
