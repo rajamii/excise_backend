@@ -491,8 +491,14 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         is_final_stage = getattr(obj.current_stage, 'is_final', False) if obj.current_stage else False
         combined = f"{status_lower} {stage_name_lower}"
         looks_approved = ('approv' in combined) and ('reject' not in combined)
-        # Cancellation request should be allowed only at final approved requisition stage.
-        is_final_approved = is_final_stage and looks_approved
+        # Cancellation request should be allowed only at approved requisition stage.
+        # Prefer workflow final flag, but fall back to status/stage tokens when legacy data lacks is_final.
+        is_final_approved = looks_approved and (
+            is_final_stage or
+            ('commissioner' in combined) or
+            ('approved' in combined) or
+            ('approv' in combined)
+        )
 
         if not is_final_approved:
             return False
