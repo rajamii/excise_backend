@@ -887,4 +887,4 @@ def confirm_license_application_payment(request, application_id):
     
     # Mark application as fee paid
     application.is_license_fee_paid = True
-    application.save(update_field
+    application.save(update_fields=['is_license_fee_paid'])

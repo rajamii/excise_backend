@@ -196,9 +196,10 @@ class GetUserEntitiesView(APIView):
 class ApprovedBrandDetailsView(APIView):
     """
     Read-only API to fetch brand details for approved licensees only.
-    1. Validates license is approved (is_approved=True)
-    2. Gets distillery_name from brand_warehouse for that license_id
-    3. Returns transit permit brands where manufacturing_unit_name matches distillery_name
+    1. Validates license exists and is_approved=True in NewLicenseApplication
+    2. Gets distillery/manufacturing unit names from transit_permit_details for that licensee
+    3. Fetches ALL brands from brand_warehouse matching those distillery names
+    4. Attaches bottle_type from approved transit permits dynamically
     """
     def get(self, request):
         try:
@@ -210,11 +211,11 @@ class ApprovedBrandDetailsView(APIView):
                     'error': 'license_id is required'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Step 1: Check is_approved=True in NewLicenseApplication
-            from models.transactional.new_license_application.models import NewLicenseApplication
-            is_approved = NewLicenseApplication.objects.filter(
-                application_id=license_id,
-                is_approved=True
+            # Step 1: Check license exists and is active in the licenses table
+            from models.masters.license.models import License
+            is_approved = License.objects.filter(
+                license_id=license_id,
+                is_active=True
             ).exists()
 
             if not is_approved:
@@ -223,24 +224,38 @@ class ApprovedBrandDetailsView(APIView):
                     'error': 'License is not approved or does not exist'
                 }, status=status.HTTP_403_FORBIDDEN)
 
-            # Step 2: Get distillery_name from brand_warehouse for this license_id
-            distillery_names = BrandWarehouse.objects.filter(
-                license_id=license_id
-            ).exclude(
-                distillery_name__isnull=True
-            ).exclude(
-                distillery_name=''
-            ).values_list('distillery_name', flat=True).distinct()
+            # Step 2: Get approved workflow stage name dynamically
+            from auth.workflow.models import WorkflowStage
+            from auth.workflow.constants import WORKFLOW_IDS
+            approved_stage = WorkflowStage.objects.filter(
+                workflow_id=WORKFLOW_IDS['TRANSIT_PERMIT'],
+                is_final=True,
+                name__icontains='Approved'
+            ).values_list('name', flat=True).first()
+
+            # Step 3: Get distillery names from transit_permit_details for this licensee
+            # (approved permits tell us which manufacturing units supply this licensee)
+            distillery_names = list(
+                EnaTransitPermitDetail.objects.filter(
+                    licensee_id=license_id,
+                    status=approved_stage
+                ).exclude(
+                    manufacturing_unit_name=''
+                ).exclude(
+                    manufacturing_unit_name__isnull=True
+                ).values_list('manufacturing_unit_name', flat=True).distinct()
+            )
 
             if not distillery_names:
                 return Response({
                     'success': True,
                     'data': [],
                     'total': 0,
-                    'licenseId': license_id
+                    'licenseId': license_id,
+                    'message': 'No approved transit permits found for this license'
                 })
 
-            # Step 3: Fetch ALL brands from brand_warehouse for that distillery_name
+            # Step 4: Fetch ALL brands from brand_warehouse for those distillery names
             warehouse_brands = BrandWarehouse.objects.filter(
                 distillery_name__in=distillery_names
             ).exclude(
@@ -260,16 +275,7 @@ class ApprovedBrandDetailsView(APIView):
                 'distillery_name'
             ).distinct().order_by('brand_details', 'capacity_size')
 
-            # Get approved status_code dynamically from workflow stage (is_final=True, approved stage)
-            from auth.workflow.models import WorkflowStage
-            from auth.workflow.constants import WORKFLOW_IDS
-            approved_stage = WorkflowStage.objects.filter(
-                workflow_id=WORKFLOW_IDS['TRANSIT_PERMIT'],
-                is_final=True,
-                name__icontains='Approved'
-            ).values_list('name', flat=True).first()
-
-            # Get bottle types from approved transit permits only
+            # Step 5: Build bottle_type map from approved transit permits
             transit_bottle_map = {}
             transit_permits = EnaTransitPermitDetail.objects.filter(
                 licensee_id=license_id,
@@ -285,19 +291,19 @@ class ApprovedBrandDetailsView(APIView):
                 key = (permit['brand'].strip().lower(), permit['size_ml'])
                 transit_bottle_map[key] = permit['bottle_type']
 
+            # Step 6: Build response
             brand_data = []
             for brand in warehouse_brands:
                 key = (brand['brand_details'].strip().lower(), brand['capacity_size'])
-                bottle_type = transit_bottle_map.get(key, None)
                 brand_data.append({
                     'brandName': brand['brand_details'],
                     'liquorType': brand['brand_type'],
                     'bottleSize': brand['capacity_size'],
-                    'bottleType': bottle_type,
+                    'bottleType': transit_bottle_map.get(key, None),
                     'manufacturingUnit': brand['distillery_name']
                 })
 
-            logger.info(f"ApprovedBrandDetailsView: {len(brand_data)} brands for license_id: {license_id}")
+            logger.info(f"ApprovedBrandDetailsView: {len(brand_data)} brands for license_id={license_id}, distilleries={distillery_names}")
 
             return Response({
                 'success': True,
