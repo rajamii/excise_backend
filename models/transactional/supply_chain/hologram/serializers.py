@@ -71,7 +71,6 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
         # Force carton_details to be present
         if 'carton_details' not in data:
             data['carton_details'] = instance.carton_details or []
-        print(f"DEBUG: Serialized {instance.ref_no}. keys: {list(data.keys())} carton_details len: {len(data.get('carton_details', []))}")
         return data
 
     def get_total_available_holograms(self, obj):
