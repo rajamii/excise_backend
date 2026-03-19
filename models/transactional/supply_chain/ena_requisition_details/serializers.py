@@ -592,15 +592,24 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             from datetime import timedelta
             
             ninety_days_ago = timezone.now() - timedelta(days=90)
-            
+
+            licensee_id = str(getattr(obj, 'licensee_id', '') or '').strip()
+            details_token = str(getattr(obj, 'details_permits_number', '') or '').strip()
+
             # Look for revalidations that:
-            # 1. Belong to the same licensee
-            # 2. Were created recently (within 90 days)
-            # 3. Are not in a final/completed state (status_code not ending in approved/rejected/cancelled)
-            active_revalidations = EnaRevalidationDetail.objects.filter(
-                licensee_id=obj.licensee_id,
-                created_at__gte=ninety_days_ago
-            ).exclude(
+            # 1. Belong to the same licensee (preferred)
+            # 2. Or match permit number batch when licensee is missing
+            # 3. Were created recently (within 90 days)
+            # 4. Are not in a final/completed state (status_code not ending in approved/rejected/cancelled)
+            base_qs = EnaRevalidationDetail.objects.filter(created_at__gte=ninety_days_ago)
+            if licensee_id:
+                base_qs = base_qs.filter(licensee_id=licensee_id)
+            elif details_token:
+                base_qs = base_qs.filter(details_permits_number=details_token)
+            else:
+                return False
+
+            active_revalidations = base_qs.exclude(
                 status_code__in=['RV_09', 'RV_APPROVED', 'RV_REJECTED', 'RV_CANCELLED']
             ).exclude(
                 status__icontains='cancelled'

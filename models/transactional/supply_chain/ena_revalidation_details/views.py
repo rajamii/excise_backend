@@ -9,6 +9,7 @@ from decimal import Decimal
 import logging
 from .models import EnaRevalidationDetail
 from .serializers import EnaRevalidationDetailSerializer
+from models.transactional.supply_chain.ena_requisition_details.models import EnaRequisitionDetail
 from auth.workflow.constants import WORKFLOW_IDS
 from models.transactional.supply_chain.access_control import (
     has_workflow_access,
@@ -194,6 +195,98 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         context['request'] = self.request
         return context
 
+    @action(detail=False, methods=['post'], url_path='from-requisition')
+    def create_from_requisition(self, request):
+        """
+        Create (or reuse) a revalidation record from an approved requisition.
+        Accepts requisition_id or requisition_ref_no in the request payload.
+        """
+        requisition_id = request.data.get('requisition_id') or request.data.get('id') or request.data.get('requisitionId')
+        requisition_ref = (
+            request.data.get('requisition_ref_no')
+            or request.data.get('ref')
+            or request.data.get('reference_no')
+            or request.data.get('referenceNo')
+        )
+
+        requisition = None
+        if requisition_id:
+            requisition = EnaRequisitionDetail.objects.filter(id=requisition_id).first()
+        if requisition is None and requisition_ref:
+            requisition = EnaRequisitionDetail.objects.filter(our_ref_no=requisition_ref).first()
+
+        if requisition is None:
+            return Response(
+                {'error': 'Requisition not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        existing = None
+        details_token = str(getattr(requisition, 'details_permits_number', '') or '').strip()
+        license_token = str(getattr(requisition, 'licensee_id', '') or '').strip()
+
+        if license_token and details_token:
+            existing = EnaRevalidationDetail.objects.filter(
+                licensee_id=license_token,
+                details_permits_number=details_token,
+            ).order_by('-created_at').first()
+
+        if existing is None and details_token:
+            existing = EnaRevalidationDetail.objects.filter(
+                details_permits_number=details_token
+            ).order_by('-created_at').first()
+
+        if existing is None and license_token:
+            existing = EnaRevalidationDetail.objects.filter(
+                licensee_id=license_token
+            ).order_by('-created_at').first()
+
+        if existing:
+            serializer = self.get_serializer(existing)
+            return Response({
+                'status': 'success',
+                'message': 'Revalidation already exists for this requisition',
+                'data': serializer.data
+            }, status=status.HTTP_200_OK)
+
+        now = timezone.now()
+        payload = {
+            'requisition_date': requisition.requisition_date,
+            'grain_ena_number': requisition.grain_ena_number,
+            'bulk_spirit_type': requisition.bulk_spirit_type or '',
+            'strength': requisition.strength or '',
+            'lifted_from': requisition.lifted_from or '',
+            'via_route': requisition.via_route or '',
+            'total_bl': requisition.totalbl or 0,
+            'br_amount': requisition.totalbl or 0,
+            'requisiton_number_of_permits': requisition.requisiton_number_of_permits or 0,
+            'branch_name': requisition.lifted_from_distillery_name or requisition.check_post_name or '',
+            'branch_address': '',
+            'branch_purpose': requisition.branch_purpose or requisition.purpose_name or '',
+            'govt_officer': '',
+            'state': requisition.state or '',
+            'revalidation_date': now,
+            'status': 'IMPORT PERMIT EXTENDS 45 DAYS INVALID',
+            'status_code': 'RV_00',
+            'revalidation_br_amount': str(self.REVALIDATION_FEE_AMOUNT),
+            'details_permits_number': requisition.details_permits_number or '',
+            'distillery_name': requisition.lifted_from_distillery_name or requisition.lifted_from or '',
+        }
+
+        if license_token:
+            payload['licensee_id'] = license_token
+
+        serializer = self.get_serializer(data=payload)
+        serializer.is_valid(raise_exception=True)
+        revalidation = serializer.save()
+
+        response_payload = {
+            'status': 'success',
+            'message': 'Revalidation created from requisition',
+            'data': self.get_serializer(revalidation).data
+        }
+        return Response(response_payload, status=status.HTTP_201_CREATED)
+
     # Note: allowed_actions is now handled by SerializerMethodField in serializer
     # Following the same pattern as requisition - no custom list() override needed
 
@@ -217,20 +310,31 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                     user=request.user
                 )
 
-                # Sync to fields
-                revalidation.status = status_name
-                revalidation.status_code = status_code
-                
                 # Bind to Workflow
                 try:
                     workflow = Workflow.objects.get(id=WORKFLOW_IDS['ENA_REVALIDATION'])
-                    stage = WorkflowStage.objects.get(workflow=workflow, name=status_name)
-                    
-                    revalidation.workflow = workflow
-                    revalidation.current_stage = stage
+                    stage = (
+                        WorkflowStage.objects.filter(workflow=workflow, name=status_name).first()
+                        or WorkflowStage.objects.filter(
+                            workflow=workflow,
+                            name__icontains='forward'
+                        ).filter(name__icontains='commissioner').first()
+                        or WorkflowStage.objects.filter(workflow=workflow, is_initial=True).first()
+                        or WorkflowStage.objects.filter(workflow=workflow).order_by('id').first()
+                    )
+
+                    if stage:
+                        revalidation.workflow = workflow
+                        revalidation.current_stage = stage
+                        revalidation.status = stage.name
+                    else:
+                        revalidation.status = status_name
                 except Exception as e:
                     # Log warning but don't fail if workflow setup incomplete (though it should be complete)
                     logger.warning("Workflow binding failed for revalidation=%s", revalidation.id, exc_info=True)
+                    revalidation.status = status_name
+
+                revalidation.status_code = status_code
 
                 revalidation.save()
             
