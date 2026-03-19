@@ -3,7 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
-from django.db import transaction, models
+from django.db import transaction, models, IntegrityError
 from django.utils import timezone
 from decimal import Decimal
 import logging
@@ -96,17 +96,18 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         reference_no = str(getattr(revalidation, 'our_ref_no', '') or f"REV-{revalidation.pk}")
         transaction_id = f"REV-{revalidation.pk}-PAYMENT"
 
-        already_debited = WalletTransaction.objects.filter(
-            transaction_id=transaction_id,
-            source_module='ena_revalidation',
-            entry_type='DR'
-        ).exists()
-        if already_debited:
-            return {'debited': False, 'reason': 'already_debited'}
-
         candidates = self._resolve_wallet_license_candidates(revalidation, user)
         if not candidates:
             raise ValueError("Unable to resolve licensee_id for wallet deduction.")
+
+        already_debited = WalletTransaction.objects.filter(
+            transaction_id=transaction_id,
+            source_module='ena_revalidation',
+            entry_type='DR',
+            licensee_id__in=candidates
+        ).exists()
+        if already_debited:
+            return {'debited': False, 'reason': 'already_debited', 'licensee_id': candidates[0] if candidates else ''}
 
         wallet = None
         resolved_licensee_id = ''
@@ -152,26 +153,39 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         wallet.last_updated_at = now_ts
         wallet.save(update_fields=['current_balance', 'total_debit', 'last_updated_at'])
 
-        WalletTransaction.objects.create(
-            wallet_balance=wallet,
+        # Protect against duplicate-constraint collisions on (transaction_id, head_of_account, entry_type, source_module).
+        duplicate_txn = WalletTransaction.objects.filter(
             transaction_id=transaction_id,
-            licensee_id=resolved_licensee_id,
-            licensee_name=wallet.licensee_name,
-            user_id=str(getattr(user, 'username', '') or wallet.user_id or ''),
-            module_type=wallet.module_type,
-            wallet_type=wallet.wallet_type,
             head_of_account=wallet.head_of_account,
             entry_type='DR',
-            transaction_type='debit',
-            amount=amount,
-            balance_before=current_balance,
-            balance_after=after,
-            reference_no=reference_no,
-            source_module='ena_revalidation',
-            payment_status='success',
-            remarks='Revalidation submission fee debit',
-            created_at=now_ts,
-        )
+            source_module='ena_revalidation'
+        ).exists()
+        if duplicate_txn:
+            return {'debited': False, 'reason': 'already_debited', 'licensee_id': resolved_licensee_id}
+
+        try:
+            WalletTransaction.objects.create(
+                wallet_balance=wallet,
+                transaction_id=transaction_id,
+                licensee_id=resolved_licensee_id,
+                licensee_name=wallet.licensee_name,
+                user_id=str(getattr(user, 'username', '') or wallet.user_id or ''),
+                module_type=wallet.module_type,
+                wallet_type=wallet.wallet_type,
+                head_of_account=wallet.head_of_account,
+                entry_type='DR',
+                transaction_type='debit',
+                amount=amount,
+                balance_before=current_balance,
+                balance_after=after,
+                reference_no=reference_no,
+                source_module='ena_revalidation',
+                payment_status='success',
+                remarks='Revalidation submission fee debit',
+                created_at=now_ts,
+            )
+        except IntegrityError:
+            return {'debited': False, 'reason': 'already_debited', 'licensee_id': resolved_licensee_id}
 
         return {
             'debited': True,
