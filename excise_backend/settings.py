@@ -76,6 +76,7 @@ INSTALLED_APPS = [
     'models.masters.supply_chain.ena_distillery_details',
     'models.masters.supply_chain.profile',
     'models.masters.supply_chain.transit_permit',
+    'models.masters.supply_chain.sync',
     # 'models.masters.supply_chain.vehicles',
     # 'models.masters.supply_chain.status_master',
 

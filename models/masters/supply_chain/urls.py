@@ -9,6 +9,7 @@ urlpatterns = [
     path('distributor-data/', include('models.masters.supply_chain.distributor_data_details.urls')),
     path('user-profile/', include('models.masters.supply_chain.profile.urls')),
     path('transit-permit/', include('models.masters.supply_chain.transit_permit.urls')),
+    path('sync/', include('models.masters.supply_chain.sync.urls')),
     # path('vehicles/', include('models.masters.supply_chain.vehicles.urls')),
     # path('status-master/', include('models.masters.supply_chain.status_master.urls')),
 ]
