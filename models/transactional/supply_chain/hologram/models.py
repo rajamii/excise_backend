@@ -134,6 +134,15 @@ class HologramRollsDetails(models.Model):
     # Denormalized license for direct ownership filtering in OIC/licensee dashboards.
     license_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     received_date = models.DateTimeField(default=timezone.now)
+    # Officer who confirmed/recorded carton arrival ("Received By" in UI). Kept stable for audit even if roll is updated later.
+    received_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='received_hologram_rolls',
+    )
+    received_by_display_name = models.CharField(max_length=255, blank=True, null=True)
     carton_number = models.CharField(max_length=100, unique=True)
     type = models.CharField(max_length=50, choices=TYPE_CHOICES, blank=True, null=True)
     from_serial = models.CharField(max_length=100, blank=True, null=True)
@@ -342,6 +351,8 @@ class DailyHologramRegister(models.Model):
     # Approval tracking
     approval_status = models.CharField(max_length=20, choices=APPROVAL_STATUS_CHOICES, default=APPROVAL_STATUS_PENDING)
     approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='approved_daily_registers')
+    # Denormalized display name of approving officer (useful when usernames are cryptic / may change).
+    approved_by_display_name = models.CharField(max_length=255, blank=True, null=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     rejection_reason = models.TextField(blank=True, null=True)
     
@@ -402,6 +413,15 @@ class HologramSerialRange(models.Model):
     damage_date = models.DateField(null=True, blank=True)
     damage_reason = models.TextField(blank=True)
     reported_by = models.CharField(max_length=255, blank=True)
+    # Officer metadata for audit (who updated this serial range status).
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='updated_hologram_serial_ranges',
+    )
+    updated_by_display_name = models.CharField(max_length=255, blank=True, null=True)
     
     # Common fields
     description = models.TextField(blank=True)
