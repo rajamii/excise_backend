@@ -130,6 +130,7 @@ ward_patterns = [
 ]
 
 urlpatterns = [
+    path('timer-config/',          views.timer_config,          name='timer-config'),
     path('license-categories/',     include(license_category_patterns)),
     path('license-types/',          include(license_type_patterns)),
     path('states/',                 include(state_patterns)),

@@ -1,7 +1,8 @@
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.response import Response
+from rest_framework.permissions import AllowAny
 from auth.roles.permissions import HasAppPermission  # type: ignore
 
 from . import models as masters_model
@@ -22,6 +23,74 @@ from .serializers.ward_serializer import WardSerializer
 
 # NOTE: LicenseeProfile views have been moved to auth.user.views.
 # Endpoints are now served under /api/users/licensee-profiles/
+
+
+@permission_classes([AllowAny])
+@authentication_classes([])
+@api_view(['GET'])
+def timer_config(request):
+    """
+    Read timer config from public.timer (SupplyChainTimerConfig) by code.
+
+    Example:
+      GET /masters/core/timer-config/?code=INACTIVITY_LOGOUT
+    """
+    code = str(request.query_params.get('code') or '').strip()
+    if not code:
+        return Response({'error': 'code is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Backend fallback only; frontend should rely on DB config.
+    # Defaults vary by timer code.
+    default_seconds_by_code = {
+        'INACTIVITY_LOGOUT': 4 * 60,
+        'INACTIVITY_WARNING': 30,
+    }
+    default_seconds = int(default_seconds_by_code.get(code, 4 * 60))
+
+    cfg = (
+        masters_model.SupplyChainTimerConfig.objects.filter(code=code, is_active=True)
+        .order_by('-updated_at', '-id')
+        .first()
+    )
+    if not cfg:
+        return Response(
+            {
+                'code': code,
+                'is_active': False,
+                'delay_seconds': default_seconds,
+                'delay_ms': default_seconds * 1000,
+                'source': 'default',
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    unit = str(getattr(cfg, 'delay_unit', '') or '').lower().strip()
+    value = int(getattr(cfg, 'delay_value', 0) or 0)
+    if value < 0:
+        value = 0
+
+    multiplier = 1
+    if unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_MINUTE:
+        multiplier = 60
+    elif unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_HOUR:
+        multiplier = 60 * 60
+    elif unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_DAY:
+        multiplier = 24 * 60 * 60
+
+    seconds = max(0, value * multiplier)
+    return Response(
+        {
+            'code': cfg.code,
+            'description': cfg.description,
+            'delay_value': cfg.delay_value,
+            'delay_unit': cfg.delay_unit,
+            'is_active': cfg.is_active,
+            'delay_seconds': seconds,
+            'delay_ms': seconds * 1000,
+            'source': 'db',
+        },
+        status=status.HTTP_200_OK,
+    )
 
 
 #################################################
