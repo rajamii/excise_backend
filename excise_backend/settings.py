@@ -220,6 +220,9 @@ OTP_SMS_MESSAGE_TEMPLATE = os.getenv(
 )
 OTP_SMS_VERIFY_SSL = os.getenv('OTP_SMS_VERIFY_SSL', 'false'
 ).strip().lower() == 'true'
+# Optional: path to a PEM bundle for environments with custom/root CAs (proxy, enterprise certs).
+# If set, requests will verify the gateway SSL cert using this bundle.
+OTP_SMS_CA_BUNDLE = os.getenv('OTP_SMS_CA_BUNDLE', '').strip()
 OTP_SMS_TIMEOUT_SECONDS = int(os.getenv('OTP_SMS_TIMEOUT_SECONDS', '10'))
 OTP_SMS_FORCE_SEND_IN_DEBUG = os.getenv('OTP_SMS_FORCE_SEND_IN_DEBUG', 'true').strip().lower() == 'true'
 OTP_EXPOSE_IN_RESPONSE = os.getenv('OTP_EXPOSE_IN_RESPONSE', 'false').strip().lower() == 'true'

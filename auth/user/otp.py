@@ -9,6 +9,7 @@ from django.core.cache import cache
 import logging
 import requests
 import re
+import os
 from urllib.parse import quote, urlencode, unquote
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,18 @@ def _parse_gateway_ack(response_text: str) -> tuple[str | None, str | None]:
     return request_id, code
 
 
+def _redact_gateway_exception_text(text: str) -> str:
+    """
+    Requests/urllib3 exceptions may contain the full URL including sensitive query params.
+    Redact secrets/PII to avoid leaking into API responses or logs.
+    """
+    value = str(text or "")
+    value = re.sub(r"(pin=)([^&\s]+)", r"\1***", value, flags=re.IGNORECASE)
+    value = re.sub(r"(message=)([^&\s]+)", r"\1***", value, flags=re.IGNORECASE)
+    value = re.sub(r"(mnumber=)([^&\s]+)", r"\1***", value, flags=re.IGNORECASE)
+    return value
+
+
 def _format_gateway_mobile_number(phone_number: str) -> str:
     digits_only = "".join(ch for ch in str(phone_number or "") if ch.isdigit())
     if len(digits_only) == 12 and digits_only.startswith("91"):
@@ -72,6 +85,32 @@ def _normalize_message_for_gateway(message: str) -> str:
     normalized = str(message or "").replace("\r\n", "\n").replace("\r", "\n")
     normalized = normalized.replace("\n", "\r\n")
     return normalized.replace("&", "and")
+
+
+def _render_otp_message(message_template: str, otp_value: str) -> str:
+    """
+    Render an OTP SMS message safely.
+
+    Supports both:
+    - Python format placeholder: {otp}
+    - Common DLT placeholder style used by some gateways: {#var#}, {#var1#}, ...
+
+    Never raises on unexpected placeholders; falls back to a simple replacement.
+    """
+    template = str(message_template or "")
+
+    # Normalize common DLT variable placeholders to our {otp} placeholder.
+    template = re.sub(r"\{#var\d*#\}", "{otp}", template, flags=re.IGNORECASE)
+
+    # Some templates may include the token without braces.
+    if "#var#" in template:
+        template = template.replace("#var#", str(otp_value))
+
+    try:
+        return template.format(otp=str(otp_value))
+    except Exception:
+        # Avoid crashing OTP API due to bad template braces/placeholders.
+        return template.replace("{otp}", str(otp_value))
 
 def get_new_otp(phone_number):
 
@@ -141,6 +180,8 @@ def _get_sms_config_from_db() -> dict | None:
         return None
 
     return {
+        "id": int(getattr(config, "id", 0) or 0),
+        "name": (config.name or "").strip(),
         "base_url": (config.base_url or "").strip(),
         "username": (config.username or "").strip(),
         "pin": (config.pin or "").strip(),
@@ -168,6 +209,13 @@ def send_otp_via_sms_gateway(phone_number: str, otp_value: str) -> tuple[bool, s
 
     db_config = _get_sms_config_from_db()
     if db_config:
+        logger.info(
+            "Using DB SMS config id=%s name=%s verify_ssl=%s timeout=%ss",
+            db_config.get("id") or "N/A",
+            db_config.get("name") or "N/A",
+            bool(db_config.get("verify_ssl")),
+            int(db_config.get("timeout_seconds") or 0),
+        )
         base_url = db_config["base_url"]
         username = db_config["username"]
         pin = db_config["pin"]
@@ -178,6 +226,11 @@ def send_otp_via_sms_gateway(phone_number: str, otp_value: str) -> tuple[bool, s
         verify_ssl = db_config["verify_ssl"]
         timeout_seconds = db_config["timeout_seconds"]
     else:
+        logger.info(
+            "Using settings SMS config verify_ssl=%s timeout=%ss",
+            bool(getattr(settings, "OTP_SMS_VERIFY_SSL", True)),
+            int(getattr(settings, "OTP_SMS_TIMEOUT_SECONDS", 10)),
+        )
         base_url = getattr(settings, "OTP_SMS_BASE_URL", "").strip()
         username = getattr(settings, "OTP_SMS_USERNAME", "").strip()
         # Old service stored encoded pin (`%23` for `#`). Decode once, then urlencode safely.
@@ -197,7 +250,7 @@ def send_otp_via_sms_gateway(phone_number: str, otp_value: str) -> tuple[bool, s
         logger.error("OTP SMS gateway settings are incomplete")
         return False, "OTP SMS gateway settings are incomplete"
 
-    message = _normalize_message_for_gateway(message_template.format(otp=otp_value))
+    message = _normalize_message_for_gateway(_render_otp_message(message_template, otp_value))
     mnumber = _format_gateway_mobile_number(phone_number)
 
     params = {
@@ -219,7 +272,19 @@ def send_otp_via_sms_gateway(phone_number: str, otp_value: str) -> tuple[bool, s
     url = f"{base_url}?{query}"
 
     try:
-        response = requests.get(url, timeout=timeout_seconds, verify=verify_ssl)
+        # Support custom CA bundle for environments where default trust store is incomplete
+        # (common on some servers / corporate proxies).
+        ca_bundle = str(getattr(settings, "OTP_SMS_CA_BUNDLE", "") or "").strip()
+        verify_arg: bool | str = bool(verify_ssl)
+        if verify_ssl and ca_bundle:
+            try:
+                if os.path.exists(ca_bundle):
+                    verify_arg = ca_bundle
+            except OSError:
+                # ignore invalid paths and fall back to boolean verify
+                pass
+
+        response = requests.get(url, timeout=timeout_seconds, verify=verify_arg)
         response.raise_for_status()
         response_text = (response.text or "").strip()
         request_id, code = _parse_gateway_ack(response_text)
@@ -245,5 +310,20 @@ def send_otp_via_sms_gateway(phone_number: str, otp_value: str) -> tuple[bool, s
             return True, f"OTP accepted by gateway (code={code or 'N/A'}, request_id={request_id or 'N/A'})"
         return True, "OTP SMS sent successfully"
     except requests.RequestException as exc:
-        logger.exception("Failed to send OTP SMS to %s: %s", _mask_phone(phone_number), str(exc))
+        logger.exception(
+            "Failed to send OTP SMS to %s: %s",
+            _mask_phone(phone_number),
+            _redact_gateway_exception_text(str(exc)),
+        )
+        # Avoid exposing sensitive details in production responses.
+        expose = bool(getattr(settings, "OTP_SMS_EXPOSE_ERRORS", False))
+        if getattr(settings, "DEBUG", False) or expose:
+            hint = ""
+            exc_text = _redact_gateway_exception_text(str(exc))
+            if isinstance(exc, requests.exceptions.SSLError) and "CERTIFICATE_VERIFY_FAILED" in str(exc):
+                hint = (
+                    " (hint: SSL verification failed; install/update CA certificates on the server, "
+                    "or set sms_service_config.verify_ssl=false for local testing only)"
+                )
+            return False, f"Failed to send OTP SMS ({exc_text}){hint}"
         return False, "Failed to send OTP SMS"

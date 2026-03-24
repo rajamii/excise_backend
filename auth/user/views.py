@@ -946,6 +946,22 @@ def send_otp_api(request):
             'gateway_message': sms_message,
         }
 
+        if getattr(settings, 'DEBUG', False):
+            masked = str(phone_number or "")
+            if len(masked) >= 4:
+                masked = ("*" * (len(masked) - 4)) + masked[-4:]
+            response_data['sent_to'] = masked
+
+            try:
+                match_code = re.search(r"code\s*=\s*([A-Za-z0-9_]+)", str(sms_message or ""), flags=re.IGNORECASE)
+                match_req = re.search(r"request_id\s*=\s*([^\s,)]+)", str(sms_message or ""), flags=re.IGNORECASE)
+                if match_code:
+                    response_data['gateway_code'] = match_code.group(1).strip()
+                if match_req:
+                    response_data['gateway_request_id'] = match_req.group(1).strip()
+            except re.error:
+                pass
+
         if getattr(settings, 'OTP_EXPOSE_IN_RESPONSE', False):
             response_data['otp'] = otp_obj.otp
 
