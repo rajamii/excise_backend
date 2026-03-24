@@ -52,10 +52,14 @@ class BrandWarehouse(models.Model):
         blank=True,
         help_text='Stable licensee identifier used to scope stock per establishment'
     )
-    brand_type = models.CharField(
-        max_length=100,
-        db_column='brand_type',
-        help_text='Type of brand (e.g., Whisky, Rum, Vodka)'
+    liquor_type = models.ForeignKey(
+        'liquor_data.MasterLiquorType',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        db_column='liquor_type',
+        related_name='brand_warehouses',
+        help_text='Master liquor type (FK to master_liquor_type.id)'
     )
     brand_details = models.TextField(
         db_column='brand_details',
@@ -201,12 +205,23 @@ class BrandWarehouse(models.Model):
         indexes = [
             models.Index(fields=['license_id']),
             models.Index(fields=['distillery_name']),
-            models.Index(fields=['brand_type']),
+            models.Index(fields=['liquor_type']),
             models.Index(fields=['status']),
         ]
 
     def __str__(self):
         return f"{self.distillery_name} - {self.brand_type}"
+
+    @property
+    def brand_type(self):
+        """
+        Backward-compatible liquor type display string.
+
+        Legacy code and clients still refer to this as `brand_type`.
+        """
+        if getattr(self, 'liquor_type_id', None) and getattr(self, 'liquor_type', None):
+            return str(getattr(self.liquor_type, 'liquor_type', '') or '').strip()
+        return ''
 
     @property
     def total_capacity(self):

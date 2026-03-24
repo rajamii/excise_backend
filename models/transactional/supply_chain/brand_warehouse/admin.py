@@ -17,14 +17,14 @@ class BrandWarehouseAdmin(admin.ModelAdmin):
         'current_stock', 'status', 'is_deleted', 'deleted_status'
     ]
     list_filter = [
-        'distillery_name', 'brand_type', 'status', 'capacity_size', 'is_deleted'
+        'distillery_name', 'liquor_type', 'status', 'capacity_size', 'is_deleted'
     ]
-    search_fields = ['brand_details', 'distillery_name', 'brand_type']
+    search_fields = ['brand_details', 'distillery_name', 'liquor_type__liquor_type']
     readonly_fields = ['created_at', 'updated_at', 'deleted_at', 'deleted_by']
     
     fieldsets = (
         ('Basic Information', {
-            'fields': ('distillery_name', 'brand_type', 'brand_details')
+            'fields': ('distillery_name', 'liquor_type', 'brand_details')
         }),
         ('Stock Information', {
             'fields': ('current_stock', 'capacity_size', 'status')

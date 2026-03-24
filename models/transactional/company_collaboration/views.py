@@ -166,16 +166,20 @@ def list_brands(request):
                 break
 
     base_query = """
-        SELECT brand_details, distillery_name, brand_type, capacity_size
-        FROM brand_warehouse
-        WHERE COALESCE(brand_details, '') <> ''
-          AND (is_deleted = false OR is_deleted IS NULL)
+        SELECT bw.brand_details,
+               bw.distillery_name,
+               COALESCE(mlt.liquor_type, '') AS brand_type,
+               bw.capacity_size
+        FROM brand_warehouse bw
+        LEFT JOIN master_liquor_type mlt ON bw.liquor_type = mlt.id
+        WHERE COALESCE(bw.brand_details, '') <> ''
+          AND (bw.is_deleted = false OR bw.is_deleted IS NULL)
     """
     params = []
     if owner_distillery:
-        base_query += " AND LOWER(distillery_name) = LOWER(%s)"
+        base_query += " AND LOWER(bw.distillery_name) = LOWER(%s)"
         params.append(owner_distillery)
-    base_query += " ORDER BY brand_details, capacity_size"
+    base_query += " ORDER BY bw.brand_details, bw.capacity_size"
 
     with connection.cursor() as cursor:
         cursor.execute(base_query, params)

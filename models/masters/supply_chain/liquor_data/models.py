@@ -1,5 +1,21 @@
 from django.db import models
 
+
+class MasterLiquorType(models.Model):
+    liquor_type = models.CharField(max_length=100, unique=True, db_column='liquor_type')
+    created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True, blank=True, null=True)
+
+    class Meta:
+        db_table = 'master_liquor_type'
+        ordering = ['liquor_type']
+        verbose_name = 'Master Liquor Type'
+        verbose_name_plural = 'Master Liquor Types'
+
+    def __str__(self):
+        return str(self.liquor_type or '').strip()
+
+
 class LiquorData(models.Model):
     sl_no = models.IntegerField(blank=True, null=True, db_column='sl_no')
     manufacturing_unit_name = models.CharField(max_length=255, blank=True, null=True, db_column='manufacturing_unit_name')

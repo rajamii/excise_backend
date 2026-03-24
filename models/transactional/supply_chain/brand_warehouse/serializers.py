@@ -116,6 +116,7 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
     """
     Serializer for Brand Warehouse main model with NEW tag support
     """
+    brand_type = serializers.CharField(read_only=True)
     total_capacity = serializers.ReadOnlyField()
     total_utilized = serializers.ReadOnlyField()
     utilization_percentage = serializers.ReadOnlyField()
@@ -134,6 +135,7 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
             'id',
             'license_id',
             'distillery_name',
+            'liquor_type',
             'brand_type',
             'brand_details',
             'current_stock',
@@ -253,6 +255,7 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
     """
     Lightweight serializer for listing ALL Sikkim brands with NEW tags
     """
+    brand_type = serializers.CharField(read_only=True)
     total_capacity = serializers.ReadOnlyField()
     total_utilized = serializers.ReadOnlyField()
     utilization_percentage = serializers.ReadOnlyField()
@@ -267,6 +270,7 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
             'id',
             'license_id',
             'distillery_name',
+            'liquor_type',
             'brand_type',
             'brand_details',
             'current_stock',

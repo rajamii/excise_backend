@@ -1,11 +1,53 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from django.db.models import Q, Max
+from django.db.models import Q, Max, Count
 import logging
 from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
+from .models import MasterLiquorType
+from .serializers import MasterLiquorTypeSerializer
 
 logger = logging.getLogger(__name__)
+
+
+class MasterLiquorTypeListView(APIView):
+    """
+    Master table endpoint for liquor types.
+
+    Query params:
+    - include_brands=true|false (default false)
+    - distillery=<partial name> (optional)
+    """
+
+    def get(self, request):
+        include_brands = str(request.query_params.get('include_brands') or '').strip().lower() in {'1', 'true', 'yes'}
+        distillery_filter = str(request.query_params.get('distillery') or '').strip()
+
+        qs = MasterLiquorType.objects.all()
+
+        data = MasterLiquorTypeSerializer(qs, many=True).data
+
+        if not include_brands:
+            return Response({'success': True, 'data': data, 'total': len(data)})
+
+        brand_qs = BrandWarehouse.objects.all()
+        if distillery_filter:
+            brand_qs = brand_qs.filter(distillery_name__icontains=distillery_filter)
+
+        brand_rows = (
+            brand_qs.exclude(brand_details__isnull=True)
+            .exclude(brand_details='')
+            .values('liquor_type')
+            .annotate(brand_count=Count('id'))
+        )
+        count_map = {row['liquor_type']: int(row.get('brand_count') or 0) for row in brand_rows}
+
+        for row in data:
+            liquor_type_id = row.get('id')
+            row['brand_count'] = count_map.get(liquor_type_id, 0)
+
+        return Response({'success': True, 'data': data, 'total': len(data)})
+
 
 class BrandSizeListView(APIView):
     def get(self, request):
@@ -160,7 +202,7 @@ class GetUserEntitiesView(APIView):
             ).values(
                 'distillery_name'
             ).annotate(
-                sample_type=Max('brand_type')
+                sample_type=Max('liquor_type__liquor_type')
             )
 
             entities = []

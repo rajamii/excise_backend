@@ -305,7 +305,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         """
         Return brand warehouse queryset with server-side license scoping.
         """
-        queryset = BrandWarehouse.objects.all().prefetch_related('utilizations', 'arrivals')
+        queryset = BrandWarehouse.objects.all().select_related('liquor_type').prefetch_related('utilizations', 'arrivals')
 
         scoped_to_unit, active_license_id = _get_scope_context(self.request.user)
 
@@ -325,9 +325,20 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         if distillery_name:
             queryset = queryset.filter(distillery_name__icontains=distillery_name)
             
+        # Backward compatible filter: `brand_type` (name) + new filter `liquor_type` (id)
+        liquor_type_id = (
+            self.request.query_params.get('liquor_type')
+            or self.request.query_params.get('liquor_type_id')
+        )
+        if liquor_type_id:
+            try:
+                queryset = queryset.filter(liquor_type_id=int(liquor_type_id))
+            except (TypeError, ValueError):
+                pass
+
         brand_type = self.request.query_params.get('brand_type', None)
-        if brand_type:
-            queryset = queryset.filter(brand_type=brand_type)
+        if brand_type and not liquor_type_id:
+            queryset = queryset.filter(liquor_type__liquor_type__iexact=str(brand_type).strip())
             
         status_filter = self.request.query_params.get('status', None)
         if status_filter:

@@ -3,9 +3,11 @@ from django.db.models import Q
 from django.utils import timezone
 from datetime import timedelta
 from .models import BrandWarehouse, BrandWarehouseArrival
+from models.masters.supply_chain.liquor_data.models import MasterLiquorType
 import logging
 import re
 from difflib import SequenceMatcher
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,28 @@ class BrandWarehouseStockService:
         'distillery', 'distilleries', 'brewery', 'breweries', 'industries', 'industry',
         'and', 'of', 'the', 'unit', 'factory', 'plant', 'r', 'rs', 'sikkim', 'melli'
     }
+
+    @staticmethod
+    def _resolve_liquor_type(type_name: Optional[str] = None, type_id: Optional[int] = None) -> Optional[MasterLiquorType]:
+        """
+        Resolve (or create) the master liquor type row.
+
+        - Prefer `type_id` when provided.
+        - Fall back to `type_name` and create if missing.
+        - Default to 'Other'.
+        """
+        if type_id:
+            try:
+                return MasterLiquorType.objects.get(id=type_id)
+            except MasterLiquorType.DoesNotExist:
+                pass
+
+        normalized = str(type_name or '').strip()
+        if not normalized:
+            normalized = 'Other'
+
+        obj, _ = MasterLiquorType.objects.get_or_create(liquor_type=normalized)
+        return obj
 
     @staticmethod
     def _license_aliases(license_id: str):
@@ -168,7 +192,7 @@ class BrandWarehouseStockService:
 
         templates = template_rows.values(
             'distillery_name',
-            'brand_type',
+            'liquor_type',
             'brand_details',
             'capacity_size',
             'max_capacity',
@@ -187,6 +211,9 @@ class BrandWarehouseStockService:
             brand_name = str(item.get('brand_details') or '').strip()
             distillery_name = str(item.get('distillery_name') or normalized_establishment).strip()
             pack_size_ml = item.get('capacity_size')
+            liquor_type_id = item.get('liquor_type')
+            liquor_type = BrandWarehouseStockService._resolve_liquor_type(type_id=liquor_type_id)
+            liquor_type_id = getattr(liquor_type, 'id', None)
 
             if not brand_name or not distillery_name or not pack_size_ml:
                 continue
@@ -248,7 +275,7 @@ class BrandWarehouseStockService:
             BrandWarehouse.objects.create(
                 license_id=normalized_license_id,
                 distillery_name=distillery_name,
-                brand_type=item.get('brand_type') or 'Liquor',
+                liquor_type_id=liquor_type_id,
                 brand_details=brand_name,
                 current_stock=0,
                 capacity_size=pack_size_ml,
@@ -517,7 +544,7 @@ class BrandWarehouseStockService:
             brand_warehouse = BrandWarehouse.objects.create(
                 distillery_name=distillery_name,
                 license_id=str(license_id or '').strip() or None,
-                brand_type=template.brand_type if template else 'Liquor',
+                liquor_type=template.liquor_type if getattr(template, 'liquor_type_id', None) else BrandWarehouseStockService._resolve_liquor_type('Other'),
                 brand_details=brand_name,
                 current_stock=0,  # Will be updated immediately after creation
                 capacity_size=capacity_ml,

@@ -127,7 +127,7 @@ class ManufacturingUnitListView(APIView):
                 license_id__isnull=True
             ).exclude(
                 license_id=''
-            ).values('distillery_name', 'license_id', 'brand_type')
+            ).values('distillery_name', 'license_id', 'liquor_type__liquor_type')
 
             grouped = {}
             for row in rows:
@@ -144,7 +144,7 @@ class ManufacturingUnitListView(APIView):
                 for row in unit_rows:
                     candidate = str(row.get('license_id') or '').strip()
                     if not l_type_raw:
-                        l_type_raw = str(row.get('brand_type') or '')
+                        l_type_raw = str(row.get('liquor_type__liquor_type') or '')
                     if not candidate:
                         continue
                     if candidate.startswith('NA/'):
