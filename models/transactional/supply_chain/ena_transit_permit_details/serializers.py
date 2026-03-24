@@ -7,11 +7,62 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
     current_stage_description = serializers.CharField(source='current_stage.description', read_only=True)
+    current_stage_is_initial = serializers.BooleanField(source='current_stage.is_initial', read_only=True)
+    current_stage_is_final = serializers.BooleanField(source='current_stage.is_final', read_only=True)
     workflow_name = serializers.CharField(source='workflow.name', read_only=True)
+    current_stage_entry_actions = serializers.SerializerMethodField()
+    approved_by_display = serializers.SerializerMethodField()
+    cancelled_by_display = serializers.SerializerMethodField()
+    cancelled_reason_display = serializers.SerializerMethodField()
+
+    def get_approved_by_display(self, obj):
+        """Return the OIC name who approved this permit (from utilization record)."""
+        try:
+            from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouseUtilization
+            util = BrandWarehouseUtilization.objects.filter(
+                permit_no=obj.bill_no
+            ).exclude(approved_by__isnull=True).exclude(approved_by='').first()
+            if util:
+                return util.approved_by or ''
+        except Exception:
+            pass
+        return ''
+
+    def get_cancelled_by_display(self, obj):
+        """Return the OIC name who cancelled this permit (from cancellation record)."""
+        try:
+            from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouseTpCancellation
+            cancel = BrandWarehouseTpCancellation.objects.filter(
+                reference_no=obj.bill_no
+            ).exclude(cancelled_by__isnull=True).exclude(cancelled_by='').first()
+            if cancel:
+                return cancel.cancelled_by or ''
+        except Exception:
+            pass
+        return ''
+
+    def get_cancelled_reason_display(self, obj):
+        """Return cancellation reason entered by admin/OIC for this permit."""
+        try:
+            from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouseTpCancellation
+            cancel = BrandWarehouseTpCancellation.objects.filter(
+                reference_no=obj.bill_no
+            ).exclude(reason__isnull=True).exclude(reason='').first()
+            if cancel:
+                return str(cancel.reason or '').strip()
+        except Exception:
+            pass
+        return ''
 
     class Meta:
         model = EnaTransitPermitDetail
         fields = '__all__'
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if getattr(instance, 'current_stage', None):
+            data['status'] = instance.current_stage.name
+        return data
 
     def get_allowed_actions(self, obj):
         """
@@ -22,40 +73,20 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
         if not request or not request.user.is_authenticated:
             return []
 
-        # Get user role
-        user_role_name = request.user.role.name if hasattr(request.user, 'role') and request.user.role else None
-        
-        if not user_role_name:
-            return []
-        
-        # Determine Role (Matching Frontend Logic)
-        role = None
-        normalized_role = ''.join(ch for ch in str(user_role_name or '').lower() if ch.isalnum())
-        officer_aliases = {
-            'level1', 'level2', 'level3', 'level4', 'level5', 'siteadmin',
-            'officerincharge', 'offcierincharge', 'oic', 'officer'
-        }
-
-        if normalized_role in officer_aliases or hasattr(request.user, 'oic_assignment'):
-            role = 'officer'
-        elif normalized_role in {'licensee', 'licenseeuser', 'licenseuser'}:
-            role = 'licensee'
-        
-        if not role:
+        user_role = getattr(request.user, 'role', None)
+        if not user_role:
             return []
 
         # Query Workflow Transitions
         from auth.workflow.models import WorkflowTransition, WorkflowStage
-        
+
         current_stage = obj.current_stage
         if not current_stage:
-            # Fallback: infer stage from status name
-            try:
-                current_stage = WorkflowStage.objects.get(
-                    workflow_id=WORKFLOW_IDS['TRANSIT_PERMIT'],
-                    name=obj.status
-                )
-            except WorkflowStage.DoesNotExist:
+            current_stage = WorkflowStage.objects.filter(
+                workflow_id=WORKFLOW_IDS['TRANSIT_PERMIT'],
+                is_initial=True
+            ).first()
+            if not current_stage:
                 return []
 
         transitions = WorkflowTransition.objects.filter(from_stage=current_stage)
@@ -66,20 +97,33 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
                 continue
 
             action = cond.get('action')
-            if not action:
-                stage_name = str(getattr(t.to_stage, 'name', '') or '').lower()
-                if 'approved' in stage_name:
-                    action = 'APPROVE'
-                elif 'rejected' in stage_name or 'cancelled' in stage_name:
-                    action = 'REJECT'
-                elif 'payment' in stage_name and 'successful' in stage_name:
-                    action = 'PAY'
-                elif stage_name:
-                    action = 'FORWARD'
             if action:
                 actions.append(str(action).upper())
 
         return list(set(actions))  # Unique actions
+
+    def get_current_stage_entry_actions(self, obj):
+        """
+        Returns actions that can move *into* the current stage.
+        Useful for UI categorization without relying on stage-name strings.
+        """
+        if not obj.current_stage:
+            return []
+
+        from auth.workflow.models import WorkflowTransition
+
+        actions = []
+        incoming = WorkflowTransition.objects.filter(
+            workflow_id=WORKFLOW_IDS['TRANSIT_PERMIT'],
+            to_stage=obj.current_stage
+        )
+        for t in incoming:
+            cond = t.condition or {}
+            action = cond.get('action')
+            if action:
+                actions.append(str(action).upper())
+
+        return sorted(list(set(actions)))
     
     # New Field: Returns Full UI Config for Actions
     allowed_action_configs = serializers.SerializerMethodField()

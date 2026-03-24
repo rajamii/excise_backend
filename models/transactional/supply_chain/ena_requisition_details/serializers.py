@@ -2,16 +2,25 @@ from rest_framework import serializers
 from django.db import transaction, models
 from decimal import Decimal, InvalidOperation
 from django.core.exceptions import ObjectDoesNotExist
+from django.contrib.contenttypes.models import ContentType
 from .models import EnaRequisitionDetail, RequisitionBulkLiterDetail
 from auth.workflow.constants import WORKFLOW_IDS
+from auth.workflow.models import Rejection
+from models.masters.license.models import License
+import logging
 import re
 from models.transactional.supply_chain.access_control import condition_role_matches
+
+logger = logging.getLogger(__name__)
 
 class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
     allowed_action_configs = serializers.SerializerMethodField()
     can_initiate_cancellation = serializers.SerializerMethodField()
     has_active_revalidation = serializers.SerializerMethodField()
+    establishment_name = serializers.SerializerMethodField()
+    rejected_by_display = serializers.SerializerMethodField()
+    cancellation_reason_display = serializers.SerializerMethodField()
     
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
     current_stage_is_final = serializers.SerializerMethodField()
@@ -60,10 +69,20 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             data['has_arrival_details'] = True
             data['arrival_total_bulk_liter'] = str(arrival.total_bulk_liter or '0')
             data['arrival_tanker_count'] = int(arrival.tanker_count or 0)
+            data['arrival_approval_status'] = arrival.approval_status or 'PENDING'
+            data['arrival_submitted_at'] = arrival.submitted_at.isoformat() if arrival.submitted_at else None
+            data['arrival_reviewed_at'] = arrival.reviewed_at.isoformat() if arrival.reviewed_at else None
+            data['arrival_reviewed_by'] = arrival.reviewed_by or ''
+            data['arrival_review_remarks'] = arrival.review_remarks or ''
         except ObjectDoesNotExist:
             data['has_arrival_details'] = False
             data['arrival_total_bulk_liter'] = '0'
             data['arrival_tanker_count'] = 0
+            data['arrival_approval_status'] = ''
+            data['arrival_submitted_at'] = None
+            data['arrival_reviewed_at'] = None
+            data['arrival_reviewed_by'] = ''
+            data['arrival_review_remarks'] = ''
         
         # Ensure status_code is set - derive from stage if not set
         if not instance.status_code or instance.status_code == 'RQ_00':
@@ -71,19 +90,144 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         else:
             data['status_code'] = instance.status_code
         
-        print(f"DEBUG: Serializing requisition {instance.id}")
-        print(f"  - our_ref_no: '{instance.our_ref_no}' -> '{data['our_ref_no']}'")
-        print(f"  - lifted_from: '{instance.lifted_from}' -> '{data['lifted_from']}'")
-        print(f"  - via_route: '{instance.via_route}' -> '{data['via_route']}'")
-        print(f"  - check_post_name: '{instance.check_post_name}' -> '{data['check_post_name']}'")
-        print(f"  - branch_purpose: '{instance.branch_purpose}' -> '{data['branch_purpose']}'")
-        print(f"  - lifted_from_distillery_name: '{instance.lifted_from_distillery_name}' -> '{data['lifted_from_distillery_name']}'")
-        print(f"  - purpose_name: '{instance.purpose_name}' -> '{data['purpose_name']}'")
-        print(f"  - totalbl: {instance.totalbl} -> '{data['totalbl']}'")
-        print(f"  - status: '{instance.status}' -> '{data['status']}'")
-        print(f"  - status_code: '{instance.status_code}' -> '{data['status_code']}'")
-        
         return data
+
+    def _expand_license_aliases(self, raw_license_id):
+        token = str(raw_license_id or '').strip()
+        if not token:
+            return []
+
+        aliases = [token]
+        if token.startswith('NLI/'):
+            aliases.append(f"NA/{token[4:]}")
+        elif token.startswith('NA/'):
+            aliases.append(f"NLI/{token[3:]}")
+        return aliases
+
+    def get_establishment_name(self, obj):
+        for license_id in self._expand_license_aliases(getattr(obj, 'licensee_id', '')):
+            license_obj = (
+                License.objects.filter(license_id__iexact=license_id)
+                .select_related('source_content_type')
+                .first()
+            )
+            if not license_obj:
+                continue
+
+            source = getattr(license_obj, 'source_application', None)
+            if not source:
+                continue
+
+            establishment_name = str(getattr(source, 'establishment_name', '') or '').strip()
+            if establishment_name:
+                return establishment_name
+
+            company_name = str(getattr(source, 'company_name', '') or '').strip()
+            if company_name:
+                return company_name
+
+        return ''
+
+    def get_rejected_by_display(self, obj):
+        """Return role label of the latest rejecting officer (e.g., Permit Section/Commissioner)."""
+        stored_role = str(getattr(obj, 'rejected_by_role', '') or '').strip()
+        if stored_role:
+            return self._humanize_role_name(stored_role)
+
+        try:
+            content_type = ContentType.objects.get_for_model(obj.__class__)
+            latest_rejection = (
+                Rejection.objects.filter(content_type=content_type, object_id=str(obj.pk))
+                .select_related('rejected_by__role')
+                .order_by('-rejected_on')
+                .first()
+            )
+            if latest_rejection:
+                role_name = str(getattr(getattr(latest_rejection.rejected_by, 'role', None), 'name', '') or '').strip()
+                if role_name:
+                    return self._humanize_role_name(role_name)
+
+                full_name = str(getattr(latest_rejection.rejected_by, 'full_name', '') or '').strip()
+                if full_name:
+                    return full_name
+
+                username = str(getattr(latest_rejection.rejected_by, 'username', '') or '').strip()
+                if username:
+                    return username
+        except Exception:
+            pass
+
+        # Fallback: requisition reject flow uses WorkflowService.advance_stage(),
+        # which always writes a Transaction with performed_by/forwarded_by role.
+        try:
+            latest_txn = (
+                obj.transactions.select_related('performed_by__role', 'forwarded_by', 'stage')
+                .order_by('-timestamp')
+                .first()
+            )
+            if not latest_txn:
+                return ''
+
+            role_name = str(getattr(getattr(latest_txn, 'forwarded_by', None), 'name', '') or '').strip()
+            if role_name:
+                return self._humanize_role_name(role_name)
+
+            actor_role = str(getattr(getattr(getattr(latest_txn, 'performed_by', None), 'role', None), 'name', '') or '').strip()
+            if actor_role:
+                return self._humanize_role_name(actor_role)
+
+            stage_name = str(getattr(getattr(latest_txn, 'stage', None), 'name', '') or '').strip()
+            stage_hint = self._role_from_stage_name(stage_name)
+            if stage_hint:
+                return stage_hint
+        except Exception:
+            return ''
+
+        return ''
+
+    def get_cancellation_reason_display(self, obj):
+        stored_reason = str(getattr(obj, 'cancellation_reason', '') or '').strip()
+        if stored_reason:
+            return stored_reason
+
+        # Fallback for historical rows where reason may only exist in workflow rejection remarks.
+        try:
+            content_type = ContentType.objects.get_for_model(obj.__class__)
+            latest_rejection = (
+                Rejection.objects.filter(content_type=content_type, object_id=str(obj.pk))
+                .order_by('-rejected_on')
+                .values_list('remarks', flat=True)
+                .first()
+            )
+            rejection_reason = str(latest_rejection or '').strip()
+            if rejection_reason:
+                return rejection_reason
+
+            latest_txn_remarks = (
+                obj.transactions.order_by('-timestamp')
+                .values_list('remarks', flat=True)
+                .first()
+            )
+            txn_reason = str(latest_txn_remarks or '').strip()
+            if txn_reason and txn_reason.lower() not in {'action: reject', 'reject'}:
+                return txn_reason
+            return ''
+        except Exception:
+            return ''
+
+    def _role_from_stage_name(self, value):
+        token = str(value or '').lower()
+        if 'permit' in token and 'section' in token:
+            return 'Permit Section'
+        if 'commissioner' in token:
+            return 'Commissioner'
+        return ''
+
+    def _humanize_role_name(self, value):
+        normalized = str(value or '').replace('_', ' ').replace('-', ' ').strip()
+        if not normalized:
+            return ''
+        return ' '.join(part.capitalize() for part in normalized.split())
     
     def _derive_status_code_from_stage(self, instance):
         """
@@ -104,24 +248,27 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         else:
             stage_name = instance.status or ''
         
-        # Map common stage names to status codes
-        stage_lower = stage_name.lower().replace(' ', '').replace('_', '')
-        
-        stage_code_map = {
-            'pending': 'RQ_00',
-            'submitted': 'RQ_01',
-            'underreview': 'RQ_02',
-            'forwardedtopermitsection': 'RQ_03',
-            'forwardedpaysliptopermitsection': 'RQ_04',
-            'approvedbypermitsection': 'RQ_05',
-            'forwardedtocommissioner': 'RQ_06',
-            'approvedbycommissioner': 'RQ_09',
-            'approved': 'RQ_09',
-            'rejected': 'RQ_10',
-            'rejectedbycommissioner': 'RQ_10',
-        }
-        
-        return stage_code_map.get(stage_lower, instance.status_code or 'RQ_00')
+        # Infer status code from stage semantics (robust to stage label renames).
+        stage_lower = self._normalize_stage_token(stage_name)
+
+        if 'reject' in stage_lower:
+            return 'RQ_10'
+        if 'approv' in stage_lower:
+            return 'RQ_09'
+        if 'forward' in stage_lower and 'payslip' in stage_lower and 'permitsection' in stage_lower:
+            return 'RQ_04'
+        if 'forward' in stage_lower and 'permitsection' in stage_lower:
+            return 'RQ_03'
+        if 'forward' in stage_lower and 'commissioner' in stage_lower:
+            return 'RQ_06'
+        if 'review' in stage_lower:
+            return 'RQ_02'
+        if 'submit' in stage_lower:
+            return 'RQ_01'
+        if 'pending' in stage_lower:
+            return 'RQ_00'
+
+        return instance.status_code or 'RQ_00'
 
     def get_allowed_actions(self, obj):
         request = self.context.get('request')
@@ -157,20 +304,12 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             role = cleaned_role_name
         
         # Query Workflow Transitions
-        from auth.workflow.models import WorkflowTransition, WorkflowStage
+        from auth.workflow.models import WorkflowTransition
         
         current_stage = obj.current_stage
         if not current_stage:
-            try:
-                # Prefer explicit workflow on the object; fallback to ENA Requisition workflow id.
-                if obj.workflow_id:
-                    current_stage = WorkflowStage.objects.get(workflow_id=obj.workflow_id, name=obj.status)
-                else:
-                    current_stage = WorkflowStage.objects.get(
-                        workflow_id=WORKFLOW_IDS['ENA_REQUISITION'],
-                        name=obj.status
-                    )
-            except WorkflowStage.DoesNotExist:
+            current_stage = self._resolve_stage_for_object(obj)
+            if not current_stage:
                 return []
 
         transitions = WorkflowTransition.objects.filter(from_stage=current_stage).select_related('to_stage')
@@ -212,6 +351,37 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
     def _normalize_stage_token(self, value):
         token = ''.join(ch for ch in str(value or '').lower() if ch.isalnum())
         return token
+
+    def _resolve_stage_for_object(self, obj):
+        from auth.workflow.models import WorkflowStage
+
+        workflow_id = getattr(obj, 'workflow_id', None) or WORKFLOW_IDS['ENA_REQUISITION']
+        stages = list(WorkflowStage.objects.filter(workflow_id=workflow_id))
+        if not stages:
+            return None
+
+        hint = self._normalize_stage_token(getattr(obj, 'status', ''))
+        if hint:
+            for stage in stages:
+                if self._normalize_stage_token(stage.name) == hint:
+                    return stage
+
+            keywords = [
+                key for key in ['pending', 'submit', 'review', 'forward', 'permitsection', 'commissioner', 'payslip', 'approve', 'reject']
+                if key in hint
+            ]
+            if keywords:
+                scored = []
+                for stage in stages:
+                    stage_token = self._normalize_stage_token(stage.name)
+                    score = sum(1 for key in keywords if key in stage_token)
+                    scored.append((score, stage))
+                best_score, best_stage = max(scored, key=lambda item: item[0])
+                if best_score > 0:
+                    return best_stage
+
+        initial = next((stage for stage in stages if getattr(stage, 'is_initial', False)), None)
+        return initial or stages[0]
 
     def _looks_like_payment_stage(self, value):
         token = self._normalize_stage_token(value)
@@ -289,7 +459,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
                 if config:
                     configs.append(config)
             except Exception as e:
-                print(f"Error getting config for action {action_name}: {e}")
+                logger.exception("Error getting UI config for action=%s", action_name)
                 # Add a basic config as fallback
                 configs.append({
                     'action': action_name,
@@ -303,68 +473,56 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
 
     def get_can_initiate_cancellation(self, obj):
         request = self.context.get('request')
-        
-        print(f"DEBUG get_can_initiate_cancellation: obj.id={obj.id}")
-        print(f"  - request: {request}")
-        print(f"  - request.user: {request.user if request else 'NO REQUEST'}")
-        
+
         if not request or not request.user.is_authenticated:
-            print(f"  - FAILED: No request or user not authenticated")
             return False
             
         # Only Licensee can initiate cancellation
         user_role_name = request.user.role.name if hasattr(request.user, 'role') and request.user.role else None
-        print(f"  - user_role_name: {user_role_name}")
-        
+
         if user_role_name not in ['licensee', 'Licensee']:
-            print(f"  - FAILED: User is not a licensee")
             return False
 
-        # Check if requisition is approved (final stage)
-        # Use current_stage.is_final instead of status_code since status_code might not be updated
-        if not obj.current_stage:
-            print(f"  - FAILED: No current_stage")
-            return False
-        
-        is_final_stage = getattr(obj.current_stage, 'is_final', False)
-        print(f"  - current_stage: {obj.current_stage.name if obj.current_stage else 'None'}")
-        print(f"  - is_final_stage: {is_final_stage}")
-        
-        if not is_final_stage:
-            print(f"  - FAILED: Not a final stage")
+        status_lower = str(obj.status or '').lower()
+        stage_name_lower = str(obj.current_stage.name or '').lower() if obj.current_stage else ''
+        status_code = str(getattr(obj, 'status_code', '') or '').upper()
+
+        current_stage_name = obj.current_stage.name if obj.current_stage else 'None'
+        is_final_stage = getattr(obj.current_stage, 'is_final', False) if obj.current_stage else False
+        combined = f"{status_lower} {stage_name_lower}"
+        looks_approved = ('approv' in combined) and ('reject' not in combined)
+        # Cancellation request should be allowed only at approved requisition stage.
+        # Prefer workflow final flag, but fall back to status/stage tokens when legacy data lacks is_final.
+        is_final_approved = looks_approved and (
+            is_final_stage or
+            ('commissioner' in combined) or
+            ('approved' in combined) or
+            ('approv' in combined)
+        )
+
+        if not is_final_approved:
             return False
         
         # Check if it's approved (not rejected)
-        status_lower = str(obj.status or '').lower()
-        stage_name_lower = str(obj.current_stage.name or '').lower() if obj.current_stage else ''
-        
-        print(f"  - status: {obj.status}")
-        print(f"  - stage_name: {obj.current_stage.name if obj.current_stage else 'None'}")
         
         # If status or stage name contains 'reject', it's not approved
         if 'reject' in status_lower or 'reject' in stage_name_lower:
-            print(f"  - FAILED: Status or stage contains 'reject'")
             return False
         
         # Check if there's an active revalidation - if yes, cannot cancel
         has_active_reval = self.get_has_active_revalidation(obj)
-        print(f"  - has_active_revalidation: {has_active_reval}")
-        
+
         if has_active_reval:
-            print(f"  - FAILED: Has active revalidation")
             return False
 
         # Check if all requisition permits are already cancelled by commissioner-approved cancellations
         if self._are_all_requisition_permits_cancelled(obj):
-            print(f"  - FAILED: All permits already cancelled for requisition")
             return False
         
         # Check if already cancelled or cancellation in progress
         if 'cancel' in status_lower or 'cancel' in stage_name_lower:
-            print(f"  - FAILED: Already cancelled or in progress")
             return False
         
-        print(f"  - SUCCESS: Can initiate cancellation!")
         return True
 
     def _parse_permit_tokens(self, value):
@@ -434,15 +592,24 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             from datetime import timedelta
             
             ninety_days_ago = timezone.now() - timedelta(days=90)
-            
+
+            licensee_id = str(getattr(obj, 'licensee_id', '') or '').strip()
+            details_token = str(getattr(obj, 'details_permits_number', '') or '').strip()
+
             # Look for revalidations that:
-            # 1. Belong to the same licensee
-            # 2. Were created recently (within 90 days)
-            # 3. Are not in a final/completed state (status_code not ending in approved/rejected/cancelled)
-            active_revalidations = EnaRevalidationDetail.objects.filter(
-                licensee_id=obj.licensee_id,
-                created_at__gte=ninety_days_ago
-            ).exclude(
+            # 1. Belong to the same licensee (preferred)
+            # 2. Or match permit number batch when licensee is missing
+            # 3. Were created recently (within 90 days)
+            # 4. Are not in a final/completed state (status_code not ending in approved/rejected/cancelled)
+            base_qs = EnaRevalidationDetail.objects.filter(created_at__gte=ninety_days_ago)
+            if licensee_id:
+                base_qs = base_qs.filter(licensee_id=licensee_id)
+            elif details_token:
+                base_qs = base_qs.filter(details_permits_number=details_token)
+            else:
+                return False
+
+            active_revalidations = base_qs.exclude(
                 status_code__in=['RV_09', 'RV_APPROVED', 'RV_REJECTED', 'RV_CANCELLED']
             ).exclude(
                 status__icontains='cancelled'
@@ -460,7 +627,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             return active_count > 0
             
         except Exception as e:
-            print(f"Error checking active revalidation: {e}")
+            logger.exception("Error checking active revalidation for requisition=%s", getattr(obj, "id", None))
             return False
 
     def create(self, validated_data):
@@ -526,7 +693,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             
         except Exception as e:
             # Fallback for robustness
-            print(f"Workflow initialization failed: {e}")
+            logger.exception("Workflow initialization failed for ENA requisition")
             validated_data['status'] = 'Pending'
             validated_data['status_code'] = 'RQ_00'
 
@@ -603,7 +770,18 @@ class RequisitionBulkLiterDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = RequisitionBulkLiterDetail
         fields = '__all__'
-        read_only_fields = ['reference_no', 'licensee_id', 'total_bulk_liter', 'created_at', 'updated_at']
+        read_only_fields = [
+            'reference_no',
+            'licensee_id',
+            'total_bulk_liter',
+            'approval_status',
+            'submitted_at',
+            'reviewed_at',
+            'reviewed_by',
+            'review_remarks',
+            'created_at',
+            'updated_at'
+        ]
 
     def validate(self, attrs):
         tanker_details = attrs.get('tanker_details')

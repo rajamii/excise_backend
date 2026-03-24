@@ -87,3 +87,23 @@ class Objection(models.Model):
 
     class Meta:
         ordering = ['-raised_on']
+
+
+# ---------- POLYMORPHIC REJECTION ----------
+class Rejection(models.Model):
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.CharField(max_length=36)
+    application = GenericForeignKey('content_type', 'object_id')
+
+    remarks = models.TextField()
+    rejected_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True,
+                                    related_name='workflow_rejections')
+    stage = models.ForeignKey(WorkflowStage, on_delete=models.SET_NULL, null=True)
+    rejected_on = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-rejected_on']
+        indexes = [models.Index(fields=['content_type', 'object_id'])]
+
+    def __str__(self):
+        return f"Rejection [{self.object_id}] at {self.stage} on {self.rejected_on:%Y-%m-%d}"

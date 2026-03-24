@@ -1,18 +1,67 @@
 from django.core.management.base import BaseCommand
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition, StagePermission
+from auth.workflow.constants import WORKFLOW_IDS
 from auth.roles.models import Role
-import logging
 
 class Command(BaseCommand):
     help = 'Populates Workflow tables for Transit Permit'
 
+    @staticmethod
+    def _normalize_role_token(role_name):
+        token = ''.join(ch for ch in str(role_name or '').lower() if ch.isalnum())
+        if token in {'officerincharge', 'officercharge', 'oic', 'offcierincharge'}:
+            return 'officer'
+        return token
+
+    def _build_role_id_map(self):
+        role_id_map = {}
+        for role in Role.objects.all().only('id', 'name'):
+            canonical = self._normalize_role_token(role.name)
+            if canonical:
+                role_id_map[canonical] = role.id
+        return role_id_map
+
+    def _upsert_transition(self, workflow, from_stage, to_stage, condition):
+        pair_qs = WorkflowTransition.objects.filter(
+            workflow=workflow,
+            from_stage=from_stage,
+            to_stage=to_stage
+        ).order_by('id')
+
+        existing = pair_qs.first()
+        if existing:
+            existing.condition = condition
+            existing.save(update_fields=['condition'])
+            duplicate_ids = list(pair_qs.values_list('id', flat=True))[1:]
+            if duplicate_ids:
+                WorkflowTransition.objects.filter(id__in=duplicate_ids).delete()
+        else:
+            WorkflowTransition.objects.create(
+                workflow=workflow,
+                from_stage=from_stage,
+                to_stage=to_stage,
+                condition=condition
+            )
+
+    def _cleanup_transitions(self, workflow, required_pairs):
+        deleted = 0
+        for transition in WorkflowTransition.objects.filter(workflow=workflow):
+            pair = (transition.from_stage_id, transition.to_stage_id)
+            cond = transition.condition or {}
+            action = str(cond.get('action') or '').strip().lower()
+            if action == 'view' or pair not in required_pairs:
+                transition.delete()
+                deleted += 1
+        return deleted
+
     def handle(self, *args, **kwargs):
         self.stdout.write("Starting Transit Permit Workflow Population...")
+        role_id_map = self._build_role_id_map()
 
         # 1. Ensure Workflow exists
         workflow_name = "Transit Permit"
         workflow, created = Workflow.objects.get_or_create(
-            name=workflow_name,
+            id=WORKFLOW_IDS['TRANSIT_PERMIT'],
             defaults={"description": "Workflow for Transit Permit Application and Approval"}
         )
         if created:
@@ -25,7 +74,7 @@ class Command(BaseCommand):
         stages_data = {
             "Ready for Payment": ("Application submitted, pending payment", True, False),
             "PaymentSuccessfulandForwardedToOfficerincharge": ("Payment successful, forwarded to Officer", False, False),
-            "TransitPermitSucessfulyApproved": ("Approved by Officer", False, True),
+            "TransitPermitSuccessfullyApproved": ("Approved by Officer", False, True),
             "Cancelled by Officer In-Charge - Refund Initiated Successfully": ("Rejected by Officer, refund initiated", False, True),
         }
 
@@ -50,40 +99,39 @@ class Command(BaseCommand):
             (
                 "Ready for Payment",
                 "PaymentSuccessfulandForwardedToOfficerincharge",
-                {"action": "PAY", "role": "licensee"} # Or "user"? Assuming licensee based on context
+                "licensee",
+                "PAY"
             ),
             (
                 "PaymentSuccessfulandForwardedToOfficerincharge",
-                "TransitPermitSucessfulyApproved",
-                {"action": "APPROVE", "role": "officer"} # Need to verify exact role name later, using generic 'officer' for now or update logic to match
+                "TransitPermitSuccessfullyApproved",
+                "officer",
+                "APPROVE"
             ),
              (
                 "PaymentSuccessfulandForwardedToOfficerincharge",
                 "Cancelled by Officer In-Charge - Refund Initiated Successfully",
-                {"action": "REJECT", "role": "officer"}
+                "officer",
+                "REJECT"
             ),
         ]
 
-        for from_name, to_name, condition in transitions_data:
+        required_pairs = set()
+        for from_name, to_name, role_name, action_name in transitions_data:
             from_stage = stage_objects[from_name]
             to_stage = stage_objects[to_name]
-            
-            # Check if transition exists to avoid duplicates
-            if not WorkflowTransition.objects.filter(
-                workflow=workflow,
-                from_stage=from_stage,
-                to_stage=to_stage,
-                condition=condition
-            ).exists():
-                WorkflowTransition.objects.create(
-                    workflow=workflow,
-                    from_stage=from_stage,
-                    to_stage=to_stage,
-                    condition=condition
-                )
-                self.stdout.write(f"Created Transition: {from_name} -> {to_name}")
-            else:
-                self.stdout.write(f"Transition already exists: {from_name} -> {to_name}")
+            condition = {"action": action_name, "role": role_name}
+            role_id = role_id_map.get(role_name)
+            if role_id is not None:
+                condition["role_id"] = role_id
+
+            self._upsert_transition(workflow, from_stage, to_stage, condition)
+            required_pairs.add((from_stage.id, to_stage.id))
+            self.stdout.write(f"Created/Updated Transition: {from_name} -> {to_name} ({condition})")
+
+        deleted = self._cleanup_transitions(workflow, required_pairs)
+        if deleted:
+            self.stdout.write(self.style.WARNING(f"Removed {deleted} obsolete transitions from Transit Permit workflow"))
 
         # 4. Define Stage Permissions
         # (StageName, RoleName, CanProcess)
@@ -92,7 +140,7 @@ class Command(BaseCommand):
         permissions_data = [
             ("Ready for Payment", "licensee", True),
             ("PaymentSuccessfulandForwardedToOfficerincharge", "officer", True),
-            ("TransitPermitSucessfulyApproved", "officer", True), 
+            ("TransitPermitSuccessfullyApproved", "officer", True), 
         ]
 
         for stage_name, role_name, can_process in permissions_data:

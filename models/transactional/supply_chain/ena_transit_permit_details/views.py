@@ -7,6 +7,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from decimal import Decimal
+import logging
 import re
 from .serializers import TransitPermitSubmissionSerializer, EnaTransitPermitDetailSerializer
 from .models import EnaTransitPermitDetail
@@ -17,6 +18,20 @@ from models.transactional.supply_chain.access_control import (
     transition_matches,
 )
 
+logger = logging.getLogger(__name__)
+
+
+def _get_user_display_name(user) -> str:
+    """Return a human-readable display name for a user (first + middle + last name, falling back to username)."""
+    if user is None:
+        return 'System'
+    first = (getattr(user, 'first_name', '') or '').strip()
+    middle = (getattr(user, 'middle_name', '') or '').strip()
+    last = (getattr(user, 'last_name', '') or '').strip()
+    parts = [p for p in [first, middle, last] if p]
+    full = ' '.join(parts)
+    return full if full else (getattr(user, 'username', None) or 'System')
+
 
 class SubmitTransitPermitAPIView(views.APIView):
     permission_classes = [IsAuthenticated]
@@ -24,33 +39,66 @@ class SubmitTransitPermitAPIView(views.APIView):
     def _resolve_submit_target_stage(self):
         """
         Resolve submit target stage from workflow table dynamically.
-        Prefers the stage that represents "payment successful, forwarded to officer".
+        Resolves the target stage by DB transition: initial_stage --PAY--> next_stage.
         """
-        from auth.workflow.models import Workflow, WorkflowStage
+        from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition
 
         workflow_obj = Workflow.objects.filter(id=WORKFLOW_IDS['TRANSIT_PERMIT']).first()
         if not workflow_obj:
             return None, None
 
-        stage_qs = WorkflowStage.objects.filter(workflow=workflow_obj)
+        initial_stage = WorkflowStage.objects.filter(workflow=workflow_obj, is_initial=True).first()
+        if not initial_stage:
+            return workflow_obj, None
 
-        preferred_stage = stage_qs.filter(
-            Q(name='PaymentSuccessfulandForwardedToOfficerincharge')
-        ).first()
-        if preferred_stage:
-            return workflow_obj, preferred_stage
-
-        for stage in stage_qs:
-            normalized_name = ''.join(ch for ch in str(stage.name or '').lower() if ch.isalnum())
-            normalized_desc = ''.join(ch for ch in str(stage.description or '').lower() if ch.isalnum())
-            if (
-                'paymentsuccessful' in normalized_name and 'forwardedtoofficer' in normalized_name
-            ) or (
-                'paymentsuccessful' in normalized_desc and 'forwardedtoofficer' in normalized_desc
-            ):
-                return workflow_obj, stage
+        pay_transitions = WorkflowTransition.objects.filter(
+            workflow=workflow_obj,
+            from_stage=initial_stage
+        )
+        for transition in pay_transitions:
+            cond = transition.condition or {}
+            if str(cond.get('action') or '').strip().upper() == 'PAY':
+                return workflow_obj, transition.to_stage
 
         return workflow_obj, None
+
+    def _resolve_stage_from_status_code(self, workflow_obj, status_code):
+        """
+        Resolve a stage by status_code using workflow graph/actions, not stage names.
+        """
+        from auth.workflow.models import WorkflowStage, WorkflowTransition
+
+        normalized = str(status_code or '').strip().upper()
+        initial_stage = WorkflowStage.objects.filter(workflow=workflow_obj, is_initial=True).first()
+        if not initial_stage:
+            return None
+
+        if normalized == 'TRP_01':
+            return initial_stage
+
+        outgoing = WorkflowTransition.objects.filter(workflow=workflow_obj, from_stage=initial_stage)
+        if normalized == 'TRP_02':
+            for t in outgoing:
+                if str((t.condition or {}).get('action') or '').strip().upper() == 'PAY':
+                    return t.to_stage
+
+        if normalized in {'TRP_03', 'TRP_04'}:
+            pay_stage = None
+            for t in outgoing:
+                if str((t.condition or {}).get('action') or '').strip().upper() == 'PAY':
+                    pay_stage = t.to_stage
+                    break
+            if not pay_stage:
+                return None
+            second_hop = WorkflowTransition.objects.filter(workflow=workflow_obj, from_stage=pay_stage)
+            for t in second_hop:
+                action = str((t.condition or {}).get('action') or '').strip().upper()
+                if normalized == 'TRP_03' and action == 'APPROVE':
+                    return t.to_stage
+                if normalized == 'TRP_04' and action == 'REJECT':
+                    return t.to_stage
+
+        return None
 
     def _generate_transit_ref(self) -> str:
         existing_refs = list(EnaTransitPermitDetail.objects.values_list('bill_no', flat=True))
@@ -252,7 +300,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                     created_at=now_ts,
                 )
 
-    def _create_utilization_and_deduct_stock_for_submit(self, permit_rows, license_id: str):
+    def _create_utilization_and_deduct_stock_for_submit(self, permit_rows, license_id: str, user=None):
         """
         Create BrandWarehouseUtilization rows immediately on submit and deduct stock.
         This keeps OIC utilization dashboard in sync without waiting for a separate PAY action.
@@ -316,13 +364,11 @@ class SubmitTransitPermitAPIView(views.APIView):
                 cases=item.cases,
                 bottles_per_case=bottles_per_case,
                 status='APPROVED',
-                approved_by='System (Submit Auto-Deduction)',
+                approved_by=_get_user_display_name(user) if user else 'System (Submit Auto-Deduction)',
                 approval_date=timezone.now(),
             )
 
     def post(self, request):
-        print(f"DEBUG: Raw Request Data keys: {list(request.data.keys())}")
-        print(f"DEBUG: Full Request Data: {request.data}")
         serializer = TransitPermitSubmissionSerializer(data=request.data)
         if serializer.is_valid():
             data = serializer.validated_data
@@ -356,6 +402,11 @@ class SubmitTransitPermitAPIView(views.APIView):
             try:
                 with transaction.atomic():
                     workflow_obj, paid_stage = self._resolve_submit_target_stage()
+                    if not paid_stage:
+                        return Response({
+                            "status": "error",
+                            "message": "Transit workflow misconfigured: missing PAY transition from initial stage."
+                        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
                     submit_message = (
                         str(getattr(paid_stage, 'description', '') or '').strip()
                         if paid_stage else
@@ -406,12 +457,12 @@ class SubmitTransitPermitAPIView(views.APIView):
                             obj.status = paid_stage.name
                             obj.status_code = 'TRP_02'
                             obj.current_stage = paid_stage
-                        else:
-                            obj.status = 'PaymentSuccessfulandForwardedToOfficerincharge'
-                            obj.status_code = 'TRP_02'
                         if workflow_obj:
                             obj.workflow = workflow_obj
                         obj.save()
+                        if obj.current_stage and obj.status != obj.current_stage.name:
+                            obj.status = obj.current_stage.name
+                            obj.save(update_fields=['status'])
                         created_records.append(obj)
 
                     # Deduct wallet immediately on submit from excise + education wallets.
@@ -426,6 +477,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                     self._create_utilization_and_deduct_stock_for_submit(
                         permit_rows=created_records,
                         license_id=licensee_id,
+                        user=request.user,
                     )
                 
                 return Response({
@@ -446,7 +498,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                     "message": str(e)
                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        print(f"Validation Errors: {serializer.errors}")
+        logger.debug("Transit permit submission validation errors: %s", serializer.errors)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def _get_bottles_per_case(self, size_ml, brand_name):
@@ -458,7 +510,11 @@ class SubmitTransitPermitAPIView(views.APIView):
                 if ml_config:
                     return ml_config.pieces_in_case
         except Exception as e:
-            print(f"Error fetching bottles per case: {e}")
+            logger.exception(
+                "Error fetching bottles per case (brand=%s size_ml=%s). Using fallback.",
+                brand_name,
+                size_ml,
+            )
         
         # Fallbacks
         try:
@@ -672,10 +728,10 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 or request.data.get('comments')
                 or ''
             ).strip()
-            if not action or action not in ['PAY', 'APPROVE', 'REJECT']:
+            if not action:
                 return Response({
                     'status': 'error',
-                    'message': 'Valid action (PAY, APPROVE, or REJECT) is required'
+                    'message': 'Action is required'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
             # Get the transit permit
@@ -697,12 +753,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
             else:
                 raise PermissionDenied("You are not allowed to modify this transit permit.")
             
-            # Determine User Role
-            # Simplified logic: In real app, check request.user.role.name
-            role = 'licensee' # default to licensee for PAY
-            if action in ['APPROVE', 'REJECT']:
-                 role = 'officer' # default to officer actions
-
             # --- Use WorkflowService to advance stage ---
             from auth.workflow.services import WorkflowService
             from auth.workflow.models import WorkflowStage
@@ -710,18 +760,21 @@ class PerformTransitPermitActionAPIView(views.APIView):
             # Ensure current_stage is set (if missing)
             if not permit.current_stage or not permit.workflow:
                  try:
-                     # Try to find by name if stage ID missing
                      from auth.workflow.models import Workflow
                      workflow_obj = Workflow.objects.get(id=WORKFLOW_IDS['TRANSIT_PERMIT'])
                      permit.workflow = workflow_obj
-                     
-                     current_stage = WorkflowStage.objects.get(workflow=workflow_obj, name=permit.status)
+                     current_stage = self._resolve_stage_from_status_code(workflow_obj, permit.status_code)
+                     if not current_stage:
+                         current_stage = WorkflowStage.objects.filter(workflow=workflow_obj, is_initial=True).first()
+                     if not current_stage:
+                         raise WorkflowStage.DoesNotExist("Initial workflow stage not found")
                      permit.current_stage = current_stage
+                     permit.status = current_stage.name
                      permit.save()
                  except (Workflow.DoesNotExist, WorkflowStage.DoesNotExist):
-                     return Response({
-                        'status': 'error',
-                        'message': 'Workflow configuration not found. Please run "python manage.py populate_transit_permit_workflow".'
+                      return Response({
+                         'status': 'error',
+                         'message': 'Workflow configuration not found. Please run "python manage.py populate_transit_permit_workflow".'
                      }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
                  except Exception as e:
                      return Response({
@@ -738,7 +791,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
 
             # Context for validation
             context = {
-                "role": role,
                 "action": action
             }
 
@@ -750,18 +802,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
                     target_transition = t
                     break
 
-            if not target_transition:
-                # Fallback for OIC/officer role token mismatches in transition.condition role text.
-                for t in transitions:
-                    cond = t.condition or {}
-                    cond_action = str(cond.get('action') or '').upper().strip()
-                    cond_role = ''.join(ch for ch in str(cond.get('role') or '').lower() if ch.isalnum())
-                    if cond_action and cond_action != str(action or '').upper().strip():
-                        continue
-                    if not cond_role or cond_role in {'officer', 'officerincharge', 'offcierincharge', 'oic'}:
-                        target_transition = t
-                        break
-            
             if not target_transition:
                 return Response({
                     'status': 'error',
@@ -779,11 +819,15 @@ class PerformTransitPermitActionAPIView(views.APIView):
             # Sync back to status/status_code
             new_stage_name = target_transition.to_stage.name
             permit.status = new_stage_name
-            # Update status code based on name map (simplified)
-            if new_stage_name == 'Ready for Payment': permit.status_code = 'TRP_01'
-            elif new_stage_name == 'PaymentSuccessfulandForwardedToOfficerincharge': permit.status_code = 'TRP_02'
-            elif new_stage_name == 'TransitPermitSucessfulyApproved': permit.status_code = 'TRP_03'
-            elif new_stage_name == 'Cancelled by Officer In-Charge - Refund Initiated Successfully': permit.status_code = 'TRP_04'
+            # Keep status_code compatibility without relying on stage names.
+            if target_transition.to_stage.is_initial:
+                permit.status_code = 'TRP_01'
+            elif action == 'PAY':
+                permit.status_code = 'TRP_02'
+            elif action == 'APPROVE':
+                permit.status_code = 'TRP_03'
+            elif action == 'REJECT':
+                permit.status_code = 'TRP_04'
             
             permit.save()
             
@@ -791,7 +835,11 @@ class PerformTransitPermitActionAPIView(views.APIView):
             if action == 'PAY':
                 # Wallet is already debited at submit time.
                 # On PAY we only continue stock/workflow processing.
-                self._handle_stock_deduction(permit)
+                self._handle_stock_deduction(permit, user=request.user)
+
+            elif action == 'APPROVE':
+                # Update utilization records with OIC's full name as approved_by
+                self._update_utilization_approved_by(permit, request.user)
 
             elif action == 'REJECT':
                 self._handle_rejection(request, permit, remarks=remarks)
@@ -809,16 +857,16 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 'message': str(e)
             }, status=status.HTTP_403_FORBIDDEN)
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"DEBUG Error Generic: {str(e)}")
+            logger.exception(
+                "Unhandled error while updating transit permit status (permit=%s)",
+                getattr(locals().get("permit", None), "bill_no", None),
+            )
             return Response({
                 'status': 'error',
                 'message': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def _handle_rejection(self, request, permit, remarks=''):
-        print(f"DEBUG: Handling Rejection for Permit {permit.bill_no}")
         cancellation_reason = str(
             remarks
             or request.data.get('remarks')
@@ -833,17 +881,18 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 permit,
                 cancellation_reason=cancellation_reason
             )
-            print(
-                "DEBUG: Wallet refund summary for %s -> credited=%s skipped=%s missing_wallet=%s"
-                % (
-                    permit.bill_no,
-                    refund_summary.get("credited", 0),
-                    refund_summary.get("skipped", 0),
-                    refund_summary.get("missing_wallet", 0),
-                )
+            logger.debug(
+                "Wallet refund summary for %s -> credited=%s skipped=%s missing_wallet=%s",
+                permit.bill_no,
+                refund_summary.get("credited", 0),
+                refund_summary.get("skipped", 0),
+                refund_summary.get("missing_wallet", 0),
             )
         except Exception as wallet_error:
-            print(f"ERROR wallet refund during rejection for {permit.bill_no}: {wallet_error}")
+            logger.exception(
+                "Wallet refund during rejection failed for permit=%s",
+                getattr(permit, "bill_no", None),
+            )
 
         # 2. Restore stock and insert cancellation rows.
         try:
@@ -852,6 +901,14 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 BrandWarehouseUtilization,
                 BrandWarehouseTpCancellation,
             )
+            from django.db import connection as _db_conn
+
+            # Reset sequence to avoid primary key conflicts from manual DB operations
+            with _db_conn.cursor() as _cur:
+                _cur.execute(
+                    "SELECT setval(pg_get_serial_sequence('brand_warehouse_tp_cancellation', 'id'), "
+                    "COALESCE((SELECT MAX(id) FROM brand_warehouse_tp_cancellation), 0) + 1, false)"
+                )
 
             utilizations = BrandWarehouseUtilization.objects.filter(permit_no=permit.bill_no)
             if utilizations.exists():
@@ -870,7 +927,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                     BrandWarehouseTpCancellation.objects.create(
                         brand_warehouse=warehouse,
                         reference_no=permit.bill_no,
-                        cancelled_by=request.user.username,
+                        cancelled_by=_get_user_display_name(request.user),
                         quantity_cases=utilization.cases,
                         quantity_bottles=utilization.total_bottles,
                         amount_refunded=permit.total_amount,
@@ -883,11 +940,13 @@ class PerformTransitPermitActionAPIView(views.APIView):
                         depot_address=utilization.depot_address,
                         brand_name=f"{warehouse.brand_type} ({warehouse.capacity_size}ml)"
                     )
-                print(f"DEBUG: Stock restored and cancellation records created for all items in {permit.bill_no}")
                 return
 
             # Fallback: create cancellation rows from permit lines even when utilization rows are missing.
-            print(f"WARNING: No utilization found for {permit.bill_no}; creating fallback cancellation entries")
+            logger.warning(
+                "No utilization found for permit=%s; creating fallback cancellation entries",
+                getattr(permit, "bill_no", None),
+            )
             bill_items = EnaTransitPermitDetail.objects.filter(bill_no=permit.bill_no)
             created_count = 0
 
@@ -906,7 +965,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 BrandWarehouseTpCancellation.objects.create(
                     brand_warehouse=warehouse,
                     reference_no=permit.bill_no,
-                    cancelled_by=request.user.username,
+                    cancelled_by=_get_user_display_name(request.user),
                     quantity_cases=int(item.cases or 0),
                     quantity_bottles=int(item.cases or 0) * int(item.bottles_per_case or 0),
                     amount_refunded=item.total_amount,
@@ -922,13 +981,31 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 created_count += 1
 
             if created_count == 0:
-                print(f"WARNING: No brand_warehouse match found for fallback cancellation rows on {permit.bill_no}")
+                logger.warning(
+                    "No brand_warehouse match found for fallback cancellation rows on permit=%s",
+                    getattr(permit, "bill_no", None),
+                )
             else:
-                print(f"DEBUG: Created {created_count} fallback cancellation rows for {permit.bill_no}")
+                logger.info(
+                    "Created %s fallback cancellation rows for permit=%s",
+                    created_count,
+                    getattr(permit, "bill_no", None),
+                )
         except Exception as cancellation_error:
-            print(f"ERROR cancellation logging during rejection for {permit.bill_no}: {cancellation_error}")
+            logger.exception(
+                "Error creating fallback cancellation rows for permit=%s",
+                getattr(permit, "bill_no", None),
+            )
 
-    def _handle_stock_deduction(self, permit):
+    def _update_utilization_approved_by(self, permit, user):
+        """Update utilization records with OIC's full name when they approve."""
+        from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouseUtilization
+        full_name = _get_user_display_name(user)
+        BrandWarehouseUtilization.objects.filter(
+            permit_no=permit.bill_no
+        ).update(approved_by=full_name)
+
+    def _handle_stock_deduction(self, permit, user=None):
         """
         Check if all items in the bill are paid, and if so, deduct stock from BrandWarehouse
         """
@@ -942,18 +1019,12 @@ class PerformTransitPermitActionAPIView(views.APIView):
             
             # Count items that are NOT in a paid/approved state
             # "Ready for Payment" is the state BEFORE payment. 
-            unpaid_count = bill_items.exclude(
-                status__in=[
-                    'PaymentSuccessfulandForwardedToOfficerincharge', 
-                    'TransitPermitSucessfulyApproved',
-                    # Add other post-payment statuses if any
-                ]
+            unpaid_count = bill_items.filter(
+                Q(current_stage__isnull=True) | Q(current_stage__is_initial=True)
             ).count()
             
-            print(f"DEBUG Stock Deduction: Bill {permit.bill_no} has {unpaid_count} unpaid items")
 
             if unpaid_count == 0:
-                print(f"DEBUG Stock Deduction: All items paid for {permit.bill_no}. Proceeding to deduct stock.")
                 # ALL items are paid. Trigger deduction for each.
                 
                 from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse, BrandWarehouseUtilization
@@ -970,7 +1041,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
                     if item_license_id:
                         utilization_qs = utilization_qs.filter(brand_warehouse__license_id=item_license_id)
                     if utilization_qs.exists():
-                         print(f"DEBUG: Utilization already exists for {item.brand} {item.size_ml} in bill {item.bill_no}")
                          continue
 
                     # Find matching BrandWarehouse entry
@@ -988,9 +1058,11 @@ class PerformTransitPermitActionAPIView(views.APIView):
                         ).first()
                         
                     if warehouse_entry:
-                        print(
-                            f"DEBUG: Found warehouse entry {warehouse_entry} for {item.brand} "
-                            f"(license_id={item_license_id or 'N/A'})"
+                        logger.debug(
+                            "Found warehouse entry %s for brand=%s (license_id=%s)",
+                            warehouse_entry,
+                            getattr(item, "brand", None),
+                            item_license_id or "N/A",
                         )
                         
                         # Calculate quantity (pieces)
@@ -1007,13 +1079,13 @@ class PerformTransitPermitActionAPIView(views.APIView):
                         ml_config = BrandMlInCases.objects.filter(ml=int(warehouse_entry.capacity_size)).first()
                         if ml_config and ml_config.pieces_in_case:
                             bottles_per_case = int(ml_config.pieces_in_case)
-                            print(f"DEBUG: Found ML configuration for {warehouse_entry.capacity_size}ml: {bottles_per_case} pieces/case")
                         else:
                             if bottles_per_case <= 0:
                                 bottles_per_case = 1
-                            print(
-                                f"WARNING: No ML configuration found for {warehouse_entry.capacity_size}ml. "
-                                f"Using fallback {bottles_per_case} from permit/default."
+                            logger.warning(
+                                "No ML configuration found for %sml. Using fallback bottles_per_case=%s (permit/default).",
+                                getattr(warehouse_entry, "capacity_size", None),
+                                bottles_per_case,
                             )
                         
                         total_pieces = int(item.cases) * bottles_per_case
@@ -1032,24 +1104,31 @@ class PerformTransitPermitActionAPIView(views.APIView):
                             cases=item.cases,
                             bottles_per_case=bottles_per_case,
                             status='APPROVED', # Setting directly to APPROVED to trigger deduction
-                            approved_by='System (Payment Auto-Deduction)',
+                            approved_by=_get_user_display_name(user) if user else 'System (Payment Auto-Deduction)',
                             approval_date=timezone.now()
                         )
-                        print(f"DEBUG: Created utilization {utilization.id}, deducted {total_pieces} pieces")
                         
                     else:
-                        print(
-                            f"WARNING: No warehouse entry found for Brand: {item.brand}, "
-                            f"Size: {item.size_ml}, license_id={item_license_id or 'N/A'}"
+                        logger.warning(
+                            "No warehouse entry found for brand=%s size_ml=%s license_id=%s",
+                            getattr(item, "brand", None),
+                            getattr(item, "size_ml", None),
+                            item_license_id or "N/A",
                         )
                         
             else:
-                print(f"DEBUG: Not deducting stock yet. {unpaid_count} items remaining unpaid.")
+                logger.debug(
+                    "Stock deduction skipped for permit=%s (unpaid_count=%s)",
+                    getattr(permit, "bill_no", None),
+                    unpaid_count,
+                )
+                return
 
         except Exception as e:
-            print(f"ERROR inside _handle_stock_deduction: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            logger.exception(
+                "Unhandled error during stock deduction for permit=%s",
+                getattr(permit, "bill_no", None),
+            )
 
 
 
@@ -1065,7 +1144,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
             # 1. Get Wallet
             wallet = Wallet.objects.filter(user=user).first()
             if not wallet:
-                print(f"DEBUG: Wallet not found for user {user.username}. Creating default wallet (for dev/sim).")
                 wallet = Wallet.objects.create(
                     user=user,
                     excise_balance=10000000.00, # Default high balance for dev
@@ -1083,7 +1161,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
             total_required_additional = additional_excise_amount
             total_required_cess = cess_amount
             
-            print(f"DEBUG Wallet Deduction: Excise: {excise_amount}, Add.Excise: {additional_excise_amount}, Cess: {cess_amount}")
             
             # 3. Check Balances
             if float(wallet.excise_balance) < total_required_excise:
@@ -1118,8 +1195,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
                     head='EDUCATION_CESS', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
                 )
                 
-            print(f"DEBUG: Wallet deduction successful. New Balances - Excise: {wallet.excise_balance}, Cess: {wallet.education_cess_balance}")
 
         except Exception as e:
-            print(f"ERROR: Wallet Deduction Failed: {e}")
             raise e # Re-raise to stop the transaction/response

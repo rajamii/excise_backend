@@ -1,5 +1,6 @@
 from django.utils.timezone import now
 from django.shortcuts import get_object_or_404
+from django.utils.timezone import now
 from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.parsers import JSONParser
 from rest_framework.response import Response
@@ -49,7 +50,6 @@ def print_license_view(request, license_id):
 @permission_classes([HasAppPermission('license', 'view')])
 @api_view(['GET'])
 def license_detail(request, license_id):
-   
     license = get_object_or_404(License, license_id=license_id)
     serializer = LicenseDetailSerializer(license)
     return Response(serializer.data, status=status.HTTP_200_OK)

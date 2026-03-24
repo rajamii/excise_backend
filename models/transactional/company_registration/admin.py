@@ -1,9 +1,7 @@
-#from django.contrib import admin
-#from .models import CompanyModel
+from django.contrib import admin
+from .models import CompanyRegistration
 
-# Register the models for the admin panel
-#admin.site.register(CompanyDetails)
-#class CompanyDetailsAdmin(admin.ModelAdmin):
-#    list_display = ('name', 'license_type', 'application_year', 'country', 'state')  # Ensure 'license_type' is included
-#admin.site.register(MemberDetails)
-#admin.site.register(DocumentDetails)
+
+@admin.register(CompanyRegistration)
+class CompanyRegistrationAdmin(admin.ModelAdmin):
+    list_display = ('application_id', 'company_name', 'current_stage', 'is_approved')

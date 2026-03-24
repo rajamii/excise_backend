@@ -1,9 +1,10 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition
+from models.transactional.supply_chain.ena_cancellation_details.models import EnaCancellationDetail
 
 class Command(BaseCommand):
-    help = 'Updates the ENA Cancellation workflow to route directly to Commissioner with Payslip flow'
+    help = 'Updates ENA Cancellation workflow to an approve-only flow with payslip approval'
 
     def handle(self, *args, **kwargs):
         with transaction.atomic():
@@ -15,22 +16,21 @@ class Command(BaseCommand):
             else:
                 self.stdout.write(self.style.SUCCESS(f"Updating existing workflow: {workflow_name}"))
 
-            # Correct Stage Names from DB Dump
-            # 67: ForwardedCancellationToCommissioner
-            # 72: ApprovedCancellationByCommissioner
-            # 73: RejectedCancellationByCommissioner
-            # 69: ForwardedCancellationPaySLipToCommissioner
-            # 70: ApprovedCancellationPaySLipByCommissioner
-            # 71: RejectedCancellationPaySlipByCommissioner
+            # Target flow:
+            # ForwardedCancellationToCommissioner -> ApprovedCancellationByCommissioner
+            # ApprovedCancellationByCommissioner -> ForwardedCancellationPaySLipToCommissioner
+            # ForwardedCancellationPaySLipToCommissioner -> ApprovedCancellationPaySLipByCommissioner
 
             stage_names_map = {
                 'ForwardedCancellationToCommissioner': 'ForwardedCancellationToCommissioner',
                 'ApprovedCancellationByCommissioner': 'ApprovedCancellationByCommissioner',
-                'RejectedCancellationByCommissioner': 'RejectedCancellationByCommissioner',
                 'ForwardedCancellationPaySLipToCommissioner': 'ForwardedCancellationPaySLipToCommissioner',
-                'ApprovedCancellationPaySlipByCommissioner': 'ApprovedCancellationPaySLipByCommissioner', # Note SLip
-                'RejectedCancellationPaySlipByCommissioner': 'RejectedCancellationPaySlipByCommissioner'
+                'ApprovedCancellationPaySlipByCommissioner': 'ApprovedCancellationPaySLipByCommissioner',  # Note SLip
             }
+            rejected_stage_names = [
+                'RejectedCancellationByCommissioner',
+                'RejectedCancellationPaySlipByCommissioner',
+            ]
 
             stage_objects = {}
             for key, db_name in stage_names_map.items():
@@ -43,9 +43,7 @@ class Command(BaseCommand):
                      stage = WorkflowStage.objects.create(workflow=workflow, name=db_name)
                      stage_objects[key] = stage
 
-            # Clear existing transitions to strictly enforce the new flow
-            # We only remove transitions for the stages we are touching to avoid breaking other parts if any
-            # But the user said "do it in the exiting workflow", implying we can reconfigure it.
+            # Remove all transitions for this workflow, then recreate only the desired minimal set.
             WorkflowTransition.objects.filter(workflow=workflow).delete()
             self.stdout.write("Cleared old transitions.")
 
@@ -56,11 +54,6 @@ class Command(BaseCommand):
                     'from': 'ForwardedCancellationToCommissioner',
                     'to': 'ApprovedCancellationByCommissioner',
                     'condition': {'role': 'commissioner', 'action': 'Approve'},
-                },
-                {
-                    'from': 'ForwardedCancellationToCommissioner',
-                    'to': 'RejectedCancellationByCommissioner',
-                    'condition': {'role': 'commissioner', 'action': 'Reject'},
                 },
                 # Payslip Submission (Licensee uploads payslip after approval)
                 {
@@ -73,11 +66,6 @@ class Command(BaseCommand):
                     'from': 'ForwardedCancellationPaySLipToCommissioner',
                     'to': 'ApprovedCancellationPaySlipByCommissioner',
                     'condition': {'role': 'commissioner', 'action': 'ApprovePayslip'},
-                },
-                {
-                    'from': 'ForwardedCancellationPaySLipToCommissioner',
-                    'to': 'RejectedCancellationPaySlipByCommissioner',
-                    'condition': {'role': 'commissioner', 'action': 'RejectPayslip'},
                 }
             ]
 
@@ -92,4 +80,22 @@ class Command(BaseCommand):
                 )
                 self.stdout.write(f"Created transition: {t['from']} -> {t['to']} ({t['condition']['action']})")
 
-            self.stdout.write(self.style.SUCCESS("Successfully updated ENA Cancellation workflow."))
+            # Attempt to remove rejected stages if they are no longer referenced by cancellation records.
+            for rejected_name in rejected_stage_names:
+                rejected_stage = WorkflowStage.objects.filter(workflow=workflow, name=rejected_name).first()
+                if not rejected_stage:
+                    continue
+
+                in_use = EnaCancellationDetail.objects.filter(current_stage=rejected_stage).exists()
+                if in_use:
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"Rejected stage '{rejected_name}' is still referenced by cancellation data; keeping stage."
+                        )
+                    )
+                    continue
+
+                rejected_stage.delete()
+                self.stdout.write(self.style.SUCCESS(f"Deleted unused rejected stage: {rejected_name}"))
+
+            self.stdout.write(self.style.SUCCESS("Successfully updated ENA Cancellation workflow (clean approve-only flow)."))
