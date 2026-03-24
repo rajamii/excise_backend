@@ -6,7 +6,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.apps import apps
 from .models import (
     WorkflowTransition, StagePermission,
-    Transaction, Objection
+    Transaction, Objection, Rejection
 )
 
 # UI Configuration for Workflow Actions (Moved from Frontend)
@@ -142,6 +142,8 @@ ACTION_CONFIGS = {
 # Mapping: (app_label, model_name) -> Serializer class
 SERIALIZER_MAPPING = {
     # (app_label, model_name_lower): 'full.import.path.to.Serializer'
+    ('company_registration', 'companyregistration'): 'models.transactional.company_registration.serializers.CompanyRegistrationSerializer',
+    ('company_collaboration', 'companycollaboration'): 'models.transactional.company_collaboration.serializers.CompanyCollaborationSerializer',
     ('license_application', 'licenseapplication'): 'models.transactional.license_application.serializers.LicenseApplicationSerializer',
     ('new_license_application', 'newlicenseapplication'): 'models.transactional.new_license_application.serializers.NewLicenseApplicationSerializer',
     ('salesman_barman', 'salesmanbarmanmodel'): 'models.transactional.salesman_barman.serializers.SalesmanBarmanSerializer',
@@ -308,7 +310,6 @@ class WorkflowService:
         return {**config, 'action': action_name}
 
     @staticmethod
-    @transaction.atomic
     def submit_application(application, user, remarks=None):
         initial_stage = application.current_stage
         if not initial_stage.is_initial:
@@ -627,4 +628,43 @@ class WorkflowService:
             forwarded_to=forward_to,
             stage=original_txn.stage,
             remarks=remarks
+        )
+
+    @staticmethod
+    @transaction.atomic
+    def reject_application(application, user, target_stage, remarks=None):
+        """
+        Rejects an application by:
+          1. Validating the transition to the rejection stage.
+          2. Creating a Rejection record.
+          3. Advancing the application to the rejection stage.
+          4. Logging a Transaction.
+        """
+        if not remarks:
+            raise ValidationError("A remark is required when rejecting an application.")
+
+        WorkflowService.validate_transition(application, target_stage, {})
+
+        # Create the rejection record
+        Rejection.objects.create(
+            content_type=ContentType.objects.get_for_model(application),
+            object_id=str(application.pk),
+            remarks=remarks,
+            rejected_by=user,
+            stage=target_stage,
+        )
+
+        # Advance to the rejection stage
+        application.current_stage = target_stage
+        application.save(update_fields=['current_stage'])
+
+        # Log the transaction
+        Transaction.objects.create(
+            content_type=ContentType.objects.get_for_model(application),
+            object_id=str(application.pk),
+            performed_by=user,
+            forwarded_by=getattr(user, "role", None),
+            forwarded_to=None,
+            stage=target_stage,
+            remarks=remarks,
         )

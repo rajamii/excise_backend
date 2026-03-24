@@ -7,6 +7,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from decimal import Decimal
+import logging
 import re
 from .serializers import TransitPermitSubmissionSerializer, EnaTransitPermitDetailSerializer
 from .models import EnaTransitPermitDetail
@@ -16,6 +17,20 @@ from models.transactional.supply_chain.access_control import (
     scope_by_profile_or_workflow,
     transition_matches,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _get_user_display_name(user) -> str:
+    """Return a human-readable display name for a user (first + middle + last name, falling back to username)."""
+    if user is None:
+        return 'System'
+    first = (getattr(user, 'first_name', '') or '').strip()
+    middle = (getattr(user, 'middle_name', '') or '').strip()
+    last = (getattr(user, 'last_name', '') or '').strip()
+    parts = [p for p in [first, middle, last] if p]
+    full = ' '.join(parts)
+    return full if full else (getattr(user, 'username', None) or 'System')
 
 
 class SubmitTransitPermitAPIView(views.APIView):
@@ -285,7 +300,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                     created_at=now_ts,
                 )
 
-    def _create_utilization_and_deduct_stock_for_submit(self, permit_rows, license_id: str):
+    def _create_utilization_and_deduct_stock_for_submit(self, permit_rows, license_id: str, user=None):
         """
         Create BrandWarehouseUtilization rows immediately on submit and deduct stock.
         This keeps OIC utilization dashboard in sync without waiting for a separate PAY action.
@@ -349,13 +364,11 @@ class SubmitTransitPermitAPIView(views.APIView):
                 cases=item.cases,
                 bottles_per_case=bottles_per_case,
                 status='APPROVED',
-                approved_by='System (Submit Auto-Deduction)',
+                approved_by=_get_user_display_name(user) if user else 'System (Submit Auto-Deduction)',
                 approval_date=timezone.now(),
             )
 
     def post(self, request):
-        print(f"DEBUG: Raw Request Data keys: {list(request.data.keys())}")
-        print(f"DEBUG: Full Request Data: {request.data}")
         serializer = TransitPermitSubmissionSerializer(data=request.data)
         if serializer.is_valid():
             data = serializer.validated_data
@@ -464,6 +477,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                     self._create_utilization_and_deduct_stock_for_submit(
                         permit_rows=created_records,
                         license_id=licensee_id,
+                        user=request.user,
                     )
                 
                 return Response({
@@ -484,7 +498,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                     "message": str(e)
                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        print(f"Validation Errors: {serializer.errors}")
+        logger.debug("Transit permit submission validation errors: %s", serializer.errors)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def _get_bottles_per_case(self, size_ml, brand_name):
@@ -496,7 +510,11 @@ class SubmitTransitPermitAPIView(views.APIView):
                 if ml_config:
                     return ml_config.pieces_in_case
         except Exception as e:
-            print(f"Error fetching bottles per case: {e}")
+            logger.exception(
+                "Error fetching bottles per case (brand=%s size_ml=%s). Using fallback.",
+                brand_name,
+                size_ml,
+            )
         
         # Fallbacks
         try:
@@ -817,7 +835,11 @@ class PerformTransitPermitActionAPIView(views.APIView):
             if action == 'PAY':
                 # Wallet is already debited at submit time.
                 # On PAY we only continue stock/workflow processing.
-                self._handle_stock_deduction(permit)
+                self._handle_stock_deduction(permit, user=request.user)
+
+            elif action == 'APPROVE':
+                # Update utilization records with OIC's full name as approved_by
+                self._update_utilization_approved_by(permit, request.user)
 
             elif action == 'REJECT':
                 self._handle_rejection(request, permit, remarks=remarks)
@@ -835,16 +857,16 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 'message': str(e)
             }, status=status.HTTP_403_FORBIDDEN)
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"DEBUG Error Generic: {str(e)}")
+            logger.exception(
+                "Unhandled error while updating transit permit status (permit=%s)",
+                getattr(locals().get("permit", None), "bill_no", None),
+            )
             return Response({
                 'status': 'error',
                 'message': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     def _handle_rejection(self, request, permit, remarks=''):
-        print(f"DEBUG: Handling Rejection for Permit {permit.bill_no}")
         cancellation_reason = str(
             remarks
             or request.data.get('remarks')
@@ -859,17 +881,18 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 permit,
                 cancellation_reason=cancellation_reason
             )
-            print(
-                "DEBUG: Wallet refund summary for %s -> credited=%s skipped=%s missing_wallet=%s"
-                % (
-                    permit.bill_no,
-                    refund_summary.get("credited", 0),
-                    refund_summary.get("skipped", 0),
-                    refund_summary.get("missing_wallet", 0),
-                )
+            logger.debug(
+                "Wallet refund summary for %s -> credited=%s skipped=%s missing_wallet=%s",
+                permit.bill_no,
+                refund_summary.get("credited", 0),
+                refund_summary.get("skipped", 0),
+                refund_summary.get("missing_wallet", 0),
             )
         except Exception as wallet_error:
-            print(f"ERROR wallet refund during rejection for {permit.bill_no}: {wallet_error}")
+            logger.exception(
+                "Wallet refund during rejection failed for permit=%s",
+                getattr(permit, "bill_no", None),
+            )
 
         # 2. Restore stock and insert cancellation rows.
         try:
@@ -878,6 +901,14 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 BrandWarehouseUtilization,
                 BrandWarehouseTpCancellation,
             )
+            from django.db import connection as _db_conn
+
+            # Reset sequence to avoid primary key conflicts from manual DB operations
+            with _db_conn.cursor() as _cur:
+                _cur.execute(
+                    "SELECT setval(pg_get_serial_sequence('brand_warehouse_tp_cancellation', 'id'), "
+                    "COALESCE((SELECT MAX(id) FROM brand_warehouse_tp_cancellation), 0) + 1, false)"
+                )
 
             utilizations = BrandWarehouseUtilization.objects.filter(permit_no=permit.bill_no)
             if utilizations.exists():
@@ -896,7 +927,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                     BrandWarehouseTpCancellation.objects.create(
                         brand_warehouse=warehouse,
                         reference_no=permit.bill_no,
-                        cancelled_by=request.user.username,
+                        cancelled_by=_get_user_display_name(request.user),
                         quantity_cases=utilization.cases,
                         quantity_bottles=utilization.total_bottles,
                         amount_refunded=permit.total_amount,
@@ -909,11 +940,13 @@ class PerformTransitPermitActionAPIView(views.APIView):
                         depot_address=utilization.depot_address,
                         brand_name=f"{warehouse.brand_type} ({warehouse.capacity_size}ml)"
                     )
-                print(f"DEBUG: Stock restored and cancellation records created for all items in {permit.bill_no}")
                 return
 
             # Fallback: create cancellation rows from permit lines even when utilization rows are missing.
-            print(f"WARNING: No utilization found for {permit.bill_no}; creating fallback cancellation entries")
+            logger.warning(
+                "No utilization found for permit=%s; creating fallback cancellation entries",
+                getattr(permit, "bill_no", None),
+            )
             bill_items = EnaTransitPermitDetail.objects.filter(bill_no=permit.bill_no)
             created_count = 0
 
@@ -932,7 +965,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 BrandWarehouseTpCancellation.objects.create(
                     brand_warehouse=warehouse,
                     reference_no=permit.bill_no,
-                    cancelled_by=request.user.username,
+                    cancelled_by=_get_user_display_name(request.user),
                     quantity_cases=int(item.cases or 0),
                     quantity_bottles=int(item.cases or 0) * int(item.bottles_per_case or 0),
                     amount_refunded=item.total_amount,
@@ -948,13 +981,31 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 created_count += 1
 
             if created_count == 0:
-                print(f"WARNING: No brand_warehouse match found for fallback cancellation rows on {permit.bill_no}")
+                logger.warning(
+                    "No brand_warehouse match found for fallback cancellation rows on permit=%s",
+                    getattr(permit, "bill_no", None),
+                )
             else:
-                print(f"DEBUG: Created {created_count} fallback cancellation rows for {permit.bill_no}")
+                logger.info(
+                    "Created %s fallback cancellation rows for permit=%s",
+                    created_count,
+                    getattr(permit, "bill_no", None),
+                )
         except Exception as cancellation_error:
-            print(f"ERROR cancellation logging during rejection for {permit.bill_no}: {cancellation_error}")
+            logger.exception(
+                "Error creating fallback cancellation rows for permit=%s",
+                getattr(permit, "bill_no", None),
+            )
 
-    def _handle_stock_deduction(self, permit):
+    def _update_utilization_approved_by(self, permit, user):
+        """Update utilization records with OIC's full name when they approve."""
+        from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouseUtilization
+        full_name = _get_user_display_name(user)
+        BrandWarehouseUtilization.objects.filter(
+            permit_no=permit.bill_no
+        ).update(approved_by=full_name)
+
+    def _handle_stock_deduction(self, permit, user=None):
         """
         Check if all items in the bill are paid, and if so, deduct stock from BrandWarehouse
         """
@@ -972,10 +1023,8 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 Q(current_stage__isnull=True) | Q(current_stage__is_initial=True)
             ).count()
             
-            print(f"DEBUG Stock Deduction: Bill {permit.bill_no} has {unpaid_count} unpaid items")
 
             if unpaid_count == 0:
-                print(f"DEBUG Stock Deduction: All items paid for {permit.bill_no}. Proceeding to deduct stock.")
                 # ALL items are paid. Trigger deduction for each.
                 
                 from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse, BrandWarehouseUtilization
@@ -992,7 +1041,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
                     if item_license_id:
                         utilization_qs = utilization_qs.filter(brand_warehouse__license_id=item_license_id)
                     if utilization_qs.exists():
-                         print(f"DEBUG: Utilization already exists for {item.brand} {item.size_ml} in bill {item.bill_no}")
                          continue
 
                     # Find matching BrandWarehouse entry
@@ -1010,9 +1058,11 @@ class PerformTransitPermitActionAPIView(views.APIView):
                         ).first()
                         
                     if warehouse_entry:
-                        print(
-                            f"DEBUG: Found warehouse entry {warehouse_entry} for {item.brand} "
-                            f"(license_id={item_license_id or 'N/A'})"
+                        logger.debug(
+                            "Found warehouse entry %s for brand=%s (license_id=%s)",
+                            warehouse_entry,
+                            getattr(item, "brand", None),
+                            item_license_id or "N/A",
                         )
                         
                         # Calculate quantity (pieces)
@@ -1029,13 +1079,13 @@ class PerformTransitPermitActionAPIView(views.APIView):
                         ml_config = BrandMlInCases.objects.filter(ml=int(warehouse_entry.capacity_size)).first()
                         if ml_config and ml_config.pieces_in_case:
                             bottles_per_case = int(ml_config.pieces_in_case)
-                            print(f"DEBUG: Found ML configuration for {warehouse_entry.capacity_size}ml: {bottles_per_case} pieces/case")
                         else:
                             if bottles_per_case <= 0:
                                 bottles_per_case = 1
-                            print(
-                                f"WARNING: No ML configuration found for {warehouse_entry.capacity_size}ml. "
-                                f"Using fallback {bottles_per_case} from permit/default."
+                            logger.warning(
+                                "No ML configuration found for %sml. Using fallback bottles_per_case=%s (permit/default).",
+                                getattr(warehouse_entry, "capacity_size", None),
+                                bottles_per_case,
                             )
                         
                         total_pieces = int(item.cases) * bottles_per_case
@@ -1054,24 +1104,31 @@ class PerformTransitPermitActionAPIView(views.APIView):
                             cases=item.cases,
                             bottles_per_case=bottles_per_case,
                             status='APPROVED', # Setting directly to APPROVED to trigger deduction
-                            approved_by='System (Payment Auto-Deduction)',
+                            approved_by=_get_user_display_name(user) if user else 'System (Payment Auto-Deduction)',
                             approval_date=timezone.now()
                         )
-                        print(f"DEBUG: Created utilization {utilization.id}, deducted {total_pieces} pieces")
                         
                     else:
-                        print(
-                            f"WARNING: No warehouse entry found for Brand: {item.brand}, "
-                            f"Size: {item.size_ml}, license_id={item_license_id or 'N/A'}"
+                        logger.warning(
+                            "No warehouse entry found for brand=%s size_ml=%s license_id=%s",
+                            getattr(item, "brand", None),
+                            getattr(item, "size_ml", None),
+                            item_license_id or "N/A",
                         )
                         
             else:
-                print(f"DEBUG: Not deducting stock yet. {unpaid_count} items remaining unpaid.")
+                logger.debug(
+                    "Stock deduction skipped for permit=%s (unpaid_count=%s)",
+                    getattr(permit, "bill_no", None),
+                    unpaid_count,
+                )
+                return
 
         except Exception as e:
-            print(f"ERROR inside _handle_stock_deduction: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            logger.exception(
+                "Unhandled error during stock deduction for permit=%s",
+                getattr(permit, "bill_no", None),
+            )
 
 
 
@@ -1087,7 +1144,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
             # 1. Get Wallet
             wallet = Wallet.objects.filter(user=user).first()
             if not wallet:
-                print(f"DEBUG: Wallet not found for user {user.username}. Creating default wallet (for dev/sim).")
                 wallet = Wallet.objects.create(
                     user=user,
                     excise_balance=10000000.00, # Default high balance for dev
@@ -1105,7 +1161,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
             total_required_additional = additional_excise_amount
             total_required_cess = cess_amount
             
-            print(f"DEBUG Wallet Deduction: Excise: {excise_amount}, Add.Excise: {additional_excise_amount}, Cess: {cess_amount}")
             
             # 3. Check Balances
             if float(wallet.excise_balance) < total_required_excise:
@@ -1140,8 +1195,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
                     head='EDUCATION_CESS', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
                 )
                 
-            print(f"DEBUG: Wallet deduction successful. New Balances - Excise: {wallet.excise_balance}, Cess: {wallet.education_cess_balance}")
 
         except Exception as e:
-            print(f"ERROR: Wallet Deduction Failed: {e}")
             raise e # Re-raise to stop the transaction/response

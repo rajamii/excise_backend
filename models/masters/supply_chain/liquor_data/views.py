@@ -66,7 +66,7 @@ class LiquorRatesView(APIView):
             brand_name = request.query_params.get('brand_name')
             pack_size_ml = request.query_params.get('pack_size_ml')
 
-            print(f"DEBUG: Received request - Brand: '{brand_name}', Size: '{pack_size_ml}'")
+            logger.debug("LiquorRatesView request: brand_name=%r pack_size_ml=%r", brand_name, pack_size_ml)
 
             if not brand_name or not pack_size_ml:
                 return Response({
@@ -94,7 +94,7 @@ class LiquorRatesView(APIView):
                     Q(brand_details__istartswith=normalized_brand)
                 ).first()
 
-            print(f"DEBUG: Database query result: {warehouse_row}")
+            logger.debug("LiquorRatesView warehouse query result: %s", warehouse_row)
 
             if not warehouse_row:
                 return Response({
@@ -122,7 +122,7 @@ class LiquorRatesView(APIView):
                 'totalPricePerCase': 0
             }
 
-            print(f"DEBUG: Successfully returning: {response_data}")
+            logger.debug("LiquorRatesView response payload built for brand=%r size_ml=%s", brand_name, pack_size_ml)
 
             return Response({
                 'success': True,
@@ -130,9 +130,7 @@ class LiquorRatesView(APIView):
             })
 
         except Exception as e:
-            print(f"DEBUG: Error occurred: {str(e)}")
-            import traceback
-            print(f"DEBUG: Traceback: {traceback.format_exc()}")
+            logger.exception("Error in LiquorRatesView")
             return Response({
                 'success': False,
                 'error': f'Internal server error: {str(e)}'

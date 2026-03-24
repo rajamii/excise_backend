@@ -1,3 +1,6 @@
+from django.db import models
+from django.core.exceptions import ValidationError
+from .validators import validate_name, validate_name_extended
 # models.py
 from typing import TYPE_CHECKING
 
@@ -9,6 +12,7 @@ from .validators import validate_name, validate_name_extended
 
 if TYPE_CHECKING:
     from django.db.models.manager import Manager
+
 
 
 class LicenseCategory(models.Model):
@@ -84,13 +88,8 @@ class District(models.Model):
         null=False,
         blank=False
     )
-    district_code = models.IntegerField(
-        unique=True,
-        default=225
-    )
-    is_active = models.BooleanField(
-        default=True
-    )
+    district_code = models.IntegerField(unique=True, default=225)
+    is_active = models.BooleanField(default=True)
     state_code = models.ForeignKey(
         State,
         to_field='state_code',
@@ -123,13 +122,8 @@ class Subdivision(models.Model):
         null=True,
         blank=True
     )
-    subdivision_code = models.IntegerField(
-        unique=True,
-        default=1553
-    )
-    is_active = models.BooleanField(
-        default=True
-    )
+    subdivision_code = models.IntegerField(unique=True, default=1553)
+    is_active = models.BooleanField(default=True)
     district_code = models.ForeignKey(
         District,
         to_field='district_code',
@@ -170,13 +164,8 @@ class PoliceStation(models.Model):
         null=True,
         blank=True
     )
-    police_station_code = models.IntegerField(
-        unique=True,
-        default=11999
-    )
-    is_active = models.BooleanField(
-        default=True
-    )
+    police_station_code = models.IntegerField(unique=True, default=11999)
+    is_active = models.BooleanField(default=True)
     subdivision_code = models.ForeignKey(
         Subdivision,
         to_field='subdivision_code',
@@ -204,7 +193,12 @@ class LicenseTitle(models.Model):
 
 
 class LicenseSubcategory(models.Model):
-    description = models.CharField(max_length=200, default=None, null=False, validators=[validate_name_extended])
+    description = models.CharField(
+        max_length=200,
+        default=None,
+        null=False,
+        validators=[validate_name_extended]
+    )
     category = models.ForeignKey(
         LicenseCategory,
         on_delete=models.CASCADE,
@@ -235,12 +229,221 @@ class Road(models.Model):
         return f"{self.road_name} ({self.road_type})"
 
 
-class LocationFee(models.Model):
-    location_name = models.CharField(max_length=100, unique=True)
-    fee_amount = models.DecimalField(max_digits=10, decimal_places=2)
+# ─────────────────────────────────────────────────────────────────────────────
+# Location models
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LocationCategory(models.Model):
+    category_name = models.CharField(
+        max_length=100,
+        unique=True,
+        null=False,
+        blank=False,
+        validators=[validate_name_extended],
+        help_text="Name of the location category"
+    )
+    description = models.TextField(null=True, blank=True, help_text="Detailed description")
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        'user.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_location_categories'
+    )
+    operation_date = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'location_fee'
+        db_table = 'masters_locationcategory'
+        verbose_name = 'Location Category'
+        verbose_name_plural = 'Location Categories'
+
+    def __str__(self) -> str:
+        return self.category_name
+
+
+class LocationSubcategory(models.Model):
+    subcategory_name = models.CharField(
+        max_length=100,
+        null=False,
+        blank=False,
+        validators=[validate_name_extended],
+        help_text="Name of the location subcategory"
+    )
+    category = models.ForeignKey(
+        LocationCategory,
+        on_delete=models.CASCADE,
+        related_name='subcategories',
+        null=False
+    )
+    description = models.TextField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        'user.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_location_subcategories'
+    )
+    operation_date = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'masters_locationsubcategory'
+        verbose_name = 'Location Subcategory'
+        verbose_name_plural = 'Location Subcategories'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['category', 'subcategory_name'],
+                name='unique_subcategory_per_category'
+            )
+        ]
+        ordering = ['category', 'subcategory_name']
+
+    def __str__(self) -> str:
+        return f"{self.subcategory_name} ({self.category.category_name})"
+
+
+class Location(models.Model):
+    location_code = models.IntegerField(
+        unique=True,
+        null=False,
+        blank=False,
+        help_text="Unique location code"
+    )
+    location_description = models.CharField(
+        max_length=200,
+        null=False,
+        blank=False,
+        help_text="Description of the location"
+    )
+    district_code = models.ForeignKey(
+        District,
+        to_field='district_code',
+        on_delete=models.CASCADE,
+        related_name='locations',
+        null=False,
+        db_column='district_code'
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'masters_location'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['district_code', 'location_code'],
+                name='unique_location_code_per_district'
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.location_description} ({self.location_code})"
+
+    def clean(self):
+        if self.location_description:
+            validate_name_extended(self.location_description)
+            if len(self.location_description.strip()) < 2:
+                raise ValidationError("Location description must be ≥2 characters")
+
+
+class Ward(models.Model):
+    ward_name = models.CharField(
+        max_length=100,
+        null=False,
+        blank=False,
+        validators=[validate_name_extended]
+    )
+    ward_number = models.IntegerField(null=False, blank=False)
+    location_code = models.ForeignKey(
+        Location,
+        to_field='location_code',
+        on_delete=models.CASCADE,
+        related_name='wards',
+        null=False,
+        db_column='location_code'
+    )
+    population = models.IntegerField(null=True, blank=True)
+    area_sq_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        'user.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_wards'
+    )
+    operation_date = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'masters_ward'
+        verbose_name = 'Ward'
+        verbose_name_plural = 'Wards'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['location_code', 'ward_number'],
+                name='unique_ward_number_per_location'
+            )
+        ]
+        ordering = ['location_code', 'ward_number']
+
+    def __str__(self) -> str:
+        return f"Ward {self.ward_number} - {self.ward_name}"
+
+    def clean(self):
+        if self.ward_number <= 0:
+            raise ValidationError("Ward number must be positive")
+        if self.population is not None and self.population < 0:
+            raise ValidationError("Population cannot be negative")
+        if self.area_sq_km is not None and self.area_sq_km <= 0:
+            raise ValidationError("Area must be positive")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# License Fee
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LicenseFee(models.Model):
+    license_category = models.ForeignKey(
+        LicenseCategory,
+        on_delete=models.CASCADE,
+        related_name='license_fees',
+        null=False
+    )
+    license_subcategory = models.ForeignKey(
+        LicenseSubcategory,
+        on_delete=models.CASCADE,
+        related_name='license_fees',
+        null=False
+    )
+    location_code = models.ForeignKey(
+        Location,
+        to_field='location_code',
+        on_delete=models.CASCADE,
+        related_name='license_fees',
+        null=False,
+        db_column='location_code'
+    )
+    license_fee = models.DecimalField(max_digits=10, decimal_places=2)
+    security_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    renewal_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    late_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        'user.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_license_fees'
+    )
+    operation_date = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'license_fee'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['license_category', 'license_subcategory', 'location_code'],
+                name='unique_license_fee_combination'
+            )
+        ]
 
     def __str__(self):
         return f"{self.location_name} - Rs {self.fee_amount}"

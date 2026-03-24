@@ -4,6 +4,9 @@ from django.utils import timezone
 from .models import HologramProcurement, HologramRequest
 from auth.workflow.models import Transaction, Objection
 from models.masters.supply_chain.profile.models import SupplyChainUserProfile
+import logging
+
+logger = logging.getLogger(__name__)
 
 def _normalize_role_name(role_name):
     return ''.join(ch for ch in str(role_name or '').lower() if ch.isalnum())
@@ -71,7 +74,6 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
         # Force carton_details to be present
         if 'carton_details' not in data:
             data['carton_details'] = instance.carton_details or []
-        print(f"DEBUG: Serialized {instance.ref_no}. keys: {list(data.keys())} carton_details len: {len(data.get('carton_details', []))}")
         return data
 
     def get_total_available_holograms(self, obj):
@@ -155,7 +157,7 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
                 'updatedPayment': new_payment
             }
         except Exception as e:
-            print(f"Error extracting edit history: {e}")
+            logger.exception("Error extracting hologram edit history")
             return None
 
     def get_allowed_actions(self, obj):
@@ -208,6 +210,7 @@ class HologramRequestSerializer(serializers.ModelSerializer):
     workflow_name = serializers.CharField(source='workflow.name', read_only=True)
     rolls_assigned = serializers.SerializerMethodField()
     available_cartons = serializers.SerializerMethodField()
+    production_updated_by = serializers.SerializerMethodField()
 
     class Meta:
         model = HologramRequest
@@ -217,14 +220,14 @@ class HologramRequestSerializer(serializers.ModelSerializer):
             'workflow', 'workflow_name', 'current_stage', 'status', 'stage_id',
             'current_stage_name', 'current_stage_is_initial', 'current_stage_is_final',
             'current_stage_entry_actions', 'allowed_actions', 'allowed_action_configs',
-            'available_cartons'
+            'available_cartons',
+            'production_updated_by',
         ]
         read_only_fields = ('ref_no', 'submission_date', 'workflow', 'current_stage', 'licensee', 'license_id')
     
     def to_representation(self, instance):
         """Add logging to debug issued_assets"""
         ret = super().to_representation(instance)
-        # print(f"DEBUG SERIALIZER: Request {ret.get('ref_no')} - issued_assets: {ret.get('issued_assets')}")
         return ret
 
     def validate_usage_date(self, value):
@@ -238,6 +241,22 @@ class HologramRequestSerializer(serializers.ModelSerializer):
             )
 
         return value
+
+    def get_production_updated_by(self, obj):
+        """
+        Name of the officer who saved/fixed the Daily Hologram Entry for this request.
+        Provided via viewset context to avoid N+1 DB queries.
+        """
+        ctx = getattr(self, 'context', {}) or {}
+        mapping = ctx.get('production_updated_by_map') or {}
+        by_request_id = mapping.get('by_request_id') or {}
+        by_ref_no = mapping.get('by_ref_no') or {}
+
+        req_id = getattr(obj, 'id', None)
+        ref_no = str(getattr(obj, 'ref_no', '') or '').strip()
+
+        val = by_request_id.get(req_id) or by_ref_no.get(ref_no) or ''
+        return val or None
 
     # CRITICAL FIX: Dynamically fetch latest roll stats from HologramRollsDetails
     # This prevents stale JSON data from showing incorrect Available/Used counts in UI
@@ -282,14 +301,13 @@ class HologramRequestSerializer(serializers.ModelSerializer):
                     updated_roll['used'] = db_roll.used
                     updated_roll['damaged'] = db_roll.damaged
                     updated_roll['status'] = db_roll.status
-                    # print(f"DEBUG: Dynamic updated {c_num}: Avail={db_roll.available}, Used={db_roll.used}")
                 
                 updated_rolls.append(updated_roll)
                 
             return updated_rolls
             
         except Exception as e:
-            print(f"ERROR in get_rolls_assigned: {e}")
+            logger.exception("Error in get_rolls_assigned")
             return assigned_rolls
 
     def get_available_cartons(self, obj):
@@ -346,7 +364,7 @@ class HologramRequestSerializer(serializers.ModelSerializer):
                         cartons.append(carton_copy)
             return cartons
         except Exception as e:
-            print(f"Error fetching available cartons: {e}")
+            logger.exception("Error fetching available cartons")
             return []
 
     def get_current_stage_entry_actions(self, obj):
@@ -410,10 +428,21 @@ class TransactionSerializer(serializers.ModelSerializer):
 
 from .models import DailyHologramRegister
 
+def _get_user_display_name(user) -> str:
+    if user is None:
+        return ''
+    first = (getattr(user, 'first_name', '') or '').strip()
+    middle = (getattr(user, 'middle_name', '') or '').strip()
+    last = (getattr(user, 'last_name', '') or '').strip()
+    parts = [p for p in [first, middle, last] if p]
+    full = ' '.join(parts)
+    return full if full else (getattr(user, 'username', '') or '')
+
 class DailyHologramRegisterSerializer(serializers.ModelSerializer):
     licensee_name = serializers.CharField(source='licensee.manufacturing_unit_name', read_only=True)
     hologram_type = serializers.SerializerMethodField()
-    approved_by_name = serializers.CharField(source='approved_by.username', read_only=True, allow_null=True)
+    approved_by_name = serializers.SerializerMethodField()
+    approved_by_username = serializers.CharField(source='approved_by.username', read_only=True, allow_null=True)
     rolls_used_details = serializers.SerializerMethodField()
     
     # CRITICAL: Accept allocated range fields from frontend for "Not In Use" entries
@@ -424,7 +453,14 @@ class DailyHologramRegisterSerializer(serializers.ModelSerializer):
     class Meta:
         model = DailyHologramRegister
         fields = '__all__'
-        read_only_fields = ('submission_date', 'licensee', 'license_id', 'approved_by', 'approved_at')
+        read_only_fields = (
+            'submission_date',
+            'licensee',
+            'license_id',
+            'approved_by',
+            'approved_by_display_name',
+            'approved_at',
+        )
     
     def create(self, validated_data):
         # Extract allocated range fields before creating instance
@@ -450,6 +486,12 @@ class DailyHologramRegisterSerializer(serializers.ModelSerializer):
         if obj.hologram_request:
             return obj.hologram_request.hologram_type
         return 'LOCAL'  # Default fallback
+
+    def get_approved_by_name(self, obj):
+        stored = str(getattr(obj, 'approved_by_display_name', '') or '').strip()
+        if stored:
+            return stored
+        return _get_user_display_name(getattr(obj, 'approved_by', None)) or None
     
     def get_rolls_used_details(self, obj):
         """Get details of rolls used in this entry"""
@@ -470,20 +512,43 @@ class HologramRollsDetailsSerializer(serializers.ModelSerializer):
     procurement_date = serializers.DateTimeField(source='procurement.date', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
     updated_by_name = serializers.CharField(source='updated_by.username', read_only=True, allow_null=True)
+    received_by_name = serializers.SerializerMethodField()
+    received_by_username = serializers.CharField(source='received_by.username', read_only=True, allow_null=True)
     
     class Meta:
         model = HologramRollsDetails
         fields = '__all__'
-        read_only_fields = ('created_by', 'confirmed_at', 'last_updated', 'updated_by')
+        read_only_fields = (
+            'created_by',
+            'confirmed_at',
+            'last_updated',
+            'updated_by',
+            'received_by',
+            'received_by_display_name',
+        )
+
+    def get_received_by_name(self, obj):
+        stored = str(getattr(obj, 'received_by_display_name', '') or '').strip()
+        if stored:
+            return stored
+        return _get_user_display_name(getattr(obj, 'received_by', None)) or None
 
 
 class HologramSerialRangeSerializer(serializers.ModelSerializer):
     roll_carton_number = serializers.CharField(source='roll.carton_number', read_only=True)
+    updated_by_name = serializers.SerializerMethodField()
+    updated_by_username = serializers.CharField(source='updated_by.username', read_only=True, allow_null=True)
     
     class Meta:
         model = HologramSerialRange
         fields = '__all__'
-        read_only_fields = ('created_at', 'updated_at')
+        read_only_fields = ('created_at', 'updated_at', 'updated_by', 'updated_by_display_name')
+
+    def get_updated_by_name(self, obj):
+        stored = str(getattr(obj, 'updated_by_display_name', '') or '').strip()
+        if stored:
+            return stored
+        return _get_user_display_name(getattr(obj, 'updated_by', None)) or None
 
 
 class HologramUsageHistorySerializer(serializers.ModelSerializer):

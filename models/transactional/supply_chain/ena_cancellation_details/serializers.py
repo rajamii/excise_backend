@@ -1,7 +1,10 @@
 from rest_framework import serializers
 from .models import EnaCancellationDetail
 from auth.workflow.constants import WORKFLOW_IDS
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 class EnaCancellationDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
@@ -38,7 +41,10 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
                 if establishment_name:
                     return establishment_name
         except Exception as e:
-            print(f"❌ Error fetching from License: {e}")
+            logger.exception(
+                "Error fetching establishment_name from License (licensee_id=%s)",
+                getattr(obj, "licensee_id", None),
+            )
         
         return obj.distillery_name or ''
 
@@ -53,26 +59,27 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
                 payment_status__iexact='success'
             ).exists()
         except Exception as e:
-            print(f"Payment completion lookup failed for cancellation {obj.id}: {e}")
+            logger.exception("Payment completion lookup failed for cancellation=%s", getattr(obj, "id", None))
             return False
 
     def get_allowed_actions(self, obj):
         request = self.context.get('request')
-        print(f"\n=== GET_ALLOWED_ACTIONS DEBUG (CANCELLATION) ===")
-        print(f"Cancellation ID: {obj.id}, Status: {obj.status}")
-        print(f"Current Stage ID: {obj.current_stage_id if hasattr(obj, 'current_stage_id') else 'N/A'}")
-        print(f"Workflow ID: {obj.workflow_id if hasattr(obj, 'workflow_id') else 'N/A'}")
+        logger.debug(
+            "ENA cancellation allowed_actions: id=%s status=%s current_stage_id=%s workflow_id=%s",
+            getattr(obj, "id", None),
+            getattr(obj, "status", None),
+            getattr(obj, "current_stage_id", None) if hasattr(obj, "current_stage_id") else None,
+            getattr(obj, "workflow_id", None) if hasattr(obj, "workflow_id") else None,
+        )
         
         if not request or not hasattr(request, 'user'):
-            print("❌ No request or user")
             return []
         
         # Get user role name
         user_role_name = request.user.role.name if hasattr(request.user, 'role') and request.user.role else None
-        print(f"User role name (raw): '{user_role_name}'")
+        logger.debug("ENA cancellation allowed_actions: user_role_name(raw)=%r", user_role_name)
         
         if not user_role_name:
-            print("❌ No user role name found")
             return []
             
         user_role_name = user_role_name.strip()
@@ -93,10 +100,10 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
         elif user_role_name in licensee_roles:
             role = 'licensee'
         
-        print(f"Determined role: '{role}'")
+        logger.debug("ENA cancellation allowed_actions: determined_role=%r", role)
         
         if not role:
-            print(f"❌ Role not determined for '{user_role_name}'")
+            logger.debug("ENA cancellation allowed_actions: role not determined for user_role_name=%r", user_role_name)
             return []
             
         # Fallback for status_code if missing (legacy data)
@@ -138,17 +145,21 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
         # Permit slip must be visible only after commissioner approval stage.
         is_viewable_stage = is_commissioner_approved or (is_stage_final and not is_rejected and 'approv' in stage_name_lower)
 
-        print("Checking VIEW_PERMIT_SLIP conditions:")
-        print(f"  - Role: {role} (need: commissioner or officer-in-charge)")
-        print(f"  - Workflow ID: {workflow_id} (need: {WORKFLOW_IDS['ENA_CANCELLATION']})")
-        print(f"  - Stage: {getattr(current_stage_obj, 'name', 'N/A')}, final={is_stage_final}, viewable={is_viewable_stage}")
+        logger.debug(
+            "ENA cancellation VIEW_PERMIT_SLIP check: role=%s workflow_id=%s stage=%s final=%s viewable=%s",
+            role,
+            workflow_id,
+            getattr(current_stage_obj, 'name', 'N/A'),
+            is_stage_final,
+            is_viewable_stage,
+        )
 
         if (
             role in ['commissioner', 'officer-in-charge']
             and workflow_id == WORKFLOW_IDS['ENA_CANCELLATION']
             and is_viewable_stage
         ):
-            print("Adding VIEW_PERMIT_SLIP action")
+            logger.debug("ENA cancellation allowed_actions: adding VIEW_PERMIT_SLIP")
             actions.append('VIEW_PERMIT_SLIP')
 
         return list(set(actions))
@@ -194,9 +205,15 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
                     establishment_name = getattr(license_obj.source_application, 'establishment_name', None)
                     if establishment_name:
                         validated_data['establishment_name'] = establishment_name
-                        print(f"✅ Stored establishment_name in cancellation: {establishment_name}")
+                        logger.debug(
+                            "Stored establishment_name in cancellation create (licensee_id=%s)",
+                            validated_data.get('licensee_id'),
+                        )
             except Exception as e:
-                print(f"⚠️ Could not fetch establishment_name: {e}")
+                logger.exception(
+                    "Could not fetch establishment_name during cancellation create (licensee_id=%s)",
+                    validated_data.get('licensee_id'),
+                )
         
         return super().create(validated_data)
 

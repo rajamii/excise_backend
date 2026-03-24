@@ -45,6 +45,10 @@ urlpatterns = [
     path('<everything:application_id>/objections/', views.get_objections, name='get-objections'),
     # Resolve Objections
     path('<everything:application_id>/resolve-objections/', views.resolve_objections, name='resolve-objections'),
+    # Reject Application
+    path('<everything:application_id>/reject/', views.reject_application, name='reject-application'),
+    # Get Rejections
+    path('<everything:application_id>/rejections/', views.get_rejections, name='get-rejections'),
     # Get dashboard statistics/counts (e.g., total applications, approved, pending, etc.) (GET)
     path('dashboard-counts/', views.dashboard_counts, name='dashboard-counts'),
     # List applications filtered by their current status (e.g., pending, approved, etc.) (GET)

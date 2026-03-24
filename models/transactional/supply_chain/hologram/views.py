@@ -6,6 +6,7 @@ from django.utils.dateparse import parse_datetime
 from django.shortcuts import get_object_or_404
 from django.db import transaction as db_transaction, models
 from decimal import Decimal
+import logging
 import re
 from .models import HologramProcurement, HologramRequest, HologramRollsDetails
 from .serializers import HologramProcurementSerializer, HologramRequestSerializer
@@ -16,6 +17,8 @@ from models.transactional.supply_chain.access_control import scope_by_profile_or
 
 HOLOGRAM_REF_PREFIX = 'HQR'
 HOLOGRAM_REF_DISTRICT_CODE = '1101'
+
+logger = logging.getLogger(__name__)
 
 def _normalize_role_name(role_name):
     return ''.join(ch for ch in str(role_name or '').lower() if ch.isalnum())
@@ -490,7 +493,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                         instance.carton_details = carton_details
                         instance.arrival_date = arrival_ts
                         # Sync to new table
-                        self._sync_rolls_details(instance, carton_details, acting_user=request.user)
+                        self._sync_rolls_details(instance, carton_details, acting_user=request.user, mark_received_by=False)
 
                 instance.save()
                 
@@ -499,7 +502,27 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     if not instance.arrival_date:
                         instance.arrival_date = timezone.now()
                     if instance.carton_details:
-                        self._sync_rolls_details(instance, instance.carton_details, acting_user=request.user)
+                        self._sync_rolls_details(instance, instance.carton_details, acting_user=request.user, mark_received_by=True)
+                    # Backfill received-by for any existing rolls under this procurement.
+                    try:
+                        display = _get_user_display_name(request.user)
+                        HologramRollsDetails.objects.filter(
+                            procurement=instance
+                        ).filter(
+                            models.Q(received_by_id__isnull=True) |
+                            models.Q(received_by_display_name__isnull=True) |
+                            models.Q(received_by_display_name='')
+                        ).update(
+                            received_by=request.user,
+                            received_by_display_name=display,
+                            confirmed_at=timezone.now(),
+                            updated_by=request.user,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to backfill received-by for procurement=%s",
+                            getattr(instance, "id", None),
+                        )
 
                 if normalized_action == 'pay':
                     instance.payment_status = 'completed'
@@ -523,6 +546,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                         'wallet_history': history
                     })
                     instance.payment_details = payment_details
+                    instance.save(update_fields=['payment_status', 'payment_details'])
 
                 Transaction.objects.create(
                     application=instance,
@@ -557,10 +581,31 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     self._validate_assign_cartons(instance, carton_details)
                     instance.carton_details = carton_details
                     instance.arrival_date = arrival_ts
-                    self._sync_rolls_details(instance, carton_details, acting_user=request.user)
+                    self._sync_rolls_details(instance, carton_details, acting_user=request.user, mark_received_by=False)
             elif normalized_action in ['confirm_arrival', 'arrival_confirmed', 'confirm arrival', 'confirm']:
                 if not instance.arrival_date:
                     instance.arrival_date = timezone.now()
+                if instance.carton_details:
+                    self._sync_rolls_details(instance, instance.carton_details, acting_user=request.user, mark_received_by=True)
+                try:
+                    display = _get_user_display_name(request.user)
+                    HologramRollsDetails.objects.filter(
+                        procurement=instance
+                    ).filter(
+                        models.Q(received_by_id__isnull=True) |
+                        models.Q(received_by_display_name__isnull=True) |
+                        models.Q(received_by_display_name='')
+                    ).update(
+                        received_by=request.user,
+                        received_by_display_name=display,
+                        confirmed_at=timezone.now(),
+                        updated_by=request.user,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to backfill received-by for procurement=%s (no-transition confirm)",
+                        getattr(instance, "id", None),
+                    )
 
             if normalized_action == 'pay':
                 wallet_result = self._debit_hologram_wallet_for_payment(instance, request.user)
@@ -585,6 +630,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     'wallet_history': history
                 })
                 instance.payment_details = payment_details
+                instance.save(update_fields=['payment_status', 'payment_details'])
             
             instance.save()
             
@@ -902,12 +948,11 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             'new_payment_amount': new_payment_amount
         })
 
-    def _sync_rolls_details(self, procurement, carton_details, acting_user=None):
+    def _sync_rolls_details(self, procurement, carton_details, acting_user=None, mark_received_by: bool = False):
         """
         Syncs JSON carton details to HologramRollsDetails table
         """
         try:
-            print(f"DEBUG: Syncing {len(carton_details)} cartons to HologramRollsDetails for {procurement.ref_no}")
             
             # Collect all procurement types for fallback logic
             proc_types = []
@@ -927,6 +972,22 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 carton_num = item.get('cartoonNumber') or item.get('cartoon_number') or item.get('carton_number')
                 if not carton_num:
                     continue
+
+                received_ts = None
+                arrived_value = (
+                    item.get('arrivedDate') or
+                    item.get('arrived_date') or
+                    item.get('arrival_date') or
+                    item.get('received_date') or
+                    item.get('receivedDate')
+                )
+                if arrived_value:
+                    try:
+                        received_ts = parse_datetime(str(arrived_value))
+                        if received_ts and timezone.is_naive(received_ts):
+                            received_ts = timezone.make_aware(received_ts)
+                    except Exception:
+                        received_ts = None
                 
                 defaults = {
                      'type': item.get('type') or default_proc_type,
@@ -934,6 +995,11 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                      'to_serial': item.get('toSerial') or item.get('to_serial'),
                      'total_count': item.get('numberOfHolograms') or item.get('number_of_holograms') or item.get('total_count', 0),
                 }
+                if received_ts:
+                    defaults['received_date'] = received_ts
+                if acting_user:
+                    defaults['created_by'] = acting_user
+                    defaults['updated_by'] = acting_user
                 
                 try:
                     defaults['total_count'] = int(defaults['total_count'])
@@ -974,11 +1040,9 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                         status='AVAILABLE',
                         description=f'Initial range for roll {carton_num}'
                     )
-                    print(f"✅ Created initial HologramSerialRange for {carton_num}: {defaults['from_serial']}-{defaults['to_serial']}")
                     
                     # Update available_range field
                     obj.update_available_range()
-                    print(f"✅ Initialized available_range for {carton_num}: {obj.available_range}")
                 
                 if not created:
                     # Update definition fields
@@ -988,6 +1052,18 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     obj.total_count = defaults['total_count']
                     if resolved_license_id:
                         obj.license_id = resolved_license_id
+                    if received_ts and not obj.received_date:
+                        obj.received_date = received_ts
+                    if acting_user:
+                        obj.updated_by = acting_user
+
+                    if mark_received_by and acting_user:
+                        if not getattr(obj, 'received_by_id', None):
+                            obj.received_by = acting_user
+                        if not str(getattr(obj, 'received_by_display_name', '') or '').strip():
+                            obj.received_by_display_name = _get_user_display_name(obj.received_by)
+                        if not getattr(obj, 'confirmed_at', None):
+                            obj.confirmed_at = timezone.now()
                     
                     # Reset available if unused (assuming edit mode)
                     if obj.used == 0 and obj.damaged == 0:
@@ -995,17 +1071,97 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                         obj.status = 'AVAILABLE'
                     
                     obj.save()
+                else:
+                    if mark_received_by and acting_user:
+                        changed = False
+                        if not getattr(obj, 'received_by_id', None):
+                            obj.received_by = acting_user
+                            changed = True
+                        if not str(getattr(obj, 'received_by_display_name', '') or '').strip():
+                            obj.received_by_display_name = _get_user_display_name(obj.received_by)
+                            changed = True
+                        if not getattr(obj, 'confirmed_at', None):
+                            obj.confirmed_at = timezone.now()
+                            changed = True
+                        if acting_user and not getattr(obj, 'updated_by_id', None):
+                            obj.updated_by = acting_user
+                            changed = True
+                        if changed:
+                            obj.save(update_fields=['received_by', 'received_by_display_name', 'confirmed_at', 'updated_by'])
                     
         except Exception as e:
-            print(f"ERROR: Failed to sync rolls details: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("Unhandled error while updating hologram rolls details")
 
 
 class HologramRequestViewSet(viewsets.ModelViewSet):
     queryset = HologramRequest.objects.all()
     serializer_class = HologramRequestSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def _build_production_updated_by_map(self, requests):
+        """
+        Build a mapping of HologramRequest -> officer display name who saved the fixed daily entry.
+        """
+        try:
+            from django.db.models import Q
+            from .models import DailyHologramRegister
+
+            request_ids = []
+            ref_nos = []
+            for r in requests:
+                if getattr(r, 'id', None) is not None:
+                    request_ids.append(r.id)
+                ref = str(getattr(r, 'ref_no', '') or '').strip()
+                if ref:
+                    ref_nos.append(ref)
+
+            if not request_ids and not ref_nos:
+                return {'by_request_id': {}, 'by_ref_no': {}}
+
+            entries = (
+                DailyHologramRegister.objects.filter(is_fixed=True)
+                .filter(Q(hologram_request_id__in=request_ids) | Q(reference_no__in=ref_nos))
+                .select_related('approved_by')
+                .order_by('-approved_at', '-id')
+            )
+
+            by_request_id = {}
+            by_ref_no = {}
+
+            for entry in entries:
+                display = str(getattr(entry, 'approved_by_display_name', '') or '').strip()
+                if not display:
+                    display = _get_user_display_name(getattr(entry, 'approved_by', None))
+                if not display:
+                    continue
+
+                req_id = getattr(entry, 'hologram_request_id', None)
+                if req_id is not None and req_id not in by_request_id:
+                    by_request_id[req_id] = display
+
+                ref = str(getattr(entry, 'reference_no', '') or '').strip()
+                if ref and ref not in by_ref_no:
+                    by_ref_no[ref] = display
+
+            return {'by_request_id': by_request_id, 'by_ref_no': by_ref_no}
+        except Exception:
+            logger.exception("Failed to build production_updated_by map")
+            return {'by_request_id': {}, 'by_ref_no': {}}
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        production_updated_by_map = self._build_production_updated_by_map(queryset)
+        ctx = dict(self.get_serializer_context() or {})
+        ctx['production_updated_by_map'] = production_updated_by_map
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True, context=ctx)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True, context=ctx)
+        return Response(serializer.data)
     
     def allocate_holograms_fifo(self, roll, quantity_needed, reference_no, usage_date=None):
         """
@@ -1022,8 +1178,6 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         """
         from models.transactional.supply_chain.hologram.models import HologramSerialRange
         
-        print(f"\n🎯 FIFO Allocation for Roll {roll.carton_number}")
-        print(f"   Requested: {quantity_needed} holograms")
         
         # Get all available ranges ordered by from_serial (FIFO)
         available_ranges = HologramSerialRange.objects.filter(
@@ -1031,9 +1185,6 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
             status='AVAILABLE'
         ).order_by('from_serial')  # CRITICAL: This ensures FIFO order
         
-        print(f"   Available ranges: {available_ranges.count()}")
-        for r in available_ranges:
-            print(f"     - {r.from_serial}-{r.to_serial} ({r.count} units)")
         
         # Check if we have enough inventory
         total_available = sum(r.count for r in available_ranges)
@@ -1065,7 +1216,6 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                     'range_obj': avail_range
                 })
                 remaining_needed -= range_count
-                print(f"   ✅ Allocated entire range: {range_from}-{range_to} ({range_count} units)")
                 
             else:
                 # Take partial range from the beginning (FIFO)
@@ -1076,7 +1226,6 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                     'count': remaining_needed,
                     'range_obj': avail_range
                 })
-                print(f"   ✅ Allocated partial range: {range_from}-{allocated_to} ({remaining_needed} units)")
                 remaining_needed = 0
         
         # Apply allocation to database
@@ -1096,7 +1245,6 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                 avail_range.reference_no = reference_no
                 avail_range.description = f'Allocated for request {reference_no}'
                 avail_range.save()
-                print(f"     ✅ Converted entire range to IN_USE: {alloc_from}-{alloc_to}")
                 
             elif avail_from == alloc_from and alloc_to < avail_to:
                 # Allocated from start - split into IN_USE and AVAILABLE
@@ -1115,7 +1263,6 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                 avail_range.from_serial = str(alloc_to + 1)
                 avail_range.count = avail_to - alloc_to
                 avail_range.save()
-                print(f"     ✅ Split: IN_USE {alloc_from}-{alloc_to}, AVAILABLE {alloc_to + 1}-{avail_to}")
                 
             elif avail_from < alloc_from and alloc_to == avail_to:
                 # Allocated from middle to end - split into AVAILABLE and IN_USE
@@ -1134,7 +1281,6 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                 avail_range.to_serial = str(alloc_from - 1)
                 avail_range.count = alloc_from - 1 - avail_from + 1
                 avail_range.save()
-                print(f"     ✅ Split: AVAILABLE {avail_from}-{alloc_from - 1}, IN_USE {alloc_from}-{alloc_to}")
                 
             elif avail_from < alloc_from and alloc_to < avail_to:
                 # Allocated from middle - split into 3 parts: AVAILABLE, IN_USE, AVAILABLE
@@ -1162,11 +1308,9 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                 avail_range.to_serial = str(alloc_from - 1)
                 avail_range.count = alloc_from - 1 - avail_from + 1
                 avail_range.save()
-                print(f"     ✅ Split into 3: AVAILABLE {avail_from}-{alloc_from - 1}, IN_USE {alloc_from}-{alloc_to}, AVAILABLE {alloc_to + 1}-{avail_to}")
         
         # Update the roll's available_range field
         roll.update_available_range()
-        print(f"   ✅ Updated available_range: {roll.available_range}")
         
         return {
             'success': True,
@@ -1182,7 +1326,6 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
             return queryset.none()
             
         role_name = _normalize_role_name(getattr(getattr(user, 'role', None), 'name', ''))
-        print(f"DEBUG: User: {user.username}, Role: '{role_name}'")
 
         if _is_scoped_officer_or_licensee(role_name):
             scoped_by_request_license = scope_by_profile_or_workflow(
@@ -1259,19 +1402,7 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                 instance.license_id = resolved_license_id
                 instance.save(update_fields=['license_id'])
 
-        print(f"DEBUG: perform_action. Ref: {instance.ref_no}, Current Stage: {instance.current_stage.name}, Action: {action_name}")
-        print(f"DEBUG: issued_assets received: {issued_assets}")
         
-        # CRITICAL DEBUG: Print each asset's serial ranges
-        if issued_assets:
-            for idx, asset in enumerate(issued_assets):
-                print(f"  Asset {idx + 1}:")
-                print(f"    cartoonNumber: {asset.get('cartoonNumber') or asset.get('cartoon_number')}")
-                print(f"    fromSerial: {asset.get('fromSerial') or asset.get('from_serial')}")
-                print(f"    toSerial: {asset.get('toSerial') or asset.get('to_serial')}")
-                print(f"    quantity: {asset.get('quantity') or asset.get('count')}")
-
-        # CRITICAL FIX: Save issued_assets to rolls_assigned IMMEDIATELY before any processing
         # This ensures the frontend-provided ranges are preserved exactly as sent
         if issued_assets:
             # Create a deep copy to preserve original ranges
@@ -1281,14 +1412,6 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
             instance.issued_assets = original_assets
             instance.rolls_assigned = original_assets  # Save for "Currently Issued Holograms" tab
             instance.save()
-            print(f"DEBUG: Saved issued_assets and rolls_assigned for {instance.ref_no}: {len(original_assets)} rolls")
-            print(f"DEBUG: rolls_assigned content: {instance.rolls_assigned}")
-            
-            # Verify the ranges were saved correctly
-            for idx, asset in enumerate(instance.rolls_assigned):
-                print(f"  ✅ Saved Asset {idx + 1}:")
-                print(f"     fromSerial: {asset.get('fromSerial') or asset.get('from_serial')}")
-                print(f"     toSerial: {asset.get('toSerial') or asset.get('to_serial')}")
         
         if not action_name:
             return Response({'error': 'Action is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1309,12 +1432,10 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
             from_stage=instance.current_stage
         )
         
-        print(f"DEBUG: perform_action. Ref: {instance.ref_no}, Current Stage: {instance.current_stage.name}, Action: {action_name}")
         
         selected_transition = None
         for t in transitions:
             cond = t.condition or {}
-            print(f"DEBUG: Checking transition to {t.to_stage.name} with cond {cond}")
             cond_action = str(cond.get('action') or '').lower()
             role_ok = _condition_role_matches(cond, request.user)
             action_ok = cond_action == str(action_name).lower()
@@ -1323,7 +1444,6 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                 break
         
         if not selected_transition:
-             print("DEBUG: No transition found")
              return Response({'error': 'Invalid action for current stage'}, status=status.HTTP_400_BAD_REQUEST)
         
         with db_transaction.atomic():
@@ -1332,11 +1452,14 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
             
             # Verify we are still in the 'from_stage'
             if instance.current_stage != selected_transition.from_stage:
-                 print(f"DEBUG: Stage mismatch during atomic block. Expected {selected_transition.from_stage.name}, got {instance.current_stage.name}")
-                 # Try to proceed if safe, or abort? 
-                 # If stage changed, the transition might be invalid.
-                 # Re-fetch transition? No, just fail for now to debug.
-                 # Actually, let's just log and try to update if plausible.
+                # Stage drift detected; abort to avoid applying an invalid transition.
+                logger.warning(
+                    "Hologram transition aborted due to stage mismatch (instance_id=%s current_stage=%s expected_from=%s)",
+                    getattr(instance, "id", None),
+                    getattr(instance.current_stage, "id", None),
+                    getattr(selected_transition.from_stage, "id", None),
+                )
+                return Response({'error': 'Stage changed, please retry.'}, status=status.HTTP_409_CONFLICT)
             
             instance.current_stage = selected_transition.to_stage
             instance.save()
@@ -1344,10 +1467,8 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
             # Verify persistence
             instance.refresh_from_db()
             if instance.current_stage != selected_transition.to_stage:
-                print(f"DEBUG: CRITICAL FAIL - Save did not persist! Got {instance.current_stage.name}")
                 raise serializers.ValidationError("Database update failed")
 
-            print(f"DEBUG: Updated stage to {instance.current_stage.name}")
             
             Transaction.objects.create(
                 application=instance,
@@ -1369,7 +1490,6 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         Updates the status AND QUANTITY of allocated cartons in HologramProcurement
         """
         try:
-            print(f"DEBUG: Updating inventory for {len(issued_assets)} assets. Payload: {issued_assets}")
             licensee = request_instance.licensee
             
             # Fetch all active procurements for this licensee to search within
@@ -1400,33 +1520,24 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                             current_status = detail.get('status', 'AVAILABLE')
                             current_available = int(detail.get('available_qty') if detail.get('available_qty') is not None else (detail.get('numberOfHolograms') or detail.get('total_count') or 0))
                             
-                            print(f"DEBUG: Found carton {cartoon_number} in proc {proc.ref_no}")
-                            print(f"DEBUG:   Current available_qty: {current_available}")
-                            print(f"DEBUG:   Allocated qty: {allocated_qty}")
                             
                             # Deduct allocated quantity OR use provided remaining
                             # Check both camelCase and snake_case formats
                             remaining_arg = asset.get('remainingInCartoon') or asset.get('remaining_in_cartoon')
-                            print(f"DEBUG:   Raw remainingInCartoon from payload: {remaining_arg}, Type: {type(remaining_arg)}")
-                            print(f"DEBUG:   Condition check - is not None: {remaining_arg is not None}")
                             
                             if remaining_arg is not None:
                                 new_available = int(remaining_arg)
-                                print(f"DEBUG:   ✅ Using provided remaining balance: {new_available}")
                             else:
                                 new_available = max(0, current_available - allocated_qty)
-                                print(f"DEBUG:   ❌ Calculated remaining: {current_available} - {allocated_qty} = {new_available}")
                                 
                             detail['available_qty'] = new_available
                             
                             # Update status if needed
                             if current_status != 'IN_USE':
                                 detail['status'] = 'IN_USE'
-                                print(f"DEBUG:   Updated status to IN_USE")
                             
                             # Mark procurement as updated
                             updated = True
-                            print(f"DEBUG:   Carton {cartoon_number} updated! New available_qty: {new_available}")
                             
                             found = True
                             break 
@@ -1440,139 +1551,149 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
             
             # Bulk save affected procurements
             for proc in affected_procurements.values():
-                print(f"DEBUG: Saving procurement {proc.ref_no} (ID: {proc.id})")
-                proc.save()
-                print(f"DEBUG: Procurement {proc.ref_no} saved successfully!")
-                
                 # Sync quantity changes to HologramRollsDetails
                 try:
                     for asset in issued_assets:
-                         c_num = asset.get('cartoonNumber') or asset.get('cartoon_number')
-                         a_qty = int(asset.get('count') or asset.get('quantity') or 0)
-                         
-                         if not c_num: continue
-                         
-                         try:
-                             roll_obj = HologramRollsDetails.objects.get(
-                                 procurement=proc,
-                                 carton_number=c_num
-                             )
-                             
-                             # Deduct from DB available count directly to ensure consistency
-                             # Reload to be safe? No, we trust the flow.
-                             # Wait, we should use the same logic as above or sync from the JSON we just solved?
-                             # Better to calculate:
-                             # roll_obj.available -= a_qty
-                             
-                             # Let's resync from the procurement details to be 100% sure
-                             # Find the detail again
-                             target_detail = next((d for d in proc.carton_details if (d.get('cartoon_number') == c_num or d.get('cartoonNumber') == c_num)), None)
-                             
-                             if target_detail:
-                                 roll_obj.available = target_detail['available_qty']
-                                 roll_obj.status = target_detail['status']
-                                 roll_obj.save()
-                                 print(f"DEBUG: Synced RollsDetails for {c_num}: Available now {roll_obj.available}")
-                                 
-                                 # CRITICAL FIX: Trust frontend allocation if valid ranges are provided
-                                 # Only use FIFO as fallback if frontend didn't provide ranges
-                                 from_serial = asset.get('fromSerial') or asset.get('from_serial')
-                                 to_serial = asset.get('toSerial') or asset.get('to_serial')
-                                 a_qty = asset.get('quantity') or asset.get('count', 0)
-                                 
-                                 if a_qty > 0:
-                                     from models.transactional.supply_chain.hologram.models import HologramSerialRange
-                                     
-                                     # Check if frontend provided valid serial ranges
-                                     if from_serial and to_serial:
-                                         print(f"✅ Using frontend-provided ranges: {from_serial}-{to_serial} ({a_qty} units)")
-                                         
-                                         # Trust the frontend allocation - just mark the range as IN_USE
-                                         try:
-                                             # Use FIFO to properly split ranges in the database
-                                             allocation_result = self.allocate_holograms_fifo(
-                                                 roll=roll_obj,
-                                                 quantity_needed=a_qty,
-                                                 reference_no=request_instance.ref_no,
-                                                 usage_date=request_instance.usage_date if hasattr(request_instance, 'usage_date') else None
-                                             )
-                                             
-                                             if allocation_result['success']:
-                                                 print(f"✅ FIFO allocation successful: {allocation_result['message']}")
-                                                 
-                                                 # CRITICAL FIX: Don't overwrite frontend ranges!
-                                                 # Keep the frontend-provided ranges in the response
-                                                 print(f"✅ Keeping frontend ranges: {from_serial}-{to_serial}")
-                                             else:
-                                                 print(f"⚠️ FIFO allocation failed: {allocation_result['message']}")
-                                                 # Fallback: Create IN_USE entry with frontend ranges
-                                                 try:
-                                                     from_num = int(from_serial)
-                                                     to_num = int(to_serial)
-                                                     allocated_count = to_num - from_num + 1
-                                                     
-                                                     HologramSerialRange.objects.get_or_create(
-                                                         roll=roll_obj,
-                                                         from_serial=from_serial,
-                                                         to_serial=to_serial,
-                                                         defaults={
-                                                             'count': allocated_count,
-                                                             'status': 'IN_USE',
-                                                             'used_date': request_instance.usage_date if hasattr(request_instance, 'usage_date') else None,
-                                                             'reference_no': request_instance.ref_no,
-                                                             'description': f'Allocated for request {request_instance.ref_no} (frontend ranges)'
-                                                         }
-                                                     )
-                                                     roll_obj.update_available_range()
-                                                     print(f"✅ Created IN_USE range with frontend ranges: {from_serial}-{to_serial}")
-                                                 except (ValueError, TypeError) as e:
-                                                     print(f"❌ Failed to create IN_USE range: {e}")
-                                         except Exception as e:
-                                             print(f"❌ Error during allocation: {e}")
-                                     else:
-                                         # No ranges provided by frontend - use FIFO to calculate
-                                         print(f"⚠️ No ranges provided by frontend, using FIFO to allocate {a_qty} holograms")
-                                         
-                                         allocation_result = self.allocate_holograms_fifo(
-                                             roll=roll_obj,
-                                             quantity_needed=a_qty,
-                                             reference_no=request_instance.ref_no,
-                                             usage_date=request_instance.usage_date if hasattr(request_instance, 'usage_date') else None
-                                         )
-                                         
-                                         if allocation_result['success']:
-                                             print(f"✅ FIFO allocation successful: {allocation_result['message']}")
-                                             
-                                             # Update the asset with the FIFO-calculated ranges
-                                             if allocation_result['allocated_ranges']:
-                                                 first_range = allocation_result['allocated_ranges'][0]
-                                                 last_range = allocation_result['allocated_ranges'][-1]
-                                                 
-                                                 asset['fromSerial'] = str(first_range['from'])
-                                                 asset['toSerial'] = str(last_range['to'])
-                                                 asset['from_serial'] = str(first_range['from'])
-                                                 asset['to_serial'] = str(last_range['to'])
-                                                 
-                                                 print(f"✅ Updated asset with FIFO ranges: {first_range['from']}-{last_range['to']}")
-                                         else:
-                                             print(f"❌ FIFO allocation failed: {allocation_result['message']}")
-                                 else:
-                                     print(f"⚠️ No quantity specified for roll {c_num}, skipping allocation")
-                             
-                         except HologramRollsDetails.DoesNotExist:
-                             pass 
-                             
-                except Exception as ex:
-                    print(f"ERROR: Failed to sync RollsDetails quantity: {ex}")
-                
-        except Exception as e:
-            print(f"ERROR: Failed to update inventory status: {str(e)}")
-            import traceback
-            traceback.print_exc()
+                        c_num = asset.get('cartoonNumber') or asset.get('cartoon_number')
+                        a_qty = int(asset.get('count') or asset.get('quantity') or 0)
+
+                        if not c_num:
+                            continue
+
+                        try:
+                            roll_obj = HologramRollsDetails.objects.get(
+                                procurement=proc,
+                                carton_number=c_num
+                            )
+                        except HologramRollsDetails.DoesNotExist:
+                            continue
+
+                        # Resync from the procurement details to be 100% sure
+                        target_detail = next(
+                            (d for d in proc.carton_details if (d.get('cartoon_number') == c_num or d.get('cartoonNumber') == c_num)),
+                            None
+                        )
+
+                        if target_detail:
+                            roll_obj.available = target_detail['available_qty']
+                            roll_obj.status = target_detail['status']
+                            roll_obj.save()
+
+                            # CRITICAL FIX: Trust frontend allocation if valid ranges are provided
+                            # Only use FIFO as fallback if frontend didn't provide ranges
+                            from_serial = asset.get('fromSerial') or asset.get('from_serial')
+                            to_serial = asset.get('toSerial') or asset.get('to_serial')
+                            a_qty = asset.get('quantity') or asset.get('count', 0)
+
+                            if a_qty > 0:
+                                from models.transactional.supply_chain.hologram.models import HologramSerialRange
+
+                                # Check if frontend provided valid serial ranges
+                                if from_serial and to_serial:
+                                    # Trust the frontend allocation - just mark the range as IN_USE
+                                    try:
+                                        # Use FIFO to properly split ranges in the database
+                                        allocation_result = self.allocate_holograms_fifo(
+                                            roll=roll_obj,
+                                            quantity_needed=a_qty,
+                                            reference_no=request_instance.ref_no,
+                                            usage_date=request_instance.usage_date if hasattr(request_instance, 'usage_date') else None
+                                        )
+
+                                        if allocation_result.get('success'):
+                                            # CRITICAL FIX: Don't overwrite frontend ranges!
+                                            # Keep the frontend-provided ranges in the response
+                                            pass
+                                        else:
+                                            # Fallback: Create IN_USE entry with frontend ranges
+                                            try:
+                                                from_num = int(from_serial)
+                                                to_num = int(to_serial)
+                                                allocated_count = to_num - from_num + 1
+
+                                                HologramSerialRange.objects.get_or_create(
+                                                    roll=roll_obj,
+                                                    from_serial=from_serial,
+                                                    to_serial=to_serial,
+                                                    defaults={
+                                                        'count': allocated_count,
+                                                        'status': 'IN_USE',
+                                                        'used_date': request_instance.usage_date if hasattr(request_instance, 'usage_date') else None,
+                                                        'reference_no': request_instance.ref_no,
+                                                        'description': f'Allocated for request {request_instance.ref_no} (frontend ranges)'
+                                                    }
+                                                )
+                                                roll_obj.update_available_range()
+                                            except (ValueError, TypeError):
+                                                logger.warning(
+                                                    "Invalid frontend serial range (from=%s to=%s) for request=%s",
+                                                    from_serial,
+                                                    to_serial,
+                                                    getattr(request_instance, "ref_no", None),
+                                                )
+                                    except Exception:
+                                        logger.exception(
+                                            "Error allocating hologram serial ranges (request=%s roll=%s)",
+                                            getattr(request_instance, "ref_no", None),
+                                            getattr(roll_obj, "id", None),
+                                        )
+                                else:
+                                    # No ranges provided by frontend - use FIFO to calculate
+                                    allocation_result = self.allocate_holograms_fifo(
+                                        roll=roll_obj,
+                                        quantity_needed=a_qty,
+                                        reference_no=request_instance.ref_no,
+                                        usage_date=request_instance.usage_date if hasattr(request_instance, 'usage_date') else None
+                                    )
+
+                                    if allocation_result.get('success'):
+                                        # Update the asset with FIFO-calculated ranges
+                                        if allocation_result.get('allocated_ranges'):
+                                            first_range = allocation_result['allocated_ranges'][0]
+                                            last_range = allocation_result['allocated_ranges'][-1]
+
+                                            asset['fromSerial'] = str(first_range['from'])
+                                            asset['toSerial'] = str(last_range['to'])
+                                            asset['from_serial'] = str(first_range['from'])
+                                            asset['to_serial'] = str(last_range['to'])
+                                    else:
+                                        logger.warning(
+                                            "FIFO allocation failed for request=%s roll=%s quantity=%s",
+                                            getattr(request_instance, "ref_no", None),
+                                            getattr(roll_obj, "id", None),
+                                            a_qty,
+                                        )
+                            else:
+                                logger.debug(
+                                    "Skipping allocation for non-positive quantity (request=%s roll=%s qty=%s)",
+                                    getattr(request_instance, "ref_no", None),
+                                    getattr(roll_obj, "id", None),
+                                    a_qty,
+                                )
+
+                except Exception:
+                    logger.exception(
+                        "Error syncing hologram rolls details (procurement_id=%s)",
+                        getattr(proc, "id", None),
+                    )
+
+        except Exception:
+            logger.exception("Unhandled error during inventory status update")
 
 
 from .models import DailyHologramRegister
 from .serializers import DailyHologramRegisterSerializer, HologramRollsDetailsSerializer
+
+def _get_user_display_name(user) -> str:
+    """Return a human-readable display name for a user (first/middle/last, fallback to username)."""
+    if user is None:
+        return 'System'
+    first = (getattr(user, 'first_name', '') or '').strip()
+    middle = (getattr(user, 'middle_name', '') or '').strip()
+    last = (getattr(user, 'last_name', '') or '').strip()
+    parts = [p for p in [first, middle, last] if p]
+    full = ' '.join(parts)
+    return full if full else (getattr(user, 'username', None) or 'System')
 
 class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
     queryset = DailyHologramRegister.objects.all()  # FIXED: was 'dataset' which DRF ignores
@@ -1626,6 +1747,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 save_kwargs.update({
                     'approval_status': DailyHologramRegister.APPROVAL_STATUS_APPROVED,
                     'approved_by': self.request.user,
+                    'approved_by_display_name': _get_user_display_name(self.request.user),
                     'approved_at': timezone.now()
                 })
 
@@ -1639,17 +1761,14 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                         **save_kwargs
                     )
                 except Exception as e:
-                    print(f"ERROR: accessing supply_chain_profile: {e}")
                     raise serializers.ValidationError(f"User profile error: {str(e)}")
             else:
                 # DEBUG fallback
-                print(f"DEBUG: User {self.request.user.username} has no supply_chain_profile.")
                 # if self.request.user.is_superuser: # Unblock for now
                 if True:
                     from models.masters.supply_chain.profile.models import SupplyChainUserProfile
                     first_profile = SupplyChainUserProfile.objects.first()
                     if first_profile:
-                        print(f"DEBUG: Fallback to first available profile: {first_profile.manufacturing_unit_name}")
                         instance = serializer.save(
                             licensee=first_profile,
                             license_id=_resolve_request_license_id(profile=first_profile, acting_user=self.request.user) or None,
@@ -1673,16 +1792,22 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                         remarks='Hologram Production Completed via Daily Register'
                     )
                     if moved_to:
-                        print(f"DEBUG: Auto-completed HologramRequest {req.ref_no} to stage {moved_to.name}")
+                        logger.debug(
+                            "Hologram request transitioned via daily register (request_id=%s stage=%s)",
+                            getattr(req, "id", None),
+                            getattr(moved_to, "name", None) if moved_to else None,
+                        )
                 except Exception as e:
-                    print(f"ERROR: Failed to update request status: {e}")
+                    logger.exception(
+                        "Failed to transition hologram request via daily register (request_id=%s)",
+                        getattr(instance.hologram_request, "id", None),
+                    )
             else:
                 # FALLBACK: Try to find request by reference number
                 try:
                     if instance.reference_no:
                         req = HologramRequest.objects.filter(ref_no=instance.reference_no).first()
                         if req:
-                            print(f"DEBUG: Found request by reference_no: {req.ref_no}")
                             # Link the entry to the request
                             instance.hologram_request = req
                             instance.save(update_fields=['hologram_request'])
@@ -1694,25 +1819,38 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 remarks='Hologram Production Completed via Daily Register'
                             )
                             if moved_to:
-                                print(f"DEBUG: Auto-completed HologramRequest {req.ref_no} (via reference_no match) to stage {moved_to.name}")
+                                logger.debug(
+                                    "Hologram request transitioned via fallback ref_no (request_id=%s stage=%s)",
+                                    getattr(req, "id", None),
+                                    getattr(moved_to, "name", None) if moved_to else None,
+                                )
                         else:
-                            print(f"WARNING: No request found with ref_no={instance.reference_no}")
+                            logger.info(
+                                "No hologram request found for reference_no=%s during daily register save",
+                                instance.reference_no,
+                            )
                 except Exception as e:
-                    print(f"ERROR: Failed to find/update request by reference_no: {e}")
+                    logger.exception(
+                        "Fallback hologram request transition failed (reference_no=%s)",
+                        getattr(instance, "reference_no", None),
+                    )
             
         except Exception as e:
-            import traceback
-            traceback.print_exc()
+            logger.exception("Unhandled error during DailyHologramRegister create")
             raise serializers.ValidationError(f"Internal Server Error during save: {str(e)}")
 
     def perform_update(self, serializer):
         instance = serializer.save()
         # Keep officer name visible for edited fixed entries as well.
-        if bool(getattr(instance, 'is_fixed', False)) and not getattr(instance, 'approved_by_id', None):
-            instance.approval_status = DailyHologramRegister.APPROVAL_STATUS_APPROVED
-            instance.approved_by = self.request.user
-            instance.approved_at = timezone.now()
-            instance.save(update_fields=['approval_status', 'approved_by', 'approved_at'])
+        if bool(getattr(instance, 'is_fixed', False)):
+            needs_approval_meta = not getattr(instance, 'approved_by_id', None)
+            needs_display_name = not str(getattr(instance, 'approved_by_display_name', '') or '').strip()
+            if needs_approval_meta or needs_display_name:
+                instance.approval_status = DailyHologramRegister.APPROVAL_STATUS_APPROVED
+                instance.approved_by = instance.approved_by or self.request.user
+                instance.approved_by_display_name = _get_user_display_name(instance.approved_by)
+                instance.approved_at = instance.approved_at or timezone.now()
+                instance.save(update_fields=['approval_status', 'approved_by', 'approved_by_display_name', 'approved_at'])
         self._sync_brand_warehouse_stock(instance)
 
     def _sync_brand_warehouse_stock(self, instance):
@@ -1736,7 +1874,10 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
             if success:
                 DailyHologramRegister.objects.filter(id=instance.id).update(stock_updated=True)
         except Exception as e:
-            print(f"ERROR: Failed to sync brand warehouse stock for daily register {getattr(instance, 'id', None)}: {e}")
+            logger.exception(
+                "Failed to sync brand warehouse stock from daily hologram register (id=%s)",
+                getattr(instance, "id", None),
+            )
 
     def _update_procurement_usage(self, instance):
         """
@@ -1751,14 +1892,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
         based on the DailyHologramRegister entry.
         Also updates usage_history JSON and creates HologramSerialRange records.
         """
-        print(f"\n{'='*80}")
-        print(f"🔥 _update_procurement_usage_impl CALLED")
-        print(f"{'='*80}")
-        print(f"Entry ID: {instance.id if instance.id else 'NEW'}")
-        print(f"Reference: {instance.reference_no}")
-        print(f"Roll Range: {instance.roll_range}")
-        print(f"Issued Qty: {instance.issued_qty}, Wastage Qty: {instance.wastage_qty}")
-        print(f"{'='*80}\n")
         
         try:
             def _safe_int(value):
@@ -1798,7 +1931,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                     base_range = parts[0].strip()  # 'a1 - 1 - 50'
                     # Now extract just the carton number (first part before ' - ')
                     carton_number = base_range.split(' - ')[0].strip()  # 'a1'
-                    print(f"DEBUG: Multi-brand format detected. Extracted carton: '{carton_number}' from '{roll_range_str}'")
                 # Try splitting by " - " first (standard format)
                 elif ' - ' in roll_range_str:
                     parts = roll_range_str.split(' - ')
@@ -1812,10 +1944,8 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                     carton_number = roll_range_str
             
             if not carton_number:
-                print(f"DEBUG: No carton number extracted from '{instance.roll_range}'")
                 return
 
-            print(f"DEBUG: Updating usage for Carton '{carton_number}' (Issued: {instance.issued_qty}, Wastage: {instance.wastage_qty})")
 
             # Find matching procurement
             from .models import HologramProcurement
@@ -1907,7 +2037,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                     roll_obj = None
 
                 if not roll_obj:
-                    print(f"ERROR: HologramRollsDetails not found for {carton_number}")
                     return
 
                 issued_ranges = instance.issued_ranges or []
@@ -1928,14 +2057,12 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 total_count = roll_obj.total_count
                 current_used = roll_obj.used
                 current_damaged = roll_obj.damaged
-                print(f"DEBUG: Current state - total: {total_count}, used: {current_used}, damaged: {current_damaged}")
                 
                 # Calculate new counts
                 new_used = current_used + effective_issued_qty
                 new_damaged = current_damaged + effective_wastage_qty
                 new_available = max(0, total_count - new_used - new_damaged)
                 
-                print(f"DEBUG: New state - available: {new_available}, used: {new_used}, damaged: {new_damaged}")
                 
                 # Update JSON in procurement
                 updated_status = 'COMPLETED' if new_available == 0 else 'AVAILABLE'
@@ -1965,21 +2092,8 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 
                 from .models import HologramSerialRange
                 
-                print(f"=" * 80)
-                print(f"🔥 DAILY REGISTER SAVE - RANGE SPLITTING DEBUG")
-                print(f"=" * 80)
-                print(f"Roll: {carton_number}")
-                print(f"Issued Qty: {instance.issued_qty}")
-                print(f"Wastage Qty: {instance.wastage_qty}")
-                print(f"Issued Ranges: {instance.issued_ranges}")
-                print(f"Wastage Ranges: {instance.wastage_ranges}")
-                print(f"Issued From/To: {instance.issued_from} - {instance.issued_to}")
-                print(f"Wastage From/To: {instance.wastage_from} - {instance.wastage_to}")
-                print(f"=" * 80)
-                
                 # SPECIAL CASE: "Not Used" - if issued and wastage are both 0
                 if effective_issued_qty == 0 and effective_wastage_qty == 0:
-                    print(f"⚠️ 'Not Used' case detected (Issued: 0, Wastage: 0)")
                     
                     try:
                         start_int = None
@@ -1992,7 +2106,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 try:
                                     start_int = int(instance.allocated_from_serial)
                                     end_int = int(instance.allocated_to_serial)
-                                    print(f"✅ Using allocated_from_serial/allocated_to_serial: {start_int}-{end_int}")
                                 except (ValueError, TypeError):
                                     pass
                         
@@ -2012,7 +2125,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 start_int = int(start_s)
                                 end_int = int(end_s)
                                 
-                                print(f"🔍 Parsed range via Regex: {start_int}-{end_int} (from '{instance.roll_range}')")
                         
                         if start_int is not None and end_int is not None:
                             # Fetch ALL IN_USE ranges for this roll
@@ -2027,7 +2139,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                     # Check for exact match OR overlap
                                     # We want to be generous here: if the candidate is fully contained in the target range, release it
                                     if c_start >= start_int and c_end <= end_int:
-                                        print(f"✅ Found matching IN_USE range {c_start}-{c_end}. Converting to AVAILABLE.")
                                         candidate.status = 'AVAILABLE'
                                         candidate.description = f'Released from Not Used entry {instance.reference_no}'
                                         candidate.save()
@@ -2036,20 +2147,30 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                     continue
                             
                             if not match_found:
-                                print(f"⚠️ No matching IN_USE ranges found for {start_int}-{end_int}")
-                                print(f"   Existing IN_USE ranges: {[f'{r.from_serial}-{r.to_serial}' for r in in_use_candidates]}")
+                                logger.debug(
+                                    "No IN_USE ranges matched for release (request=%s roll=%s range=%s-%s)",
+                                    getattr(instance, "reference_no", None),
+                                    getattr(roll_obj, "id", None),
+                                    start_int,
+                                    end_int,
+                                )
                         else:
-                            print(f"⚠️ Could not determine allocated range for Not In Use entry")
+                            logger.warning(
+                                "Skipping release of ranges due to invalid range values (from=%s to=%s request=%s)",
+                                start_s,
+                                end_s,
+                                getattr(instance, "reference_no", None),
+                            )
 
                     except Exception as e:
-                        print(f"ERROR processing Not Used range: {e}")
+                        logger.exception(
+                            "Error releasing IN_USE ranges for request=%s roll=%s",
+                            getattr(instance, "reference_no", None),
+                            getattr(roll_obj, "id", None),
+                        )
 
                 # Check existing IN_USE ranges
                 existing_in_use = HologramSerialRange.objects.filter(roll=roll_obj, status='IN_USE')
-                print(f"Existing IN_USE ranges: {existing_in_use.count()}")
-                for r in existing_in_use:
-                    print(f"  - {r.from_serial} to {r.to_serial} (status: {r.status})")
-                print(f"=" * 80)
                 
                 # CRITICAL: Find and delete IN_USE ranges that will be split
                 # Collect all serials that will be marked as USED or DAMAGED
@@ -2101,19 +2222,14 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             pass
                 
                 
-                print(f"📊 Collected serials from current entry:")
-                print(f"   Used serials: {len(used_serials)} - Sample: {sorted(list(used_serials))[:10] if used_serials else 'None'}")
-                print(f"   Damaged serials: {len(damaged_serials)} - Sample: {sorted(list(damaged_serials))[:10] if damaged_serials else 'None'}")
                 
                 # CRITICAL FIX: Also collect used/damaged serials from ALL OTHER daily register entries for this same roll
                 # This prevents duplicate AVAILABLE ranges in multi-brand scenarios
-                print(f"🔍 Checking for OTHER daily register entries using roll {carton_number}...")
                 other_entries = DailyHologramRegister.objects.filter(
                     cartoon_number=carton_number,
                     hologram_type=roll_obj.type
                 ).exclude(id=instance.id)  # Exclude the current entry being saved
                 
-                print(f"   Found {other_entries.count()} other entries for this roll")
                 
                 for other_entry in other_entries:
                     # Collect USED serials from other entries
@@ -2128,7 +2244,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                     to_num = int(to_s)
                                     for serial in range(from_num, to_num + 1):
                                         used_serials.add(serial)
-                                    print(f"   ✅ Added USED serials from other entry {other_entry.id}: {from_s}-{to_s}")
                                 except (ValueError, TypeError):
                                     pass
                         else:
@@ -2137,7 +2252,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 to_num = int(other_entry.issued_to)
                                 for serial in range(from_num, to_num + 1):
                                     used_serials.add(serial)
-                                print(f"   ✅ Added USED serials from other entry {other_entry.id}: {other_entry.issued_from}-{other_entry.issued_to}")
                             except (ValueError, TypeError):
                                 pass
                     
@@ -2153,7 +2267,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                     to_num = int(to_s)
                                     for serial in range(from_num, to_num + 1):
                                         damaged_serials.add(serial)
-                                    print(f"   ✅ Added DAMAGED serials from other entry {other_entry.id}: {from_s}-{to_s}")
                                 except (ValueError, TypeError):
                                     pass
                         else:
@@ -2162,33 +2275,21 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 to_num = int(other_entry.wastage_to)
                                 for serial in range(from_num, to_num + 1):
                                     damaged_serials.add(serial)
-                                print(f"   ✅ Added DAMAGED serials from other entry {other_entry.id}: {other_entry.wastage_from}-{other_entry.wastage_to}")
                             except (ValueError, TypeError):
                                 pass
                 
-                print(f"📊 FINAL collected serials (including other entries):")
-                print(f"   Total used serials: {len(used_serials)} - Sample: {sorted(list(used_serials))[:10] if used_serials else 'None'}")
-                print(f"   Total damaged serials: {len(damaged_serials)} - Sample: {sorted(list(damaged_serials))[:10] if damaged_serials else 'None'}")
 
                 
                 # Find IN_USE ranges that overlap with used/damaged serials
                 in_use_ranges = HologramSerialRange.objects.filter(roll=roll_obj, status='IN_USE').order_by('from_serial')
-                print(f"🔍 Found {in_use_ranges.count()} IN_USE range(s) to check for splitting")
                 
                 # Check for AVAILABLE ranges too - if we have them, we shouldn't run fallback
                 available_ranges_check = HologramSerialRange.objects.filter(roll=roll_obj, status='AVAILABLE')
                 
                 if in_use_ranges.count() == 0 and available_ranges_check.count() == 0:
-                    print(f"⚠️ WARNING: No IN_USE ranges found for roll {carton_number}")
-                    print(f"   This might mean the allocation didn't create IN_USE ranges properly")
-                    print(f"   Checking all ranges for this roll:")
-                    all_ranges = HologramSerialRange.objects.filter(roll=roll_obj)
-                    for r in all_ranges:
-                        print(f"     - {r.from_serial} to {r.to_serial} (status: {r.status})")
                     
                     # FALLBACK: If no IN_USE ranges exist, we need to infer the allocated range
                     # from the request's rolls_assigned data
-                    print(f"🔧 FALLBACK: Attempting to infer allocated range from request data")
                     
                     # Try to find the hologram request that was allocated
                     from .models import HologramRequest
@@ -2202,7 +2303,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                     alloc_to = assigned_roll.get('toSerial') or assigned_roll.get('to_serial')
                                     alloc_count = assigned_roll.get('count') or assigned_roll.get('quantity')
                                     
-                                    print(f"✅ Found allocated range from request: {alloc_from}-{alloc_to} ({alloc_count} units)")
                                     
                                     # Create a virtual IN_USE range for processing
                                     try:
@@ -2213,11 +2313,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                         allocated_serials = set(range(alloc_from_num, alloc_to_num + 1))
                                         leftover_serials = allocated_serials - used_serials - damaged_serials
                                         
-                                        print(f"📊 Fallback range analysis:")
-                                        print(f"   Total allocated: {len(allocated_serials)}")
-                                        print(f"   Used: {len(allocated_serials & used_serials)}")
-                                        print(f"   Damaged: {len(allocated_serials & damaged_serials)}")
-                                        print(f"   Leftover: {len(leftover_serials)}")
                                         
                                         # Create AVAILABLE ranges for leftovers
                                         if leftover_serials:
@@ -2235,7 +2330,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                                     current_end = serial
                                             leftover_ranges.append((current_start, current_end))
                                             
-                                            print(f"📦 Creating {len(leftover_ranges)} AVAILABLE leftover range(s) via fallback")
                                             
                                             for left_from, left_to in leftover_ranges:
                                                 leftover_count = left_to - left_from + 1
@@ -2247,14 +2341,20 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                                     status='AVAILABLE',
                                                     description=f'Leftover from allocation {instance.reference_no}'
                                                 )
-                                                print(f"✅ Created AVAILABLE leftover range (fallback): {left_from}-{left_to} ({leftover_count} units)")
                                         
                                     except (ValueError, TypeError) as e:
-                                        print(f"⚠️ Could not parse allocated range: {e}")
+                                        logger.warning(
+                                            "Invalid serial values during allocation cleanup (request=%s roll=%s)",
+                                            getattr(instance, "reference_no", None),
+                                            getattr(roll_obj, "id", None),
+                                        )
                                     
                                     break
                     except HologramRequest.DoesNotExist:
-                        print(f"⚠️ Could not find request {instance.reference_no} for fallback")
+                        logger.info(
+                            "Hologram request not found while updating procurement usage (request_id=%s)",
+                            getattr(instance, "hologram_request_id", None),
+                        )
                 
                 for in_use_range in in_use_ranges:
                     try:
@@ -2267,23 +2367,16 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                         overlaps_damaged = bool(range_serials & damaged_serials)
                         
                         if overlaps_used or overlaps_damaged:
-                            print(f"🔄 Splitting IN_USE range {range_from}-{range_to}")
                             
                             # Save reference_no before deleting
                             ref_no = in_use_range.reference_no or instance.reference_no
                             
                             # Delete the original IN_USE range - we'll recreate the pieces
                             in_use_range.delete()
-                            print(f"✅ Deleted IN_USE range {range_from}-{range_to}")
                             
                             # Find leftover serials (not used and not damaged)
                             leftover_serials = range_serials - used_serials - damaged_serials
                             
-                            print(f"📊 Range analysis:")
-                            print(f"   Total serials in range: {len(range_serials)}")
-                            print(f"   Used serials: {len(range_serials & used_serials)}")
-                            print(f"   Damaged serials: {len(range_serials & damaged_serials)}")
-                            print(f"   Leftover serials: {len(leftover_serials)}")
                             
                             # Create AVAILABLE ranges for leftovers
                             if leftover_serials:
@@ -2302,7 +2395,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                         current_end = serial
                                 leftover_ranges.append((current_start, current_end))
                                 
-                                print(f"📦 Creating {len(leftover_ranges)} AVAILABLE leftover range(s)")
                                 
                                 # Create AVAILABLE range entries
                                 for left_from, left_to in leftover_ranges:
@@ -2315,18 +2407,23 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                         status='AVAILABLE',
                                         description=f'Leftover from allocation {ref_no}'
                                     )
-                                    print(f"✅ Created AVAILABLE leftover range: {left_from}-{left_to} ({leftover_count} units)")
                             else:
-                                print(f"⚠️ No leftover serials found - entire range was used/damaged")
+                                logger.debug(
+                                    "No leftover serials after splitting IN_USE range (request=%s roll=%s)",
+                                    getattr(instance, "reference_no", None),
+                                    getattr(roll_obj, "id", None),
+                                )
                     
                     except (ValueError, TypeError) as e:
-                        print(f"⚠️ Could not parse IN_USE range {in_use_range.from_serial}-{in_use_range.to_serial}: {e}")
+                        logger.warning(
+                            "Invalid IN_USE range values encountered during split (roll=%s)",
+                            getattr(roll_obj, "id", None),
+                        )
                 
                 # CRITICAL FIX: Also process existing AVAILABLE ranges
                 # This handles multi-brand scenarios where the first entry already converted IN_USE to AVAILABLE
                 # and the second entry needs to mark some of those AVAILABLE serials as USED
                 available_ranges = HologramSerialRange.objects.filter(roll=roll_obj, status='AVAILABLE').order_by('from_serial')
-                print(f"🔍 Found {available_ranges.count()} AVAILABLE range(s) to check for splitting")
                 
                 for avail_range in available_ranges:
                     try:
@@ -2339,20 +2436,13 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                         overlaps_damaged = bool(range_serials & damaged_serials)
                         
                         if overlaps_used or overlaps_damaged:
-                            print(f"🔄 Splitting AVAILABLE range {range_from}-{range_to}")
                             
                             # Delete the original AVAILABLE range - we'll recreate the pieces
                             avail_range.delete()
-                            print(f"✅ Deleted AVAILABLE range {range_from}-{range_to}")
                             
                             # Find leftover serials (not used and not damaged)
                             leftover_serials = range_serials - used_serials - damaged_serials
                             
-                            print(f"📊 AVAILABLE range analysis:")
-                            print(f"   Total serials in range: {len(range_serials)}")
-                            print(f"   Used serials from this range: {len(range_serials & used_serials)}")
-                            print(f"   Damaged serials from this range: {len(range_serials & damaged_serials)}")
-                            print(f"   Leftover serials: {len(leftover_serials)}")
                             
                             # Create new AVAILABLE ranges for leftovers
                             if leftover_serials:
@@ -2371,7 +2461,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                         current_end = serial
                                 leftover_ranges.append((current_start, current_end))
                                 
-                                print(f"📦 Re-creating {len(leftover_ranges)} AVAILABLE range(s) after removing used/damaged")
                                 
                                 # Create AVAILABLE range entries
                                 for left_from, left_to in leftover_ranges:
@@ -2384,12 +2473,17 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                         status='AVAILABLE',
                                         description=f'Remaining after usage recorded'
                                     )
-                                    print(f"✅ Re-created AVAILABLE range: {left_from}-{left_to} ({leftover_count} units)")
                             else:
-                                print(f"⚠️ No leftover serials - entire AVAILABLE range was used/damaged")
+                                logger.debug(
+                                    "No leftover serials after splitting AVAILABLE range (roll=%s)",
+                                    getattr(roll_obj, "id", None),
+                                )
                     
                     except (ValueError, TypeError) as e:
-                        print(f"⚠️ Could not parse AVAILABLE range {avail_range.from_serial}-{avail_range.to_serial}: {e}")
+                        logger.warning(
+                            "Invalid AVAILABLE range values encountered during split (roll=%s)",
+                            getattr(roll_obj, "id", None),
+                        )
 
                 
                 # Now create USED ranges
@@ -2408,7 +2502,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 'brandName': instance.brand_details,
                                 'brandDetails': instance.brand_details,
                                 'bottleSize': instance.bottle_size,
-                                'approvedBy': self.request.user.username if self.request else 'System',
+                                'approvedBy': _get_user_display_name(self.request.user) if self.request else 'System',
                                 'approvedAt': timezone.now().isoformat()
                             }
                             roll_obj.usage_history.append(usage_entry)
@@ -2424,9 +2518,10 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 reference_no=instance.reference_no,
                                 brand_name=instance.brand_details,
                                 bottle_size=instance.bottle_size,
+                                updated_by=self.request.user if self.request else None,
+                                updated_by_display_name=_get_user_display_name(self.request.user) if self.request else None,
                                 description=f"Used on {instance.usage_date}"
                             )
-                            print(f"✅ Created USED serial range: {usage_entry['issuedFromSerial']} - {usage_entry['issuedToSerial']}")
                     else:
                         # Legacy: single issued range
                         usage_entry = {
@@ -2440,7 +2535,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             'brandName': instance.brand_details,
                             'brandDetails': instance.brand_details,
                             'bottleSize': instance.bottle_size,
-                            'approvedBy': self.request.user.username if self.request else 'System',
+                            'approvedBy': _get_user_display_name(self.request.user) if self.request else 'System',
                             'approvedAt': timezone.now().isoformat()
                         }
                         roll_obj.usage_history.append(usage_entry)
@@ -2456,9 +2551,10 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             reference_no=instance.reference_no,
                             brand_name=instance.brand_details,
                             bottle_size=instance.bottle_size,
+                            updated_by=self.request.user if self.request else None,
+                            updated_by_display_name=_get_user_display_name(self.request.user) if self.request else None,
                             description=f"Used on {instance.usage_date}"
                         )
-                        print(f"✅ Created USED serial range: {instance.issued_from} - {instance.issued_to}")
                 
                 # Now create DAMAGED ranges
                 if effective_wastage_qty > 0:
@@ -2476,8 +2572,8 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 'referenceNo': instance.reference_no,
                                 'brandName': instance.brand_details,
                                 'brandDetails': instance.brand_details,
-                                'reportedBy': self.request.user.username if self.request else 'System',
-                                'approvedBy': self.request.user.username if self.request else 'System',
+                                'reportedBy': _get_user_display_name(self.request.user) if self.request else 'System',
+                                'approvedBy': _get_user_display_name(self.request.user) if self.request else 'System',
                                 'approvedAt': timezone.now().isoformat()
                             }
                             roll_obj.usage_history.append(usage_entry)
@@ -2491,10 +2587,11 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 status='DAMAGED',
                                 damage_date=instance.usage_date,
                                 damage_reason=usage_entry['damageReason'],
-                                reported_by=self.request.user.username if self.request else 'System',
+                                reported_by=_get_user_display_name(self.request.user) if self.request else 'System',
+                                updated_by=self.request.user if self.request else None,
+                                updated_by_display_name=_get_user_display_name(self.request.user) if self.request else None,
                                 description=usage_entry['damageReason'] or 'Damaged during production'
                             )
-                            print(f"✅ Created DAMAGED serial range: {usage_entry['wastageFromSerial']} - {usage_entry['wastageToSerial']}")
                     else:
                         # Legacy: single wastage range
                         usage_entry = {
@@ -2508,8 +2605,8 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             'referenceNo': instance.reference_no,
                             'brandName': instance.brand_details,
                             'brandDetails': instance.brand_details,
-                            'reportedBy': self.request.user.username if self.request else 'System',
-                            'approvedBy': self.request.user.username if self.request else 'System',
+                            'reportedBy': _get_user_display_name(self.request.user) if self.request else 'System',
+                            'approvedBy': _get_user_display_name(self.request.user) if self.request else 'System',
                             'approvedAt': timezone.now().isoformat()
                         }
                         roll_obj.usage_history.append(usage_entry)
@@ -2523,10 +2620,11 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             status='DAMAGED',
                             damage_date=instance.usage_date,
                             damage_reason=instance.damage_reason,
-                            reported_by=self.request.user.username if self.request else 'System',
+                            reported_by=_get_user_display_name(self.request.user) if self.request else 'System',
+                            updated_by=self.request.user if self.request else None,
+                            updated_by_display_name=_get_user_display_name(self.request.user) if self.request else None,
                             description=instance.damage_reason or 'Damaged during production'
                         )
-                        print(f"✅ Created DAMAGED serial range: {instance.wastage_from} - {instance.wastage_to}")
                 
                 # Update HologramRollsDetails counts and save
                 roll_obj.used = new_used
@@ -2543,7 +2641,6 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                         if not in_use_range.description:
                             in_use_range.description = f"Released to AVAILABLE after daily save {instance.reference_no}"
                         in_use_range.save(update_fields=['status', 'description', 'updated_at'])
-                    print(f"Converted {remaining_in_use_ranges.count()} IN_USE range(s) to AVAILABLE after daily save")
 
                 # Recalculate available count from AVAILABLE ranges
                 available_ranges = HologramSerialRange.objects.filter(roll=roll_obj, status='AVAILABLE')
@@ -2551,17 +2648,14 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 if total_available != roll_obj.available:
                     roll_obj.available = total_available
                     roll_obj.save(update_fields=['available'])
-                    print(f"Updated roll.available to {total_available} from AVAILABLE ranges")
 
                 # Status rule after save:
                 # available == 0 -> COMPLETED
                 # available  > 0 -> AVAILABLE
                 if roll_obj.available == 0:
                     roll_obj.status = 'COMPLETED'
-                    print(f"Status changed to COMPLETED (no holograms left)")
                 else:
                     roll_obj.status = 'AVAILABLE'
-                    print(f"Status changed to AVAILABLE (has {roll_obj.available} holograms available)")
 
                 roll_obj.save(update_fields=['status'])
                 
@@ -2585,36 +2679,32 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 d['damaged_qty'] = roll_obj.damaged
                                 d['status'] = roll_obj.status
                                 json_updated = True
-                                print(f"✅ Synced JSON for {carton_number}: Avail={roll_obj.available}, Used={roll_obj.used}, Status={roll_obj.status}")
                                 break
                         
                         if json_updated:
                             proc_to_update.carton_details = updated_details
                             proc_to_update.save(update_fields=['carton_details'])
-                            print(f"✅ Saved Procurement JSON updates")
                 except Exception as json_e:
-                    print(f"⚠️ Warning: Failed to sync Procurement JSON: {json_e}")
+                    logger.exception(
+                        "Failed to sync carton_details JSON for roll=%s",
+                        getattr(roll_obj, "id", None),
+                    )
                 
                 # Update available_range to reflect new state
                 roll_obj.update_available_range()
                 
                 # CRITICAL VERIFICATION: Check if leftover ranges were actually created
                 final_available_ranges = HologramSerialRange.objects.filter(roll=roll_obj, status='AVAILABLE')
-                print(f"🔍 FINAL VERIFICATION - AVAILABLE ranges in database:")
-                for r in final_available_ranges:
-                    print(f"   - {r.from_serial} to {r.to_serial} ({r.count} units, status: {r.status})")
-                print(f"📊 Final available_range field: {roll_obj.available_range}")
                 
-                print(f"✅ Updated HologramRollsDetails - available: {roll_obj.available}, used: {roll_obj.used}, damaged: {roll_obj.damaged}")
-                print(f"✅ Status: {roll_obj.status}, Available Range: {roll_obj.available_range}")
-                print(f"✅ Usage history entries: {len(roll_obj.usage_history)}")
             else:
-                print(f"ERROR: Could not resolve target procurement for carton '{carton_number}' and reference '{instance.reference_no}'")
+                logger.warning(
+                    "Hologram roll not found while updating procurement usage (reference_no=%s carton_number=%s)",
+                    getattr(instance, "reference_no", None),
+                    carton_number,
+                )
                 
         except Exception as e:
-            print(f"ERROR updating procurement usage: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("Unhandled error during procurement usage update")
 
 class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = HologramRollsDetails.objects.all()
@@ -2660,38 +2750,26 @@ class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
     
     def list(self, request, *args, **kwargs):
         """Override list to calculate and populate available_range for each roll"""
-        print("=" * 80)
-        print("🔥 HologramRollsDetailsViewSet.list() CALLED")
-        print("=" * 80)
         
         queryset = self.filter_queryset(self.get_queryset())
         
-        print(f"Queryset count: {queryset.count()}")
         
         # Update available_range for all rolls in queryset
         roll_ids = []
         for roll in queryset:
-            print(f"Updating available_range for roll {roll.carton_number}...")
-            roll.update_available_range()
-            print(f"  -> available_range = {roll.available_range}")
             roll_ids.append(roll.id)
         
         # Refresh queryset to get updated values
         queryset = self.get_queryset().filter(id__in=roll_ids)
         
-        print(f"After refresh, queryset count: {queryset.count()}")
-        for roll in queryset:
-            print(f"Roll {roll.carton_number}: available_range = {roll.available_range}")
         
         # Now serialize and return
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
-            print(f"Serialized data (paginated): {serializer.data}")
             return self.get_paginated_response(serializer.data)
 
         serializer = self.get_serializer(queryset, many=True)
-        print(f"Serialized data: {serializer.data}")
         return Response(serializer.data)
     
     def retrieve(self, request, *args, **kwargs):
@@ -2882,8 +2960,6 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
             result_data = []
             
             for req in requests:
-                print(f"\n=== Processing Request: {req.ref_no} ===")
-                print(f"Current Stage: {req.current_stage.name if req.current_stage else 'None'}")
                 
                 # Get submission transaction
                 submission_txn = req.transactions.filter(
@@ -2898,14 +2974,12 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 else:
                     approval_txn = req.transactions.exclude(stage__is_initial=True).order_by('timestamp').first()
                 
-                print(f"Approval Transaction: {approval_txn.stage.name if approval_txn else 'None'}")
                 
                 # Get daily register entries for this request
                 daily_entries = DailyHologramRegister.objects.filter(
                     Q(hologram_request=req) | Q(reference_no=req.ref_no)
                 ).select_related('licensee').prefetch_related('rolls_used').order_by('created_at', 'id')
                 
-                print(f"Daily Register Entries: {daily_entries.count()}")
                 
                 # Determine status using stage metadata + transition-derived action mapping.
                 status = 'UNDER_PROCESS'
@@ -2928,7 +3002,6 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 # Override status if we have daily register entries (means it's completed)
                 if daily_entries.exists():
                     status = 'COMPLETED'
-                    print("Status: COMPLETED (has daily register entries)")
                 
                 # Calculate deadline and SLA if approved
                 if approval_txn:
@@ -3022,7 +3095,6 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                             minutes_left = (remaining_seconds % 3600) // 60
                             time_remaining = f"{hours_left}h {minutes_left}m remaining (deadline 5:00 PM)"
                 
-                print(f"Final Status: {status}")
                 
                 result_data.append({
                     'id': req.id,
@@ -3055,9 +3127,6 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
             completed_late_count = sum(1 for r in result_data if r['status'] == 'COMPLETED' and r['completedOnTime'] is False)
             overdue_count = sum(1 for r in result_data if r['isOverdue'])
             
-            print(f"\n=== Summary ===")
-            print(f"Total: {total_entries}, Applied: {applied_count}, Under Process: {under_process_count}")
-            print(f"Completed On Time: {completed_on_time_count}, Completed Late: {completed_late_count}, Overdue: {overdue_count}")
             
             return Response({
                 'summary': {
@@ -3072,8 +3141,6 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
             })
         except Exception as e:
             import traceback
-            print(f"ERROR in daily_register_overview: {str(e)}")
-            print(traceback.format_exc())
             return Response({
                 'error': str(e),
                 'summary': {

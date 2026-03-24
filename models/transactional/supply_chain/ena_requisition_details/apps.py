@@ -2,8 +2,11 @@ from django.apps import AppConfig
 import threading
 import time
 import os
+import logging
 from django.db import connection, transaction
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 def run_expiry_loop():
     """
@@ -16,17 +19,15 @@ def run_expiry_loop():
     except ValueError:
         interval_seconds = 10
 
-    print(f" [Scheduler] Thread Started. Checking every {interval_seconds}s...")
+    logger.info("Permit expiry scheduler thread started (interval_seconds=%s)", interval_seconds)
 
     while True:
         try:
-            # print(" [Scheduler] Ticking...")
             with transaction.atomic():
                 with connection.cursor() as cursor:
                     cursor.execute("SELECT public.copy_expired_permits();")
-            # print(" [Scheduler] Tick Success.")
         except Exception as e:
-            print(f" [Scheduler] Error: {e}")
+            logger.exception("Permit expiry scheduler error")
         
         time.sleep(interval_seconds)
 
@@ -57,5 +58,5 @@ class EnaRequisitionDetailsConfig(AppConfig):
 
         t = threading.Thread(target=run_expiry_loop, daemon=True)
         t.start()
-        print(" >> Excise Automation: Expiry Scheduler ACTIVATED << ")
+        logger.info("Permit expiry scheduler activated")
 

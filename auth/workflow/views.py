@@ -4,21 +4,19 @@ from rest_framework.response import Response
 from rest_framework.views import PermissionDenied
 from django.apps import apps
 from django.forms import ValidationError
-from django.core.exceptions import SuspiciousOperation
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import status
 from importlib import import_module
 from django.contrib.contenttypes.models import ContentType
-from .models import Workflow, WorkflowStage, WorkflowTransition, StagePermission, Objection, Transaction
-from .serializers import WorkflowSerializer, WorkflowStageSerializer, WorkflowTransitionSerializer, WorkflowObjectionSerializer, StagePermissionSerializer
+from .models import Workflow, WorkflowStage, WorkflowTransition, StagePermission, Objection, Transaction, Rejection
+from .serializers import WorkflowSerializer, WorkflowStageSerializer, WorkflowTransitionSerializer, WorkflowObjectionSerializer, WorkflowRejectionSerializer, StagePermissionSerializer
 from auth.roles.permissions import HasAppPermission
 from .permissions import HasStagePermission
-from .services import WorkflowService
+from .services import SERIALIZER_MAPPING, WorkflowService
 from models.transactional.license_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
 from models.transactional.salesman_barman.models import SalesmanBarmanModel
-from models.transactional.company_registration.models import CompanyModel
 import logging
 
 # Workflow views (from previous response)
@@ -186,83 +184,50 @@ def stage_permission_delete(request, pk):
 @api_view(['GET'])
 @permission_classes([HasStagePermission])
 def get_next_stages(request, application_id):
-    try:
-        application = _get_application_by_id(application_id)
-        if not application:
-            return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
-            
-        # Enforce stage-level processing permission for action discovery.
-        # Without this, non-processing users can still fetch next actions on GET.
-        if not request.user.is_superuser:
-            if not getattr(request.user, 'role', None):
-                return Response([], status=status.HTTP_200_OK)
-            if not StagePermission.objects.filter(
-                stage=application.current_stage,
-                role=request.user.role,
-                can_process=True
-            ).exists():
-                # For users who can view but not process this stage, return no actions
-                # instead of 403 so frontend can render gracefully.
-                return Response([], status=status.HTTP_200_OK)
+    application = _get_application_by_id(application_id)
+    if not application:
+        return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+        
+    # Enforce stage-level processing permission for action discovery.
+    # Without this, non-processing users can still fetch next actions on GET.
+    if not request.user.is_superuser:
+        if not getattr(request.user, 'role', None):
+            return Response({"detail": "User has no role"}, status=status.HTTP_403_FORBIDDEN)
+        if not StagePermission.objects.filter(
+            stage=application.current_stage,
+            role=request.user.role,
+            can_process=True
+        ).exists():
+            return Response({"detail": "You cannot process this stage."}, status=status.HTTP_403_FORBIDDEN)
 
-        current_stage = application.current_stage
-        transitions = WorkflowTransition.objects.filter(
-            workflow=application.workflow,
-            from_stage=current_stage
-        ).select_related('to_stage').order_by('id')
-
-        # Filter transitions by transition-level role condition when present.
-        filtered_transitions = []
-        for t in transitions:
-            condition = t.condition or {}
-            if WorkflowService._condition_role_matches(condition, request.user):
-                filtered_transitions.append(t)
-
-        def _normalized_action(condition: dict) -> str | None:
-            action = str((condition or {}).get('action') or '').strip().upper()
-            if action:
-                return action
-            if (condition or {}).get('has_objections') is True:
-                return 'RAISE_OBJECTION'
-            if (condition or {}).get('objections_resolved') is True:
-                return 'RESOLVE_OBJECTION'
-            if (condition or {}).get('is_reverted') is True:
-                return 'REVERT'
-            return None
-
-        data = []
-        for t in filtered_transitions:
-            condition = t.condition or {}
-            action = _normalized_action(condition)
-            data.append({
-                'id': t.to_stage.id,
-                'name': t.to_stage.name,
-                'description': t.to_stage.description or "",
-                'action': action or None,
-                'transition_id': t.id,
-                'condition': condition,
-            })
-        return Response(data)
-    except SuspiciousOperation as exc:
-        return Response({"detail": f"Invalid request: {str(exc)}"}, status=status.HTTP_400_BAD_REQUEST)
+    current_stage = application.current_stage
+    transitions = WorkflowTransition.objects.filter(workflow=application.workflow, from_stage=current_stage)
+    data = [{
+            'id': t.to_stage.id,
+            'name': t.to_stage.name,
+            'description': t.to_stage.description or "",
+            'condition': t.condition or {},
+            'transition_id': t.id,
+        } for t in transitions]
+    return Response(data)
 
 @api_view(['POST'])
 @permission_classes([HasStagePermission])
 def advance_application(request, application_id, stage_id):  # request is here
+    application = _get_application_by_id(application_id)
+    if not application:
+        return Response({"detail": "Application not found"}, status=404)
+
     try:
-        application = _get_application_by_id(application_id)
-        if not application:
-            return Response({"detail": "Application not found"}, status=404)
+        target_stage = application.workflow.stages.get(id=stage_id)
+    except WorkflowStage.DoesNotExist:
+        return Response({"detail": "Target stage does not exist"}, status=400)
 
-        try:
-            target_stage = application.workflow.stages.get(id=stage_id)
-        except WorkflowStage.DoesNotExist:
-            return Response({"detail": "Target stage does not exist"}, status=400)
-
-        remarks = request.data.get("remarks", "")
-        if not remarks and "context_data" in request.data:
-            remarks = request.data["context_data"].get("remarks", "")
-        
+    remarks = request.data.get("remarks", "")
+    if not remarks and "context_data" in request.data:
+                remarks = request.data["context_data"].get("remarks", "")
+    
+    try:
         WorkflowService.advance_stage(
             application=application,
             user=request.user,
@@ -272,8 +237,6 @@ def advance_application(request, application_id, stage_id):  # request is here
         ) 
         # Pass the request.user down
         return _serialize_application(application, requesting_user=request.user)
-    except SuspiciousOperation as exc:
-        return Response({"detail": f"Invalid request: {str(exc)}"}, status=400)
     except Exception as e:
         return Response({"detail": str(e)}, status=400)
 
@@ -369,13 +332,70 @@ def resolve_objections(request, application_id):
     return _serialize_application(application)
 
 
-# ---------- REUSABLE: Dashboard Counts ----------
+# ---------- REUSABLE: Reject Application ----------
+@api_view(['POST'])
+@permission_classes([HasStagePermission])
+def reject_application(request, application_id):
+    application = _get_application_by_id(application_id)
+    if not application:
+        return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    target_stage_id = request.data.get("target_stage_id")
+    remarks = request.data.get("remarks", "").strip()
+
+    if not target_stage_id:
+        return Response({"detail": "target_stage_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+    if not remarks:
+        return Response({"detail": "remarks are required when rejecting an application"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        target_stage = WorkflowStage.objects.get(id=target_stage_id)
+    except WorkflowStage.DoesNotExist:
+        return Response({"detail": "Invalid target stage ID"}, status=status.HTTP_400_BAD_REQUEST)
+
+    if target_stage.workflow != application.workflow:
+        return Response({"detail": "Target stage does not belong to this application's workflow"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        with transaction.atomic():
+            WorkflowService.reject_application(
+                application=application,
+                user=request.user,
+                target_stage=target_stage,
+                remarks=remarks,
+            )
+        return Response({
+            "detail": "Application rejected successfully",
+            "application_id": application.application_id,
+            "current_stage": target_stage.name,
+            "current_stage_id": target_stage.id,
+        }, status=status.HTTP_200_OK)
+    except ValidationError as e:
+        return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({"detail": f"Server error: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ---------- REUSABLE: Get Rejections ----------
+@api_view(['GET'])
+@permission_classes([HasStagePermission])
+def get_rejections(request, application_id):
+    application = _get_application_by_id(application_id)
+    if not application:
+        return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    rejections = Rejection.objects.filter(
+        content_type__model=application.__class__.__name__.lower(),
+        object_id=str(application.pk),
+    ).order_by('-rejected_on')
+
+    serializer = WorkflowRejectionSerializer(rejections, many=True)
+    return Response(serializer.data)
 @api_view(['GET'])
 @permission_classes([HasStagePermission])
 def dashboard_counts(request):
     models = [_get_model("license_application", "LicenseApplication"),
-              _get_model("new_license_application", "NewLicenseApplication"),
-              _get_model("company_registration", "CompanyModel")]
+              _get_model("new_license_application", "NewLicenseApplication")]
 
     total = approved = pending = rejected = objection = 0
 
@@ -407,8 +427,7 @@ def application_group(request):
         return Response({"detail": "User has no role"}, status=400)
 
     models = [_get_model("license_application", "LicenseApplication"),
-              _get_model("new_license_application", "NewLicenseApplication"),
-              _get_model("company_registration", "CompanyModel")]
+              _get_model("new_license_application", "NewLicenseApplication")]
 
     result = {"pending": [], "approved": [], "rejected": [], "objection": []}
 
@@ -466,32 +485,25 @@ def _get_application_by_id(application_id):
     Returns the instance or None
     """
     model_configs = [
+        ("company_registration", "CompanyRegistration"),
+        ("company_collaboration", "CompanyCollaboration"),
         ("license_application", "LicenseApplication"),
         ("new_license_application", "NewLicenseApplication"),
         ("salesman_barman", "SalesmanBarmanModel"),
-        ("company_registration", "CompanyModel"),
     ]
 
     for app_label, model_name in model_configs:
         try:
             Model = apps.get_model(app_label=app_label, model_name=model_name)
-            field_names = {f.name for f in Model._meta.get_fields()}
-            if 'application_id' in field_names:
-                return Model.objects.select_related('current_stage', 'workflow').get(
-                    application_id=application_id
-                )
-            if 'applicationId' in field_names:
-                return Model.objects.select_related('current_stage', 'workflow').get(
-                    applicationId=application_id
-                )
-        except LookupError:
-            continue
-        except Model.DoesNotExist:
-            continue
-        except Exception:
-            continue
+            # This will raise DoesNotExist if not found → we catch it
+            return Model.objects.select_related('current_stage', 'workflow').get(
+                application_id=application_id
+            )
+        except (LookupError, Model.DoesNotExist):
+            continue  # Try next model
 
     return None
+
 
 def _get_model(app_label, model_name):
     try:
@@ -507,9 +519,17 @@ def _serialize_application(application, requesting_user=None):
     Falls back gracefully if serializer is missing.
     """
     try:
-        # Try to load the correct app-specific serializer
-        module = import_module(f"{application._meta.app_label}.serializers")
-        serializer_class = getattr(module, f"{application.__class__.__name__}Serializer")
+        key = (application._meta.app_label, application._meta.model_name.lower())
+        serializer_path = SERIALIZER_MAPPING.get(key)
+
+        if serializer_path:
+            module_path, serializer_name = serializer_path.rsplit('.', 1)
+            module = import_module(module_path)
+            serializer_class = getattr(module, serializer_name)
+        else:
+            module = import_module(f"models.transactional.{application._meta.app_label}.serializers")
+            serializer_class = getattr(module, f"{application.__class__.__name__}Serializer")
+
         serializer = serializer_class(application)
         return Response(serializer.data)
     except (ImportError, AttributeError):
@@ -598,4 +618,3 @@ def pay_license_fee(request, application_id):
         "application_id": application_id,
         "stage": "approved"
     }, status=status.HTTP_200_OK)
-
