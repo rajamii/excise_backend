@@ -2937,8 +2937,9 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
         Shows: Applied, Under Process, Completed On Time, Completed Late, Overdue
         """
         from django.db.models import Q
-        from datetime import datetime
+        from datetime import datetime, time
         from django.utils import timezone as django_timezone
+        from models.masters.core.models import SupplyChainTimerConfig
         
         try:
             workflow_id = WORKFLOW_IDS['HOLOGRAM_REQUEST']
@@ -2956,7 +2957,39 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
             requests = HologramRequest.objects.select_related(
                 'licensee', 'workflow', 'current_stage'
             ).prefetch_related('transactions').all()
-            
+
+            # Deadline time is configurable in DB (public.timer).
+            # Store as minutes-from-midnight (recommended): delay_unit=minute, delay_value=1020 for 5:00 PM.
+            deadline_timer_code = 'HOLOGRAM_DAILY_ENTRY_DEADLINE_TIME'
+            default_deadline_minutes = 17 * 60  # 5:00 PM fallback only
+            deadline_minutes = default_deadline_minutes
+            try:
+                cfg = (
+                    SupplyChainTimerConfig.objects.filter(code=deadline_timer_code, is_active=True)
+                    .order_by('-updated_at', '-id')
+                    .first()
+                )
+                if cfg:
+                    unit = str(getattr(cfg, 'delay_unit', '') or '').lower().strip()
+                    value = int(getattr(cfg, 'delay_value', 0) or 0)
+                    if value < 0:
+                        value = 0
+
+                    if unit == SupplyChainTimerConfig.TIMER_UNIT_MINUTE:
+                        deadline_minutes = value
+                    elif unit == SupplyChainTimerConfig.TIMER_UNIT_HOUR:
+                        deadline_minutes = value * 60
+                    elif unit == SupplyChainTimerConfig.TIMER_UNIT_SECOND:
+                        deadline_minutes = int(round(value / 60))
+                    elif unit == SupplyChainTimerConfig.TIMER_UNIT_DAY:
+                        deadline_minutes = value * 24 * 60
+            except Exception:
+                deadline_minutes = default_deadline_minutes
+
+            deadline_minutes = int(deadline_minutes or 0) % (24 * 60)
+            deadline_time = time(hour=deadline_minutes // 60, minute=deadline_minutes % 60)
+            deadline_label = datetime.combine(datetime.today().date(), deadline_time).strftime('%I:%M %p')
+
             result_data = []
             
             for req in requests:
@@ -3005,9 +3038,9 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 
                 # Calculate deadline and SLA if approved
                 if approval_txn:
-                    # Deadline is 5 PM on approval date
+                    # Deadline is configurable time on approval date
                     approval_date = approval_txn.timestamp.date()
-                    deadline_naive = datetime.combine(approval_date, datetime.strptime('17:00', '%H:%M').time())
+                    deadline_naive = datetime.combine(approval_date, deadline_time)
                     deadline = django_timezone.make_aware(deadline_naive) if django_timezone.is_naive(deadline_naive) else deadline_naive
                     
                     now = django_timezone.now()
@@ -3082,18 +3115,18 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                                     'serialRanges': serial_ranges,
                                 })
                     elif status in {'UNDER_PROCESS', 'APPLIED'}:
-                        # OIC has not saved daily entry yet; track remaining time vs 5 PM deadline
+                        # OIC has not saved daily entry yet; track remaining time vs configured deadline
                         if now > deadline:
                             is_overdue = True
                             overdue_seconds = int((now - deadline).total_seconds())
                             overdue_hours = overdue_seconds // 3600
                             overdue_minutes = (overdue_seconds % 3600) // 60
-                            time_remaining = f"Overdue by {overdue_hours}h {overdue_minutes}m (deadline 5:00 PM)"
+                            time_remaining = f"Overdue by {overdue_hours}h {overdue_minutes}m (deadline {deadline_label})"
                         else:
                             remaining_seconds = int((deadline - now).total_seconds())
                             hours_left = remaining_seconds // 3600
                             minutes_left = (remaining_seconds % 3600) // 60
-                            time_remaining = f"{hours_left}h {minutes_left}m remaining (deadline 5:00 PM)"
+                            time_remaining = f"{hours_left}h {minutes_left}m remaining (deadline {deadline_label})"
                 
                 
                 result_data.append({
