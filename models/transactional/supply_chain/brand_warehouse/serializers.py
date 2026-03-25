@@ -139,6 +139,7 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
         model = BrandWarehouse
         fields = [
             'id',
+            'is_sync',
             'license_id',
             'distillery_name',
             'liquor_type',
@@ -173,6 +174,7 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             'id',
+            'is_sync',
             'total_capacity',
             'total_utilized',
             'utilization_percentage',
@@ -292,6 +294,7 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
         model = BrandWarehouse
         fields = [
             'id',
+            'is_sync',
             'license_id',
             'distillery_name',
             'liquor_type',
@@ -310,6 +313,7 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
             'pack_sizes_info',
             'updated_at',
         ]
+        read_only_fields = ['id', 'is_sync']
 
     def get_utilization_count(self, obj):
         """Get count of utilization records"""

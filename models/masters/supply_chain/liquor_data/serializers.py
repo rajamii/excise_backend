@@ -12,19 +12,22 @@ class LiquorDataSerializer(serializers.ModelSerializer):
 class MasterLiquorTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = MasterLiquorType
-        fields = ['id', 'liquor_type']
+        fields = ['id', 'liquor_type', 'is_sync']
+        read_only_fields = ['id', 'is_sync']
 
 
 class MasterLiquorCategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = MasterLiquorCategory
-        fields = ['id', 'size_ml']
+        fields = ['id', 'size_ml', 'is_sync']
+        read_only_fields = ['id', 'is_sync']
 
 
 class MasterBottleTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = MasterBottleType
-        fields = ['id', 'bottle_type', 'is_active']
+        fields = ['id', 'bottle_type', 'is_active', 'is_sync']
+        read_only_fields = ['id', 'is_sync']
 
 class BrandSizeSerializer(serializers.Serializer):
     brand_name = serializers.CharField()
