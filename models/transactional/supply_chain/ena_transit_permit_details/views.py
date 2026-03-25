@@ -1,7 +1,7 @@
 from rest_framework import status, views, generics
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import Q
@@ -9,7 +9,11 @@ from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from decimal import Decimal
 import logging
 import re
-from .serializers import TransitPermitSubmissionSerializer, EnaTransitPermitDetailSerializer
+from .serializers import (
+    TransitPermitSubmissionSerializer,
+    EnaTransitPermitDetailSerializer,
+    PublicTransitPermitDetailSerializer,
+)
 from .models import EnaTransitPermitDetail
 from auth.workflow.constants import WORKFLOW_IDS
 from models.transactional.supply_chain.access_control import (
@@ -561,6 +565,40 @@ class GetTransitPermitDetailAPIView(generics.RetrieveAPIView):
             licensee_field='licensee_id'
         )
 
+
+class PublicTransitPermitAPIView(generics.ListAPIView):
+    """
+    Public (no-auth) endpoint to fetch limited transit permit details.
+
+    Intended for sharing a permit snapshot externally. This endpoint requires `bill_no`
+    (or `billNo`) query param and will never return a full unfiltered list.
+    """
+
+    serializer_class = PublicTransitPermitDetailSerializer
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def _get_bill_no(self):
+        return (
+            self.kwargs.get('bill_no')
+            or self.request.query_params.get('bill_no')
+            or self.request.query_params.get('billNo')
+        )
+
+    def get_queryset(self):
+        bill_no = self._get_bill_no()
+        if not bill_no:
+            return EnaTransitPermitDetail.objects.none()
+        return EnaTransitPermitDetail.objects.filter(bill_no=bill_no).order_by('-id')
+
+    def list(self, request, *args, **kwargs):
+        bill_no = self._get_bill_no()
+        if not bill_no:
+            return Response(
+                {"detail": "bill_no query param is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().list(request, *args, **kwargs)
 
 
 class PerformTransitPermitActionAPIView(views.APIView):

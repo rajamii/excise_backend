@@ -174,3 +174,35 @@ class TransitPermitSubmissionSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         return attrs
+
+
+class PublicTransitPermitDetailSerializer(serializers.ModelSerializer):
+    """
+    Public-facing (no-auth) transit permit serializer.
+    Intentionally exposes a limited set of fields for external consumption.
+    """
+
+    class Meta:
+        model = EnaTransitPermitDetail
+        fields = (
+            'bill_no',
+            'sole_distributor_name',
+            'date',
+            'depot_address',
+            'brand',
+            'size_ml',
+            'cases',
+            'vehicle_number',
+            'licensee_id',
+            'bottle_type',
+            'bottles_per_case',
+            'brand_owner',
+            'liquor_type',
+            'manufacturing_unit_name',
+            'total_amount',
+            'driver_name',
+            'driver_license_no',
+            'transporter_name',
+            'created_at',
+            'updated_at',
+        )
