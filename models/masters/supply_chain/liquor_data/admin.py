@@ -1,3 +1,7 @@
 from django.contrib import admin
 
-# Register your models here.
+from .models import LiquorData, MasterLiquorType, MasterLiquorCategory
+
+admin.site.register(LiquorData)
+admin.site.register(MasterLiquorType)
+admin.site.register(MasterLiquorCategory)

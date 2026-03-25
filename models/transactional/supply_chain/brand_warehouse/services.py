@@ -3,7 +3,7 @@ from django.db.models import Q
 from django.utils import timezone
 from datetime import timedelta
 from .models import BrandWarehouse, BrandWarehouseArrival
-from models.masters.supply_chain.liquor_data.models import MasterLiquorType
+from models.masters.supply_chain.liquor_data.models import MasterLiquorType, MasterLiquorCategory
 import logging
 import re
 from difflib import SequenceMatcher
@@ -43,6 +43,23 @@ class BrandWarehouseStockService:
             normalized = 'Other'
 
         obj, _ = MasterLiquorType.objects.get_or_create(liquor_type=normalized)
+        return obj
+
+    @staticmethod
+    def _resolve_capacity_size(size_ml: Optional[int] = None) -> Optional[MasterLiquorCategory]:
+        """
+        Resolve (or create) the master capacity size row.
+
+        Keep `size_ml=0` as a valid placeholder so existing default rows do not break
+        when enforcing FK integrity.
+        """
+        if size_ml is None:
+            return None
+        try:
+            normalized = int(size_ml or 0)
+        except (TypeError, ValueError):
+            normalized = 0
+        obj, _ = MasterLiquorCategory.objects.get_or_create(size_ml=normalized)
         return obj
 
     @staticmethod
@@ -194,7 +211,7 @@ class BrandWarehouseStockService:
             'distillery_name',
             'liquor_type',
             'brand_details',
-            'capacity_size',
+            'capacity_size__size_ml',
             'max_capacity',
             'reorder_level',
             'status',
@@ -210,7 +227,7 @@ class BrandWarehouseStockService:
         for item in templates:
             brand_name = str(item.get('brand_details') or '').strip()
             distillery_name = str(item.get('distillery_name') or normalized_establishment).strip()
-            pack_size_ml = item.get('capacity_size')
+            pack_size_ml = item.get('capacity_size__size_ml')
             liquor_type_id = item.get('liquor_type')
             liquor_type = BrandWarehouseStockService._resolve_liquor_type(type_id=liquor_type_id)
             liquor_type_id = getattr(liquor_type, 'id', None)
@@ -220,7 +237,7 @@ class BrandWarehouseStockService:
 
             matching_rows = BrandWarehouse.objects.filter(
                 distillery_name__iexact=distillery_name,
-                capacity_size=pack_size_ml
+                capacity_size__size_ml=pack_size_ml
             ).filter(
                 Q(brand_details__iexact=brand_name) |
                 Q(brand_details__icontains=brand_name)
@@ -247,7 +264,7 @@ class BrandWarehouseStockService:
 
                 duplicate_rows = BrandWarehouse.objects.filter(
                     distillery_name__iexact=distillery_name,
-                    capacity_size=pack_size_ml,
+                    capacity_size__size_ml=pack_size_ml,
                     license_id=normalized_license_id,
                     is_deleted=False
                 ).filter(
@@ -278,7 +295,7 @@ class BrandWarehouseStockService:
                 liquor_type_id=liquor_type_id,
                 brand_details=brand_name,
                 current_stock=0,
-                capacity_size=pack_size_ml,
+                capacity_size=BrandWarehouseStockService._resolve_capacity_size(pack_size_ml),
                 liquor_data_id=item.get('liquor_data_id'),
                 ex_factory_price_rs_per_case=item.get('ex_factory_price_rs_per_case') or 0,
                 excise_duty_rs_per_case=item.get('excise_duty_rs_per_case') or 0,
@@ -339,7 +356,7 @@ class BrandWarehouseStockService:
                 # Find existing Brand Warehouse entry using strict license scope first.
                 warehouse_qs = BrandWarehouse.objects.filter(
                     brand_details__icontains=brand_name,
-                    capacity_size=capacity_ml
+                    capacity_size__size_ml=capacity_ml
                 )
                 if license_id:
                     warehouse_qs = warehouse_qs.filter(license_id__in=BrandWarehouseStockService._license_aliases(license_id))
@@ -537,7 +554,7 @@ class BrandWarehouseStockService:
             template = BrandWarehouse.objects.filter(
                 distillery_name__icontains=distillery_name,
                 brand_details__icontains=brand_name,
-                capacity_size=capacity_ml
+                capacity_size__size_ml=capacity_ml
             ).order_by('-updated_at').first()
             
             # Create new Brand Warehouse entry
@@ -547,7 +564,7 @@ class BrandWarehouseStockService:
                 liquor_type=template.liquor_type if getattr(template, 'liquor_type_id', None) else BrandWarehouseStockService._resolve_liquor_type('Other'),
                 brand_details=brand_name,
                 current_stock=0,  # Will be updated immediately after creation
-                capacity_size=capacity_ml,
+                capacity_size=BrandWarehouseStockService._resolve_capacity_size(capacity_ml),
                 liquor_data_id=template.liquor_data_id if template else None,
                 ex_factory_price_rs_per_case=template.ex_factory_price_rs_per_case if template else 0,
                 excise_duty_rs_per_case=template.excise_duty_rs_per_case if template else 0,
@@ -689,7 +706,7 @@ class BrandWarehouseStockService:
                             sync_results['details'].append({
                                 'brand_id': brand_warehouse.id,
                                 'brand_name': brand_warehouse.brand_details,
-                                'pack_size': brand_warehouse.capacity_size,
+                                'pack_size': int(brand_warehouse.capacity_size) if getattr(brand_warehouse, 'capacity_size_id', None) else 0,
                                 'old_stock': old_stock,
                                 'new_stock': total_production,
                                 'production_batches': production_batches.count()

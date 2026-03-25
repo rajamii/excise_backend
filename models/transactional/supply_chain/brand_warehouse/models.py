@@ -82,11 +82,15 @@ class BrandWarehouse(models.Model):
         help_text='Current stock quantity in units'
     )
 
-    # Capacity Information (in ml)
-    capacity_size = models.IntegerField(
-        default=0,
+    # Capacity Information (normalized via master table)
+    capacity_size = models.ForeignKey(
+        'liquor_data.MasterLiquorCategory',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
         db_column='capacity_size',
-        help_text='Pack size in ml (e.g., 750, 375, 180)'
+        related_name='brand_warehouses',
+        help_text='Pack size (FK to master_liquor_category.id)'
     )
 
     # Status

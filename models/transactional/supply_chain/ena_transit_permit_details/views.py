@@ -317,7 +317,7 @@ class SubmitTransitPermitAPIView(views.APIView):
             item_license_id = str(getattr(item, 'licensee_id', '') or '').strip() or normalized_license_id
 
             warehouse_qs = BrandWarehouse.objects.filter(
-                capacity_size=int(item.size_ml),
+                capacity_size__size_ml=int(item.size_ml),
             )
             if item_license_id:
                 warehouse_qs = warehouse_qs.filter(license_id=item_license_id)
@@ -952,7 +952,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
 
             for item in bill_items:
                 item_license_id = str(item.licensee_id or '').strip()
-                warehouse_qs = BrandWarehouse.objects.filter(capacity_size=int(item.size_ml))
+                warehouse_qs = BrandWarehouse.objects.filter(capacity_size__size_ml=int(item.size_ml))
                 if item_license_id:
                     warehouse_qs = warehouse_qs.filter(license_id=item_license_id)
 
@@ -1036,7 +1036,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                     utilization_qs = BrandWarehouseUtilization.objects.filter(
                         permit_no=item.bill_no,
                         brand_warehouse__brand_details__iexact=item.brand,
-                        brand_warehouse__capacity_size=item.size_ml
+                        brand_warehouse__capacity_size__size_ml=item.size_ml
                     )
                     if item_license_id:
                         utilization_qs = utilization_qs.filter(brand_warehouse__license_id=item_license_id)
@@ -1044,7 +1044,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                          continue
 
                     # Find matching BrandWarehouse entry
-                    warehouse_qs = BrandWarehouse.objects.filter(capacity_size=int(item.size_ml))
+                    warehouse_qs = BrandWarehouse.objects.filter(capacity_size__size_ml=int(item.size_ml))
                     if item_license_id:
                         warehouse_qs = warehouse_qs.filter(license_id=item_license_id)
 

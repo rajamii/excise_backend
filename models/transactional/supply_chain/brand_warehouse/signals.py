@@ -48,7 +48,7 @@ def update_brand_warehouse_stock_on_save(sender, instance, created, **kwargs):
             production_date=instance.usage_date,
             quantity_produced=instance.issued_qty,
             brand_warehouse__brand_details__icontains=instance.brand_details,
-            brand_warehouse__capacity_size=BrandWarehouseStockService._parse_bottle_size(instance.bottle_size)
+            brand_warehouse__capacity_size__size_ml=BrandWarehouseStockService._parse_bottle_size(instance.bottle_size)
         ).exists()
         
         if existing_production:

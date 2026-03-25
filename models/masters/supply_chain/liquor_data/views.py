@@ -4,8 +4,8 @@ from rest_framework import status
 from django.db.models import Q, Max, Count
 import logging
 from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
-from .models import MasterLiquorType
-from .serializers import MasterLiquorTypeSerializer
+from .models import MasterLiquorType, MasterLiquorCategory
+from .serializers import MasterLiquorTypeSerializer, MasterLiquorCategorySerializer
 
 logger = logging.getLogger(__name__)
 
@@ -64,13 +64,13 @@ class BrandSizeListView(APIView):
             ).exclude(
                 capacity_size__isnull=True
             ).values(
-                'brand_details', 'capacity_size'
+                'brand_details', 'capacity_size__size_ml'
             )
 
             grouped: dict[str, set[int]] = {}
             for row in rows:
                 brand_name = str(row.get('brand_details') or '').strip()
-                size = row.get('capacity_size')
+                size = row.get('capacity_size__size_ml')
                 if not brand_name or size is None:
                     continue
                 grouped.setdefault(brand_name, set()).add(int(size))
@@ -126,7 +126,7 @@ class LiquorRatesView(APIView):
                 }, status=status.HTTP_400_BAD_REQUEST)
 
             normalized_brand = brand_name.strip()
-            base_qs = BrandWarehouse.objects.filter(capacity_size=pack_size_ml)
+            base_qs = BrandWarehouse.objects.filter(capacity_size__size_ml=pack_size_ml)
 
             # Prefer exact match first, then fall back to contains for legacy name variations.
             warehouse_row = base_qs.filter(brand_details__iexact=normalized_brand).first()
@@ -177,6 +177,25 @@ class LiquorRatesView(APIView):
                 'success': False,
                 'error': f'Internal server error: {str(e)}'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class MasterLiquorCategoryListView(APIView):
+    """
+    Master table endpoint for pack sizes (ml).
+
+    Query params:
+    - include_zero=true|false (default false)
+    """
+
+    def get(self, request):
+        include_zero = str(request.query_params.get('include_zero') or '').strip().lower() in {'1', 'true', 'yes'}
+
+        qs = MasterLiquorCategory.objects.all()
+        if not include_zero:
+            qs = qs.filter(size_ml__gt=0)
+
+        data = MasterLiquorCategorySerializer(qs, many=True).data
+        return Response({'success': True, 'data': data, 'total': len(data)})
 
 class GetUserEntitiesView(APIView):
     def get(self, request):

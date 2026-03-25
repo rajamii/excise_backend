@@ -16,6 +16,31 @@ class MasterLiquorType(models.Model):
         return str(self.liquor_type or '').strip()
 
 
+class MasterLiquorCategory(models.Model):
+    """
+    Master table for bottle/pack capacities (ml).
+
+    Normalizes `brand_warehouse.capacity_size` so that the warehouse table stores
+    this master row `id` while the actual ml value lives here.
+    """
+
+    size_ml = models.IntegerField(unique=True, db_column='size_ml')
+    created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True, blank=True, null=True)
+
+    class Meta:
+        db_table = 'master_liquor_category'
+        ordering = ['size_ml']
+        verbose_name = 'Master Liquor Category'
+        verbose_name_plural = 'Master Liquor Categories'
+
+    def __str__(self):
+        return str(int(self.size_ml or 0))
+
+    def __int__(self):
+        return int(self.size_ml or 0)
+
+
 class LiquorData(models.Model):
     sl_no = models.IntegerField(blank=True, null=True, db_column='sl_no')
     manufacturing_unit_name = models.CharField(max_length=255, blank=True, null=True, db_column='manufacturing_unit_name')

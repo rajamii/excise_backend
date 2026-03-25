@@ -22,9 +22,9 @@ class Command(BaseCommand):
             self.stdout.write(f'Unique distilleries: {unique_distilleries}')
 
             pack_sizes = list(
-                BrandWarehouse.objects.values_list('capacity_size', flat=True)
+                BrandWarehouse.objects.values_list('capacity_size__size_ml', flat=True)
                 .distinct()
-                .order_by('capacity_size')
+                .order_by('capacity_size__size_ml')
             )
             self.stdout.write(f'Available pack sizes: {pack_sizes}')
 

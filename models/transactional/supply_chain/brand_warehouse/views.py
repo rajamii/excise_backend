@@ -349,7 +349,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         if brand_name:
             queryset = queryset.filter(brand_details__icontains=brand_name)
             
-        return queryset.order_by('distillery_name', 'brand_details', 'capacity_size')
+        return queryset.order_by('distillery_name', 'brand_details', 'capacity_size__size_ml')
 
     def list(self, request, *args, **kwargs):
         """
@@ -445,7 +445,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
                 'status_display': brand_warehouse.get_status_display(),
             },
             'pack_size_details': {
-                'capacity_ml': brand_warehouse.capacity_size,
+                'capacity_ml': int(brand_warehouse.capacity_size) if getattr(brand_warehouse, 'capacity_size_id', None) else 0,
                 'current_stock': brand_warehouse.current_stock,
                 'max_capacity': brand_warehouse.max_capacity,
                 'utilization_percentage': brand_warehouse.utilization_percentage,

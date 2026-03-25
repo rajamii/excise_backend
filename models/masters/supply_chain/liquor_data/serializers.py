@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import LiquorData, MasterLiquorType
+from .models import LiquorData, MasterLiquorType, MasterLiquorCategory
 
 class LiquorDataSerializer(serializers.ModelSerializer):
     class Meta:
@@ -13,6 +13,12 @@ class MasterLiquorTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = MasterLiquorType
         fields = ['id', 'liquor_type']
+
+
+class MasterLiquorCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MasterLiquorCategory
+        fields = ['id', 'size_ml']
 
 class BrandSizeSerializer(serializers.Serializer):
     brand_name = serializers.CharField()
