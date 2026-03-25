@@ -111,6 +111,13 @@ class BrandWarehouse(models.Model):
         help_text='Legacy reference id from liquor_data_details'
     )
 
+    # Sync flag for external integrations (0 = not synced, 1 = synced)
+    is_sync = models.IntegerField(
+        default=0,
+        db_column='is_sync',
+        help_text='Sync flag (0 = not synced, 1 = synced)'
+    )
+
     # Rate/tax fields migrated from liquor_data_details
     ex_factory_price_rs_per_case = models.DecimalField(
         max_digits=15,

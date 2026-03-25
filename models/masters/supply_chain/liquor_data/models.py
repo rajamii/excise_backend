@@ -3,6 +3,7 @@ from django.db import models
 
 class MasterLiquorType(models.Model):
     liquor_type = models.CharField(max_length=100, unique=True, db_column='liquor_type')
+    is_sync = models.IntegerField(default=0, db_column='is_sync')
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
     updated_at = models.DateTimeField(auto_now=True, blank=True, null=True)
 
@@ -25,6 +26,7 @@ class MasterLiquorCategory(models.Model):
     """
 
     size_ml = models.IntegerField(unique=True, db_column='size_ml')
+    is_sync = models.IntegerField(default=0, db_column='is_sync')
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
     updated_at = models.DateTimeField(auto_now=True, blank=True, null=True)
 
@@ -51,6 +53,7 @@ class MasterBottleType(models.Model):
 
     bottle_type = models.CharField(max_length=100, unique=True)
     is_active = models.BooleanField(default=True)
+    is_sync = models.IntegerField(default=0, db_column='is_sync')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
