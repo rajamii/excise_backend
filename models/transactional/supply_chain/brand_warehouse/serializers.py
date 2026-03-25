@@ -132,7 +132,7 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
 
     # Keep API backward-compatible: expose `capacity_size` as ml while DB stores FK id.
     capacity_size = serializers.IntegerField(required=False, allow_null=True)
-    capacity_size_id = serializers.IntegerField(source='capacity_size_id', read_only=True)
+    capacity_size_id = serializers.IntegerField(read_only=True)
     capacity_size_master_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
 
     class Meta:
@@ -286,7 +286,7 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
     pack_sizes_info = serializers.SerializerMethodField()
 
     capacity_size = serializers.IntegerField(required=False, allow_null=True)
-    capacity_size_id = serializers.IntegerField(source='capacity_size_id', read_only=True)
+    capacity_size_id = serializers.IntegerField(read_only=True)
     
     class Meta:
         model = BrandWarehouse
