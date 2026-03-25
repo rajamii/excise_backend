@@ -41,6 +41,29 @@ class MasterLiquorCategory(models.Model):
         return int(self.size_ml or 0)
 
 
+class MasterBottleType(models.Model):
+    """
+    Master table for transit permit bottle types.
+
+    This is migrated from the old `transit_permit_bottle_types` table and renamed to
+    `master_bottle_type` so liquor-related masters stay in this app.
+    """
+
+    bottle_type = models.CharField(max_length=100, unique=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'master_bottle_type'
+        verbose_name = 'Master Bottle Type'
+        verbose_name_plural = 'Master Bottle Types'
+        ordering = ['bottle_type']
+
+    def __str__(self):
+        return str(self.bottle_type or '').strip()
+
+
 class LiquorData(models.Model):
     sl_no = models.IntegerField(blank=True, null=True, db_column='sl_no')
     manufacturing_unit_name = models.CharField(max_length=255, blank=True, null=True, db_column='manufacturing_unit_name')
