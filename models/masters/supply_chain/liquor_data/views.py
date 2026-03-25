@@ -4,8 +4,12 @@ from rest_framework import status
 from django.db.models import Q, Max, Count
 import logging
 from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
-from .models import MasterLiquorType, MasterLiquorCategory
-from .serializers import MasterLiquorTypeSerializer, MasterLiquorCategorySerializer
+from .models import MasterLiquorType, MasterLiquorCategory, MasterBottleType
+from .serializers import (
+    MasterLiquorTypeSerializer,
+    MasterLiquorCategorySerializer,
+    MasterBottleTypeSerializer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +200,69 @@ class MasterLiquorCategoryListView(APIView):
 
         data = MasterLiquorCategorySerializer(qs, many=True).data
         return Response({'success': True, 'data': data, 'total': len(data)})
+
+
+class MasterBottleTypeListCreateView(APIView):
+    """
+    Master table endpoint for bottle types (used by transit permits).
+
+    GET: list bottle types (optionally active-only)
+      - active_only=true|false (default true)
+
+    POST: create bottle type
+    """
+
+    def get(self, request):
+        active_only = str(request.query_params.get('active_only') or '').strip().lower() not in {'0', 'false', 'no'}
+
+        qs = MasterBottleType.objects.all()
+        if active_only:
+            qs = qs.filter(is_active=True)
+
+        data = MasterBottleTypeSerializer(qs.order_by('bottle_type'), many=True).data
+        return Response({'success': True, 'data': data, 'total': len(data)})
+
+    def post(self, request):
+        serializer = MasterBottleTypeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        obj = serializer.save()
+        return Response({'success': True, 'data': MasterBottleTypeSerializer(obj).data}, status=status.HTTP_201_CREATED)
+
+
+class MasterBottleTypeDetailView(APIView):
+    """
+    Detail endpoint for bottle types.
+
+    GET/PATCH/DELETE by id.
+    """
+
+    def get_object(self, pk: int):
+        try:
+            return MasterBottleType.objects.get(pk=pk)
+        except MasterBottleType.DoesNotExist:
+            return None
+
+    def get(self, request, pk: int):
+        obj = self.get_object(pk)
+        if not obj:
+            return Response({'success': False, 'error': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'success': True, 'data': MasterBottleTypeSerializer(obj).data})
+
+    def patch(self, request, pk: int):
+        obj = self.get_object(pk)
+        if not obj:
+            return Response({'success': False, 'error': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = MasterBottleTypeSerializer(obj, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response({'success': True, 'data': serializer.data})
+
+    def delete(self, request, pk: int):
+        obj = self.get_object(pk)
+        if not obj:
+            return Response({'success': False, 'error': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+        obj.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 class GetUserEntitiesView(APIView):
     def get(self, request):
