@@ -37,8 +37,44 @@ def _get_user_display_name(user) -> str:
     return full if full else (getattr(user, 'username', None) or 'System')
 
 
+def _get_size_ml_value(item) -> int:
+    """
+    Return the ml value for a permit row.
+
+    After migration, `item.size_ml` is a MasterLiquorCategory FK, so `int(item.size_ml)` yields ml.
+    """
+    try:
+        if getattr(item, 'size_ml_id', None):
+            return int(item.size_ml)
+    except Exception:
+        pass
+
+    try:
+        return int(getattr(item, 'size_ml', 0) or 0)
+    except Exception:
+        return 0
+
+
 class SubmitTransitPermitAPIView(views.APIView):
     permission_classes = [IsAuthenticated]
+
+    def _resolve_master_liquor_category(self, size_ml):
+        from models.masters.supply_chain.liquor_data.models import MasterLiquorCategory
+
+        try:
+            normalized = int(size_ml or 0)
+        except Exception:
+            normalized = 0
+
+        obj, _ = MasterLiquorCategory.objects.get_or_create(size_ml=normalized)
+        return obj
+
+    def _resolve_master_liquor_type(self, liquor_type):
+        from models.masters.supply_chain.liquor_data.models import MasterLiquorType
+
+        name = str(liquor_type or '').strip() or 'Other'
+        obj, _ = MasterLiquorType.objects.get_or_create(liquor_type=name)
+        return obj
 
     def _resolve_submit_target_stage(self):
         """
@@ -321,7 +357,7 @@ class SubmitTransitPermitAPIView(views.APIView):
             item_license_id = str(getattr(item, 'licensee_id', '') or '').strip() or normalized_license_id
 
             warehouse_qs = BrandWarehouse.objects.filter(
-                capacity_size__size_ml=int(item.size_ml),
+                capacity_size__size_ml=_get_size_ml_value(item),
             )
             if item_license_id:
                 warehouse_qs = warehouse_qs.filter(license_id=item_license_id)
@@ -331,7 +367,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                 warehouse_entry = warehouse_qs.filter(brand_details__icontains=item.brand).first()
             if not warehouse_entry:
                 raise ValueError(
-                    f"Brand warehouse entry not found for brand={item.brand}, size={item.size_ml}, "
+                    f"Brand warehouse entry not found for brand={item.brand}, size={_get_size_ml_value(item)}, "
                     f"license_id={item_license_id or 'N/A'}"
                 )
 
@@ -427,13 +463,13 @@ class SubmitTransitPermitAPIView(views.APIView):
                             licensee_id=licensee_id,
                             
                             brand=product.get('brand'),
-                            size_ml=product.get('size'), 
+                            size_ml=self._resolve_master_liquor_category(product.get('size')),
                             cases=product.get('cases'),
                             bottle_type=product.get('bottle_type', ''), # Save bottle_type
 
                             # New fields
                             brand_owner=product.get('brand_owner', ''),
-                            liquor_type=product.get('liquor_type', ''),
+                            liquor_type=self._resolve_master_liquor_type(product.get('liquor_type', '')),
                             exfactory_price_rs_per_case=product.get('ex_factory_price', 0.00),
                             
                             excise_duty_rs_per_case=product.get('excise_duty', 0.00),
@@ -990,7 +1026,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
 
             for item in bill_items:
                 item_license_id = str(item.licensee_id or '').strip()
-                warehouse_qs = BrandWarehouse.objects.filter(capacity_size__size_ml=int(item.size_ml))
+                warehouse_qs = BrandWarehouse.objects.filter(capacity_size__size_ml=_get_size_ml_value(item))
                 if item_license_id:
                     warehouse_qs = warehouse_qs.filter(license_id=item_license_id)
 
@@ -1014,7 +1050,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                     destination=item.sole_distributor_name,
                     vehicle_no=item.vehicle_number,
                     depot_address=item.depot_address,
-                    brand_name=f"{item.brand} ({item.size_ml}ml)"
+                    brand_name=f"{item.brand} ({_get_size_ml_value(item)}ml)"
                 )
                 created_count += 1
 
@@ -1074,7 +1110,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                     utilization_qs = BrandWarehouseUtilization.objects.filter(
                         permit_no=item.bill_no,
                         brand_warehouse__brand_details__iexact=item.brand,
-                        brand_warehouse__capacity_size__size_ml=item.size_ml
+                        brand_warehouse__capacity_size__size_ml=_get_size_ml_value(item),
                     )
                     if item_license_id:
                         utilization_qs = utilization_qs.filter(brand_warehouse__license_id=item_license_id)
@@ -1082,7 +1118,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                          continue
 
                     # Find matching BrandWarehouse entry
-                    warehouse_qs = BrandWarehouse.objects.filter(capacity_size__size_ml=int(item.size_ml))
+                    warehouse_qs = BrandWarehouse.objects.filter(capacity_size__size_ml=_get_size_ml_value(item))
                     if item_license_id:
                         warehouse_qs = warehouse_qs.filter(license_id=item_license_id)
 
