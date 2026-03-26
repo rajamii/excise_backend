@@ -583,9 +583,13 @@ class GetTransitPermitAPIView(generics.ListAPIView):
             licensee_field='licensee_id'
         )
 
-        bill_no = self.request.query_params.get('bill_no')
+        # Support both `bill_no` and camelCase `billNo` to match the public endpoint.
+        bill_no = self.request.query_params.get('bill_no') or self.request.query_params.get('billNo')
         if bill_no:
-            queryset = queryset.filter(bill_no=bill_no)
+            bill_no = str(bill_no).strip()
+            if bill_no:
+                # Be resilient to case differences or accidental whitespace.
+                queryset = queryset.filter(bill_no__iexact=bill_no)
         return queryset
 
 class GetTransitPermitDetailAPIView(generics.RetrieveAPIView):
