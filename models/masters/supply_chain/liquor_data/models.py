@@ -78,6 +78,24 @@ class MasterBrandList(models.Model):
     """
 
     brand_name = models.CharField(max_length=255, unique=True, db_column='brand_name')
+
+    # Optional link back to the factory and liquor type owning this brand
+    factory = models.ForeignKey(
+        'MasterFactoryList',
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        db_column='factory_id',
+        related_name='brands',
+    )
+    liquor_type = models.ForeignKey(
+        'MasterLiquorType',
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        db_column='liquor_type_id',
+        related_name='brands',
+    )
     is_sync = models.IntegerField(default=0, db_column='is_sync')
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
     updated_at = models.DateTimeField(auto_now=True, blank=True, null=True)

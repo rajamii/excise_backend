@@ -39,10 +39,35 @@ class MasterBottleTypeSerializer(serializers.ModelSerializer):
 
 
 class MasterBrandListSerializer(serializers.ModelSerializer):
+    factory_id = serializers.PrimaryKeyRelatedField(
+        source='factory',
+        queryset=MasterFactoryList.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+    factory_name = serializers.CharField(source='factory.factory_name', read_only=True)
+
+    liquor_type_id = serializers.PrimaryKeyRelatedField(
+        source='liquor_type',
+        queryset=MasterLiquorType.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+    liquor_type = serializers.CharField(source='liquor_type.liquor_type', read_only=True)
+
     class Meta:
         model = MasterBrandList
-        fields = ['id', 'brand_name', 'is_sync']
+        fields = ['id', 'brand_name', 'factory_id', 'factory_name', 'liquor_type_id', 'liquor_type', 'is_sync']
         read_only_fields = ['id', 'is_sync']
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+
+        # Keep response minimal for dropdowns: IDs only.
+        data.pop('factory_name', None)
+        data.pop('liquor_type', None)
+
+        return data
 
 
 class MasterFactoryListSerializer(serializers.ModelSerializer):
