@@ -15,7 +15,7 @@ class Command(BaseCommand):
             self.stdout.write(f'Total BrandWarehouse entries: {total_warehouse_entries}')
 
             unique_distilleries = (
-                BrandWarehouse.objects.values_list('distillery_name', flat=True)
+                BrandWarehouse.objects.values_list('factory__factory_name', flat=True)
                 .distinct()
                 .count()
             )
@@ -29,7 +29,7 @@ class Command(BaseCommand):
             self.stdout.write(f'Available pack sizes: {pack_sizes}')
 
             sikkim_brands = BrandWarehouse.objects.filter(
-                distillery_name__icontains='Sikkim Distilleries Ltd'
+                factory__factory_name__icontains='Sikkim Distilleries Ltd'
             ).count()
             self.stdout.write(f'Sikkim Distilleries Ltd rows: {sikkim_brands}')
 

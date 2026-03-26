@@ -13,18 +13,18 @@ class BrandWarehouseAdmin(admin.ModelAdmin):
     Admin interface for Brand Warehouse with soft delete protection
     """
     list_display = [
-        'brand_name', 'distillery_name', 'capacity_size', 
+        'brand_name', 'factory_name', 'capacity_size',
         'current_stock', 'status', 'is_deleted', 'deleted_status'
     ]
     list_filter = [
-        'distillery_name', 'liquor_type', 'status', 'capacity_size', 'is_deleted'
+        'factory', 'liquor_type', 'status', 'capacity_size', 'is_deleted'
     ]
-    search_fields = ['brand__brand_name', 'distillery_name', 'liquor_type__liquor_type']
+    search_fields = ['brand__brand_name', 'factory__factory_name', 'liquor_type__liquor_type']
     readonly_fields = ['created_at', 'updated_at', 'deleted_at', 'deleted_by']
     
     fieldsets = (
         ('Basic Information', {
-            'fields': ('distillery_name', 'liquor_type', 'brand')
+            'fields': ('factory', 'liquor_type', 'brand')
         }),
         ('Stock Information', {
             'fields': ('current_stock', 'capacity_size', 'status')
@@ -195,7 +195,7 @@ class ProductionBatchAdmin(admin.ModelAdmin):
         'batch_reference', 'brand_warehouse', 'production_date', 
         'quantity_produced', 'production_manager', 'status'
     ]
-    list_filter = ['status', 'production_date', 'brand_warehouse__distillery_name']
+    list_filter = ['status', 'production_date', 'brand_warehouse__factory']
     search_fields = ['batch_reference', 'brand_warehouse__brand__brand_name', 'production_manager']
     readonly_fields = ['stock_before', 'stock_after', 'created_at', 'updated_at']
     

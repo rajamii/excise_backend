@@ -1,4 +1,6 @@
 from django.db import models
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 
 
 class MasterLiquorType(models.Model):
@@ -88,6 +90,35 @@ class MasterBrandList(models.Model):
 
     def __str__(self):
         return str(self.brand_name or '').strip()
+
+
+class MasterFactoryList(models.Model):
+    """
+    Master table for factories / manufacturing units.
+
+    Normalizes `brand_warehouse.factory_id` so warehouse rows store a stable FK id
+    while the display name lives here.
+    """
+
+    factory_name = models.CharField(max_length=255, unique=True, db_column='factory_name')
+
+    # Generic Relation (optional)
+    source_content_type = models.ForeignKey(ContentType, on_delete=models.PROTECT, null=True, blank=True)
+    source_object_id = models.CharField(max_length=50, null=True, blank=True)
+    source_application = GenericForeignKey('source_content_type', 'source_object_id')
+
+    is_sync = models.IntegerField(default=0, db_column='is_sync')
+    created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True, blank=True, null=True)
+
+    class Meta:
+        db_table = 'master_factory_list'
+        ordering = ['factory_name']
+        verbose_name = 'Master Factory'
+        verbose_name_plural = 'Master Factories'
+
+    def __str__(self):
+        return str(self.factory_name or '').strip()
 
 
 class LiquorData(models.Model):

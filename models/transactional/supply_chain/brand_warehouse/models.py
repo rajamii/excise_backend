@@ -40,10 +40,14 @@ class BrandWarehouse(models.Model):
     ]
 
     # Basic Information
-    distillery_name = models.CharField(
-        max_length=255,
-        db_column='distillery_name',
-        help_text='Name of the distillery/manufacturing unit'
+    factory = models.ForeignKey(
+        'liquor_data.MasterFactoryList',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        db_column='factory_id',
+        related_name='brand_warehouses',
+        help_text='Master factory (FK to master_factory_list.id)'
     )
     license_id = models.CharField(
         max_length=100,
@@ -218,14 +222,32 @@ class BrandWarehouse(models.Model):
         verbose_name_plural = 'Brand Warehouses'
         indexes = [
             models.Index(fields=['license_id']),
-            models.Index(fields=['distillery_name']),
+            models.Index(fields=['factory']),
             models.Index(fields=['liquor_type']),
             models.Index(fields=['brand']),
             models.Index(fields=['status']),
         ]
 
     def __str__(self):
-        return f"{self.distillery_name} - {self.brand_name}"
+        return f"{self.factory_name} - {self.brand_name}"
+
+    @property
+    def factory_name(self) -> str:
+        try:
+            if getattr(self, 'factory_id', None) and getattr(self, 'factory', None):
+                return str(getattr(self.factory, 'factory_name', '') or '').strip()
+        except Exception:
+            pass
+        return ''
+
+    @property
+    def distillery_name(self) -> str:
+        """
+        Backward-compatible factory display string.
+
+        Legacy code and clients still refer to this as `distillery_name`.
+        """
+        return self.factory_name
 
     @property
     def brand_name(self) -> str:

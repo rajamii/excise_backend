@@ -4,12 +4,13 @@ from rest_framework import status
 from django.db.models import Q, Max, Count
 import logging
 from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
-from .models import MasterLiquorType, MasterLiquorCategory, MasterBottleType, MasterBrandList
+from .models import MasterLiquorType, MasterLiquorCategory, MasterBottleType, MasterBrandList, MasterFactoryList
 from .serializers import (
     MasterLiquorTypeSerializer,
     MasterLiquorCategorySerializer,
     MasterBottleTypeSerializer,
     MasterBrandListSerializer,
+    MasterFactoryListSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ class MasterLiquorTypeListView(APIView):
 
         brand_qs = BrandWarehouse.objects.all()
         if distillery_filter:
-            brand_qs = brand_qs.filter(distillery_name__icontains=distillery_filter)
+            brand_qs = brand_qs.filter(factory__factory_name__icontains=distillery_filter)
 
         brand_rows = (
             brand_qs.exclude(brand__isnull=True)
@@ -60,7 +61,7 @@ class BrandSizeListView(APIView):
             distillery_filter = request.GET.get('distillery', 'Sikkim Distilleries Ltd')
 
             rows = BrandWarehouse.objects.filter(
-                distillery_name__icontains=distillery_filter
+                factory__factory_name__icontains=distillery_filter
             ).exclude(
                 brand__isnull=True
             ).exclude(
@@ -288,6 +289,29 @@ class MasterBrandListListCreateView(APIView):
         obj = serializer.save()
         return Response({'success': True, 'data': MasterBrandListSerializer(obj).data}, status=status.HTTP_201_CREATED)
 
+
+class MasterFactoryListListCreateView(APIView):
+    """
+    Master table endpoint for factories.
+
+    GET: list master factories (optionally filtered by ?q=)
+    POST: create a new master factory
+    """
+
+    def get(self, request):
+        qs = MasterFactoryList.objects.all()
+        q = str(request.query_params.get('q') or '').strip()
+        if q:
+            qs = qs.filter(factory_name__icontains=q)
+        data = MasterFactoryListSerializer(qs.order_by('factory_name'), many=True).data
+        return Response({'success': True, 'data': data, 'total': len(data)})
+
+    def post(self, request):
+        serializer = MasterFactoryListSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        obj = serializer.save()
+        return Response({'success': True, 'data': MasterFactoryListSerializer(obj).data}, status=status.HTTP_201_CREATED)
+
 class GetUserEntitiesView(APIView):
     def get(self, request):
         try:
@@ -306,18 +330,20 @@ class GetUserEntitiesView(APIView):
             rows = BrandWarehouse.objects.filter(
                 license_id=licensee_id
             ).exclude(
-                distillery_name__isnull=True
+                factory__isnull=True
             ).exclude(
-                distillery_name=''
+                factory__factory_name__isnull=True
+            ).exclude(
+                factory__factory_name=''
             ).values(
-                'distillery_name'
+                'factory__factory_name'
             ).annotate(
                 sample_type=Max('liquor_type__liquor_type')
             )
 
             entities = []
             for row in rows:
-                unit_name = row.get('distillery_name')
+                unit_name = row.get('factory__factory_name')
                 l_type = row.get('sample_type') or ""
                 
                 entity_type = 'Brewery' if 'beer' in l_type.lower() else 'Distillery'

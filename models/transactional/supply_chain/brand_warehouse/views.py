@@ -249,10 +249,10 @@ def _scope_queryset_by_active_license(queryset, user, field_name: str):
     if scoped_ids and establishment_name:
         # Prefer strict license scoping but keep a safe fallback to establishment name.
         filters = Q(**{f'{field_name}__in': scoped_ids})
-        if _supports_lookup(queryset.model, 'distillery_name'):
-            filters |= Q(distillery_name__icontains=establishment_name)
-        elif _supports_lookup(queryset.model, 'brand_warehouse__distillery_name'):
-            filters |= Q(brand_warehouse__distillery_name__icontains=establishment_name)
+        if _supports_lookup(queryset.model, 'factory__factory_name'):
+            filters |= Q(factory__factory_name__icontains=establishment_name)
+        elif _supports_lookup(queryset.model, 'brand_warehouse__factory__factory_name'):
+            filters |= Q(brand_warehouse__factory__factory_name__icontains=establishment_name)
         return queryset.filter(filters)
 
     if scoped_ids:
@@ -261,10 +261,10 @@ def _scope_queryset_by_active_license(queryset, user, field_name: str):
     # Fallback: some deployments have license mappings that don't match stored stock rows.
     # Keep scoped users limited to their establishment name so dashboards don't show empty inventory.
     if establishment_name:
-        if _supports_lookup(queryset.model, 'distillery_name'):
-            return queryset.filter(distillery_name__icontains=establishment_name)
-        if _supports_lookup(queryset.model, 'brand_warehouse__distillery_name'):
-            return queryset.filter(brand_warehouse__distillery_name__icontains=establishment_name)
+        if _supports_lookup(queryset.model, 'factory__factory_name'):
+            return queryset.filter(factory__factory_name__icontains=establishment_name)
+        if _supports_lookup(queryset.model, 'brand_warehouse__factory__factory_name'):
+            return queryset.filter(brand_warehouse__factory__factory_name__icontains=establishment_name)
         return queryset.none()
 
     return queryset.none()
@@ -341,7 +341,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         """
         Return brand warehouse queryset with server-side license scoping.
         """
-        queryset = BrandWarehouse.objects.all().select_related('liquor_type').prefetch_related('utilizations', 'arrivals')
+        queryset = BrandWarehouse.objects.all().select_related('liquor_type', 'brand', 'factory').prefetch_related('utilizations', 'arrivals')
 
         scoped_to_unit, active_license_id = _get_scope_context(self.request.user)
 
@@ -359,7 +359,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
 
         distillery_name = self.request.query_params.get('distillery_name', None)
         if distillery_name:
-            queryset = queryset.filter(distillery_name__icontains=distillery_name)
+            queryset = queryset.filter(factory__factory_name__icontains=distillery_name)
             
         # Backward compatible filter: `brand_type` (name) + new filter `liquor_type` (id)
         liquor_type_id = (
@@ -385,7 +385,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         if brand_name:
             queryset = queryset.filter(brand__brand_name__icontains=brand_name)
             
-        return queryset.order_by('distillery_name', 'brand__brand_name', 'capacity_size__size_ml')
+        return queryset.order_by('factory__factory_name', 'brand__brand_name', 'capacity_size__size_ml')
 
     def list(self, request, *args, **kwargs):
         """

@@ -133,6 +133,11 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
     brand_id = serializers.IntegerField(required=False, allow_null=True)
     brand_name = serializers.CharField(source='brand.brand_name', read_only=True)
 
+    factory_id = serializers.IntegerField(required=False, allow_null=True)
+    factory_name = serializers.CharField(source='factory.factory_name', read_only=True)
+    # Backward compatible name
+    distillery_name = serializers.CharField(source='factory.factory_name', read_only=True)
+
     # Keep API backward-compatible: expose `capacity_size` as ml while DB stores FK id.
     capacity_size = serializers.IntegerField(required=False, allow_null=True)
     capacity_size_id = serializers.IntegerField(read_only=True)
@@ -144,6 +149,8 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
             'id',
             'is_sync',
             'license_id',
+            'factory_id',
+            'factory_name',
             'distillery_name',
             'liquor_type',
             'brand_type',
@@ -295,6 +302,10 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
     capacity_size_id = serializers.IntegerField(read_only=True)
     brand_id = serializers.IntegerField(required=False, allow_null=True)
     brand_name = serializers.CharField(source='brand.brand_name', read_only=True)
+
+    factory_id = serializers.IntegerField(required=False, allow_null=True)
+    factory_name = serializers.CharField(source='factory.factory_name', read_only=True)
+    distillery_name = serializers.CharField(source='factory.factory_name', read_only=True)
     
     class Meta:
         model = BrandWarehouse
@@ -302,6 +313,8 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
             'id',
             'is_sync',
             'license_id',
+            'factory_id',
+            'factory_name',
             'distillery_name',
             'liquor_type',
             'brand_type',
