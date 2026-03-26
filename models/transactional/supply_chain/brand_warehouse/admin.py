@@ -13,18 +13,18 @@ class BrandWarehouseAdmin(admin.ModelAdmin):
     Admin interface for Brand Warehouse with soft delete protection
     """
     list_display = [
-        'brand_details', 'distillery_name', 'capacity_size', 
+        'brand_name', 'distillery_name', 'capacity_size', 
         'current_stock', 'status', 'is_deleted', 'deleted_status'
     ]
     list_filter = [
         'distillery_name', 'liquor_type', 'status', 'capacity_size', 'is_deleted'
     ]
-    search_fields = ['brand_details', 'distillery_name', 'liquor_type__liquor_type']
+    search_fields = ['brand__brand_name', 'distillery_name', 'liquor_type__liquor_type']
     readonly_fields = ['created_at', 'updated_at', 'deleted_at', 'deleted_by']
     
     fieldsets = (
         ('Basic Information', {
-            'fields': ('distillery_name', 'liquor_type', 'brand_details')
+            'fields': ('distillery_name', 'liquor_type', 'brand')
         }),
         ('Stock Information', {
             'fields': ('current_stock', 'capacity_size', 'status')
@@ -105,7 +105,7 @@ class BrandWarehouseAdmin(admin.ModelAdmin):
         obj.soft_delete(deleted_by=request.user.username)
         messages.success(
             request, 
-            f'Brand warehouse "{obj.brand_details}" has been soft deleted. It can be restored if needed.'
+            f'Brand warehouse "{obj.brand_name}" has been soft deleted. It can be restored if needed.'
         )
     
     def delete_queryset(self, request, queryset):
@@ -132,7 +132,7 @@ class BrandWarehouseArrivalAdmin(admin.ModelAdmin):
         'quantity_added', 'arrival_date'
     ]
     list_filter = ['source_type', 'arrival_date', 'license_id']
-    search_fields = ['reference_no', 'license_id', 'brand_warehouse__brand_details']
+    search_fields = ['reference_no', 'license_id', 'brand_warehouse__brand__brand_name']
     readonly_fields = ['created_at']
     
     fieldsets = (
@@ -162,7 +162,7 @@ class BrandWarehouseUtilizationAdmin(admin.ModelAdmin):
         'quantity', 'status', 'date'
     ]
     list_filter = ['status', 'date']
-    search_fields = ['permit_no', 'distributor', 'brand_warehouse__brand_details']
+    search_fields = ['permit_no', 'distributor', 'brand_warehouse__brand__brand_name']
     readonly_fields = ['created_at', 'updated_at']
     
     fieldsets = (
@@ -196,7 +196,7 @@ class ProductionBatchAdmin(admin.ModelAdmin):
         'quantity_produced', 'production_manager', 'status'
     ]
     list_filter = ['status', 'production_date', 'brand_warehouse__distillery_name']
-    search_fields = ['batch_reference', 'brand_warehouse__brand_details', 'production_manager']
+    search_fields = ['batch_reference', 'brand_warehouse__brand__brand_name', 'production_manager']
     readonly_fields = ['stock_before', 'stock_after', 'created_at', 'updated_at']
     
     fieldsets = (

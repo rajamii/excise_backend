@@ -3,7 +3,7 @@ from django.db.models import Q
 from django.utils import timezone
 from datetime import timedelta
 from .models import BrandWarehouse, BrandWarehouseArrival
-from models.masters.supply_chain.liquor_data.models import MasterLiquorType, MasterLiquorCategory
+from models.masters.supply_chain.liquor_data.models import MasterLiquorType, MasterLiquorCategory, MasterBrandList
 import logging
 import re
 from difflib import SequenceMatcher
@@ -60,6 +60,27 @@ class BrandWarehouseStockService:
         except (TypeError, ValueError):
             normalized = 0
         obj, _ = MasterLiquorCategory.objects.get_or_create(size_ml=normalized)
+        return obj
+
+    @staticmethod
+    def _resolve_brand(brand_name: Optional[str] = None, brand_id: Optional[int] = None) -> Optional[MasterBrandList]:
+        """
+        Resolve (or create) the master brand row.
+
+        - Prefer `brand_id` when provided.
+        - Fall back to `brand_name` and create if missing.
+        """
+        if brand_id:
+            try:
+                return MasterBrandList.objects.get(id=int(brand_id))
+            except (TypeError, ValueError, MasterBrandList.DoesNotExist):
+                pass
+
+        normalized = str(brand_name or '').strip()
+        if not normalized:
+            return None
+        normalized = ' '.join(normalized.split())
+        obj, _ = MasterBrandList.objects.get_or_create(brand_name=normalized)
         return obj
 
     @staticmethod
@@ -210,7 +231,8 @@ class BrandWarehouseStockService:
         templates = template_rows.values(
             'distillery_name',
             'liquor_type',
-            'brand_details',
+            'brand',
+            'brand__brand_name',
             'capacity_size__size_ml',
             'max_capacity',
             'reorder_level',
@@ -225,22 +247,24 @@ class BrandWarehouseStockService:
         ).distinct()
 
         for item in templates:
-            brand_name = str(item.get('brand_details') or '').strip()
+            brand_name = str(item.get('brand__brand_name') or '').strip()
+            master_brand = BrandWarehouseStockService._resolve_brand(brand_name=brand_name, brand_id=item.get('brand'))
             distillery_name = str(item.get('distillery_name') or normalized_establishment).strip()
             pack_size_ml = item.get('capacity_size__size_ml')
             liquor_type_id = item.get('liquor_type')
             liquor_type = BrandWarehouseStockService._resolve_liquor_type(type_id=liquor_type_id)
             liquor_type_id = getattr(liquor_type, 'id', None)
 
-            if not brand_name or not distillery_name or not pack_size_ml:
+            if not brand_name or not master_brand or not distillery_name or not pack_size_ml:
                 continue
 
             matching_rows = BrandWarehouse.objects.filter(
                 distillery_name__iexact=distillery_name,
                 capacity_size__size_ml=pack_size_ml
             ).filter(
-                Q(brand_details__iexact=brand_name) |
-                Q(brand_details__icontains=brand_name)
+                Q(brand_id=master_brand.id) |
+                Q(brand__brand_name__iexact=brand_name) |
+                Q(brand__brand_name__icontains=brand_name)
             ).order_by('-updated_at', '-id')
 
             warehouse_entry = matching_rows.filter(license_id=normalized_license_id).first()
@@ -268,8 +292,9 @@ class BrandWarehouseStockService:
                     license_id=normalized_license_id,
                     is_deleted=False
                 ).filter(
-                    Q(brand_details__iexact=brand_name) |
-                    Q(brand_details__icontains=brand_name)
+                    Q(brand_id=master_brand.id) |
+                    Q(brand__brand_name__iexact=brand_name) |
+                    Q(brand__brand_name__icontains=brand_name)
                 ).order_by('id')
 
                 if duplicate_rows.count() > 1:
@@ -293,7 +318,7 @@ class BrandWarehouseStockService:
                 license_id=normalized_license_id,
                 distillery_name=distillery_name,
                 liquor_type_id=liquor_type_id,
-                brand_details=brand_name,
+                brand=master_brand,
                 current_stock=0,
                 capacity_size=BrandWarehouseStockService._resolve_capacity_size(pack_size_ml),
                 liquor_data_id=item.get('liquor_data_id'),
@@ -355,7 +380,7 @@ class BrandWarehouseStockService:
                 
                 # Find existing Brand Warehouse entry using strict license scope first.
                 warehouse_qs = BrandWarehouse.objects.filter(
-                    brand_details__icontains=brand_name,
+                    brand__brand_name__icontains=brand_name,
                     capacity_size__size_ml=capacity_ml
                 )
                 if license_id:
@@ -553,16 +578,18 @@ class BrandWarehouseStockService:
             # Try to infer brand type/rates from any existing warehouse row.
             template = BrandWarehouse.objects.filter(
                 distillery_name__icontains=distillery_name,
-                brand_details__icontains=brand_name,
+                brand__brand_name__icontains=brand_name,
                 capacity_size__size_ml=capacity_ml
             ).order_by('-updated_at').first()
             
+            master_brand = BrandWarehouseStockService._resolve_brand(brand_name=brand_name)
+
             # Create new Brand Warehouse entry
             brand_warehouse = BrandWarehouse.objects.create(
                 distillery_name=distillery_name,
                 license_id=str(license_id or '').strip() or None,
                 liquor_type=template.liquor_type if getattr(template, 'liquor_type_id', None) else BrandWarehouseStockService._resolve_liquor_type('Other'),
-                brand_details=brand_name,
+                brand=master_brand,
                 current_stock=0,  # Will be updated immediately after creation
                 capacity_size=BrandWarehouseStockService._resolve_capacity_size(capacity_ml),
                 liquor_data_id=template.liquor_data_id if template else None,
@@ -693,7 +720,7 @@ class BrandWarehouseStockService:
                         
                         # Check if sync is needed
                         if current_stock != total_production:
-                            logger.info(f"🔄 Syncing stock for {brand_warehouse.brand_details}")
+                            logger.info(f"🔄 Syncing stock for {brand_warehouse.brand_name}")
                             logger.info(f"   Current: {current_stock}, Expected: {total_production}")
                             
                             # Update stock
@@ -705,7 +732,8 @@ class BrandWarehouseStockService:
                             sync_results['total_synced'] += 1
                             sync_results['details'].append({
                                 'brand_id': brand_warehouse.id,
-                                'brand_name': brand_warehouse.brand_details,
+                                'brand_master_id': brand_warehouse.brand_id,
+                                'brand_name': brand_warehouse.brand_name,
                                 'pack_size': int(brand_warehouse.capacity_size) if getattr(brand_warehouse, 'capacity_size_id', None) else 0,
                                 'old_stock': old_stock,
                                 'new_stock': total_production,
@@ -717,7 +745,7 @@ class BrandWarehouseStockService:
                         sync_results['total_processed'] += 1
                         
                 except Exception as e:
-                    logger.error(f"❌ Error syncing {brand_warehouse.brand_details}: {str(e)}")
+                    logger.error(f"❌ Error syncing {brand_warehouse.brand_name}: {str(e)}")
                     sync_results['total_errors'] += 1
             
             logger.info(f"📋 Sync completed: {sync_results['total_synced']} brands synced out of {sync_results['total_processed']} processed")

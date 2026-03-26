@@ -67,6 +67,29 @@ class MasterBottleType(models.Model):
         return str(self.bottle_type or '').strip()
 
 
+class MasterBrandList(models.Model):
+    """
+    Master table for brand names.
+
+    Normalizes `brand_warehouse.brand_id` so warehouse rows store a stable FK id
+    while the display name lives here.
+    """
+
+    brand_name = models.CharField(max_length=255, unique=True, db_column='brand_name')
+    is_sync = models.IntegerField(default=0, db_column='is_sync')
+    created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True, blank=True, null=True)
+
+    class Meta:
+        db_table = 'master_brand_list'
+        ordering = ['brand_name']
+        verbose_name = 'Master Brand'
+        verbose_name_plural = 'Master Brands'
+
+    def __str__(self):
+        return str(self.brand_name or '').strip()
+
+
 class LiquorData(models.Model):
     sl_no = models.IntegerField(blank=True, null=True, db_column='sl_no')
     manufacturing_unit_name = models.CharField(max_length=255, blank=True, null=True, db_column='manufacturing_unit_name')

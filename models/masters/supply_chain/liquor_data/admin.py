@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.admin.sites import AlreadyRegistered
 
-from .models import LiquorData, MasterLiquorType, MasterLiquorCategory, MasterBottleType
+from .models import LiquorData, MasterLiquorType, MasterLiquorCategory, MasterBottleType, MasterBrandList
 
 
 def _safe_register(model):
@@ -15,3 +15,4 @@ _safe_register(LiquorData)
 _safe_register(MasterLiquorType)
 _safe_register(MasterLiquorCategory)
 _safe_register(MasterBottleType)
+_safe_register(MasterBrandList)

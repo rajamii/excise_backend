@@ -130,6 +130,9 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
     # Liquor data details (read-only for display)
     liquor_data_details = serializers.SerializerMethodField()
 
+    brand_id = serializers.IntegerField(required=False, allow_null=True)
+    brand_name = serializers.CharField(source='brand.brand_name', read_only=True)
+
     # Keep API backward-compatible: expose `capacity_size` as ml while DB stores FK id.
     capacity_size = serializers.IntegerField(required=False, allow_null=True)
     capacity_size_id = serializers.IntegerField(read_only=True)
@@ -144,7 +147,8 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
             'distillery_name',
             'liquor_type',
             'brand_type',
-            'brand_details',
+            'brand_id',
+            'brand_name',
             'current_stock',
             'capacity_size',
             'capacity_size_id',
@@ -204,7 +208,7 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
         """Backward-compatible structure built from brand_warehouse columns."""
         return {
             'id': obj.liquor_data_id,
-            'brand_name': obj.brand_details,
+            'brand_name': obj.brand_name,
             'brand_owner': '',
             'liquor_type': obj.brand_type,
             'pack_size_ml': int(obj.capacity_size) if getattr(obj, 'capacity_size_id', None) else 0,
@@ -289,6 +293,8 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
 
     capacity_size = serializers.IntegerField(required=False, allow_null=True)
     capacity_size_id = serializers.IntegerField(read_only=True)
+    brand_id = serializers.IntegerField(required=False, allow_null=True)
+    brand_name = serializers.CharField(source='brand.brand_name', read_only=True)
     
     class Meta:
         model = BrandWarehouse
@@ -299,7 +305,8 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
             'distillery_name',
             'liquor_type',
             'brand_type',
-            'brand_details',
+            'brand_id',
+            'brand_name',
             'current_stock',
             'capacity_size',
             'capacity_size_id',

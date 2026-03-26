@@ -61,11 +61,14 @@ class BrandWarehouse(models.Model):
         related_name='brand_warehouses',
         help_text='Master liquor type (FK to master_liquor_type.id)'
     )
-    brand_details = models.TextField(
-        db_column='brand_details',
-        blank=True,
+    brand = models.ForeignKey(
+        'liquor_data.MasterBrandList',
         null=True,
-        help_text='Detailed information about the brand'
+        blank=True,
+        on_delete=models.SET_NULL,
+        db_column='brand_id',
+        related_name='brand_warehouses',
+        help_text='Master brand (FK to master_brand_list.id)'
     )
     purpose_of_sale = models.CharField(
         max_length=50,
@@ -217,11 +220,30 @@ class BrandWarehouse(models.Model):
             models.Index(fields=['license_id']),
             models.Index(fields=['distillery_name']),
             models.Index(fields=['liquor_type']),
+            models.Index(fields=['brand']),
             models.Index(fields=['status']),
         ]
 
     def __str__(self):
-        return f"{self.distillery_name} - {self.brand_type}"
+        return f"{self.distillery_name} - {self.brand_name}"
+
+    @property
+    def brand_name(self) -> str:
+        try:
+            if getattr(self, 'brand_id', None) and getattr(self, 'brand', None):
+                return str(getattr(self.brand, 'brand_name', '') or '').strip()
+        except Exception:
+            pass
+        return ''
+
+    @property
+    def brand_details(self) -> str:
+        """
+        Backward-compatible brand display string.
+
+        Legacy code and clients still refer to this as `brand_details`.
+        """
+        return self.brand_name
 
     @property
     def brand_type(self):

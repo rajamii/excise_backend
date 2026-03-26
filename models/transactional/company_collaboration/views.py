@@ -103,7 +103,7 @@ def _create_application(request):
 @permission_classes([permissions.IsAuthenticated])
 def list_brand_owners(request):
     query = """
-        SELECT distillery_name, COUNT(DISTINCT brand_details) AS brand_count
+        SELECT distillery_name, COUNT(DISTINCT brand_id) AS brand_count
         FROM brand_warehouse
         WHERE COALESCE(distillery_name, '') <> ''
           AND (is_deleted = false OR is_deleted IS NULL)
@@ -166,29 +166,30 @@ def list_brands(request):
                 break
 
     base_query = """
-        SELECT bw.brand_details,
+        SELECT COALESCE(mbl.brand_name, '') AS brand_name,
                bw.distillery_name,
                COALESCE(mlt.liquor_type, '') AS brand_type,
                COALESCE(mlc.size_ml, 0) AS capacity_size
         FROM brand_warehouse bw
+        LEFT JOIN master_brand_list mbl ON bw.brand_id = mbl.id
         LEFT JOIN master_liquor_type mlt ON bw.liquor_type = mlt.id
         LEFT JOIN master_liquor_category mlc ON bw.capacity_size = mlc.id
-        WHERE COALESCE(bw.brand_details, '') <> ''
+        WHERE COALESCE(mbl.brand_name, '') <> ''
           AND (bw.is_deleted = false OR bw.is_deleted IS NULL)
     """
     params = []
     if owner_distillery:
         base_query += " AND LOWER(bw.distillery_name) = LOWER(%s)"
         params.append(owner_distillery)
-    base_query += " ORDER BY bw.brand_details, COALESCE(mlc.size_ml, 0)"
+    base_query += " ORDER BY mbl.brand_name, COALESCE(mlc.size_ml, 0)"
 
     with connection.cursor() as cursor:
         cursor.execute(base_query, params)
         rows = cursor.fetchall()
 
     brand_map = {}
-    for brand_details, distillery_name, brand_type, capacity_size in rows:
-        brand_name = str(brand_details or '').strip()
+    for brand_name_value, distillery_name, brand_type, capacity_size in rows:
+        brand_name = str(brand_name_value or '').strip()
         if not brand_name:
             continue
 

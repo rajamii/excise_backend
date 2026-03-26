@@ -228,10 +228,46 @@ def _get_active_establishment_name(user, active_license_id: str = '') -> str:
 
 
 def _scope_queryset_by_active_license(queryset, user, field_name: str):
+    def _supports_lookup(model, lookup: str) -> bool:
+        current = model
+        for part in str(lookup or '').split('__'):
+            if not part:
+                return False
+            try:
+                field = current._meta.get_field(part)
+            except Exception:
+                return False
+            if getattr(field, 'is_relation', False):
+                current = getattr(field, 'related_model', None)
+                if current is None:
+                    return False
+        return True
+
     scoped_ids = _collect_user_license_ids(user)
-    if not scoped_ids:
+    establishment_name = _get_active_establishment_name(user)
+
+    if scoped_ids and establishment_name:
+        # Prefer strict license scoping but keep a safe fallback to establishment name.
+        filters = Q(**{f'{field_name}__in': scoped_ids})
+        if _supports_lookup(queryset.model, 'distillery_name'):
+            filters |= Q(distillery_name__icontains=establishment_name)
+        elif _supports_lookup(queryset.model, 'brand_warehouse__distillery_name'):
+            filters |= Q(brand_warehouse__distillery_name__icontains=establishment_name)
+        return queryset.filter(filters)
+
+    if scoped_ids:
+        return queryset.filter(**{f'{field_name}__in': scoped_ids})
+
+    # Fallback: some deployments have license mappings that don't match stored stock rows.
+    # Keep scoped users limited to their establishment name so dashboards don't show empty inventory.
+    if establishment_name:
+        if _supports_lookup(queryset.model, 'distillery_name'):
+            return queryset.filter(distillery_name__icontains=establishment_name)
+        if _supports_lookup(queryset.model, 'brand_warehouse__distillery_name'):
+            return queryset.filter(brand_warehouse__distillery_name__icontains=establishment_name)
         return queryset.none()
-    return queryset.filter(**{f'{field_name}__in': scoped_ids})
+
+    return queryset.none()
 
 
 def _apply_license_query_filter(queryset, request, field_name: str, scoped_to_unit: bool, active_license_id: str):
@@ -347,9 +383,9 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         # distinct brand_name filter for specific brand lookups
         brand_name = self.request.query_params.get('brand_name', None)
         if brand_name:
-            queryset = queryset.filter(brand_details__icontains=brand_name)
+            queryset = queryset.filter(brand__brand_name__icontains=brand_name)
             
-        return queryset.order_by('distillery_name', 'brand_details', 'capacity_size__size_ml')
+        return queryset.order_by('distillery_name', 'brand__brand_name', 'capacity_size__size_ml')
 
     def list(self, request, *args, **kwargs):
         """
@@ -430,7 +466,8 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
             'brand_details': {
                 'id': brand_warehouse.id,
                 'distillery_name': brand_warehouse.distillery_name,
-                'brand_name': brand_warehouse.brand_details,
+                'brand_id': brand_warehouse.brand_id,
+                'brand_name': brand_warehouse.brand_name,
                 'brand_type': brand_warehouse.brand_type,
                 'pack_size': f"{brand_warehouse.capacity_size}ml",
                 'last_updated': brand_warehouse.updated_at,
@@ -600,7 +637,8 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
                 'periodDays': days
             },
             'brandInfo': {
-                'brandName': brand_warehouse.brand_details,
+                'brandId': brand_warehouse.brand_id,
+                'brandName': brand_warehouse.brand_name,
                 'packSize': f"{brand_warehouse.capacity_size}ml",
                 'currentStock': brand_warehouse.current_stock
             }
@@ -854,7 +892,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
             
             return Response({
                 'success': True,
-                'message': f'Brand warehouse "{instance.brand_details}" has been soft deleted',
+                'message': f'Brand warehouse "{instance.brand_name}" has been soft deleted',
                 'deleted_at': instance.deleted_at,
                 'deleted_by': instance.deleted_by,
                 'note': 'This entry can be restored if needed. Contact administrator for restoration.'
@@ -887,7 +925,7 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
             
             return Response({
                 'success': True,
-                'message': f'Brand warehouse "{instance.brand_details}" has been restored',
+                'message': f'Brand warehouse "{instance.brand_name}" has been restored',
                 'restored_at': timezone.now()
             }, status=status.HTTP_200_OK)
             
@@ -1077,7 +1115,7 @@ class ProductionBatchViewSet(viewsets.ModelViewSet):
         
         # Get unique brands and managers
         brands_produced = list(daily_batches.values_list(
-            'brand_warehouse__brand_details', flat=True
+            'brand_warehouse__brand__brand_name', flat=True
         ).distinct())
         
         managers = list(daily_batches.values_list(
@@ -1161,7 +1199,8 @@ class ProductionBatchViewSet(viewsets.ModelViewSet):
             'success': True,
             'brandInfo': {
                 'id': brand_warehouse.id,
-                'brandName': brand_warehouse.brand_details,
+                'brandId': brand_warehouse.brand_id,
+                'brandName': brand_warehouse.brand_name,
                 'packSize': f"{brand_warehouse.capacity_size}ml",
                 'currentStock': brand_warehouse.current_stock
             },

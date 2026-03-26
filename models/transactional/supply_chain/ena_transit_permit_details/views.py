@@ -362,9 +362,9 @@ class SubmitTransitPermitAPIView(views.APIView):
             if item_license_id:
                 warehouse_qs = warehouse_qs.filter(license_id=item_license_id)
 
-            warehouse_entry = warehouse_qs.filter(brand_details__iexact=item.brand).first()
+            warehouse_entry = warehouse_qs.filter(brand__brand_name__iexact=item.brand).first()
             if not warehouse_entry:
-                warehouse_entry = warehouse_qs.filter(brand_details__icontains=item.brand).first()
+                warehouse_entry = warehouse_qs.filter(brand__brand_name__icontains=item.brand).first()
             if not warehouse_entry:
                 raise ValueError(
                     f"Brand warehouse entry not found for brand={item.brand}, size={_get_size_ml_value(item)}, "
@@ -1034,9 +1034,9 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 if item_license_id:
                     warehouse_qs = warehouse_qs.filter(license_id=item_license_id)
 
-                warehouse = warehouse_qs.filter(brand_details__iexact=item.brand).first()
+                warehouse = warehouse_qs.filter(brand__brand_name__iexact=item.brand).first()
                 if not warehouse:
-                    warehouse = warehouse_qs.filter(brand_details__icontains=item.brand).first()
+                    warehouse = warehouse_qs.filter(brand__brand_name__icontains=item.brand).first()
                 if not warehouse:
                     continue
 
@@ -1113,7 +1113,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
                     # Check if utilization already exists to prevent double deduction
                     utilization_qs = BrandWarehouseUtilization.objects.filter(
                         permit_no=item.bill_no,
-                        brand_warehouse__brand_details__iexact=item.brand,
+                        brand_warehouse__brand__brand_name__iexact=item.brand,
                         brand_warehouse__capacity_size__size_ml=_get_size_ml_value(item),
                     )
                     if item_license_id:
@@ -1127,12 +1127,12 @@ class PerformTransitPermitActionAPIView(views.APIView):
                         warehouse_qs = warehouse_qs.filter(license_id=item_license_id)
 
                     warehouse_entry = warehouse_qs.filter(
-                        brand_details__iexact=item.brand
+                        brand__brand_name__iexact=item.brand
                     ).first()
                     
                     if not warehouse_entry:
                         warehouse_entry = warehouse_qs.filter(
-                            brand_details__icontains=item.brand,
+                            brand__brand_name__icontains=item.brand,
                         ).first()
                         
                     if warehouse_entry:

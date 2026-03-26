@@ -4,11 +4,12 @@ from rest_framework import status
 from django.db.models import Q, Max, Count
 import logging
 from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
-from .models import MasterLiquorType, MasterLiquorCategory, MasterBottleType
+from .models import MasterLiquorType, MasterLiquorCategory, MasterBottleType, MasterBrandList
 from .serializers import (
     MasterLiquorTypeSerializer,
     MasterLiquorCategorySerializer,
     MasterBottleTypeSerializer,
+    MasterBrandListSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,8 +40,7 @@ class MasterLiquorTypeListView(APIView):
             brand_qs = brand_qs.filter(distillery_name__icontains=distillery_filter)
 
         brand_rows = (
-            brand_qs.exclude(brand_details__isnull=True)
-            .exclude(brand_details='')
+            brand_qs.exclude(brand__isnull=True)
             .values('liquor_type')
             .annotate(brand_count=Count('id'))
         )
@@ -62,28 +62,28 @@ class BrandSizeListView(APIView):
             rows = BrandWarehouse.objects.filter(
                 distillery_name__icontains=distillery_filter
             ).exclude(
-                brand_details__isnull=True
-            ).exclude(
-                brand_details=''
+                brand__isnull=True
             ).exclude(
                 capacity_size__isnull=True
             ).values(
-                'brand_details', 'capacity_size__size_ml'
+                'brand_id', 'brand__brand_name', 'capacity_size__size_ml'
             )
 
-            grouped: dict[str, set[int]] = {}
+            grouped: dict[int, dict] = {}
             for row in rows:
-                brand_name = str(row.get('brand_details') or '').strip()
+                brand_id = row.get('brand_id')
+                brand_name = str(row.get('brand__brand_name') or '').strip()
                 size = row.get('capacity_size__size_ml')
-                if not brand_name or size is None:
+                if not brand_id or not brand_name or size is None:
                     continue
-                grouped.setdefault(brand_name, set()).add(int(size))
+                grouped.setdefault(int(brand_id), {'brandName': brand_name, 'sizes': set()})['sizes'].add(int(size))
 
             result = []
-            for brand_name, sizes_set in grouped.items():
+            for brand_id, payload in grouped.items():
                 result.append({
-                    'brandName': brand_name,
-                    'sizes': sorted(list(sizes_set)),
+                    'brandId': int(brand_id),
+                    'brandName': payload['brandName'],
+                    'sizes': sorted(list(payload['sizes'])),
                     'manufacturingUnit': distillery_filter
                 })
 
@@ -133,11 +133,11 @@ class LiquorRatesView(APIView):
             base_qs = BrandWarehouse.objects.filter(capacity_size__size_ml=pack_size_ml)
 
             # Prefer exact match first, then fall back to contains for legacy name variations.
-            warehouse_row = base_qs.filter(brand_details__iexact=normalized_brand).first()
+            warehouse_row = base_qs.filter(brand__brand_name__iexact=normalized_brand).first()
             if not warehouse_row:
                 warehouse_row = base_qs.filter(
-                    Q(brand_details__icontains=normalized_brand) |
-                    Q(brand_details__istartswith=normalized_brand)
+                    Q(brand__brand_name__icontains=normalized_brand) |
+                    Q(brand__brand_name__istartswith=normalized_brand)
                 ).first()
 
             logger.debug("LiquorRatesView warehouse query result: %s", warehouse_row)
@@ -149,7 +149,8 @@ class LiquorRatesView(APIView):
                 }, status=status.HTTP_404_NOT_FOUND)
 
             response_data = {
-                'brand': warehouse_row.brand_details,
+                'brandId': warehouse_row.brand_id,
+                'brand': warehouse_row.brand_name,
                 'size': f"{warehouse_row.capacity_size}ml",
                 'educationCess': float(warehouse_row.education_cess_rs_per_case or 0),
                 'exciseDuty': float(warehouse_row.excise_duty_rs_per_case or 0),
@@ -263,6 +264,29 @@ class MasterBottleTypeDetailView(APIView):
             return Response({'success': False, 'error': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
         obj.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MasterBrandListListCreateView(APIView):
+    """
+    Master table endpoint for brands.
+
+    GET: list master brands (optionally filtered by ?q=)
+    POST: create a new master brand
+    """
+
+    def get(self, request):
+        qs = MasterBrandList.objects.all()
+        q = str(request.query_params.get('q') or '').strip()
+        if q:
+            qs = qs.filter(brand_name__icontains=q)
+        data = MasterBrandListSerializer(qs.order_by('brand_name'), many=True).data
+        return Response({'success': True, 'data': data, 'total': len(data)})
+
+    def post(self, request):
+        serializer = MasterBrandListSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        obj = serializer.save()
+        return Response({'success': True, 'data': MasterBrandListSerializer(obj).data}, status=status.HTTP_201_CREATED)
 
 class GetUserEntitiesView(APIView):
     def get(self, request):
