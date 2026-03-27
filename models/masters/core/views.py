@@ -44,6 +44,9 @@ def timer_config(request):
     default_seconds_by_code = {
         'INACTIVITY_LOGOUT': 4 * 60,
         'INACTIVITY_WARNING': 30,
+        # Minutes-from-midnight (recommended): set delay_unit=minute, delay_value=1020 for 5:00 PM.
+        # Returned here as seconds only for fallback response.
+        'HOLOGRAM_DAILY_ENTRY_DEADLINE_TIME': 17 * 60 * 60,
     }
     default_seconds = int(default_seconds_by_code.get(code, 4 * 60))
 

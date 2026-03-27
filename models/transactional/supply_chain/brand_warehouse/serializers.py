@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import BrandWarehouse, BrandWarehouseUtilization, BrandWarehouseArrival, BrandWarehouseTpCancellation
 from .services import BrandWarehouseStockService
+from models.masters.supply_chain.liquor_data.models import MasterLiquorCategory
 
 
 class BrandWarehouseArrivalSerializer(serializers.ModelSerializer):
@@ -116,6 +117,7 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
     """
     Serializer for Brand Warehouse main model with NEW tag support
     """
+    brand_type = serializers.CharField(read_only=True)
     total_capacity = serializers.ReadOnlyField()
     total_utilized = serializers.ReadOnlyField()
     utilization_percentage = serializers.ReadOnlyField()
@@ -128,16 +130,36 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
     # Liquor data details (read-only for display)
     liquor_data_details = serializers.SerializerMethodField()
 
+    brand_id = serializers.IntegerField(required=False, allow_null=True)
+    brand_name = serializers.CharField(source='brand.brand_name', read_only=True)
+
+    factory_id = serializers.IntegerField(required=False, allow_null=True)
+    factory_name = serializers.CharField(source='factory.factory_name', read_only=True)
+    # Backward compatible name
+    distillery_name = serializers.CharField(source='factory.factory_name', read_only=True)
+
+    # Keep API backward-compatible: expose `capacity_size` as ml while DB stores FK id.
+    capacity_size = serializers.IntegerField(required=False, allow_null=True)
+    capacity_size_id = serializers.IntegerField(read_only=True)
+    capacity_size_master_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
+
     class Meta:
         model = BrandWarehouse
         fields = [
             'id',
+            'is_sync',
             'license_id',
+            'factory_id',
+            'factory_name',
             'distillery_name',
+            'liquor_type',
             'brand_type',
-            'brand_details',
+            'brand_id',
+            'brand_name',
             'current_stock',
             'capacity_size',
+            'capacity_size_id',
+            'capacity_size_master_id',
             'total_capacity',
             'status',
             'liquor_data_id',
@@ -163,6 +185,7 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             'id',
+            'is_sync',
             'total_capacity',
             'total_utilized',
             'utilization_percentage',
@@ -192,10 +215,10 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
         """Backward-compatible structure built from brand_warehouse columns."""
         return {
             'id': obj.liquor_data_id,
-            'brand_name': obj.brand_details,
+            'brand_name': obj.brand_name,
             'brand_owner': '',
             'liquor_type': obj.brand_type,
-            'pack_size_ml': obj.capacity_size,
+            'pack_size_ml': int(obj.capacity_size) if getattr(obj, 'capacity_size_id', None) else 0,
             'manufacturing_unit_name': obj.distillery_name,
             'ex_factory_price_rs_per_case': obj.ex_factory_price_rs_per_case,
             'excise_duty_rs_per_case': obj.excise_duty_rs_per_case,
@@ -213,11 +236,24 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         """Validate capacity and stock levels"""
-        capacity_size = data.get('capacity_size', 0)
-        
-        if capacity_size < 0:
+        capacity_size_ml = data.get('capacity_size', None)
+        master_id = data.pop('capacity_size_master_id', None)
+
+        if master_id is not None:
+            try:
+                data['capacity_size'] = MasterLiquorCategory.objects.get(id=int(master_id))
+            except (TypeError, ValueError, MasterLiquorCategory.DoesNotExist):
+                raise serializers.ValidationError({'capacity_size_master_id': 'Invalid capacity size master id'})
+            return data
+
+        if capacity_size_ml is None:
+            return data
+
+        if int(capacity_size_ml) < 0:
             raise serializers.ValidationError("Capacity size cannot be negative")
-        
+
+        category, _ = MasterLiquorCategory.objects.get_or_create(size_ml=int(capacity_size_ml))
+        data['capacity_size'] = category
         return data
 
 
@@ -253,6 +289,7 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
     """
     Lightweight serializer for listing ALL Sikkim brands with NEW tags
     """
+    brand_type = serializers.CharField(read_only=True)
     total_capacity = serializers.ReadOnlyField()
     total_utilized = serializers.ReadOnlyField()
     utilization_percentage = serializers.ReadOnlyField()
@@ -260,17 +297,32 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
     is_new = serializers.SerializerMethodField()
     last_arrival_date = serializers.SerializerMethodField()
     pack_sizes_info = serializers.SerializerMethodField()
+
+    capacity_size = serializers.IntegerField(required=False, allow_null=True)
+    capacity_size_id = serializers.IntegerField(read_only=True)
+    brand_id = serializers.IntegerField(required=False, allow_null=True)
+    brand_name = serializers.CharField(source='brand.brand_name', read_only=True)
+
+    factory_id = serializers.IntegerField(required=False, allow_null=True)
+    factory_name = serializers.CharField(source='factory.factory_name', read_only=True)
+    distillery_name = serializers.CharField(source='factory.factory_name', read_only=True)
     
     class Meta:
         model = BrandWarehouse
         fields = [
             'id',
+            'is_sync',
             'license_id',
+            'factory_id',
+            'factory_name',
             'distillery_name',
+            'liquor_type',
             'brand_type',
-            'brand_details',
+            'brand_id',
+            'brand_name',
             'current_stock',
             'capacity_size',
+            'capacity_size_id',
             'total_capacity',
             'status',
             'total_utilized',
@@ -281,6 +333,7 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
             'pack_sizes_info',
             'updated_at',
         ]
+        read_only_fields = ['id', 'is_sync']
 
     def get_utilization_count(self, obj):
         """Get count of utilization records"""
@@ -297,8 +350,9 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
 
     def get_pack_sizes_info(self, obj):
         """Get pack size information for this brand"""
+        capacity_ml = int(obj.capacity_size) if getattr(obj, 'capacity_size_id', None) else 0
         return {
-            'capacity_ml': obj.capacity_size,
+            'capacity_ml': capacity_ml,
             'current_stock': obj.current_stock,
             'max_capacity': obj.max_capacity,
             'status': obj.status,

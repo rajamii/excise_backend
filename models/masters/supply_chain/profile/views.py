@@ -120,18 +120,20 @@ class ManufacturingUnitListView(APIView):
     def get(self, request):
         try:
             rows = BrandWarehouse.objects.exclude(
-                distillery_name__isnull=True
+                factory__isnull=True
             ).exclude(
-                distillery_name=''
+                factory__factory_name__isnull=True
+            ).exclude(
+                factory__factory_name=''
             ).exclude(
                 license_id__isnull=True
             ).exclude(
                 license_id=''
-            ).values('distillery_name', 'license_id', 'brand_type')
+            ).values('factory__factory_name', 'license_id', 'liquor_type__liquor_type')
 
             grouped = {}
             for row in rows:
-                name = str(row.get('distillery_name') or '').strip()
+                name = str(row.get('factory__factory_name') or '').strip()
                 if not name:
                     continue
                 grouped.setdefault(name, []).append(row)
@@ -144,7 +146,7 @@ class ManufacturingUnitListView(APIView):
                 for row in unit_rows:
                     candidate = str(row.get('license_id') or '').strip()
                     if not l_type_raw:
-                        l_type_raw = str(row.get('brand_type') or '')
+                        l_type_raw = str(row.get('liquor_type__liquor_type') or '')
                     if not candidate:
                         continue
                     if candidate.startswith('NA/'):

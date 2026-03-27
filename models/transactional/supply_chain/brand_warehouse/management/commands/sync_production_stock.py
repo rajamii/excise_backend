@@ -47,7 +47,7 @@ class Command(BaseCommand):
             brand_warehouses = BrandWarehouse.objects.filter(id=brand_id)
         else:
             brand_warehouses = BrandWarehouse.objects.filter(
-                distillery_name__icontains='sikkim'
+                factory__factory_name__icontains='sikkim'
             )
         
         total_synced = 0

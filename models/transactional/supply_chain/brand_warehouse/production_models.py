@@ -115,7 +115,7 @@ class ProductionBatch(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.batch_reference} - {self.brand_warehouse.brand_details} ({self.quantity_produced} units)"
+        return f"{self.batch_reference} - {self.brand_warehouse.brand_name} ({self.quantity_produced} units)"
 
     def save(self, *args, **kwargs):
         """Override save to update brand warehouse stock"""
@@ -133,7 +133,7 @@ class ProductionBatch(models.Model):
                 self.stock_before = self.brand_warehouse.current_stock
                 self.stock_after = self.stock_before + self.quantity_produced
                 
-                logger.info(f"🏭 Production Batch: Updating stock for {self.brand_warehouse.brand_details}")
+                logger.info(f"🏭 Production Batch: Updating stock for {self.brand_warehouse.brand_name}")
                 logger.info(f"   Previous stock: {self.stock_before}")
                 logger.info(f"   Production quantity: {self.quantity_produced}")
                 logger.info(f"   New stock: {self.stock_after}")

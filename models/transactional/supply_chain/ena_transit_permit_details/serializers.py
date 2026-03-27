@@ -4,6 +4,8 @@ from auth.workflow.constants import WORKFLOW_IDS
 from models.transactional.supply_chain.access_control import condition_role_matches
 
 class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
+    size_ml = serializers.SerializerMethodField()
+    liquor_type = serializers.SerializerMethodField()
     allowed_actions = serializers.SerializerMethodField()
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
     current_stage_description = serializers.CharField(source='current_stage.description', read_only=True)
@@ -57,6 +59,22 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = EnaTransitPermitDetail
         fields = '__all__'
+
+    def get_size_ml(self, obj) -> int:
+        try:
+            if getattr(obj, 'size_ml_id', None):
+                return int(obj.size_ml)
+        except Exception:
+            pass
+        return 0
+
+    def get_liquor_type(self, obj) -> str:
+        try:
+            if getattr(obj, 'liquor_type_id', None):
+                return str(obj.liquor_type or '').strip()
+        except Exception:
+            pass
+        return ''
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -174,3 +192,54 @@ class TransitPermitSubmissionSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         return attrs
+
+
+class PublicTransitPermitDetailSerializer(serializers.ModelSerializer):
+    """
+    Public-facing (no-auth) transit permit serializer.
+    Intentionally exposes a limited set of fields for external consumption.
+    """
+
+    size_ml = serializers.SerializerMethodField()
+    liquor_type = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EnaTransitPermitDetail
+        fields = (
+            'bill_no',
+            'sole_distributor_name',
+            'date',
+            'depot_address',
+            'brand',
+            'size_ml',
+            'cases',
+            'vehicle_number',
+            'licensee_id',
+            'bottle_type',
+            'bottles_per_case',
+            'brand_owner',
+            'liquor_type',
+            'manufacturing_unit_name',
+            'total_amount',
+            'driver_name',
+            'driver_license_no',
+            'transporter_name',
+            'created_at',
+            'updated_at',
+        )
+
+    def get_size_ml(self, obj) -> int:
+        try:
+            if getattr(obj, 'size_ml_id', None):
+                return int(obj.size_ml)
+        except Exception:
+            pass
+        return 0
+
+    def get_liquor_type(self, obj) -> str:
+        try:
+            if getattr(obj, 'liquor_type_id', None):
+                return str(obj.liquor_type or '').strip()
+        except Exception:
+            pass
+        return ''

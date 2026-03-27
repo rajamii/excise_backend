@@ -15,8 +15,8 @@ class License(models.Model):
     license_id = models.CharField(max_length=50, primary_key=True, db_index=True, unique=True)
 
     # Generic Relation
-    source_content_type = models.ForeignKey(ContentType, on_delete=models.PROTECT)
-    source_object_id = models.CharField(max_length=50)
+    source_content_type = models.ForeignKey(ContentType, on_delete=models.PROTECT, null=True, blank=True)
+    source_object_id = models.CharField(max_length=50, null=True, blank=True)
     source_application = GenericForeignKey('source_content_type', 'source_object_id')
 
     source_type = models.CharField(max_length=30, choices=SOURCE_TYPES)

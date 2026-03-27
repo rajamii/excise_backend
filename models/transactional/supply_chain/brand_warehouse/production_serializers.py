@@ -6,7 +6,7 @@ class ProductionBatchSerializer(serializers.ModelSerializer):
     """
     Serializer for Production Batch model
     """
-    brand_name = serializers.CharField(source='brand_warehouse.brand_details', read_only=True)
+    brand_name = serializers.CharField(source='brand_warehouse.brand_name', read_only=True)
     pack_size = serializers.CharField(source='brand_warehouse.capacity_size', read_only=True)
     production_datetime = serializers.DateTimeField(read_only=True)
     formatted_reference = serializers.CharField(read_only=True)
