@@ -5,6 +5,8 @@ from django.contrib.contenttypes.models import ContentType
 from models.masters.core.models import District, LicenseCategory, LicenseSubcategory
 from auth.user.models import CustomUser
 
+from .master_license_form import MasterLicenseForm  # noqa: F401
+
 class License(models.Model):
     SOURCE_TYPES = [
         ('new_license_application', 'New License Application'),
