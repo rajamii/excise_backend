@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 from urllib.parse import quote
@@ -8,7 +8,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.core import signing
 from django.http import HttpResponse
 from django.utils import timezone
-from PIL import Image
+from PIL import Image, ImageChops, ImageFilter
 from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny
@@ -20,6 +20,8 @@ from models.masters.license.models import License
 from models.transactional.license_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
 from utils.simple_pdf import PdfPage, build_text_pdf, build_validation_pdf_multi, paginate_lines
+
+_BRANDING_CACHE: tuple[object|None, object|None] | None = None
 
 
 def _normalize_token(raw: str) -> str:
@@ -128,30 +130,55 @@ def _build_pdf_lines(payload: dict) -> list[str]:
 
 
 def _load_branding_images():
+    global _BRANDING_CACHE
+    if _BRANDING_CACHE is not None:
+        return _BRANDING_CACHE
+
     base_dir = Path(getattr(settings, 'BASE_DIR', Path('.')))
-    logo_path = base_dir / 'static' / 'validation' / 'sikkim-logo.png'
-    watermark_path = base_dir / 'static' / 'validation' / 'watermark.png'
+
+    # NOTE:
+    # - watermark.png is the "boxed" emblem; use it at the top as the header logo.
+    # - For the big center watermark, we generate a cleaned version by keying out the
+    #   background color and applying a low opacity so it doesn't hurt readability.
+    top_logo_path = base_dir / 'static' / 'validation' / 'watermark.png'
+    center_watermark_path = base_dir / 'static' / 'validation' / 'sikkim-logo.png'
 
     logo_img = None
     watermark_img = None
 
     try:
-        if logo_path.exists():
-            logo_img = Image.open(str(logo_path))
+        if top_logo_path.exists():
+            logo_img = Image.open(str(top_logo_path)).convert('RGBA')
+            # Make it a small boxed emblem in the header.
+            logo_img.putalpha(255)
     except Exception:
         logo_img = None
 
+    def _make_clean_watermark(img: Image.Image, *, opacity: int = 22, threshold: int = 18) -> Image.Image:
+        wm = img.convert('RGBA')
+        w, h = wm.size
+        corners = [
+            wm.getpixel((0, 0)),
+            wm.getpixel((w - 1, 0)),
+            wm.getpixel((0, h - 1)),
+            wm.getpixel((w - 1, h - 1)),
+        ]
+        bg_rgb = tuple(int(round(sum(px[i] for px in corners) / len(corners))) for i in range(3))
+        diff = ImageChops.difference(wm.convert('RGB'), Image.new('RGB', wm.size, bg_rgb)).convert('L')
+        mask = diff.point(lambda p: 0 if p <= threshold else 255).filter(ImageFilter.GaussianBlur(radius=1))
+        alpha = mask.point(lambda p: 0 if p == 0 else opacity)
+        wm.putalpha(alpha)
+        return wm
+
     try:
-        if watermark_path.exists():
-            wm = Image.open(str(watermark_path)).convert('RGBA')
-            wm.putalpha(35)
-            watermark_img = wm
+        wm_path = center_watermark_path if center_watermark_path.exists() else top_logo_path
+        if wm_path.exists():
+            watermark_img = _make_clean_watermark(Image.open(str(wm_path)), opacity=22, threshold=18)
     except Exception:
         watermark_img = None
 
-    return logo_img, watermark_img
-
-
+    _BRANDING_CACHE = (logo_img, watermark_img)
+    return _BRANDING_CACHE
 def _make_qr_image(payload: str):
     try:
         from utils.qrcodegen import QrCode
