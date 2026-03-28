@@ -19,6 +19,7 @@ from django.utils import timezone
 from django.http import FileResponse, HttpResponse
 from io import BytesIO
 import base64
+import mimetypes
 from PIL import Image
 from utils.qrcodegen import QrCode
 import re
@@ -310,13 +311,24 @@ def final_license_detail(request, application_id):
 
     photo_url = ""
     photo_exists = False
+    passport_photo_data_url = ""
     try:
         if application.photo and hasattr(application.photo, "url"):
             photo_url = request.build_absolute_uri(application.photo.url)
             photo_exists = application.photo.storage.exists(application.photo.name)
+            if photo_exists:
+                try:
+                    with application.photo.open("rb") as f:
+                        raw = f.read()
+                    mime = mimetypes.guess_type(application.photo.name)[0] or "application/octet-stream"
+                    b64 = base64.b64encode(raw).decode("ascii")
+                    passport_photo_data_url = f"data:{mime};base64,{b64}"
+                except Exception:
+                    passport_photo_data_url = ""
     except Exception:
         photo_url = ""
         photo_exists = False
+        passport_photo_data_url = ""
 
     def make_qr_data_url(licensee_id: str) -> str:
         payload = f"Renewal of License vide Application Id No. : {application.application_id} and Licensee Id No : {licensee_id}"
@@ -361,6 +373,7 @@ def final_license_detail(request, application_id):
         "modeOfOperation": application.mode_of_operation or "",
         "passportPhotoUrl": photo_url,
         "passportPhotoExists": photo_exists,
+        "passportPhotoDataUrl": passport_photo_data_url,
         "licenseFee": application.yearly_license_fee or "",
         "transactionRef": "",
         "transactionDate": "",
