@@ -18,6 +18,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.utils import timezone
 from django.http import FileResponse, HttpResponse
 from io import BytesIO
+import base64
 from PIL import Image
 from utils.qrcodegen import QrCode
 import re
@@ -308,11 +309,38 @@ def final_license_detail(request, application_id):
         return ", ".join([p for p in parts if p])
 
     photo_url = ""
+    photo_exists = False
     try:
         if application.photo and hasattr(application.photo, "url"):
             photo_url = request.build_absolute_uri(application.photo.url)
+            photo_exists = application.photo.storage.exists(application.photo.name)
     except Exception:
         photo_url = ""
+        photo_exists = False
+
+    def make_qr_data_url(licensee_id: str) -> str:
+        payload = f"Renewal of License vide Application Id No. : {application.application_id} and Licensee Id No : {licensee_id}"
+        qr = QrCode.encode_text(payload, QrCode.Ecc.MEDIUM)
+        size = qr.get_size()
+        border = 2
+        scale = 4
+        img_size = (size + border * 2) * scale
+
+        img = Image.new("RGB", (img_size, img_size), "white")
+        pixels = img.load()
+        for y in range(size):
+            for x in range(size):
+                if qr.get_module(x, y):
+                    for dy in range(scale):
+                        for dx in range(scale):
+                            px = (x + border) * scale + dx
+                            py = (y + border) * scale + dy
+                            pixels[px, py] = (0, 0, 0)
+
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{b64}"
 
     license_number = ""
     if license_obj:
@@ -332,12 +360,14 @@ def final_license_detail(request, application_id):
         "district": application.excise_district.district if application.excise_district else "",
         "modeOfOperation": application.mode_of_operation or "",
         "passportPhotoUrl": photo_url,
+        "passportPhotoExists": photo_exists,
         "licenseFee": application.yearly_license_fee or "",
         "transactionRef": "",
         "transactionDate": "",
         "validFrom": fmt_dt(license_obj.issue_date) if license_obj else "",
         "validTo": fmt_dt(license_obj.valid_up_to) if license_obj else (fmt_dt(application.valid_up_to) if getattr(application, "valid_up_to", None) else ""),
         "generatedOn": fmt_dt(timezone.now().date()),
+        "qrCodeDataUrl": make_qr_data_url(license_obj.license_id if license_obj else (application.license_no or application.application_id)),
     }
     return Response(response, status=status.HTTP_200_OK)
 
