@@ -25,6 +25,11 @@ urlpatterns = [
     # Retrieve details of a specific license application by its primary key (GET)
     path('detail/<everything:pk>/', views.license_application_detail, name='license-application-details'), 
 
+    # Final license data for UI/printing (GET)
+    path('final-license/<everything:application_id>/', views.final_license_detail, name='final-license-detail'),
+    path('final-license/<everything:application_id>/passport-photo/', views.final_license_passport_photo, name='final-license-passport-photo'),
+    path('final-license/<everything:application_id>/qr-code/', views.final_license_qr_code, name='final-license-qr-code'),
+
     # Get dashboard statistics/counts (e.g., total applications, approved, pending, etc.) (GET)
     path('dashboard-counts/', views.dashboard_counts, name='dashboard-counts'),
 
