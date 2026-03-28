@@ -154,7 +154,7 @@ def _load_branding_images():
     except Exception:
         logo_img = None
 
-    def _make_clean_watermark(img: Image.Image, *, opacity: int = 22, threshold: int = 18) -> Image.Image:
+    def _make_clean_watermark(img: Image.Image, *, opacity: int = 90, threshold: int = 18) -> Image.Image:
         wm = img.convert('RGBA')
         w, h = wm.size
         corners = [
@@ -166,14 +166,16 @@ def _load_branding_images():
         bg_rgb = tuple(int(round(sum(px[i] for px in corners) / len(corners))) for i in range(3))
         diff = ImageChops.difference(wm.convert('RGB'), Image.new('RGB', wm.size, bg_rgb)).convert('L')
         mask = diff.point(lambda p: 0 if p <= threshold else 255).filter(ImageFilter.GaussianBlur(radius=1))
-        alpha = mask.point(lambda p: 0 if p == 0 else opacity)
-        wm.putalpha(alpha)
-        return wm
 
+        # Build a darker, cleaner watermark by using a solid dark color + computed alpha.
+        alpha = mask.point(lambda p: int((p / 255.0) * opacity))
+        out = Image.new('RGBA', wm.size, (0, 0, 0, 0))
+        out.putalpha(alpha)
+        return out
     try:
         wm_path = center_watermark_path if center_watermark_path.exists() else top_logo_path
         if wm_path.exists():
-            watermark_img = _make_clean_watermark(Image.open(str(wm_path)), opacity=22, threshold=18)
+            watermark_img = _make_clean_watermark(Image.open(str(wm_path)), opacity=90, threshold=18)
     except Exception:
         watermark_img = None
 
