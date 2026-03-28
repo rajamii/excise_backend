@@ -1,6 +1,20 @@
-from django.urls import include, path
+from django.urls import include, path, register_converter
 
 from models.masters.supply_chain.liquor_data import views as liquor_data_views
+from models.transactional.public_validation import views as public_validation_views
+
+
+class EverythingConverter:
+    regex = '.+'
+
+    def to_python(self, value):
+        return value
+
+    def to_url(self, value):
+        return value
+
+
+register_converter(EverythingConverter, 'everything')
 
 
 urlpatterns = [
@@ -23,5 +37,9 @@ urlpatterns = [
         'brand-warehouse-utilization/',
         include('models.transactional.supply_chain.brand_warehouse.short_urls_utilization'),
     ),
+
+    # Public validation (short alias)
+    # /v/<validation-code>/  -> downloads validation PDF
+    path('v/<everything:code>/', public_validation_views.validate_license_pdf, name='validate-license-pdf-short'),
 ]
 

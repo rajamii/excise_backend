@@ -414,9 +414,7 @@ def final_license_detail(request, application_id):
         "licenseNumber": license_number,
         "licenseTitle": license_title,
         "validationCode": validation_code,
-        "validationPdfUrl": request.build_absolute_uri(
-            f"/transactional/validate/license/pdf/?code={quote(validation_code)}"
-        ),
+        "validationPdfUrl": request.build_absolute_uri(f"/v/{quote(validation_code, safe='')}/"),
         "validatedViaCode": validated_via_code,
         "terms": terms,
         "licenseeName": application.member_name or application.establishment_name,

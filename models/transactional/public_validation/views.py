@@ -4,6 +4,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.core import signing
 from django.http import HttpResponse
 from django.utils import timezone
+from urllib.parse import quote
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -137,7 +138,7 @@ def _validate_license_pdf_from_code(request, code: str):
         return Response({'detail': 'Invalid validation code.'}, status=status.HTTP_400_BAD_REQUEST)
 
     now_date = timezone.now().date()
-    validation_pdf_url = request.build_absolute_uri(f'/transactional/validate/license/pdf/?code={token}')
+    validation_pdf_url = request.build_absolute_uri("/v/" + quote(token, safe="") + "/")
 
     if source == 'new_license_application':
         app = NewLicenseApplication.objects.filter(application_id=application_id).first()
@@ -227,3 +228,4 @@ def validate_license_pdf_qs(request):
     if not code:
         return Response({'detail': 'code is required'}, status=status.HTTP_400_BAD_REQUEST)
     return _validate_license_pdf_from_code(request, code)
+
