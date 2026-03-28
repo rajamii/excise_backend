@@ -6,6 +6,7 @@ from models.masters.core.models import District, LicenseCategory, LicenseSubcate
 from auth.user.models import CustomUser
 
 from .master_license_form import MasterLicenseForm  # noqa: F401
+from .master_license_form_terms import MasterLicenseFormTerms  # noqa: F401
 
 class License(models.Model):
     SOURCE_TYPES = [
