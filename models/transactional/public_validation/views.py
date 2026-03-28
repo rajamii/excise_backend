@@ -1,21 +1,25 @@
 ﻿from __future__ import annotations
 
+from pathlib import Path
+from urllib.parse import quote
+
+from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.core import signing
 from django.http import HttpResponse
 from django.utils import timezone
-from urllib.parse import quote
+from PIL import Image
+from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from rest_framework import status
 
 from models.masters.license.master_license_form import MasterLicenseForm
 from models.masters.license.master_license_form_terms import MasterLicenseFormTerms
 from models.masters.license.models import License
 from models.transactional.license_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
-from utils.simple_pdf import PdfPage, build_text_pdf, paginate_lines
+from utils.simple_pdf import PdfPage, build_text_pdf, build_validation_pdf_multi, paginate_lines
 
 
 def _normalize_token(raw: str) -> str:
@@ -67,6 +71,7 @@ def _resolve_license_obj(source: str, application_id: str, model_cls):
 def _fetch_title_terms(cat_code: int | None, scat_code: int | None) -> tuple[str, list[str]]:
     if cat_code is None or scat_code is None:
         return '', []
+
     cfg = MasterLicenseForm.get_license_config(int(cat_code), int(scat_code))
     title = cfg.license_title if cfg else ''
 
@@ -122,6 +127,55 @@ def _build_pdf_lines(payload: dict) -> list[str]:
     return lines
 
 
+def _load_branding_images():
+    base_dir = Path(getattr(settings, 'BASE_DIR', Path('.')))
+    logo_path = base_dir / 'static' / 'validation' / 'sikkim-logo.png'
+    watermark_path = base_dir / 'static' / 'validation' / 'watermark.png'
+
+    logo_img = None
+    watermark_img = None
+
+    try:
+        if logo_path.exists():
+            logo_img = Image.open(str(logo_path))
+    except Exception:
+        logo_img = None
+
+    try:
+        if watermark_path.exists():
+            wm = Image.open(str(watermark_path)).convert('RGBA')
+            wm.putalpha(35)
+            watermark_img = wm
+    except Exception:
+        watermark_img = None
+
+    return logo_img, watermark_img
+
+
+def _make_qr_image(payload: str):
+    try:
+        from utils.qrcodegen import QrCode
+
+        qr = QrCode.encode_text(str(payload), QrCode.Ecc.MEDIUM)
+        size = qr.get_size()
+        border = 2
+        scale = 4
+        img_size = (size + border * 2) * scale
+        img = Image.new('RGB', (img_size, img_size), 'white')
+        pixels = img.load()
+        for y in range(size):
+            for x in range(size):
+                if qr.get_module(x, y):
+                    for dy in range(scale):
+                        for dx in range(scale):
+                            px = (x + border) * scale + dx
+                            py = (y + border) * scale + dy
+                            pixels[px, py] = (0, 0, 0)
+        return img
+    except Exception:
+        return None
+
+
 def _validate_license_pdf_from_code(request, code: str):
     token = _normalize_token(code)
     try:
@@ -138,17 +192,19 @@ def _validate_license_pdf_from_code(request, code: str):
         return Response({'detail': 'Invalid validation code.'}, status=status.HTTP_400_BAD_REQUEST)
 
     now_date = timezone.now().date()
-    validation_pdf_url = request.build_absolute_uri("/v/" + quote(token, safe="") + "/")
+    validation_pdf_url = request.build_absolute_uri('/v/' + quote(token, safe=':') + '/')
 
     if source == 'new_license_application':
         app = NewLicenseApplication.objects.filter(application_id=application_id).first()
         if not app:
             return Response({'detail': 'License not found.'}, status=status.HTTP_404_NOT_FOUND)
+
         lic = _resolve_license_obj(source, app.application_id, NewLicenseApplication)
         license_number = lic.license_id if lic else app.application_id
         cat_code = getattr(lic, 'license_category_id', None) if lic else getattr(app, 'license_category_id', None)
         scat_code = getattr(lic, 'license_sub_category_id', None) if lic else getattr(app, 'license_sub_category_id', None)
         license_title, terms = _fetch_title_terms(cat_code, scat_code)
+
         response_payload = {
             'applicationId': app.application_id,
             'licenseNumber': license_number,
@@ -167,10 +223,12 @@ def _validate_license_pdf_from_code(request, code: str):
             'validatedViaCode': True,
             'terms': terms,
         }
+
     elif source == 'license_application':
         app = LicenseApplication.objects.filter(application_id=application_id).first()
         if not app:
             return Response({'detail': 'License not found.'}, status=status.HTTP_404_NOT_FOUND)
+
         lic = _resolve_license_obj(source, app.application_id, LicenseApplication)
         if lic:
             license_number = lic.license_id
@@ -178,9 +236,11 @@ def _validate_license_pdf_from_code(request, code: str):
             license_number = str(app.license_no)
         else:
             license_number = app.application_id
+
         cat_code = getattr(lic, 'license_category_id', None) if lic else getattr(app, 'license_category_id', None)
         scat_code = getattr(lic, 'license_sub_category_id', None) if lic else None
         license_title, terms = _fetch_title_terms(cat_code, scat_code)
+
         response_payload = {
             'applicationId': app.application_id,
             'licenseNumber': license_number,
@@ -199,12 +259,25 @@ def _validate_license_pdf_from_code(request, code: str):
             'validatedViaCode': True,
             'terms': terms,
         }
+
     else:
         return Response({'detail': 'Unsupported license source.'}, status=status.HTTP_400_BAD_REQUEST)
 
     lines = _build_pdf_lines(response_payload)
     paged = paginate_lines(lines, max_chars=95, lines_per_page=52)
-    pdf = build_text_pdf([PdfPage(lines=p) for p in paged], font_size=10)
+
+    logo_img, watermark_img = _load_branding_images()
+    qr_img = _make_qr_image(validation_pdf_url)
+
+    # Always use the styled PDF generator (multi-page supported)
+    pdf = build_validation_pdf_multi(
+        pages_lines=paged,
+        watermark=watermark_img,
+        logo=logo_img,
+        qr=qr_img,
+        font_size=10,
+        header_each_page=True,
+    )
 
     safe_name = ''.join([c if c.isalnum() or c in ('-', '_') else '_' for c in response_payload['licenseNumber']])[:80]
     filename = f"license_validation_{safe_name or 'document'}.pdf"
