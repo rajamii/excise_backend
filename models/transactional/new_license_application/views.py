@@ -26,6 +26,8 @@ from utils.qrcodegen import QrCode
 import re
 from models.masters.license.master_license_form import MasterLicenseForm
 from models.masters.license.master_license_form_terms import MasterLicenseFormTerms
+from django.core import signing
+from urllib.parse import quote
 
 
 def _normalize_role(role_name):
@@ -317,7 +319,27 @@ def license_application_detail(request, pk):
 @permission_classes([HasAppPermission('new_license_application', 'view')])
 @api_view(['GET'])
 def final_license_detail(request, application_id):
-    application = get_object_or_404(NewLicenseApplication, application_id=application_id)
+    raw_id = str(application_id or "").strip()
+    token = raw_id
+    low = token.lower()
+    if low.startswith("val:"):
+        token = token[4:].strip()
+    elif low.startswith("val-"):
+        token = token[4:].strip()
+    elif low.startswith("val "):
+        token = token[4:].strip()
+
+    resolved_application_id = raw_id
+    validated_via_code = False
+    try:
+        payload = signing.loads(token, salt="final-license")
+        if isinstance(payload, dict) and payload.get("source") == "new_license_application" and payload.get("applicationId"):
+            resolved_application_id = str(payload["applicationId"])
+            validated_via_code = True
+    except Exception:
+        resolved_application_id = raw_id
+
+    application = get_object_or_404(NewLicenseApplication, application_id=resolved_application_id)
 
     role = _normalize_role(request.user.role.name if request.user.role else None)
     if role == "licensee" and application.applicant_id != request.user.id:
@@ -406,10 +428,20 @@ def final_license_detail(request, application_id):
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
         return f"data:image/png;base64,{b64}"
 
+    validation_code = signing.dumps(
+        {"applicationId": application.application_id, "source": "new_license_application"},
+        salt="final-license",
+    )
+
     response = {
         "applicationId": application.application_id,
         "licenseNumber": (license_obj.license_id if license_obj else application.application_id),
         "licenseTitle": "",
+        "validationCode": validation_code,
+        "validationPdfUrl": request.build_absolute_uri(
+            f"/transactional/validate/license/pdf/?code={quote(validation_code)}"
+        ),
+        "validatedViaCode": validated_via_code,
         "terms": [],
         "licenseeName": application.applicant_name,
         "fatherOrHusbandName": application.father_husband_name,
