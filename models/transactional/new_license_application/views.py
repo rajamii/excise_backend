@@ -24,6 +24,8 @@ import mimetypes
 from PIL import Image
 from utils.qrcodegen import QrCode
 import re
+from models.masters.license.master_license_form import MasterLicenseForm
+from models.masters.license.master_license_form_terms import MasterLicenseFormTerms
 
 
 def _normalize_role(role_name):
@@ -407,6 +409,8 @@ def final_license_detail(request, application_id):
     response = {
         "applicationId": application.application_id,
         "licenseNumber": (license_obj.license_id if license_obj else application.application_id),
+        "licenseTitle": "",
+        "terms": [],
         "licenseeName": application.applicant_name,
         "fatherOrHusbandName": application.father_husband_name,
         "kindOfShop": application.license_type.license_type if application.license_type else "",
@@ -424,6 +428,25 @@ def final_license_detail(request, application_id):
         "generatedOn": fmt_dt(timezone.now().date()),
         "qrCodeDataUrl": make_qr_data_url(license_obj.license_id if license_obj else application.application_id),
     }
+
+    cat_code = getattr(license_obj, "license_category_id", None) if license_obj else None
+    scat_code = getattr(license_obj, "license_sub_category_id", None) if license_obj else None
+    if cat_code is None:
+        cat_code = getattr(application, "license_category_id", None)
+    if scat_code is None:
+        scat_code = getattr(application, "license_sub_category_id", None)
+    if cat_code is not None and scat_code is not None:
+        cfg = MasterLicenseForm.get_license_config(int(cat_code), int(scat_code))
+        if cfg:
+            response["licenseTitle"] = cfg.license_title
+
+        qs = MasterLicenseFormTerms.objects.filter(
+            licensee_cat_code=int(cat_code),
+            licensee_scat_code=int(scat_code),
+        ).order_by("sl_no")
+        terms = [str(t.license_terms).strip() for t in qs if getattr(t, "license_terms", None)]
+        terms = [t for t in terms if t]
+        response["terms"] = terms
 
     return Response(response, status=status.HTTP_200_OK)
 
