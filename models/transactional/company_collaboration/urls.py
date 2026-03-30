@@ -26,6 +26,10 @@ urlpatterns = [
     path('list/',             views.list_company_collaborations,  name='list'),
     path('detail/<everything:application_id>/', views.company_collaboration_detail, name='detail'),
 
+    # Workflow actions  ← NEW
+    # POST body: { "action": "FORWARD|APPROVE|REJECT|RAISE_OBJECTION|RESPOND_OBJECTION|WITHDRAW", "remarks": "..." }
+    path('workflow-action/<everything:application_id>/', views.workflow_action, name='workflow-action'),
+
     # Dashboard / reporting
     path('dashboard-counts/', views.dashboard_counts,  name='dashboard-counts'),
     path('list-by-status/',   views.application_group, name='applications-by-status'),

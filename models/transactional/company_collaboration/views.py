@@ -3,8 +3,9 @@ import json
 from django.db import transaction
 from django.http import Http404
 from django.shortcuts import get_object_or_404
-from rest_framework import status
+from rest_framework import permissions, status
 from rest_framework.decorators import api_view, parser_classes, permission_classes
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
@@ -22,6 +23,111 @@ from .serializers import CompanyCollaborationSerializer
 
 JSON_FIELDS = ['selected_brand_ids', 'selected_brands', 'fee_structure', 'overview_summary']
 
+# Stage name constants — must match exactly what is in workflow_workflowstage
+STAGE_APPLICANT_APPLIED             = 'applicant_applied'
+STAGE_PERMIT_SECTION                = 'permit_section'
+STAGE_PERMIT_SECTION_OBJECTION      = 'permit_section_objection'
+STAGE_DEPUTY_COMMISSIONER           = 'deputy_commissioner'
+STAGE_DEPUTY_COMMISSIONER_OBJECTION = 'deputy_commissioner_objection'
+STAGE_COMMISSIONER                  = 'commissioner'
+STAGE_COMMISSIONER_OBJECTION        = 'commissioner_objection'
+STAGE_APPROVED                      = 'approved'
+STAGE_REJECTED                      = 'rejected'
+
+# Stages that are considered "in review" by an officer (application moving forward)
+OFFICER_PENDING_STAGES = [
+    STAGE_PERMIT_SECTION,
+    STAGE_DEPUTY_COMMISSIONER,
+    STAGE_COMMISSIONER,
+]
+
+# Stages where the applicant needs to respond to an objection
+OBJECTION_STAGES = [
+    STAGE_PERMIT_SECTION_OBJECTION,
+    STAGE_DEPUTY_COMMISSIONER_OBJECTION,
+    STAGE_COMMISSIONER_OBJECTION,
+]
+
+# Role name → (pending_stages, approved_stages, rejected_stages)
+ROLE_STAGE_MAP = {
+    'permit_section': {
+        'pending':  [STAGE_PERMIT_SECTION, STAGE_PERMIT_SECTION_OBJECTION],
+        'approved': [STAGE_DEPUTY_COMMISSIONER],
+        'rejected': [STAGE_REJECTED],
+    },
+    'deputy_commissioner': {
+        'pending':  [STAGE_DEPUTY_COMMISSIONER, STAGE_DEPUTY_COMMISSIONER_OBJECTION],
+        'approved': [STAGE_COMMISSIONER],
+        'rejected': [STAGE_REJECTED],
+    },
+    'commissioner': {
+        'pending':  [STAGE_COMMISSIONER, STAGE_COMMISSIONER_OBJECTION],
+        'approved': [STAGE_APPROVED],
+        'rejected': [STAGE_REJECTED],
+    },
+}
+
+# Valid workflow transitions:
+# current_stage_name → action → target_stage_name
+WORKFLOW_TRANSITIONS = {
+    STAGE_APPLICANT_APPLIED: {
+        'FORWARD': STAGE_PERMIT_SECTION,
+        'REJECT':  STAGE_REJECTED,
+    },
+    STAGE_PERMIT_SECTION: {
+        'FORWARD':        STAGE_DEPUTY_COMMISSIONER,
+        'REJECT':         STAGE_REJECTED,
+        'RAISE_OBJECTION': STAGE_PERMIT_SECTION_OBJECTION,
+    },
+    STAGE_PERMIT_SECTION_OBJECTION: {
+        'RESPOND_OBJECTION': STAGE_PERMIT_SECTION,
+        'WITHDRAW':          STAGE_REJECTED,
+    },
+    STAGE_DEPUTY_COMMISSIONER: {
+        'FORWARD':        STAGE_COMMISSIONER,
+        'REJECT':         STAGE_REJECTED,
+        'RAISE_OBJECTION': STAGE_DEPUTY_COMMISSIONER_OBJECTION,
+    },
+    STAGE_DEPUTY_COMMISSIONER_OBJECTION: {
+        'RESPOND_OBJECTION': STAGE_DEPUTY_COMMISSIONER,
+        'WITHDRAW':          STAGE_REJECTED,
+    },
+    STAGE_COMMISSIONER: {
+        'APPROVE':        STAGE_APPROVED,
+        'REJECT':         STAGE_REJECTED,
+        'RAISE_OBJECTION': STAGE_COMMISSIONER_OBJECTION,
+    },
+    STAGE_COMMISSIONER_OBJECTION: {
+        'RESPOND_OBJECTION': STAGE_COMMISSIONER,
+        'WITHDRAW':          STAGE_REJECTED,
+    },
+}
+
+# Which roles are allowed to perform which actions at which stages
+ROLE_ACTION_PERMISSIONS = {
+    'permit_section': {
+        STAGE_PERMIT_SECTION: ['FORWARD', 'REJECT', 'RAISE_OBJECTION'],
+    },
+    'deputy_commissioner': {
+        STAGE_DEPUTY_COMMISSIONER: ['FORWARD', 'REJECT', 'RAISE_OBJECTION'],
+    },
+    'commissioner': {
+        STAGE_COMMISSIONER: ['APPROVE', 'REJECT', 'RAISE_OBJECTION'],
+    },
+    'licensee': {
+        STAGE_PERMIT_SECTION_OBJECTION:      ['RESPOND_OBJECTION', 'WITHDRAW'],
+        STAGE_DEPUTY_COMMISSIONER_OBJECTION: ['RESPOND_OBJECTION', 'WITHDRAW'],
+        STAGE_COMMISSIONER_OBJECTION:        ['RESPOND_OBJECTION', 'WITHDRAW'],
+    },
+    'site_admin': {
+        # Admin can trigger any action for support / testing purposes
+        '__all__': ['FORWARD', 'APPROVE', 'REJECT', 'RAISE_OBJECTION', 'RESPOND_OBJECTION', 'WITHDRAW'],
+    },
+    'single_window': {
+        STAGE_APPLICANT_APPLIED: ['FORWARD', 'REJECT'],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,10 +138,22 @@ def _normalize_role(role_name):
         return None
     normalized = str(role_name).strip().lower().replace('-', '_').replace(' ', '_')
     aliases = {
-        'license_user':  'licensee',
-        'licensee_user': 'licensee',
-        'singlewindow':  'single_window',
-        'siteadmin':     'site_admin',
+        'license_user':       'licensee',
+        'licensee_user':      'licensee',
+        'singlewindow':       'single_window',
+        'siteadmin':          'site_admin',
+        'permitsection':      'permit_section',
+        'permit_excise':      'permit_section',
+        'permitexcise':       'permit_section',
+        'permit_excise_section': 'permit_section',
+        'permit_excise_officer': 'permit_section',
+        'deputycommissioner': 'deputy_commissioner',
+        'deputy_commissioner_excise': 'deputy_commissioner',
+        'deputycommissionerexcise': 'deputy_commissioner',
+        'joint_commissioner': 'deputy_commissioner',
+        'jointcommissioner': 'deputy_commissioner',
+        'commissioner_excise': 'commissioner',
+        'commissionerexcise': 'commissioner',
     }
     return aliases.get(normalized, normalized)
 
@@ -60,6 +178,48 @@ def _resolve_workflow() -> Workflow:
             "Please create it in the Django admin before accepting applications."
         )
     return workflow
+
+
+def _get_stage(workflow: Workflow, stage_name: str) -> WorkflowStage:
+    """Fetch a WorkflowStage by name or raise a clear 400 error."""
+    stage = workflow.stages.filter(name=stage_name).first()
+    if not stage:
+        raise ValueError(
+            f"Stage '{stage_name}' not found in workflow '{workflow.name}'. "
+            "Check your workflow configuration."
+        )
+    return stage
+
+
+def _check_action_permission(role: str, current_stage_name: str, action: str) -> bool:
+    """Return True if the given role may perform action at the current stage."""
+    perms = ROLE_ACTION_PERMISSIONS.get(role, {})
+    # Site admin can do anything
+    if '__all__' in perms and action in perms['__all__']:
+        return True
+    allowed_actions = perms.get(current_stage_name, [])
+    return action in allowed_actions
+
+
+class HasCompanyCollaborationViewPermission(permissions.BasePermission):
+    """
+    Accept the dedicated company_collaboration permission when present, and
+    fall back to company_registration view access for existing role configs.
+    """
+
+    def has_permission(self, request, view):
+        permission_labels = ('company_collaboration', 'company_registration')
+
+        for label in permission_labels:
+            permission = HasAppPermission(label, 'view')
+            try:
+                if permission.has_permission(request, view):
+                    return True
+            except PermissionDenied as exc:
+                if exc.get_codes() != 'cannot_view':
+                    raise
+
+        raise PermissionDenied(detail='Cannot view company_collaboration', code='cannot_view')
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +295,7 @@ def create_company_collaboration(request):
 # ---------------------------------------------------------------------------
 
 @api_view(['GET'])
-@permission_classes([HasAppPermission('company_collaboration', 'view'), HasStagePermission])
+@permission_classes([HasCompanyCollaborationViewPermission, HasStagePermission])
 def list_company_collaborations(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
 
@@ -144,12 +304,22 @@ def list_company_collaborations(request):
     elif role == 'licensee':
         applications = CompanyCollaboration.objects.filter(applicant=request.user)
     else:
-        applications = CompanyCollaboration.objects.filter(
-            current_stage__stagepermission__role=request.user.role,
-            current_stage__stagepermission__can_process=True,
-        ).distinct()
+        # Officer roles: only see applications currently sitting at their stage(s)
+        stages = ROLE_STAGE_MAP.get(role, {})
+        all_officer_stages = (
+            stages.get('pending', []) +
+            stages.get('approved', []) +
+            stages.get('rejected', [])
+        )
+        if all_officer_stages:
+            applications = CompanyCollaboration.objects.filter(
+                current_stage__name__in=all_officer_stages
+            ).distinct()
+        else:
+            applications = CompanyCollaboration.objects.none()
 
-    return Response(CompanyCollaborationSerializer(applications, many=True).data)
+    serializer = CompanyCollaborationSerializer(applications, many=True)
+    return Response(serializer.data)
 
 
 # ---------------------------------------------------------------------------
@@ -157,10 +327,127 @@ def list_company_collaborations(request):
 # ---------------------------------------------------------------------------
 
 @api_view(['GET'])
-@permission_classes([HasAppPermission('company_collaboration', 'view'), HasStagePermission])
+@permission_classes([HasCompanyCollaborationViewPermission, HasStagePermission])
 def company_collaboration_detail(request, application_id):
     application = get_object_or_404(CompanyCollaboration, application_id=application_id)
     return Response(CompanyCollaborationSerializer(application).data)
+
+
+# ---------------------------------------------------------------------------
+# POST /workflow-action/<application_id>/
+# ---------------------------------------------------------------------------
+
+@api_view(['POST'])
+@parser_classes([JSONParser])
+@permission_classes([HasCompanyCollaborationViewPermission, HasStagePermission])
+def workflow_action(request, application_id):
+    """
+    Perform a workflow transition on a Company Collaboration application.
+
+    Request body:
+        {
+            "action":  "FORWARD" | "APPROVE" | "REJECT" | "RAISE_OBJECTION"
+                       | "RESPOND_OBJECTION" | "WITHDRAW",
+            "remarks": "Optional free-text remarks"
+        }
+
+    Workflow path (happy path):
+        applicant_applied
+          → [FORWARD by single_window / admin]
+        permit_section
+          → [FORWARD by permit_section]
+        deputy_commissioner
+          → [FORWARD by deputy_commissioner]
+        commissioner
+          → [APPROVE by commissioner]
+        approved  ✓
+
+    Objection path:
+        <officer stage>
+          → [RAISE_OBJECTION by officer]
+        <objection stage>
+          → [RESPOND_OBJECTION by licensee]  → back to officer stage
+          → [WITHDRAW by licensee]            → rejected
+
+    Rejection: any officer or admin can reject at their stage.
+    """
+    action  = str(request.data.get('action', '')).strip().upper()
+    remarks = str(request.data.get('remarks', '')).strip()
+
+    if not action:
+        return Response({'detail': "'action' is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    application = get_object_or_404(CompanyCollaboration, application_id=application_id)
+
+    # ── Guard: already terminal ───────────────────────────────────────────
+    current_stage_name = application.current_stage.name
+    if current_stage_name in (STAGE_APPROVED, STAGE_REJECTED):
+        return Response(
+            {'detail': f"Application is already in a terminal stage: '{current_stage_name}'."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ── Role check ────────────────────────────────────────────────────────
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if not _check_action_permission(role, current_stage_name, action):
+        return Response(
+            {
+                'detail': (
+                    f"Role '{role}' is not permitted to perform '{action}' "
+                    f"at stage '{current_stage_name}'."
+                )
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ── Determine target stage ────────────────────────────────────────────
+    stage_transitions = WORKFLOW_TRANSITIONS.get(current_stage_name, {})
+    target_stage_name = stage_transitions.get(action)
+
+    if not target_stage_name:
+        return Response(
+            {
+                'detail': (
+                    f"Action '{action}' is not valid at stage '{current_stage_name}'. "
+                    f"Valid actions: {list(stage_transitions.keys())}."
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ── Apply transition ──────────────────────────────────────────────────
+    try:
+        with transaction.atomic():
+            target_stage = _get_stage(application.workflow, target_stage_name)
+
+            application.current_stage = target_stage
+            if action == 'APPROVE':
+                application.is_approved = True
+            elif action in ('REJECT', 'WITHDRAW'):
+                application.is_approved = False
+
+            application.save()
+
+            # Record the transaction in the audit trail
+            WorkflowService.record_transaction(
+                application=application,
+                user=request.user,
+                action=action,
+                remarks=remarks or f"{action.replace('_', ' ').title()} by {role}",
+            )
+
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    fresh = CompanyCollaboration.objects.get(pk=application.pk)
+    return Response(
+        {
+            'detail': f"Action '{action}' applied successfully.",
+            'application': CompanyCollaborationSerializer(fresh).data,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -168,46 +455,43 @@ def company_collaboration_detail(request, application_id):
 # ---------------------------------------------------------------------------
 
 @api_view(['GET'])
-@permission_classes([HasAppPermission('company_collaboration', 'view'), HasStagePermission])
+@permission_classes([HasCompanyCollaborationViewPermission, HasStagePermission])
 def dashboard_counts(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
+    base_qs = CompanyCollaboration.objects
 
-    if role in ['level_1', 'level_2', 'level_3', 'level_4', 'level_5']:
-        workflow  = _resolve_workflow()
-        stage     = WorkflowStage.objects.get(name=role, workflow=workflow)
-        level_num = int(role.split('_')[1])
-        rejected_stage_name = f"rejected_by_{role}"
+    # ── Officer roles ────────────────────────────────────────────────────
+    if role in ROLE_STAGE_MAP:
+        stages = ROLE_STAGE_MAP[role]
         counts = {
-            'pending': CompanyCollaboration.objects.filter(current_stage=stage).count(),
-            'approved': CompanyCollaboration.objects.filter(
-                current_stage__name__in=[f"level_{level_num + 1}", 'awaiting_payment', 'approved']
-            ).count(),
-            'rejected': (
-                CompanyCollaboration.objects.filter(current_stage__name=rejected_stage_name).count()
-                if WorkflowStage.objects.filter(name=rejected_stage_name, workflow=workflow).exists()
-                else 0
-            ),
+            'pending':  base_qs.filter(current_stage__name__in=stages['pending']).count(),
+            'approved': base_qs.filter(current_stage__name__in=stages['approved']).count(),
+            'rejected': base_qs.filter(current_stage__name__in=stages['rejected']).count(),
         }
 
+    # ── Applicant / licensee ─────────────────────────────────────────────
     elif role == 'licensee':
-        base_qs = CompanyCollaboration.objects.filter(applicant=request.user)
+        mine = base_qs.filter(applicant=request.user)
         counts = {
-            'applied':  base_qs.filter(current_stage__name__in=['level_1', 'level_2', 'level_3', 'level_4', 'level_5']).count(),
-            'pending':  base_qs.filter(current_stage__name__in=['level_1_objection', 'level_2_objection', 'level_3_objection', 'level_4_objection', 'level_5_objection', 'awaiting_payment']).count(),
-            'approved': base_qs.filter(current_stage__name='approved', is_approved=True).count(),
-            'rejected': base_qs.filter(current_stage__name__in=['rejected_by_level_1', 'rejected_by_level_2', 'rejected_by_level_3', 'rejected_by_level_4', 'rejected_by_level_5', 'rejected']).count(),
+            'applied':   mine.filter(current_stage__name__in=OFFICER_PENDING_STAGES).count(),
+            'objection': mine.filter(current_stage__name__in=OBJECTION_STAGES).count(),
+            'approved':  mine.filter(current_stage__name=STAGE_APPROVED, is_approved=True).count(),
+            'rejected':  mine.filter(current_stage__name=STAGE_REJECTED).count(),
         }
 
+    # ── Admin / single window ────────────────────────────────────────────
     elif role in ['site_admin', 'single_window']:
         counts = {
-            'applied':  CompanyCollaboration.objects.filter(current_stage__name__in=['applicant_applied', 'level_1_objection', 'level_2_objection', 'level_3_objection', 'level_4_objection', 'level_5_objection', 'awaiting_payment']).count(),
-            'pending':  CompanyCollaboration.objects.filter(current_stage__name__in=['level_1', 'level_2', 'level_3', 'level_4', 'level_5']).count(),
-            'approved': CompanyCollaboration.objects.filter(current_stage__name='approved', is_approved=True).count(),
-            'rejected': CompanyCollaboration.objects.filter(current_stage__name__in=['rejected_by_level_1', 'rejected_by_level_2', 'rejected_by_level_3', 'rejected_by_level_4', 'rejected_by_level_5', 'rejected']).count(),
+            'total':     base_qs.count(),
+            'applied':   base_qs.filter(current_stage__name=STAGE_APPLICANT_APPLIED).count(),
+            'in_review': base_qs.filter(current_stage__name__in=OFFICER_PENDING_STAGES).count(),
+            'objection': base_qs.filter(current_stage__name__in=OBJECTION_STAGES).count(),
+            'approved':  base_qs.filter(current_stage__name=STAGE_APPROVED, is_approved=True).count(),
+            'rejected':  base_qs.filter(current_stage__name=STAGE_REJECTED).count(),
         }
 
     else:
-        return Response({'detail': 'Invalid role.'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'detail': 'Invalid or unsupported role.'}, status=status.HTTP_400_BAD_REQUEST)
 
     return Response(counts)
 
@@ -217,35 +501,44 @@ def dashboard_counts(request):
 # ---------------------------------------------------------------------------
 
 @api_view(['GET'])
-@permission_classes([HasAppPermission('company_collaboration', 'view'), HasStagePermission])
+@permission_classes([HasCompanyCollaborationViewPermission, HasStagePermission])
 @parser_classes([JSONParser])
 def application_group(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
+    base_qs = CompanyCollaboration.objects
 
-    level_map = {
-        'level_1': {'pending': ['level_1', 'level_1_objection'],   'approved': ['level_2'],                     'rejected': ['rejected_by_level_1']},
-        'level_2': {'pending': ['level_2', 'level_2_objection'],   'approved': ['awaiting_payment', 'level_3'], 'rejected': ['rejected_by_level_2']},
-        'level_3': {'pending': ['level_3', 'level_3_objection'],   'approved': ['level_4'],                     'rejected': ['rejected_by_level_3']},
-        'level_4': {'pending': ['level_4', 'level_4_objection'],   'approved': ['level_5'],                     'rejected': ['rejected_by_level_4']},
-        'level_5': {'pending': ['level_5', 'level_5_objection'],   'approved': ['approved'],                    'rejected': ['rejected_by_level_5']},
-    }
+    def _serialize(qs):
+        return CompanyCollaborationSerializer(qs, many=True).data
 
-    if role in level_map:
-        result = {}
-        for key, stages in level_map[role].items():
-            qs = CompanyCollaboration.objects.filter(current_stage__name__in=stages)
-            if key == 'rejected':
-                qs = qs.filter(is_approved=False)
-            result[key] = CompanyCollaborationSerializer(qs, many=True).data
-        return Response(result)
-
-    if role == 'licensee':
-        base_qs = CompanyCollaboration.objects.filter(applicant=request.user)
+    # ── Officer roles ────────────────────────────────────────────────────
+    if role in ROLE_STAGE_MAP:
+        stages = ROLE_STAGE_MAP[role]
         return Response({
-            'applied':   CompanyCollaborationSerializer(base_qs.filter(current_stage__name__in=['level_1', 'level_2', 'level_3', 'level_4', 'level_5']), many=True).data,
-            'pending':   CompanyCollaborationSerializer(base_qs.filter(current_stage__name__in=['level_1_objection', 'level_2_objection', 'level_3_objection', 'level_4_objection', 'level_5_objection', 'awaiting_payment']), many=True).data,
-            'approved':  CompanyCollaborationSerializer(base_qs.filter(current_stage__name='approved'), many=True).data,
-            'rejected':  CompanyCollaborationSerializer(base_qs.filter(current_stage__name__in=['rejected_by_level_1', 'rejected_by_level_2', 'rejected_by_level_3', 'rejected_by_level_4', 'rejected_by_level_5', 'rejected']), many=True).data,
+            'pending':  _serialize(base_qs.filter(current_stage__name__in=stages['pending'])),
+            'approved': _serialize(base_qs.filter(current_stage__name__in=stages['approved'])),
+            'rejected': _serialize(
+                base_qs.filter(current_stage__name__in=stages['rejected'], is_approved=False)
+            ),
         })
 
-    return Response({'detail': 'Invalid role.'}, status=status.HTTP_400_BAD_REQUEST)
+    # ── Applicant / licensee ─────────────────────────────────────────────
+    if role == 'licensee':
+        mine = base_qs.filter(applicant=request.user)
+        return Response({
+            'applied':   _serialize(mine.filter(current_stage__name__in=OFFICER_PENDING_STAGES)),
+            'objection': _serialize(mine.filter(current_stage__name__in=OBJECTION_STAGES)),
+            'approved':  _serialize(mine.filter(current_stage__name=STAGE_APPROVED)),
+            'rejected':  _serialize(mine.filter(current_stage__name=STAGE_REJECTED)),
+        })
+
+    # ── Admin / single window ────────────────────────────────────────────
+    if role in ['site_admin', 'single_window']:
+        return Response({
+            'applied':   _serialize(base_qs.filter(current_stage__name=STAGE_APPLICANT_APPLIED)),
+            'in_review': _serialize(base_qs.filter(current_stage__name__in=OFFICER_PENDING_STAGES)),
+            'objection': _serialize(base_qs.filter(current_stage__name__in=OBJECTION_STAGES)),
+            'approved':  _serialize(base_qs.filter(current_stage__name=STAGE_APPROVED)),
+            'rejected':  _serialize(base_qs.filter(current_stage__name=STAGE_REJECTED)),
+        })
+
+    return Response({'detail': 'Invalid or unsupported role.'}, status=status.HTTP_400_BAD_REQUEST)
