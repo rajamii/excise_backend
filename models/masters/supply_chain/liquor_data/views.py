@@ -4,7 +4,14 @@ from rest_framework import status
 from django.db.models import Q, Max, Count
 import logging
 from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
-from .models import MasterLiquorType, MasterLiquorCategory, MasterBottleType, MasterBrandList, MasterFactoryList
+from .models import (
+    MasterLiquorType,
+    MasterLiquorCategory,
+    MasterBottleType,
+    MasterBrandList,
+    MasterFactoryList,
+    LiquorData,
+)
 from .serializers import (
     MasterLiquorTypeSerializer,
     MasterLiquorCategorySerializer,
@@ -108,6 +115,40 @@ class BrandSizeListView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class LiquorRatesView(APIView):
+    @staticmethod
+    def _resolve_brand_owner(warehouse_row, normalized_brand: str, pack_size_ml: int) -> str:
+        """
+        Resolve brand owner for a given brand + pack size.
+
+        BrandWarehouse does not store brand_owner, so fall back to LiquorData.
+        """
+        try:
+            liquor_data_id = getattr(warehouse_row, 'liquor_data_id', None)
+            if liquor_data_id:
+                row = LiquorData.objects.filter(id=liquor_data_id).first()
+                if row and row.brand_owner:
+                    return str(row.brand_owner).strip()
+        except Exception:
+            pass
+
+        try:
+            row = (
+                LiquorData.objects.filter(
+                    brand_name__iexact=normalized_brand,
+                    pack_size_ml=pack_size_ml,
+                )
+                .exclude(brand_owner__isnull=True)
+                .exclude(brand_owner='')
+                .order_by('-updated_at', '-id')
+                .first()
+            )
+            if row and row.brand_owner:
+                return str(row.brand_owner).strip()
+        except Exception:
+            pass
+
+        return ''
+
     def get(self, request):
         try:
             brand_name = request.query_params.get('brand_name')
@@ -158,7 +199,7 @@ class LiquorRatesView(APIView):
                 'additionalExcise': float(warehouse_row.additional_excise_duty_rs_per_case or 0),
                 
                 # New fields
-                'brandOwner': '',
+                'brandOwner': self._resolve_brand_owner(warehouse_row, normalized_brand, pack_size_ml),
                 'liquorType': warehouse_row.brand_type,
                 'exFactoryPrice': float(warehouse_row.ex_factory_price_rs_per_case or 0),
                 'manufacturingUnitName': warehouse_row.distillery_name,

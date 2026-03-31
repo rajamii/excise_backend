@@ -2,6 +2,7 @@ from rest_framework import serializers
 from .models import EnaTransitPermitDetail
 from auth.workflow.constants import WORKFLOW_IDS
 from models.transactional.supply_chain.access_control import condition_role_matches
+from decimal import Decimal
 
 class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
     size_ml = serializers.SerializerMethodField()
@@ -80,7 +81,194 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         if getattr(instance, 'current_stage', None):
             data['status'] = instance.current_stage.name
+
+        self._enrich_missing_transit_fields(instance, data)
         return data
+
+    def _get_cache(self):
+        cache = getattr(self, '_transit_enrichment_cache', None)
+        if cache is None:
+            cache = {
+                'warehouse': {},
+                'liquor_data': {},
+            }
+            self._transit_enrichment_cache = cache
+        return cache
+
+    def _lookup_brand_warehouse(self, brand: str, size_ml: int, licensee_id: str):
+        cache = self._get_cache()['warehouse']
+        key = (str(brand or '').strip().lower(), int(size_ml or 0), str(licensee_id or '').strip().upper())
+        if key in cache:
+            return cache[key]
+
+        try:
+            from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
+
+            normalized_brand = str(brand or '').strip()
+            size_ml_val = int(size_ml or 0)
+            normalized_license = str(licensee_id or '').strip()
+            if not normalized_brand or size_ml_val <= 0:
+                cache[key] = None
+                return None
+
+            base = BrandWarehouse.objects.select_related(
+                'brand', 'factory', 'liquor_type', 'capacity_size'
+            ).filter(
+                brand__brand_name__iexact=normalized_brand,
+                capacity_size__size_ml=size_ml_val,
+            )
+
+            row = None
+            if normalized_license:
+                row = base.filter(license_id__iexact=normalized_license).first()
+            if not row:
+                row = base.first()
+
+            cache[key] = row
+            return row
+        except Exception:
+            cache[key] = None
+            return None
+
+    def _lookup_liquor_data(self, warehouse_row, brand: str, size_ml: int):
+        cache = self._get_cache()['liquor_data']
+        key = (str(brand or '').strip().lower(), int(size_ml or 0), int(getattr(warehouse_row, 'liquor_data_id', 0) or 0))
+        if key in cache:
+            return cache[key]
+
+        try:
+            from models.masters.supply_chain.liquor_data.models import LiquorData
+
+            liquor_data_id = getattr(warehouse_row, 'liquor_data_id', None) if warehouse_row else None
+            if liquor_data_id:
+                row = LiquorData.objects.filter(id=liquor_data_id).first()
+                cache[key] = row
+                return row
+
+            normalized_brand = str(brand or '').strip()
+            size_ml_val = int(size_ml or 0)
+            if not normalized_brand or size_ml_val <= 0:
+                cache[key] = None
+                return None
+
+            row = (
+                LiquorData.objects.filter(brand_name__iexact=normalized_brand, pack_size_ml=size_ml_val)
+                .order_by('-updated_at', '-id')
+                .first()
+            )
+            cache[key] = row
+            return row
+        except Exception:
+            cache[key] = None
+            return None
+
+    def _parse_decimal(self, value):
+        try:
+            if value is None or value == '':
+                return Decimal('0')
+            return Decimal(str(value))
+        except Exception:
+            return Decimal('0')
+
+    def _enrich_missing_transit_fields(self, instance: EnaTransitPermitDetail, data: dict) -> None:
+        """
+        Ensure Brand Owner / Manufacturing Unit / Amounts are available in API response.
+
+        Older rows (or deployments where the UI didn't submit enriched fields) can have empty
+        `brand_owner`, `manufacturing_unit_name`, and amount fields. Enrich using BrandWarehouse
+        + LiquorData (brand + pack size).
+        """
+        try:
+            size_ml_val = 0
+            try:
+                if getattr(instance, 'size_ml_id', None) and getattr(instance, 'size_ml', None) is not None:
+                    size_ml_val = int(instance.size_ml)
+            except Exception:
+                size_ml_val = 0
+
+            brand = str(getattr(instance, 'brand', '') or '').strip()
+            licensee_id = str(getattr(instance, 'licensee_id', '') or '').strip()
+            if not brand or size_ml_val <= 0:
+                return
+
+            warehouse_row = self._lookup_brand_warehouse(brand, size_ml_val, licensee_id)
+            liquor_data_row = self._lookup_liquor_data(warehouse_row, brand, size_ml_val)
+
+            # Manufacturing unit
+            if not str(data.get('manufacturing_unit_name') or '').strip():
+                manufacturing_unit = ''
+                if warehouse_row:
+                    manufacturing_unit = str(getattr(warehouse_row, 'distillery_name', '') or '').strip()
+                if not manufacturing_unit and liquor_data_row:
+                    manufacturing_unit = str(getattr(liquor_data_row, 'manufacturing_unit_name', '') or '').strip()
+                if manufacturing_unit:
+                    data['manufacturing_unit_name'] = manufacturing_unit
+
+            # Brand owner
+            if not str(data.get('brand_owner') or '').strip():
+                brand_owner = ''
+                if liquor_data_row:
+                    brand_owner = str(getattr(liquor_data_row, 'brand_owner', '') or '').strip()
+                if brand_owner:
+                    data['brand_owner'] = brand_owner
+
+            # Liquor type display (serializer field is string)
+            if not str(data.get('liquor_type') or '').strip():
+                liquor_type_name = ''
+                try:
+                    if warehouse_row and getattr(warehouse_row, 'liquor_type_id', None) and getattr(warehouse_row, 'liquor_type', None):
+                        liquor_type_name = str(warehouse_row.liquor_type or '').strip()
+                except Exception:
+                    liquor_type_name = ''
+                if not liquor_type_name and liquor_data_row:
+                    liquor_type_name = str(getattr(liquor_data_row, 'liquor_type', '') or '').strip()
+                if liquor_type_name:
+                    data['liquor_type'] = liquor_type_name
+
+            # Per-case rates: prefer stored values; otherwise derive from warehouse row.
+            per_case_fields = [
+                ('exfactory_price_rs_per_case', 'ex_factory_price_rs_per_case'),
+                ('excise_duty_rs_per_case', 'excise_duty_rs_per_case'),
+                ('education_cess_rs_per_case', 'education_cess_rs_per_case'),
+                ('additional_excise_duty_rs_per_case', 'additional_excise_duty_rs_per_case'),
+            ]
+            for api_field, warehouse_attr in per_case_fields:
+                current = self._parse_decimal(data.get(api_field))
+                if current > 0:
+                    continue
+                if warehouse_row:
+                    derived = self._parse_decimal(getattr(warehouse_row, warehouse_attr, 0) or 0)
+                    if derived > 0:
+                        data[api_field] = str(derived)
+
+            cases = 0
+            try:
+                cases = int(getattr(instance, 'cases', 0) or 0)
+            except Exception:
+                cases = 0
+
+            if cases <= 0:
+                return
+
+            # Totals: compute if missing/zero.
+            excise_per_case = self._parse_decimal(data.get('excise_duty_rs_per_case'))
+            education_per_case = self._parse_decimal(data.get('education_cess_rs_per_case'))
+            additional_per_case = self._parse_decimal(data.get('additional_excise_duty_rs_per_case'))
+
+            if self._parse_decimal(data.get('total_excise_duty')) <= 0 and excise_per_case > 0:
+                data['total_excise_duty'] = str(excise_per_case * cases)
+            if self._parse_decimal(data.get('total_education_cess')) <= 0 and education_per_case > 0:
+                data['total_education_cess'] = str(education_per_case * cases)
+            if self._parse_decimal(data.get('total_additional_excise')) <= 0 and additional_per_case > 0:
+                data['total_additional_excise'] = str(additional_per_case * cases)
+
+            if self._parse_decimal(data.get('total_amount')) <= 0:
+                total_per_case = excise_per_case + education_per_case + additional_per_case
+                if total_per_case > 0:
+                    data['total_amount'] = str(total_per_case * cases)
+        except Exception:
+            # Never break API responses due to enrichment.
+            return
 
     def get_allowed_actions(self, obj):
         """
@@ -164,7 +352,6 @@ class TransitPermitProductSerializer(serializers.Serializer):
     Serializer to validate individual product items within the submission payload.
     """
     brand = serializers.CharField(max_length=255)
-    size = serializers.CharField() # Input 'size'
     size = serializers.CharField() # Input 'size'
     cases = serializers.IntegerField()
     bottle_type = serializers.CharField(required=False, allow_blank=True) # New field

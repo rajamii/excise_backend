@@ -325,6 +325,11 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
             'capacity_size_id',
             'total_capacity',
             'status',
+            # Rate fields (needed by Transit Permit UI to calculate amounts without calling /rates/)
+            'ex_factory_price_rs_per_case',
+            'excise_duty_rs_per_case',
+            'education_cess_rs_per_case',
+            'additional_excise_duty_rs_per_case',
             'total_utilized',
             'utilization_percentage',
             'utilization_count',

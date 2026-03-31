@@ -58,13 +58,29 @@ def _get_size_ml_value(item) -> int:
 class SubmitTransitPermitAPIView(views.APIView):
     permission_classes = [IsAuthenticated]
 
+    def _parse_int_from_size(self, value) -> int:
+        """
+        Parse pack size ml from common UI inputs: 750, "750", "750ml", "750 ML".
+        """
+        try:
+            if value is None:
+                return 0
+            if isinstance(value, int):
+                return int(value)
+            if isinstance(value, float):
+                return int(value)
+            raw = str(value).strip().lower()
+            if not raw:
+                return 0
+            digits = re.findall(r'\d+', raw)
+            return int(digits[0]) if digits else 0
+        except Exception:
+            return 0
+
     def _resolve_master_liquor_category(self, size_ml):
         from models.masters.supply_chain.liquor_data.models import MasterLiquorCategory
 
-        try:
-            normalized = int(size_ml or 0)
-        except Exception:
-            normalized = 0
+        normalized = self._parse_int_from_size(size_ml)
 
         obj, _ = MasterLiquorCategory.objects.get_or_create(size_ml=normalized)
         return obj
@@ -75,6 +91,130 @@ class SubmitTransitPermitAPIView(views.APIView):
         name = str(liquor_type or '').strip() or 'Other'
         obj, _ = MasterLiquorType.objects.get_or_create(liquor_type=name)
         return obj
+
+    def _resolve_brand_warehouse_row(self, brand_name: str, size_ml: int, licensee_id: str):
+        try:
+            from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
+
+            normalized_brand = str(brand_name or '').strip()
+            size_ml_val = int(size_ml or 0)
+            normalized_license = str(licensee_id or '').strip()
+            if not normalized_brand or size_ml_val <= 0:
+                return None
+
+            base = BrandWarehouse.objects.select_related(
+                'brand', 'factory', 'liquor_type', 'capacity_size'
+            ).filter(
+                brand__brand_name__iexact=normalized_brand,
+                capacity_size__size_ml=size_ml_val,
+            )
+
+            row = None
+            if normalized_license:
+                row = base.filter(license_id__iexact=normalized_license).first()
+            if not row:
+                row = base.first()
+            return row
+        except Exception:
+            return None
+
+    def _resolve_liquor_data_row(self, warehouse_row, brand_name: str, size_ml: int):
+        try:
+            from models.masters.supply_chain.liquor_data.models import LiquorData
+
+            liquor_data_id = getattr(warehouse_row, 'liquor_data_id', None) if warehouse_row else None
+            if liquor_data_id:
+                return LiquorData.objects.filter(id=liquor_data_id).first()
+
+            normalized_brand = str(brand_name or '').strip()
+            size_ml_val = int(size_ml or 0)
+            if not normalized_brand or size_ml_val <= 0:
+                return None
+
+            return (
+                LiquorData.objects.filter(brand_name__iexact=normalized_brand, pack_size_ml=size_ml_val)
+                .order_by('-updated_at', '-id')
+                .first()
+            )
+        except Exception:
+            return None
+
+    def _enrich_product_payload_from_masters(self, product: dict, licensee_id: str) -> dict:
+        """
+        Ensure product payload has brand owner, manufacturing unit, liquor type and rates.
+
+        Some deployments/UI flows submit only brand/size/cases (without rates/meta). To keep
+        server-side data consistent (and to make hosted environment work), derive missing
+        values from BrandWarehouse + LiquorData.
+        """
+        if not isinstance(product, dict):
+            return product
+
+        brand = str(product.get('brand') or '').strip()
+        size_ml_val = self._parse_int_from_size(product.get('size'))
+        if not brand or size_ml_val <= 0:
+            return product
+
+        warehouse_row = self._resolve_brand_warehouse_row(brand, size_ml_val, licensee_id)
+        liquor_data_row = self._resolve_liquor_data_row(warehouse_row, brand, size_ml_val)
+
+        def has_value(v) -> bool:
+            return str(v or '').strip() != ''
+
+        # Meta fields
+        if not has_value(product.get('manufacturing_unit_name')):
+            manufacturing_unit = ''
+            if warehouse_row:
+                manufacturing_unit = str(getattr(warehouse_row, 'distillery_name', '') or '').strip()
+            if not manufacturing_unit and liquor_data_row:
+                manufacturing_unit = str(getattr(liquor_data_row, 'manufacturing_unit_name', '') or '').strip()
+            if manufacturing_unit:
+                product['manufacturing_unit_name'] = manufacturing_unit
+
+        if not has_value(product.get('brand_owner')) and liquor_data_row:
+            brand_owner = str(getattr(liquor_data_row, 'brand_owner', '') or '').strip()
+            if brand_owner:
+                product['brand_owner'] = brand_owner
+
+        if not has_value(product.get('liquor_type')):
+            liquor_type_name = ''
+            try:
+                if warehouse_row and getattr(warehouse_row, 'liquor_type', None):
+                    liquor_type_name = str(warehouse_row.liquor_type or '').strip()
+            except Exception:
+                liquor_type_name = ''
+            if not liquor_type_name and liquor_data_row:
+                liquor_type_name = str(getattr(liquor_data_row, 'liquor_type', '') or '').strip()
+            if liquor_type_name:
+                product['liquor_type'] = liquor_type_name
+
+        # Rate fields (per case)
+        def ensure_rate(product_key: str, warehouse_attr: str):
+            try:
+                current = Decimal(str(product.get(product_key, 0) or 0))
+            except Exception:
+                current = Decimal('0')
+
+            if current > 0:
+                return
+
+            if not warehouse_row:
+                return
+
+            try:
+                derived = Decimal(str(getattr(warehouse_row, warehouse_attr, 0) or 0))
+            except Exception:
+                derived = Decimal('0')
+
+            if derived > 0:
+                product[product_key] = float(derived)
+
+        ensure_rate('ex_factory_price', 'ex_factory_price_rs_per_case')
+        ensure_rate('excise_duty', 'excise_duty_rs_per_case')
+        ensure_rate('education_cess', 'education_cess_rs_per_case')
+        ensure_rate('additional_excise', 'additional_excise_duty_rs_per_case')
+
+        return product
 
     def _resolve_submit_target_stage(self):
         """
@@ -454,6 +594,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                     )
 
                     for product in products:
+                        product = self._enrich_product_payload_from_masters(product, licensee_id)
                         obj = EnaTransitPermitDetail(
                             bill_no=bill_no,
                             sole_distributor_name=sole_distributor_name,
