@@ -40,10 +40,14 @@ class BrandWarehouse(models.Model):
     ]
 
     # Basic Information
-    distillery_name = models.CharField(
-        max_length=255,
-        db_column='distillery_name',
-        help_text='Name of the distillery/manufacturing unit'
+    factory = models.ForeignKey(
+        'liquor_data.MasterFactoryList',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        db_column='factory_id',
+        related_name='brand_warehouses',
+        help_text='Master factory (FK to master_factory_list.id)'
     )
     license_id = models.CharField(
         max_length=100,
@@ -52,16 +56,23 @@ class BrandWarehouse(models.Model):
         blank=True,
         help_text='Stable licensee identifier used to scope stock per establishment'
     )
-    brand_type = models.CharField(
-        max_length=100,
-        db_column='brand_type',
-        help_text='Type of brand (e.g., Whisky, Rum, Vodka)'
-    )
-    brand_details = models.TextField(
-        db_column='brand_details',
-        blank=True,
+    liquor_type = models.ForeignKey(
+        'liquor_data.MasterLiquorType',
         null=True,
-        help_text='Detailed information about the brand'
+        blank=True,
+        on_delete=models.SET_NULL,
+        db_column='liquor_type',
+        related_name='brand_warehouses',
+        help_text='Master liquor type (FK to master_liquor_type.id)'
+    )
+    brand = models.ForeignKey(
+        'liquor_data.MasterBrandList',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        db_column='brand_id',
+        related_name='brand_warehouses',
+        help_text='Master brand (FK to master_brand_list.id)'
     )
     purpose_of_sale = models.CharField(
         max_length=50,
@@ -78,11 +89,15 @@ class BrandWarehouse(models.Model):
         help_text='Current stock quantity in units'
     )
 
-    # Capacity Information (in ml)
-    capacity_size = models.IntegerField(
-        default=0,
+    # Capacity Information (normalized via master table)
+    capacity_size = models.ForeignKey(
+        'liquor_data.MasterLiquorCategory',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
         db_column='capacity_size',
-        help_text='Pack size in ml (e.g., 750, 375, 180)'
+        related_name='brand_warehouses',
+        help_text='Pack size (FK to master_liquor_category.id)'
     )
 
     # Status
@@ -101,6 +116,13 @@ class BrandWarehouse(models.Model):
         null=True,
         blank=True,
         help_text='Legacy reference id from liquor_data_details'
+    )
+
+    # Sync flag for external integrations (0 = not synced, 1 = synced)
+    is_sync = models.IntegerField(
+        default=0,
+        db_column='is_sync',
+        help_text='Sync flag (0 = not synced, 1 = synced)'
     )
 
     # Rate/tax fields migrated from liquor_data_details
@@ -200,13 +222,61 @@ class BrandWarehouse(models.Model):
         verbose_name_plural = 'Brand Warehouses'
         indexes = [
             models.Index(fields=['license_id']),
-            models.Index(fields=['distillery_name']),
-            models.Index(fields=['brand_type']),
+            models.Index(fields=['factory']),
+            models.Index(fields=['liquor_type']),
+            models.Index(fields=['brand']),
             models.Index(fields=['status']),
         ]
 
     def __str__(self):
-        return f"{self.distillery_name} - {self.brand_type}"
+        return f"{self.factory_name} - {self.brand_name}"
+
+    @property
+    def factory_name(self) -> str:
+        try:
+            if getattr(self, 'factory_id', None) and getattr(self, 'factory', None):
+                return str(getattr(self.factory, 'factory_name', '') or '').strip()
+        except Exception:
+            pass
+        return ''
+
+    @property
+    def distillery_name(self) -> str:
+        """
+        Backward-compatible factory display string.
+
+        Legacy code and clients still refer to this as `distillery_name`.
+        """
+        return self.factory_name
+
+    @property
+    def brand_name(self) -> str:
+        try:
+            if getattr(self, 'brand_id', None) and getattr(self, 'brand', None):
+                return str(getattr(self.brand, 'brand_name', '') or '').strip()
+        except Exception:
+            pass
+        return ''
+
+    @property
+    def brand_details(self) -> str:
+        """
+        Backward-compatible brand display string.
+
+        Legacy code and clients still refer to this as `brand_details`.
+        """
+        return self.brand_name
+
+    @property
+    def brand_type(self):
+        """
+        Backward-compatible liquor type display string.
+
+        Legacy code and clients still refer to this as `brand_type`.
+        """
+        if getattr(self, 'liquor_type_id', None) and getattr(self, 'liquor_type', None):
+            return str(getattr(self.liquor_type, 'liquor_type', '') or '').strip()
+        return ''
 
     @property
     def total_capacity(self):

@@ -2,6 +2,7 @@
 from django.urls import path, include
 
 urlpatterns = [
+    path('validate/', include(('models.transactional.public_validation.urls', 'public_validation'), namespace='public_validation')),
     path('company-registration/', include(('models.transactional.company_registration.urls', 'company_registration'), namespace='company_registration')),
     path('company-collaboration/', include(('models.transactional.company_collaboration.urls', 'company_collaboration'), namespace='company_collaboration')),
     path('license_application/', include(('models.transactional.license_application.urls', 'license_application'), namespace='license_application')),

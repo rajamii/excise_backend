@@ -1,8 +1,14 @@
 from django.contrib import admin
-from .models import TransitPermitBottleType
+from django.contrib.admin.sites import AlreadyRegistered
+from .models import BrandMlInCases
 
-@admin.register(TransitPermitBottleType)
-class TransitPermitBottleTypeAdmin(admin.ModelAdmin):
-    list_display = ('bottle_type', 'is_active', 'created_at', 'updated_at')
-    search_fields = ('bottle_type',)
-    list_filter = ('is_active',)
+
+class BrandMlInCasesAdmin(admin.ModelAdmin):
+    list_display = ('ml', 'pieces_in_case', 'created_at', 'updated_at')
+    search_fields = ('ml',)
+
+
+try:
+    admin.site.register(BrandMlInCases, BrandMlInCasesAdmin)
+except AlreadyRegistered:
+    pass

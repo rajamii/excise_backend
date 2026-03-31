@@ -5,6 +5,9 @@ from django.contrib.contenttypes.models import ContentType
 from models.masters.core.models import District, LicenseCategory, LicenseSubcategory
 from auth.user.models import CustomUser
 
+from .master_license_form import MasterLicenseForm  # noqa: F401
+from .master_license_form_terms import MasterLicenseFormTerms  # noqa: F401
+
 class License(models.Model):
     SOURCE_TYPES = [
         ('new_license_application', 'New License Application'),
@@ -15,8 +18,8 @@ class License(models.Model):
     license_id = models.CharField(max_length=50, primary_key=True, db_index=True, unique=True)
 
     # Generic Relation
-    source_content_type = models.ForeignKey(ContentType, on_delete=models.PROTECT)
-    source_object_id = models.CharField(max_length=50)
+    source_content_type = models.ForeignKey(ContentType, on_delete=models.PROTECT, null=True, blank=True)
+    source_object_id = models.CharField(max_length=50, null=True, blank=True)
     source_application = GenericForeignKey('source_content_type', 'source_object_id')
 
     source_type = models.CharField(max_length=30, choices=SOURCE_TYPES)

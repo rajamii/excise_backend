@@ -7,6 +7,8 @@ from django.urls import include
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('auth/', include('auth.urls')),
+    # Short alias routes (keep existing long routes too)
+    path('', include('excise_backend.shortcuts_urls')),
     path('masters/', include('models.masters.urls')),
     path('transactional/', include('models.transactional.urls')),
     
