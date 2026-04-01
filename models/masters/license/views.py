@@ -1,6 +1,7 @@
 from django.utils.timezone import now
 from django.shortcuts import get_object_or_404
 from django.utils.timezone import now
+from django.http import Http404
 from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.parsers import JSONParser
 from rest_framework.response import Response
@@ -11,6 +12,25 @@ from auth.roles.permissions import HasAppPermission
 from .models import License
 from models.transactional.new_license_application.models import NewLicenseApplication
 from .serializers import LicenseSerializer, LicenseDetailSerializer, MyLicenseDetailsSerializer
+
+def _resolve_license(identifier: str) -> License:
+    """
+    Resolve a License by either its `license_id` OR by `source_object_id` (application id).
+    This supports screens that pass application ids like NLI/... or LIC/... instead of NA/.../LA/... ids.
+    """
+    token = str(identifier or "").strip()
+    if not token:
+        raise Http404("License not found")
+
+    direct = License.objects.filter(license_id=token).first()
+    if direct:
+        return direct
+
+    by_source = License.objects.filter(source_object_id=token).order_by("-issue_date").first()
+    if by_source:
+        return by_source
+
+    raise Http404("License not found")
 
 @permission_classes([HasAppPermission('license', 'view')])
 @api_view(['GET'])
@@ -26,7 +46,7 @@ def list_licenses(request):
 @api_view(['GET'])
 @parser_classes([JSONParser])
 def print_license_view(request, license_id):
-    license = get_object_or_404(License, license_id=license_id)
+    license = _resolve_license(license_id)
 
     can_print, fee = license.can_print_license()
 
@@ -43,14 +63,45 @@ def print_license_view(request, license_id):
 
     return Response({
         "success": "License printed.",
-        "print_count": license.print_count
+        "print_count": license.print_count,
+        "is_print_fee_paid": license.is_print_fee_paid,
+        "fee_required": fee
     })
+
+@permission_classes([HasAppPermission('license', 'view')])
+@api_view(['POST'])
+@parser_classes([JSONParser])
+def pay_print_fee_view(request, license_id):
+    """
+    Marks the duplicate print fee (â‚¹500) as paid for the next print only.
+    After printing, the token is consumed and `is_print_fee_paid` is reset to False.
+    """
+    license = _resolve_license(license_id)
+
+    if (license.print_count or 0) < 5:
+        return Response({
+            "success": "No print fee required yet.",
+            "print_count": license.print_count,
+            "is_print_fee_paid": False,
+            "fee_required": 0
+        }, status=status.HTTP_200_OK)
+
+    license.is_print_fee_paid = True
+    license.print_fee_paid_on = now()
+    license.save(update_fields=["is_print_fee_paid", "print_fee_paid_on"])
+
+    return Response({
+        "success": "Print fee marked as paid.",
+        "print_count": license.print_count,
+        "is_print_fee_paid": license.is_print_fee_paid,
+        "fee_required": 500
+    }, status=status.HTTP_200_OK)
 
 
 @permission_classes([HasAppPermission('license', 'view')])
 @api_view(['GET'])
 def license_detail(request, license_id):
-    license = get_object_or_404(License, license_id=license_id)
+    license = _resolve_license(license_id)
     serializer = LicenseDetailSerializer(license)
     return Response(serializer.data, status=status.HTTP_200_OK)
 

@@ -85,8 +85,13 @@ class License(models.Model):
 
     def record_license_print(self, fee_paid=False):
         self.print_count += 1
-        if self.print_count > 5 and fee_paid:
-            self.is_print_fee_paid = True
+        self.printed_on = now()
+        # Treat `is_print_fee_paid` as a one-time token for the next duplicate print
+        # (after 5 free prints, each additional print requires a fresh payment).
+        if fee_paid:
+            if not self.print_fee_paid_on:
+                self.print_fee_paid_on = now()
+            self.is_print_fee_paid = False
         self.save()
 
     def save(self, *args, **kwargs):
