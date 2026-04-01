@@ -265,10 +265,14 @@ def list_license_applications(request):
     return Response(serializer.data)
 
 
-@permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('license_application', 'view')])
 @api_view(['GET'])
 def license_application_detail(request, pk):
-    application = get_object_or_404(LicenseApplication, pk=pk)
+    raw_pk = str(pk or "").strip()
+    if raw_pk.isdigit():
+        application = get_object_or_404(LicenseApplication, pk=int(raw_pk))
+    else:
+        application = get_object_or_404(LicenseApplication, application_id=raw_pk)
 
     role = _normalize_role(request.user.role.name if request.user.role else None)
     if role == "licensee" and application.applicant_id != request.user.id:
