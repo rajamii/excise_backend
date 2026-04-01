@@ -97,6 +97,12 @@ def _build_pdf_lines(payload: dict) -> list[str]:
     code = str(payload.get('validationCode') or '').strip()
     pdf_url = str(payload.get('validationPdfUrl') or '').strip()
 
+    def _chunk(text: str, *, size: int = 72) -> list[str]:
+        raw = str(text or '')
+        if not raw:
+            return []
+        return [raw[i : i + size] for i in range(0, len(raw), size)]
+
     lines: list[str] = []
     lines.append('EXCISE DEPARTMENT - Government of Sikkim')
     if title:
@@ -113,18 +119,23 @@ def _build_pdf_lines(payload: dict) -> list[str]:
         lines.append(f"Valid From: {payload.get('validFrom') or ''}   Valid To: {payload.get('validTo') or ''}")
     lines.append(f"Generated On: {payload.get('generatedOn') or ''}")
     lines.append('')
-    lines.append(f"VALIDATION: {'VERIFIED' if validated else 'NOT VERIFIED'}")
-    if code:
-        lines.append(f'Validation Code: {code}')
-    if pdf_url:
-        lines.append(f'Validation PDF URL: {pdf_url}')
-    lines.append('')
 
-    terms = payload.get('terms') or []
-    if isinstance(terms, list) and terms:
-        lines.append('Terms and Conditions:')
-        for idx, t in enumerate(terms, start=1):
-            lines.append(f'{idx}. {t}')
+    lines.append('VALIDATION:')
+    if validated:
+        lines.append('__VALID_OK__VERIFIED')
+    else:
+        lines.append('__VALID_BAD__NOT VERIFIED')
+
+    if code:
+        lines.append('Validation Code:')
+        for part in _chunk(code, size=72):
+            lines.append(f'  {part}')
+
+    if pdf_url:
+        lines.append('Validation PDF URL:')
+        for part in _chunk(pdf_url, size=72):
+            lines.append(f'  {part}')
+    lines.append('')
 
     return lines
 
@@ -221,7 +232,9 @@ def _validate_license_pdf_from_code(request, code: str):
         return Response({'detail': 'Invalid validation code.'}, status=status.HTTP_400_BAD_REQUEST)
 
     now_date = timezone.now().date()
-    validation_pdf_url = request.build_absolute_uri('/v/' + quote(token, safe=':') + '/')
+    # Some production deployments (nginx) proxy only `/masters/...` to Django and serve `/` from Angular (SPA).
+    # Expose the validation link under `/masters/v/<code>/` so it works without extra reverse-proxy routes.
+    validation_pdf_url = request.build_absolute_uri('/masters/v/' + quote(token, safe=':') + '/')
 
     if source == 'new_license_application':
         app = NewLicenseApplication.objects.filter(application_id=application_id).first()
