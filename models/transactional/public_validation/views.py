@@ -275,6 +275,7 @@ def _validate_license_pdf_from_code(request, code: str):
 
     source = str(payload.get('source') or '').strip()
     application_id = str(payload.get('applicationId') or '').strip()
+    payload_nonce = str(payload.get('nonce') or '').strip()
     if not source or not application_id:
         return Response({'detail': 'Invalid validation code.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -361,6 +362,19 @@ def _validate_license_pdf_from_code(request, code: str):
 
     if not license_obj:
         return Response({'detail': 'License not issued yet.'}, status=status.HTTP_403_FORBIDDEN)
+
+    stored_nonce = str(getattr(license_obj, 'validation_nonce', '') or '').strip()
+    if stored_nonce:
+        if not payload_nonce or payload_nonce != stored_nonce:
+            return Response({'detail': 'This is not the latest issued copy (superseded validation link).'}, status=status.HTTP_403_FORBIDDEN)
+    elif payload_nonce:
+        try:
+            license_obj.validation_nonce = payload_nonce
+            license_obj.validation_nonce_updated_at = timezone.now()
+            license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+            stored_nonce = payload_nonce
+        except Exception:
+            pass
     if not bool(getattr(license_obj, 'is_active', True)):
         return Response({'detail': 'License is not active.'}, status=status.HTTP_403_FORBIDDEN)
     if getattr(license_obj, 'issue_date', None) and license_obj.issue_date > now_date:
@@ -431,6 +445,7 @@ def _build_validation_page(result: dict) -> str:
     download_url = result.get('downloadUrl') or ''
     can_download = bool(result.get('canDownload'))
     signature_verified = bool(result.get('signatureVerified'))
+    is_current_copy = bool(result.get('isCurrentCopy', True))
 
     signature_text = 'SIGNATURE VERIFIED' if signature_verified else 'SIGNATURE NOT VERIFIED'
     signature_fg = '#0b7a0b' if signature_verified else '#a11'
@@ -442,6 +457,7 @@ def _build_validation_page(result: dict) -> str:
     rows = [
         ('License Status', badge_text),
         ('QR Signature', 'VERIFIED' if signature_verified else 'NOT VERIFIED'),
+        ('Original Copy', 'YES' if is_current_copy else 'NO'),
         ('Authenticity', authenticity_text),
         ('License No', details.get('licenseNumber')),
         ('License Title', details.get('licenseTitle')),
@@ -576,6 +592,7 @@ def _resolve_validation_result(request, code: str) -> dict:
 
     source = str(payload.get('source') or '').strip()
     application_id = str(payload.get('applicationId') or '').strip()
+    payload_nonce = str(payload.get('nonce') or '').strip()
     if not source or not application_id:
         return {
             'status': 'invalid_code',
@@ -603,6 +620,7 @@ def _resolve_validation_result(request, code: str) -> dict:
 
     license_obj = None
     app = None
+    is_current_copy = True
     if source == 'new_license_application':
         app = NewLicenseApplication.objects.filter(application_id=application_id).first()
         if not app:
@@ -686,24 +704,44 @@ def _resolve_validation_result(request, code: str) -> dict:
     can_download = True
     authenticity = 'Original (digitally signed QR)'
 
+    stored_nonce = str(getattr(license_obj, 'validation_nonce', '') or '').strip() if license_obj else ''
+    if stored_nonce:
+        if not payload_nonce or payload_nonce != stored_nonce:
+            is_current_copy = False
+            can_download = False
+            authenticity = 'Digitally signed QR (superseded copy)'
+            message = 'This is not the latest issued copy (superseded validation link).'
+    elif payload_nonce and license_obj:
+        try:
+            license_obj.validation_nonce = payload_nonce
+            license_obj.validation_nonce_updated_at = timezone.now()
+            license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+            stored_nonce = payload_nonce
+        except Exception:
+            pass
+
     if not license_obj:
         status_code = 'not_issued'
-        message = 'License not issued yet.'
+        if is_current_copy:
+            message = 'License not issued yet.'
         can_download = False
         authenticity = 'Digitally signed QR (license not issued)'
     elif not bool(getattr(license_obj, 'is_active', True)):
         status_code = 'inactive'
-        message = 'License is not active.'
+        if is_current_copy:
+            message = 'License is not active.'
         can_download = False
         authenticity = 'Digitally signed QR (license inactive)'
     elif getattr(license_obj, 'issue_date', None) and license_obj.issue_date > now_date:
         status_code = 'inactive'
-        message = 'License is not valid yet.'
+        if is_current_copy:
+            message = 'License is not valid yet.'
         can_download = False
         authenticity = 'Digitally signed QR (not valid yet)'
     elif getattr(license_obj, 'valid_up_to', None) and license_obj.valid_up_to < now_date:
         status_code = 'expired'
-        message = 'License has expired.'
+        if is_current_copy:
+            message = 'License has expired.'
         can_download = False
         authenticity = 'Digitally signed QR (license expired)'
 
@@ -730,6 +768,7 @@ def _resolve_validation_result(request, code: str) -> dict:
         'code': token,
         'signatureVerified': True,
         'authenticity': authenticity,
+        'isCurrentCopy': is_current_copy,
         'canDownload': can_download,
         'downloadUrl': download_url,
         'details': details,

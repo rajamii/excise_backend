@@ -27,6 +27,7 @@ from models.masters.license.master_license_form import MasterLicenseForm
 from models.masters.license.master_license_form_terms import MasterLicenseFormTerms
 from django.core import signing
 from urllib.parse import quote
+import secrets
 
 
 def _normalize_role(role_name):
@@ -41,6 +42,19 @@ def _normalize_role(role_name):
         'siteadmin': 'site_admin',
     }
     return aliases.get(normalized, normalized)
+
+
+def _ensure_license_validation_nonce(license_obj: License | None) -> str:
+    if not license_obj:
+        return ''
+    current = str(getattr(license_obj, 'validation_nonce', '') or '').strip()
+    if current:
+        return current
+    nonce = secrets.token_hex(16)
+    license_obj.validation_nonce = nonce
+    license_obj.validation_nonce_updated_at = timezone.now()
+    license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+    return nonce
 
 
 def _extract_level_index(stage_name):
@@ -407,10 +421,12 @@ def final_license_detail(request, application_id):
         terms = [str(t.license_terms).strip() for t in qs if getattr(t, "license_terms", None)]
         terms = [t for t in terms if t]
 
-    validation_code = signing.dumps(
-        {"applicationId": application.application_id, "source": "license_application"},
-        salt="final-license",
-    )
+    nonce = _ensure_license_validation_nonce(license_obj)
+    signing_payload = {"applicationId": application.application_id, "source": "license_application"}
+    if nonce:
+        signing_payload["nonce"] = nonce
+
+    validation_code = signing.dumps(signing_payload, salt="final-license")
     validation_url = request.build_absolute_uri(f"/v/{quote(validation_code, safe=':')}/")
 
     response = {
@@ -470,10 +486,19 @@ def final_license_qr_code(request, application_id):
     if role == "licensee" and application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    validation_code = signing.dumps(
-        {"applicationId": application.application_id, "source": "license_application"},
-        salt="final-license",
-    )
+    la_ct = ContentType.objects.get_for_model(LicenseApplication)
+    license_obj = License.objects.filter(
+        source_type="license_application",
+        source_content_type=la_ct,
+        source_object_id=application.application_id,
+    ).order_by("-issue_date").first()
+
+    nonce = _ensure_license_validation_nonce(license_obj)
+    signing_payload = {"applicationId": application.application_id, "source": "license_application"}
+    if nonce:
+        signing_payload["nonce"] = nonce
+
+    validation_code = signing.dumps(signing_payload, salt="final-license")
     payload = request.build_absolute_uri(f"/v/{quote(validation_code, safe=':')}/")
 
     qr = QrCode.encode_text(str(payload), QrCode.Ecc.MEDIUM)
@@ -520,9 +545,36 @@ def print_license_view(request, application_id):
 
     license.record_license_print(fee_paid=(fee > 0))
 
+    la_ct = ContentType.objects.get_for_model(LicenseApplication)
+    license_obj = License.objects.filter(
+        source_type="license_application",
+        source_content_type=la_ct,
+        source_object_id=license.application_id,
+    ).order_by("-issue_date").first()
+
+    if license_obj:
+        license_obj.validation_nonce = secrets.token_hex(16)
+        license_obj.validation_nonce_updated_at = timezone.now()
+        license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+
+        validation_code = signing.dumps(
+            {
+                "applicationId": license.application_id,
+                "source": "license_application",
+                "nonce": license_obj.validation_nonce,
+            },
+            salt="final-license",
+        )
+        validation_url = request.build_absolute_uri(f"/v/{quote(validation_code, safe=':')}/")
+    else:
+        validation_code = ""
+        validation_url = ""
+
     return Response({
         "success": "License printed.",
-        "print_count": license.print_count
+        "print_count": license.print_count,
+        "validationCode": validation_code,
+        "validationPdfUrl": validation_url,
     })
 
 @permission_classes([HasAppPermission('license_application', 'view')])

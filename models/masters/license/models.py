@@ -60,6 +60,10 @@ class License(models.Model):
 
     is_active = models.BooleanField(default=True)
 
+    # Validation link / QR rotation (anti-copy): only the latest nonce for a license stays valid.
+    validation_nonce = models.CharField(max_length=32, blank=True, default='', db_index=True)
+    validation_nonce_updated_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         db_table = 'licenses'
         ordering = ['-issue_date']
@@ -70,6 +74,7 @@ class License(models.Model):
             models.Index(fields=['license_sub_category']),
             models.Index(fields=['is_active']),
             models.Index(fields=['valid_up_to']),
+            models.Index(fields=['validation_nonce']),
         ]
 
     def __str__(self):
