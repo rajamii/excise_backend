@@ -160,6 +160,9 @@ class LicenseValidationToken(models.Model):
 
     license = models.ForeignKey(License, on_delete=models.CASCADE, related_name='validation_tokens')
     nonce = models.CharField(max_length=32, unique=True, db_index=True)
+    signed_code = models.TextField(blank=True, default='')
+    validation_url = models.TextField(blank=True, default='')
+    verification_id = models.CharField(max_length=12, blank=True, default='', db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

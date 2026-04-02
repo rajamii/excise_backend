@@ -28,6 +28,7 @@ from models.masters.license.master_license_form_terms import MasterLicenseFormTe
 from django.core import signing
 from urllib.parse import quote
 import secrets
+import hashlib
 
 
 def _normalize_role(role_name):
@@ -72,6 +73,14 @@ def _ensure_license_validation_nonce(license_obj: License | None) -> str:
     license_obj.validation_nonce_updated_at = timezone.now()
     license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
     return nonce
+
+
+def _build_validation_link(request, *, application_id: str, source: str, nonce: str) -> tuple[str, str, str]:
+    signing_payload = {"applicationId": application_id, "source": source, "nonce": nonce}
+    signed_code = signing.dumps(signing_payload, salt="final-license")
+    validation_url = request.build_absolute_uri(f"/v/{quote(signed_code, safe=':')}/")
+    verification_id = hashlib.sha256(signed_code.encode("utf-8")).hexdigest()[:12]
+    return signed_code, validation_url, verification_id
 
 
 def _extract_level_index(stage_name):
@@ -438,13 +447,30 @@ def final_license_detail(request, application_id):
         terms = [str(t.license_terms).strip() for t in qs if getattr(t, "license_terms", None)]
         terms = [t for t in terms if t]
 
-    nonce = _ensure_license_validation_nonce(license_obj)
-    signing_payload = {"applicationId": application.application_id, "source": "license_application"}
-    if nonce:
-        signing_payload["nonce"] = nonce
-
-    validation_code = signing.dumps(signing_payload, salt="final-license")
-    validation_url = request.build_absolute_uri(f"/v/{quote(validation_code, safe=':')}/")
+    validation_code = ""
+    validation_url = ""
+    if license_obj:
+        latest_token = LicenseValidationToken.objects.filter(license=license_obj).order_by("-created_at").first()
+        if latest_token and getattr(latest_token, "signed_code", "") and getattr(latest_token, "validation_url", ""):
+            validation_code = str(latest_token.signed_code)
+            validation_url = str(latest_token.validation_url)
+        else:
+            nonce = _ensure_license_validation_nonce(license_obj)
+            if nonce:
+                signed_code, full_url, verification_id = _build_validation_link(
+                    request, application_id=application.application_id, source="license_application", nonce=nonce
+                )
+                LicenseValidationToken.objects.update_or_create(
+                    license=license_obj,
+                    nonce=nonce,
+                    defaults={
+                        "signed_code": signed_code,
+                        "validation_url": full_url,
+                        "verification_id": verification_id,
+                    },
+                )
+                validation_code = signed_code
+                validation_url = full_url
 
     response = {
         "applicationId": application.application_id,
@@ -522,13 +548,27 @@ def final_license_qr_code(request, application_id):
         except Exception:
             pass
 
-    nonce = _ensure_license_validation_nonce(license_obj)
-    signing_payload = {"applicationId": application.application_id, "source": "license_application"}
-    if nonce:
-        signing_payload["nonce"] = nonce
-
-    validation_code = signing.dumps(signing_payload, salt="final-license")
-    payload = request.build_absolute_uri(f"/v/{quote(validation_code, safe=':')}/")
+    payload = ""
+    if license_obj:
+        latest_token = LicenseValidationToken.objects.filter(license=license_obj).order_by("-created_at").first()
+        if latest_token and getattr(latest_token, "validation_url", ""):
+            payload = str(latest_token.validation_url)
+        else:
+            nonce = _ensure_license_validation_nonce(license_obj)
+            if nonce:
+                signed_code, full_url, verification_id = _build_validation_link(
+                    request, application_id=application.application_id, source="license_application", nonce=nonce
+                )
+                LicenseValidationToken.objects.update_or_create(
+                    license=license_obj,
+                    nonce=nonce,
+                    defaults={
+                        "signed_code": signed_code,
+                        "validation_url": full_url,
+                        "verification_id": verification_id,
+                    },
+                )
+                payload = full_url
 
     qr = QrCode.encode_text(str(payload), QrCode.Ecc.MEDIUM)
     size = qr.get_size()
@@ -558,7 +598,15 @@ def final_license_qr_code(request, application_id):
 def print_license_view(request, application_id):
     license = get_object_or_404(LicenseApplication, application_id=application_id)
 
-    if not license.is_approved:
+    la_ct = ContentType.objects.get_for_model(LicenseApplication)
+    license_obj = License.objects.filter(
+        source_type="license_application",
+        source_content_type=la_ct,
+        source_object_id=license.application_id,
+    ).order_by("-issue_date").first()
+
+    # If a License exists but application approval flag isn't synced, allow printing.
+    if not license.is_approved and not license_obj:
         return Response({"error": "License is not approved yet."}, status=403)
 
     can_print, fee = license.can_print_license()
@@ -574,31 +622,39 @@ def print_license_view(request, application_id):
 
     license.record_license_print(fee_paid=(fee > 0))
 
-    la_ct = ContentType.objects.get_for_model(LicenseApplication)
-    license_obj = License.objects.filter(
-        source_type="license_application",
-        source_content_type=la_ct,
-        source_object_id=license.application_id,
-    ).order_by("-issue_date").first()
-
     if license_obj:
         # New token per print; old tokens remain valid for future verification.
         nonce = secrets.token_hex(16)
+        signed_code, full_url, verification_id = _build_validation_link(
+            request, application_id=license.application_id, source="license_application", nonce=nonce
+        )
         try:
-            LicenseValidationToken.objects.create(license=license_obj, nonce=nonce)
+            LicenseValidationToken.objects.create(
+                license=license_obj,
+                nonce=nonce,
+                signed_code=signed_code,
+                validation_url=full_url,
+                verification_id=verification_id,
+            )
         except Exception:
             nonce = secrets.token_hex(16)
-            LicenseValidationToken.objects.create(license=license_obj, nonce=nonce)
+            signed_code, full_url, verification_id = _build_validation_link(
+                request, application_id=license.application_id, source="license_application", nonce=nonce
+            )
+            LicenseValidationToken.objects.create(
+                license=license_obj,
+                nonce=nonce,
+                signed_code=signed_code,
+                validation_url=full_url,
+                verification_id=verification_id,
+            )
 
         license_obj.validation_nonce = nonce
         license_obj.validation_nonce_updated_at = timezone.now()
         license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
 
-        validation_code = signing.dumps(
-            {"applicationId": license.application_id, "source": "license_application", "nonce": nonce},
-            salt="final-license",
-        )
-        validation_url = request.build_absolute_uri(f"/v/{quote(validation_code, safe=':')}/")
+        validation_code = signed_code
+        validation_url = full_url
     else:
         validation_code = ""
         validation_url = ""

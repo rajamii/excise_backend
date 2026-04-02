@@ -2,6 +2,9 @@ from django.utils.timezone import now
 from django.shortcuts import get_object_or_404
 from django.utils.timezone import now
 from django.http import Http404
+from urllib.parse import quote
+import hashlib
+import secrets
 from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.parsers import JSONParser
 from rest_framework.response import Response
@@ -9,7 +12,8 @@ from django.contrib.contenttypes.models import ContentType
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status, generics
 from auth.roles.permissions import HasAppPermission
-from .models import License
+from django.core import signing
+from .models import License, LicenseValidationToken
 from models.transactional.new_license_application.models import NewLicenseApplication
 from .serializers import LicenseSerializer, LicenseDetailSerializer, MyLicenseDetailsSerializer
 
@@ -31,6 +35,16 @@ def _resolve_license(identifier: str) -> License:
         return by_source
 
     raise Http404("License not found")
+
+
+def _build_validation_link(request, *, license_obj: License, nonce: str) -> tuple[str, str, str]:
+    source = str(getattr(license_obj, "source_type", "") or "").strip()
+    application_id = str(getattr(license_obj, "source_object_id", "") or "").strip() or str(license_obj.license_id)
+    signing_payload = {"applicationId": application_id, "source": source, "nonce": nonce}
+    signed_code = signing.dumps(signing_payload, salt="final-license")
+    validation_url = request.build_absolute_uri(f"/v/{quote(signed_code, safe=':')}/")
+    verification_id = hashlib.sha256(signed_code.encode("utf-8")).hexdigest()[:12]
+    return signed_code, validation_url, verification_id
 
 @permission_classes([HasAppPermission('license', 'view')])
 @api_view(['GET'])
@@ -61,11 +75,41 @@ def print_license_view(request, license_id):
 
     license.record_license_print(fee_paid=(fee > 0))
 
+    # Create a per-print validation token so the printed QR/link remains verifiable forever.
+    nonce = secrets.token_hex(16)
+    signed_code, validation_url, verification_id = _build_validation_link(request, license_obj=license, nonce=nonce)
+    try:
+        LicenseValidationToken.objects.create(
+            license=license,
+            nonce=nonce,
+            signed_code=signed_code,
+            validation_url=validation_url,
+            verification_id=verification_id,
+        )
+    except Exception:
+        nonce = secrets.token_hex(16)
+        signed_code, validation_url, verification_id = _build_validation_link(request, license_obj=license, nonce=nonce)
+        LicenseValidationToken.objects.create(
+            license=license,
+            nonce=nonce,
+            signed_code=signed_code,
+            validation_url=validation_url,
+            verification_id=verification_id,
+        )
+
+    license.validation_nonce = nonce
+    license.validation_nonce_updated_at = now()
+    license.save(update_fields=["validation_nonce", "validation_nonce_updated_at"])
+
     return Response({
         "success": "License printed.",
         "print_count": license.print_count,
         "is_print_fee_paid": license.is_print_fee_paid,
-        "fee_required": fee
+        "fee_required": fee,
+        "nonce": nonce,
+        "verificationId": verification_id,
+        "validationCode": signed_code,
+        "validationPdfUrl": validation_url,
     })
 
 @permission_classes([HasAppPermission('license', 'view')])
