@@ -149,3 +149,23 @@ class License(models.Model):
             raise ValueError(f"Generated license_id '{new_license_id}' exceeds 30 characters")
 
         return new_license_id
+
+
+class LicenseValidationToken(models.Model):
+    """
+    Stores per-print validation nonces for a License.
+
+    Any previously printed copy can be verified in the future by matching its nonce.
+    """
+
+    license = models.ForeignKey(License, on_delete=models.CASCADE, related_name='validation_tokens')
+    nonce = models.CharField(max_length=32, unique=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'license_validation_tokens'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['license']),
+            models.Index(fields=['created_at']),
+        ]

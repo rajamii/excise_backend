@@ -6,7 +6,7 @@ from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework.response import Response
 from auth.roles.permissions import HasAppPermission
 from .models import LicenseApplication
-from models.masters.license.models import License
+from models.masters.license.models import License, LicenseValidationToken
 from models.masters.core.models import LicenseFee
 from .serializers import LicenseApplicationSerializer, LicenseFeeSerializer
 from rest_framework import status
@@ -47,10 +47,27 @@ def _normalize_role(role_name):
 def _ensure_license_validation_nonce(license_obj: License | None) -> str:
     if not license_obj:
         return ''
-    current = str(getattr(license_obj, 'validation_nonce', '') or '').strip()
-    if current:
-        return current
+
+    try:
+        latest = LicenseValidationToken.objects.filter(license=license_obj).order_by('-created_at').first()
+        if latest and latest.nonce:
+            # keep license.validation_nonce as a handy "latest" cache
+            if str(getattr(license_obj, 'validation_nonce', '') or '').strip() != latest.nonce:
+                license_obj.validation_nonce = latest.nonce
+                license_obj.validation_nonce_updated_at = timezone.now()
+                license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+            return latest.nonce
+    except Exception:
+        pass
+
     nonce = secrets.token_hex(16)
+    try:
+        LicenseValidationToken.objects.create(license=license_obj, nonce=nonce)
+    except Exception:
+        # Collision is extremely unlikely, but retry once.
+        nonce = secrets.token_hex(16)
+        LicenseValidationToken.objects.create(license=license_obj, nonce=nonce)
+
     license_obj.validation_nonce = nonce
     license_obj.validation_nonce_updated_at = timezone.now()
     license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
@@ -493,6 +510,18 @@ def final_license_qr_code(request, application_id):
         source_object_id=application.application_id,
     ).order_by("-issue_date").first()
 
+    # Keep the license's cached "latest nonce" in sync with token history.
+    if license_obj:
+        try:
+            latest_token = LicenseValidationToken.objects.filter(license=license_obj).order_by('-created_at').first()
+            if latest_token and latest_token.nonce:
+                if str(getattr(license_obj, 'validation_nonce', '') or '').strip() != latest_token.nonce:
+                    license_obj.validation_nonce = latest_token.nonce
+                    license_obj.validation_nonce_updated_at = timezone.now()
+                    license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+        except Exception:
+            pass
+
     nonce = _ensure_license_validation_nonce(license_obj)
     signing_payload = {"applicationId": application.application_id, "source": "license_application"}
     if nonce:
@@ -553,16 +582,20 @@ def print_license_view(request, application_id):
     ).order_by("-issue_date").first()
 
     if license_obj:
-        license_obj.validation_nonce = secrets.token_hex(16)
+        # New token per print; old tokens remain valid for future verification.
+        nonce = secrets.token_hex(16)
+        try:
+            LicenseValidationToken.objects.create(license=license_obj, nonce=nonce)
+        except Exception:
+            nonce = secrets.token_hex(16)
+            LicenseValidationToken.objects.create(license=license_obj, nonce=nonce)
+
+        license_obj.validation_nonce = nonce
         license_obj.validation_nonce_updated_at = timezone.now()
         license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
 
         validation_code = signing.dumps(
-            {
-                "applicationId": license.application_id,
-                "source": "license_application",
-                "nonce": license_obj.validation_nonce,
-            },
+            {"applicationId": license.application_id, "source": "license_application", "nonce": nonce},
             salt="final-license",
         )
         validation_url = request.build_absolute_uri(f"/v/{quote(validation_code, safe=':')}/")

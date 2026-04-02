@@ -21,6 +21,7 @@ from rest_framework.response import Response
 from models.masters.license.master_license_form import MasterLicenseForm
 from models.masters.license.master_license_form_terms import MasterLicenseFormTerms
 from models.masters.license.models import License
+from models.masters.license.models import LicenseValidationToken
 from models.transactional.license_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
 from utils.simple_pdf import PdfPage, build_text_pdf, build_validation_pdf_multi, paginate_lines
@@ -363,18 +364,12 @@ def _validate_license_pdf_from_code(request, code: str):
     if not license_obj:
         return Response({'detail': 'License not issued yet.'}, status=status.HTTP_403_FORBIDDEN)
 
-    stored_nonce = str(getattr(license_obj, 'validation_nonce', '') or '').strip()
-    if stored_nonce:
-        if not payload_nonce or payload_nonce != stored_nonce:
-            return Response({'detail': 'This is not the latest issued copy (superseded validation link).'}, status=status.HTTP_403_FORBIDDEN)
-    elif payload_nonce:
-        try:
-            license_obj.validation_nonce = payload_nonce
-            license_obj.validation_nonce_updated_at = timezone.now()
-            license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
-            stored_nonce = payload_nonce
-        except Exception:
-            pass
+    # If the code contains a nonce, require it to be present in the stored token history.
+    # This makes every printed copy verifiable in the future (not just the latest copy).
+    if payload_nonce:
+        exists = LicenseValidationToken.objects.filter(license=license_obj, nonce=payload_nonce).exists()
+        if not exists:
+            return Response({'detail': 'Unknown validation token (not a recognized printed copy).'}, status=status.HTTP_403_FORBIDDEN)
     if not bool(getattr(license_obj, 'is_active', True)):
         return Response({'detail': 'License is not active.'}, status=status.HTTP_403_FORBIDDEN)
     if getattr(license_obj, 'issue_date', None) and license_obj.issue_date > now_date:
@@ -704,21 +699,18 @@ def _resolve_validation_result(request, code: str) -> dict:
     can_download = True
     authenticity = 'Original (digitally signed QR)'
 
-    stored_nonce = str(getattr(license_obj, 'validation_nonce', '') or '').strip() if license_obj else ''
-    if stored_nonce:
-        if not payload_nonce or payload_nonce != stored_nonce:
+    stored_latest_nonce = str(getattr(license_obj, 'validation_nonce', '') or '').strip() if license_obj else ''
+    if payload_nonce and license_obj:
+        token_exists = LicenseValidationToken.objects.filter(license=license_obj, nonce=payload_nonce).exists()
+        if not token_exists:
             is_current_copy = False
             can_download = False
-            authenticity = 'Digitally signed QR (superseded copy)'
-            message = 'This is not the latest issued copy (superseded validation link).'
-    elif payload_nonce and license_obj:
-        try:
-            license_obj.validation_nonce = payload_nonce
-            license_obj.validation_nonce_updated_at = timezone.now()
-            license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
-            stored_nonce = payload_nonce
-        except Exception:
-            pass
+            authenticity = 'Digitally signed QR (unknown token)'
+            message = 'Unknown validation token (not a recognized printed copy).'
+        elif stored_latest_nonce and payload_nonce != stored_latest_nonce:
+            # Still verified, but not the latest issued copy.
+            is_current_copy = False
+            authenticity = 'Digitally signed QR (older printed copy)'
 
     if not license_obj:
         status_code = 'not_issued'

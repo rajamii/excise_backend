@@ -11,7 +11,7 @@ from auth.workflow.services import WorkflowService
 from auth.workflow.models import Workflow
 from auth.workflow.constants import WORKFLOW_IDS
 from .models import NewLicenseApplication
-from models.masters.license.models import License
+from models.masters.license.models import License, LicenseValidationToken
 from .serializers import NewLicenseApplicationSerializer, ObjectionSerializer, ResolveObjectionSerializer
 from auth.workflow.models import WorkflowStage, WorkflowTransition, Objection
 from django.core.exceptions import ValidationError, PermissionDenied
@@ -47,10 +47,25 @@ def _normalize_role(role_name):
 def _ensure_license_validation_nonce(license_obj: License | None) -> str:
     if not license_obj:
         return ''
-    current = str(getattr(license_obj, 'validation_nonce', '') or '').strip()
-    if current:
-        return current
+
+    try:
+        latest = LicenseValidationToken.objects.filter(license=license_obj).order_by('-created_at').first()
+        if latest and latest.nonce:
+            if str(getattr(license_obj, 'validation_nonce', '') or '').strip() != latest.nonce:
+                license_obj.validation_nonce = latest.nonce
+                license_obj.validation_nonce_updated_at = timezone.now()
+                license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+            return latest.nonce
+    except Exception:
+        pass
+
     nonce = secrets.token_hex(16)
+    try:
+        LicenseValidationToken.objects.create(license=license_obj, nonce=nonce)
+    except Exception:
+        nonce = secrets.token_hex(16)
+        LicenseValidationToken.objects.create(license=license_obj, nonce=nonce)
+
     license_obj.validation_nonce = nonce
     license_obj.validation_nonce_updated_at = timezone.now()
     license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
@@ -552,6 +567,17 @@ def final_license_qr_code(request, application_id):
         source_object_id=application.application_id,
     ).order_by("-issue_date").first()
 
+    if license_obj:
+        try:
+            latest_token = LicenseValidationToken.objects.filter(license=license_obj).order_by('-created_at').first()
+            if latest_token and latest_token.nonce:
+                if str(getattr(license_obj, 'validation_nonce', '') or '').strip() != latest_token.nonce:
+                    license_obj.validation_nonce = latest_token.nonce
+                    license_obj.validation_nonce_updated_at = timezone.now()
+                    license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+        except Exception:
+            pass
+
     nonce = _ensure_license_validation_nonce(license_obj)
     signing_payload = {"applicationId": application.application_id, "source": "new_license_application"}
     if nonce:
@@ -613,16 +639,19 @@ def print_license_view(request, application_id):
     ).order_by("-issue_date").first()
 
     if license_obj:
-        license_obj.validation_nonce = secrets.token_hex(16)
+        nonce = secrets.token_hex(16)
+        try:
+            LicenseValidationToken.objects.create(license=license_obj, nonce=nonce)
+        except Exception:
+            nonce = secrets.token_hex(16)
+            LicenseValidationToken.objects.create(license=license_obj, nonce=nonce)
+
+        license_obj.validation_nonce = nonce
         license_obj.validation_nonce_updated_at = timezone.now()
         license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
 
         validation_code = signing.dumps(
-            {
-                "applicationId": license.application_id,
-                "source": "new_license_application",
-                "nonce": license_obj.validation_nonce,
-            },
+            {"applicationId": license.application_id, "source": "new_license_application", "nonce": nonce},
             salt="final-license",
         )
         validation_url = request.build_absolute_uri(f"/v/{quote(validation_code, safe=':')}/")
