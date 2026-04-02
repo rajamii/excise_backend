@@ -770,7 +770,21 @@ class PublicTransitPermitAPIView(generics.ListAPIView):
         bill_no = self._get_bill_no()
         if not bill_no:
             return EnaTransitPermitDetail.objects.none()
-        return EnaTransitPermitDetail.objects.filter(bill_no=bill_no).order_by('-id')
+        # Public endpoint must only expose permits AFTER OIC approval.
+        # We treat TRP_03 (APPROVE) / approved workflow stage as approved.
+        base = EnaTransitPermitDetail.objects.filter(bill_no=bill_no)
+        approved = base.filter(
+            Q(status_code__iexact='TRP_03')
+            | Q(current_stage__name__iexact='TransitPermitSuccessfullyApproved')
+            | (
+                Q(current_stage__is_final=True)
+                & Q(current_stage__name__icontains='approv')
+                & ~Q(current_stage__name__icontains='cancel')
+                & ~Q(current_stage__name__icontains='reject')
+                & ~Q(current_stage__name__icontains='refund')
+            )
+        )
+        return approved.order_by('-id')
 
     def list(self, request, *args, **kwargs):
         bill_no = self._get_bill_no()
@@ -778,6 +792,30 @@ class PublicTransitPermitAPIView(generics.ListAPIView):
             return Response(
                 {"detail": "bill_no query param is required."},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        # If a permit exists but is not approved yet, don't expose any details.
+        base = EnaTransitPermitDetail.objects.filter(bill_no=bill_no)
+        if not base.exists():
+            return Response(
+                {"detail": "Transit permit not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        approved_exists = base.filter(
+            Q(status_code__iexact='TRP_03')
+            | Q(current_stage__name__iexact='TransitPermitSuccessfullyApproved')
+            | (
+                Q(current_stage__is_final=True)
+                & Q(current_stage__name__icontains='approv')
+                & ~Q(current_stage__name__icontains='cancel')
+                & ~Q(current_stage__name__icontains='reject')
+                & ~Q(current_stage__name__icontains='refund')
+            )
+        ).exists()
+        if not approved_exists:
+            return Response(
+                {"detail": "Transit permit is not approved yet."},
+                status=status.HTTP_403_FORBIDDEN,
             )
         return super().list(request, *args, **kwargs)
 

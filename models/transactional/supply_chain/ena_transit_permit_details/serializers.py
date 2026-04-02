@@ -407,6 +407,10 @@ class PublicTransitPermitDetailSerializer(serializers.ModelSerializer):
 
     size_ml = serializers.SerializerMethodField()
     liquor_type = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+    status_code = serializers.CharField(read_only=True)
+    current_stage_name = serializers.SerializerMethodField()
+    current_stage_description = serializers.SerializerMethodField()
 
     class Meta:
         model = EnaTransitPermitDetail
@@ -420,6 +424,10 @@ class PublicTransitPermitDetailSerializer(serializers.ModelSerializer):
             'cases',
             'vehicle_number',
             'licensee_id',
+            'status',
+            'status_code',
+            'current_stage_name',
+            'current_stage_description',
             'bottle_type',
             'bottles_per_case',
             'brand_owner',
@@ -448,3 +456,30 @@ class PublicTransitPermitDetailSerializer(serializers.ModelSerializer):
         except Exception:
             pass
         return ''
+
+    def get_current_stage_name(self, obj) -> str:
+        try:
+            stage = getattr(obj, 'current_stage', None)
+            return str(getattr(stage, 'name', '') or '').strip()
+        except Exception:
+            return ''
+
+    def get_current_stage_description(self, obj) -> str:
+        try:
+            stage = getattr(obj, 'current_stage', None)
+            return str(getattr(stage, 'description', '') or '').strip()
+        except Exception:
+            return ''
+
+    def get_status(self, obj) -> str:
+        """
+        Public API should present a user-friendly status label.
+        Prefer workflow stage description; fall back to stage name / stored status.
+        """
+        desc = self.get_current_stage_description(obj)
+        if desc:
+            return desc
+        name = self.get_current_stage_name(obj)
+        if name:
+            return name
+        return str(getattr(obj, 'status', '') or '').strip()
