@@ -20,6 +20,24 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
 
     def get_approved_by_display(self, obj):
         """Return the OIC name who approved this permit (from utilization record)."""
+        # Stock utilization rows are created at PAY time (auto-deduction) and may set
+        # `approved_by` to the payer/system. Only display "Approved By" to UI once the
+        # Officer In-Charge has actually approved the permit.
+        try:
+            status_code = str(getattr(obj, 'status_code', '') or '').strip().upper()
+            stage = getattr(obj, 'current_stage', None)
+            stage_name = str(getattr(stage, 'name', '') or '').strip().lower()
+            is_final = bool(getattr(stage, 'is_final', False))
+
+            is_cancelled = 'cancel' in stage_name or 'reject' in stage_name or 'refund' in stage_name
+            is_oic_approved = status_code == 'TRP_03' or (is_final and not is_cancelled and 'approv' in stage_name)
+
+            if not is_oic_approved:
+                return ''
+        except Exception:
+            # Fail safe: don't block API; fall through to existing logic.
+            pass
+
         try:
             from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouseUtilization
             util = BrandWarehouseUtilization.objects.filter(
