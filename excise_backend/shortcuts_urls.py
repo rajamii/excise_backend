@@ -39,7 +39,7 @@ urlpatterns = [
     ),
 
     # Public validation (short alias)
-    # /v/<validation-code>/  -> downloads validation PDF
-    path('v/<everything:code>/', public_validation_views.validate_license_pdf, name='validate-license-pdf-short'),
+    # /v/<validation-code>/  -> QR-friendly verification page (download only if valid)
+    path('v/<everything:code>/', public_validation_views.validate_license_landing, name='validate-license-short'),
 ]
 

@@ -408,9 +408,8 @@ def final_license_detail(request, application_id):
         except Exception:
             passport_photo_data_url = ""
 
-    def make_qr_data_url(licensee_id: str) -> str:
-        payload = f"Renewal of License vide Application Id No. : {application.application_id} and Licensee Id No : {licensee_id}"
-        qr = QrCode.encode_text(payload, QrCode.Ecc.MEDIUM)
+    def make_qr_data_url(payload: str) -> str:
+        qr = QrCode.encode_text(str(payload), QrCode.Ecc.MEDIUM)
         size = qr.get_size()
         border = 2
         scale = 4
@@ -436,13 +435,14 @@ def final_license_detail(request, application_id):
         {"applicationId": application.application_id, "source": "new_license_application"},
         salt="final-license",
     )
+    validation_url = request.build_absolute_uri(f"/v/{quote(validation_code, safe=':')}/")
 
     response = {
         "applicationId": application.application_id,
         "licenseNumber": (license_obj.license_id if license_obj else application.application_id),
         "licenseTitle": "",
         "validationCode": validation_code,
-        "validationPdfUrl": request.build_absolute_uri(f"/v/{quote(validation_code, safe=':')}/"),
+        "validationPdfUrl": validation_url,
         "validatedViaCode": validated_via_code,
         "terms": [],
         "licenseeName": application.applicant_name,
@@ -460,7 +460,7 @@ def final_license_detail(request, application_id):
         "validFrom": fmt_dt(license_obj.issue_date) if license_obj else fmt_dt(application.created_at.date()),
         "validTo": fmt_dt(license_obj.valid_up_to) if license_obj else "",
         "generatedOn": fmt_dt(timezone.now().date()),
-        "qrCodeDataUrl": make_qr_data_url(license_obj.license_id if license_obj else application.application_id),
+        "qrCodeDataUrl": make_qr_data_url(validation_url),
     }
 
     cat_code = getattr(license_obj, "license_category_id", None) if license_obj else None
@@ -529,17 +529,13 @@ def final_license_qr_code(request, application_id):
     if role == "licensee" and application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
-    license_obj = License.objects.filter(
-        source_type="new_license_application",
-        source_content_type=new_app_ct,
-        source_object_id=application.application_id,
-    ).order_by("-issue_date").first()
+    validation_code = signing.dumps(
+        {"applicationId": application.application_id, "source": "new_license_application"},
+        salt="final-license",
+    )
+    payload = request.build_absolute_uri(f"/v/{quote(validation_code, safe=':')}/")
 
-    licensee_id = license_obj.license_id if license_obj else application.application_id
-    payload = f"Renewal of License vide Application Id No. : {application.application_id} and Licensee Id No : {licensee_id}"
-
-    qr = QrCode.encode_text(payload, QrCode.Ecc.MEDIUM)
+    qr = QrCode.encode_text(str(payload), QrCode.Ecc.MEDIUM)
     size = qr.get_size()
     border = 2
     scale = 4

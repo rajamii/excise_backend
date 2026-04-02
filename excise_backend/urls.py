@@ -12,8 +12,8 @@ urlpatterns = [
     # Short alias routes (keep existing long routes too)
     path('', include('excise_backend.shortcuts_urls')),
 
-    # Public validation PDF (also exposed under /masters/ for deployments that proxy only /masters/ to Django)
-    re_path(r'^masters/v/(?P<code>.+)/$', public_validation_views.validate_license_pdf, name='validate-license-pdf-masters'),
+    # Public validation (also exposed under /masters/ for deployments that proxy only /masters/ to Django)
+    re_path(r'^masters/v/(?P<code>.+)/$', public_validation_views.validate_license_landing, name='validate-license-masters'),
     path('masters/', include('models.masters.urls')),
     path('transactional/', include('models.transactional.urls')),
     
