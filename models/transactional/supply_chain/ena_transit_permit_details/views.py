@@ -812,12 +812,28 @@ class PublicTransitPermitAPIView(generics.ListAPIView):
                 & ~Q(current_stage__name__icontains='refund')
             )
         ).exists()
-        if not approved_exists:
+
+        if approved_exists:
+            return super().list(request, *args, **kwargs)
+
+        cancelled_exists = base.filter(
+            Q(status_code__iexact='TRP_04')
+            | Q(current_stage__name__icontains='cancel')
+            | Q(current_stage__name__icontains='reject')
+            | Q(current_stage__name__icontains='refund')
+        ).exists()
+        if cancelled_exists:
             return Response(
-                {"detail": "Transit permit is not approved yet."},
+                {"detail": "Transit permit is cancelled.", "status": "Cancelled"},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        return super().list(request, *args, **kwargs)
+
+        # Pending / in-review (paid but not approved) case.
+        return Response(
+            {"detail": "Transit permit is not approved yet.", "status": "Pending"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+        
 
 
 class PerformTransitPermitActionAPIView(views.APIView):
