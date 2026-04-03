@@ -493,7 +493,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                         instance.carton_details = carton_details
                         instance.arrival_date = arrival_ts
                         # Sync to new table
-                        self._sync_rolls_details(instance, carton_details, acting_user=request.user)
+                        self._sync_rolls_details(instance, carton_details, acting_user=request.user, mark_received_by=False)
 
                 instance.save()
                 
@@ -502,7 +502,27 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     if not instance.arrival_date:
                         instance.arrival_date = timezone.now()
                     if instance.carton_details:
-                        self._sync_rolls_details(instance, instance.carton_details, acting_user=request.user)
+                        self._sync_rolls_details(instance, instance.carton_details, acting_user=request.user, mark_received_by=True)
+                    # Backfill received-by for any existing rolls under this procurement.
+                    try:
+                        display = _get_user_display_name(request.user)
+                        HologramRollsDetails.objects.filter(
+                            procurement=instance
+                        ).filter(
+                            models.Q(received_by_id__isnull=True) |
+                            models.Q(received_by_display_name__isnull=True) |
+                            models.Q(received_by_display_name='')
+                        ).update(
+                            received_by=request.user,
+                            received_by_display_name=display,
+                            confirmed_at=timezone.now(),
+                            updated_by=request.user,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to backfill received-by for procurement=%s",
+                            getattr(instance, "id", None),
+                        )
 
                 if normalized_action == 'pay':
                     instance.payment_status = 'completed'
@@ -561,10 +581,31 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     self._validate_assign_cartons(instance, carton_details)
                     instance.carton_details = carton_details
                     instance.arrival_date = arrival_ts
-                    self._sync_rolls_details(instance, carton_details, acting_user=request.user)
+                    self._sync_rolls_details(instance, carton_details, acting_user=request.user, mark_received_by=False)
             elif normalized_action in ['confirm_arrival', 'arrival_confirmed', 'confirm arrival', 'confirm']:
                 if not instance.arrival_date:
                     instance.arrival_date = timezone.now()
+                if instance.carton_details:
+                    self._sync_rolls_details(instance, instance.carton_details, acting_user=request.user, mark_received_by=True)
+                try:
+                    display = _get_user_display_name(request.user)
+                    HologramRollsDetails.objects.filter(
+                        procurement=instance
+                    ).filter(
+                        models.Q(received_by_id__isnull=True) |
+                        models.Q(received_by_display_name__isnull=True) |
+                        models.Q(received_by_display_name='')
+                    ).update(
+                        received_by=request.user,
+                        received_by_display_name=display,
+                        confirmed_at=timezone.now(),
+                        updated_by=request.user,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to backfill received-by for procurement=%s (no-transition confirm)",
+                        getattr(instance, "id", None),
+                    )
 
             if normalized_action == 'pay':
                 wallet_result = self._debit_hologram_wallet_for_payment(instance, request.user)
@@ -907,7 +948,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             'new_payment_amount': new_payment_amount
         })
 
-    def _sync_rolls_details(self, procurement, carton_details, acting_user=None):
+    def _sync_rolls_details(self, procurement, carton_details, acting_user=None, mark_received_by: bool = False):
         """
         Syncs JSON carton details to HologramRollsDetails table
         """
@@ -931,6 +972,22 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 carton_num = item.get('cartoonNumber') or item.get('cartoon_number') or item.get('carton_number')
                 if not carton_num:
                     continue
+
+                received_ts = None
+                arrived_value = (
+                    item.get('arrivedDate') or
+                    item.get('arrived_date') or
+                    item.get('arrival_date') or
+                    item.get('received_date') or
+                    item.get('receivedDate')
+                )
+                if arrived_value:
+                    try:
+                        received_ts = parse_datetime(str(arrived_value))
+                        if received_ts and timezone.is_naive(received_ts):
+                            received_ts = timezone.make_aware(received_ts)
+                    except Exception:
+                        received_ts = None
                 
                 defaults = {
                      'type': item.get('type') or default_proc_type,
@@ -938,6 +995,11 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                      'to_serial': item.get('toSerial') or item.get('to_serial'),
                      'total_count': item.get('numberOfHolograms') or item.get('number_of_holograms') or item.get('total_count', 0),
                 }
+                if received_ts:
+                    defaults['received_date'] = received_ts
+                if acting_user:
+                    defaults['created_by'] = acting_user
+                    defaults['updated_by'] = acting_user
                 
                 try:
                     defaults['total_count'] = int(defaults['total_count'])
@@ -990,6 +1052,18 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     obj.total_count = defaults['total_count']
                     if resolved_license_id:
                         obj.license_id = resolved_license_id
+                    if received_ts and not obj.received_date:
+                        obj.received_date = received_ts
+                    if acting_user:
+                        obj.updated_by = acting_user
+
+                    if mark_received_by and acting_user:
+                        if not getattr(obj, 'received_by_id', None):
+                            obj.received_by = acting_user
+                        if not str(getattr(obj, 'received_by_display_name', '') or '').strip():
+                            obj.received_by_display_name = _get_user_display_name(obj.received_by)
+                        if not getattr(obj, 'confirmed_at', None):
+                            obj.confirmed_at = timezone.now()
                     
                     # Reset available if unused (assuming edit mode)
                     if obj.used == 0 and obj.damaged == 0:
@@ -997,6 +1071,23 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                         obj.status = 'AVAILABLE'
                     
                     obj.save()
+                else:
+                    if mark_received_by and acting_user:
+                        changed = False
+                        if not getattr(obj, 'received_by_id', None):
+                            obj.received_by = acting_user
+                            changed = True
+                        if not str(getattr(obj, 'received_by_display_name', '') or '').strip():
+                            obj.received_by_display_name = _get_user_display_name(obj.received_by)
+                            changed = True
+                        if not getattr(obj, 'confirmed_at', None):
+                            obj.confirmed_at = timezone.now()
+                            changed = True
+                        if acting_user and not getattr(obj, 'updated_by_id', None):
+                            obj.updated_by = acting_user
+                            changed = True
+                        if changed:
+                            obj.save(update_fields=['received_by', 'received_by_display_name', 'confirmed_at', 'updated_by'])
                     
         except Exception as e:
             logger.exception("Unhandled error while updating hologram rolls details")
@@ -1006,6 +1097,71 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
     queryset = HologramRequest.objects.all()
     serializer_class = HologramRequestSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def _build_production_updated_by_map(self, requests):
+        """
+        Build a mapping of HologramRequest -> officer display name who saved the fixed daily entry.
+        """
+        try:
+            from django.db.models import Q
+            from .models import DailyHologramRegister
+
+            request_ids = []
+            ref_nos = []
+            for r in requests:
+                if getattr(r, 'id', None) is not None:
+                    request_ids.append(r.id)
+                ref = str(getattr(r, 'ref_no', '') or '').strip()
+                if ref:
+                    ref_nos.append(ref)
+
+            if not request_ids and not ref_nos:
+                return {'by_request_id': {}, 'by_ref_no': {}}
+
+            entries = (
+                DailyHologramRegister.objects.filter(is_fixed=True)
+                .filter(Q(hologram_request_id__in=request_ids) | Q(reference_no__in=ref_nos))
+                .select_related('approved_by')
+                .order_by('-approved_at', '-id')
+            )
+
+            by_request_id = {}
+            by_ref_no = {}
+
+            for entry in entries:
+                display = str(getattr(entry, 'approved_by_display_name', '') or '').strip()
+                if not display:
+                    display = _get_user_display_name(getattr(entry, 'approved_by', None))
+                if not display:
+                    continue
+
+                req_id = getattr(entry, 'hologram_request_id', None)
+                if req_id is not None and req_id not in by_request_id:
+                    by_request_id[req_id] = display
+
+                ref = str(getattr(entry, 'reference_no', '') or '').strip()
+                if ref and ref not in by_ref_no:
+                    by_ref_no[ref] = display
+
+            return {'by_request_id': by_request_id, 'by_ref_no': by_ref_no}
+        except Exception:
+            logger.exception("Failed to build production_updated_by map")
+            return {'by_request_id': {}, 'by_ref_no': {}}
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        production_updated_by_map = self._build_production_updated_by_map(queryset)
+        ctx = dict(self.get_serializer_context() or {})
+        ctx['production_updated_by_map'] = production_updated_by_map
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True, context=ctx)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True, context=ctx)
+        return Response(serializer.data)
     
     def allocate_holograms_fifo(self, roll, quantity_needed, reference_no, usage_date=None):
         """
@@ -1528,6 +1684,17 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
 from .models import DailyHologramRegister
 from .serializers import DailyHologramRegisterSerializer, HologramRollsDetailsSerializer
 
+def _get_user_display_name(user) -> str:
+    """Return a human-readable display name for a user (first/middle/last, fallback to username)."""
+    if user is None:
+        return 'System'
+    first = (getattr(user, 'first_name', '') or '').strip()
+    middle = (getattr(user, 'middle_name', '') or '').strip()
+    last = (getattr(user, 'last_name', '') or '').strip()
+    parts = [p for p in [first, middle, last] if p]
+    full = ' '.join(parts)
+    return full if full else (getattr(user, 'username', None) or 'System')
+
 class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
     queryset = DailyHologramRegister.objects.all()  # FIXED: was 'dataset' which DRF ignores
     serializer_class = DailyHologramRegisterSerializer
@@ -1580,6 +1747,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 save_kwargs.update({
                     'approval_status': DailyHologramRegister.APPROVAL_STATUS_APPROVED,
                     'approved_by': self.request.user,
+                    'approved_by_display_name': _get_user_display_name(self.request.user),
                     'approved_at': timezone.now()
                 })
 
@@ -1674,11 +1842,15 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         instance = serializer.save()
         # Keep officer name visible for edited fixed entries as well.
-        if bool(getattr(instance, 'is_fixed', False)) and not getattr(instance, 'approved_by_id', None):
-            instance.approval_status = DailyHologramRegister.APPROVAL_STATUS_APPROVED
-            instance.approved_by = self.request.user
-            instance.approved_at = timezone.now()
-            instance.save(update_fields=['approval_status', 'approved_by', 'approved_at'])
+        if bool(getattr(instance, 'is_fixed', False)):
+            needs_approval_meta = not getattr(instance, 'approved_by_id', None)
+            needs_display_name = not str(getattr(instance, 'approved_by_display_name', '') or '').strip()
+            if needs_approval_meta or needs_display_name:
+                instance.approval_status = DailyHologramRegister.APPROVAL_STATUS_APPROVED
+                instance.approved_by = instance.approved_by or self.request.user
+                instance.approved_by_display_name = _get_user_display_name(instance.approved_by)
+                instance.approved_at = instance.approved_at or timezone.now()
+                instance.save(update_fields=['approval_status', 'approved_by', 'approved_by_display_name', 'approved_at'])
         self._sync_brand_warehouse_stock(instance)
 
     def _sync_brand_warehouse_stock(self, instance):
@@ -2330,7 +2502,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 'brandName': instance.brand_details,
                                 'brandDetails': instance.brand_details,
                                 'bottleSize': instance.bottle_size,
-                                'approvedBy': self.request.user.username if self.request else 'System',
+                                'approvedBy': _get_user_display_name(self.request.user) if self.request else 'System',
                                 'approvedAt': timezone.now().isoformat()
                             }
                             roll_obj.usage_history.append(usage_entry)
@@ -2346,6 +2518,8 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 reference_no=instance.reference_no,
                                 brand_name=instance.brand_details,
                                 bottle_size=instance.bottle_size,
+                                updated_by=self.request.user if self.request else None,
+                                updated_by_display_name=_get_user_display_name(self.request.user) if self.request else None,
                                 description=f"Used on {instance.usage_date}"
                             )
                     else:
@@ -2361,7 +2535,7 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             'brandName': instance.brand_details,
                             'brandDetails': instance.brand_details,
                             'bottleSize': instance.bottle_size,
-                            'approvedBy': self.request.user.username if self.request else 'System',
+                            'approvedBy': _get_user_display_name(self.request.user) if self.request else 'System',
                             'approvedAt': timezone.now().isoformat()
                         }
                         roll_obj.usage_history.append(usage_entry)
@@ -2377,6 +2551,8 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             reference_no=instance.reference_no,
                             brand_name=instance.brand_details,
                             bottle_size=instance.bottle_size,
+                            updated_by=self.request.user if self.request else None,
+                            updated_by_display_name=_get_user_display_name(self.request.user) if self.request else None,
                             description=f"Used on {instance.usage_date}"
                         )
                 
@@ -2396,8 +2572,8 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 'referenceNo': instance.reference_no,
                                 'brandName': instance.brand_details,
                                 'brandDetails': instance.brand_details,
-                                'reportedBy': self.request.user.username if self.request else 'System',
-                                'approvedBy': self.request.user.username if self.request else 'System',
+                                'reportedBy': _get_user_display_name(self.request.user) if self.request else 'System',
+                                'approvedBy': _get_user_display_name(self.request.user) if self.request else 'System',
                                 'approvedAt': timezone.now().isoformat()
                             }
                             roll_obj.usage_history.append(usage_entry)
@@ -2411,7 +2587,9 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                                 status='DAMAGED',
                                 damage_date=instance.usage_date,
                                 damage_reason=usage_entry['damageReason'],
-                                reported_by=self.request.user.username if self.request else 'System',
+                                reported_by=_get_user_display_name(self.request.user) if self.request else 'System',
+                                updated_by=self.request.user if self.request else None,
+                                updated_by_display_name=_get_user_display_name(self.request.user) if self.request else None,
                                 description=usage_entry['damageReason'] or 'Damaged during production'
                             )
                     else:
@@ -2427,8 +2605,8 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             'referenceNo': instance.reference_no,
                             'brandName': instance.brand_details,
                             'brandDetails': instance.brand_details,
-                            'reportedBy': self.request.user.username if self.request else 'System',
-                            'approvedBy': self.request.user.username if self.request else 'System',
+                            'reportedBy': _get_user_display_name(self.request.user) if self.request else 'System',
+                            'approvedBy': _get_user_display_name(self.request.user) if self.request else 'System',
                             'approvedAt': timezone.now().isoformat()
                         }
                         roll_obj.usage_history.append(usage_entry)
@@ -2442,7 +2620,9 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                             status='DAMAGED',
                             damage_date=instance.usage_date,
                             damage_reason=instance.damage_reason,
-                            reported_by=self.request.user.username if self.request else 'System',
+                            reported_by=_get_user_display_name(self.request.user) if self.request else 'System',
+                            updated_by=self.request.user if self.request else None,
+                            updated_by_display_name=_get_user_display_name(self.request.user) if self.request else None,
                             description=instance.damage_reason or 'Damaged during production'
                         )
                 
@@ -2757,8 +2937,9 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
         Shows: Applied, Under Process, Completed On Time, Completed Late, Overdue
         """
         from django.db.models import Q
-        from datetime import datetime
+        from datetime import datetime, time
         from django.utils import timezone as django_timezone
+        from models.masters.core.models import SupplyChainTimerConfig
         
         try:
             workflow_id = WORKFLOW_IDS['HOLOGRAM_REQUEST']
@@ -2776,7 +2957,39 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
             requests = HologramRequest.objects.select_related(
                 'licensee', 'workflow', 'current_stage'
             ).prefetch_related('transactions').all()
-            
+
+            # Deadline time is configurable in DB (public.timer).
+            # Store as minutes-from-midnight (recommended): delay_unit=minute, delay_value=1020 for 5:00 PM.
+            deadline_timer_code = 'HOLOGRAM_DAILY_ENTRY_DEADLINE_TIME'
+            default_deadline_minutes = 17 * 60  # 5:00 PM fallback only
+            deadline_minutes = default_deadline_minutes
+            try:
+                cfg = (
+                    SupplyChainTimerConfig.objects.filter(code=deadline_timer_code, is_active=True)
+                    .order_by('-updated_at', '-id')
+                    .first()
+                )
+                if cfg:
+                    unit = str(getattr(cfg, 'delay_unit', '') or '').lower().strip()
+                    value = int(getattr(cfg, 'delay_value', 0) or 0)
+                    if value < 0:
+                        value = 0
+
+                    if unit == SupplyChainTimerConfig.TIMER_UNIT_MINUTE:
+                        deadline_minutes = value
+                    elif unit == SupplyChainTimerConfig.TIMER_UNIT_HOUR:
+                        deadline_minutes = value * 60
+                    elif unit == SupplyChainTimerConfig.TIMER_UNIT_SECOND:
+                        deadline_minutes = int(round(value / 60))
+                    elif unit == SupplyChainTimerConfig.TIMER_UNIT_DAY:
+                        deadline_minutes = value * 24 * 60
+            except Exception:
+                deadline_minutes = default_deadline_minutes
+
+            deadline_minutes = int(deadline_minutes or 0) % (24 * 60)
+            deadline_time = time(hour=deadline_minutes // 60, minute=deadline_minutes % 60)
+            deadline_label = datetime.combine(datetime.today().date(), deadline_time).strftime('%I:%M %p')
+
             result_data = []
             
             for req in requests:
@@ -2825,9 +3038,9 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 
                 # Calculate deadline and SLA if approved
                 if approval_txn:
-                    # Deadline is 5 PM on approval date
+                    # Deadline is configurable time on approval date
                     approval_date = approval_txn.timestamp.date()
-                    deadline_naive = datetime.combine(approval_date, datetime.strptime('17:00', '%H:%M').time())
+                    deadline_naive = datetime.combine(approval_date, deadline_time)
                     deadline = django_timezone.make_aware(deadline_naive) if django_timezone.is_naive(deadline_naive) else deadline_naive
                     
                     now = django_timezone.now()
@@ -2902,18 +3115,18 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                                     'serialRanges': serial_ranges,
                                 })
                     elif status in {'UNDER_PROCESS', 'APPLIED'}:
-                        # OIC has not saved daily entry yet; track remaining time vs 5 PM deadline
+                        # OIC has not saved daily entry yet; track remaining time vs configured deadline
                         if now > deadline:
                             is_overdue = True
                             overdue_seconds = int((now - deadline).total_seconds())
                             overdue_hours = overdue_seconds // 3600
                             overdue_minutes = (overdue_seconds % 3600) // 60
-                            time_remaining = f"Overdue by {overdue_hours}h {overdue_minutes}m (deadline 5:00 PM)"
+                            time_remaining = f"Overdue by {overdue_hours}h {overdue_minutes}m (deadline {deadline_label})"
                         else:
                             remaining_seconds = int((deadline - now).total_seconds())
                             hours_left = remaining_seconds // 3600
                             minutes_left = (remaining_seconds % 3600) // 60
-                            time_remaining = f"{hours_left}h {minutes_left}m remaining (deadline 5:00 PM)"
+                            time_remaining = f"{hours_left}h {minutes_left}m remaining (deadline {deadline_label})"
                 
                 
                 result_data.append({

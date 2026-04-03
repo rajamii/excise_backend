@@ -23,5 +23,7 @@ urlpatterns = [
 
     path('<everything:license_id>/print/', views.print_license_view, name='print-license'),
 
+    path('<everything:license_id>/pay-print-fee/', views.pay_print_fee_view, name='pay-print-fee'),
+
     path('me/', views.MyLicensesListView.as_view(), name='my-licenses-list'),
 ]

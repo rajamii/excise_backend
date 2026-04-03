@@ -16,7 +16,18 @@ from .serializers import NewLicenseApplicationSerializer, ObjectionSerializer, R
 from auth.workflow.models import WorkflowStage, WorkflowTransition, Objection
 from django.core.exceptions import ValidationError, PermissionDenied
 from django.utils import timezone
+from django.contrib.contenttypes.models import ContentType
+from django.http import FileResponse, HttpResponse
+from io import BytesIO
+import base64
+import mimetypes
+from PIL import Image
+from utils.qrcodegen import QrCode
 import re
+from models.masters.license.master_license_form import MasterLicenseForm
+from models.masters.license.master_license_form_terms import MasterLicenseFormTerms
+from django.core import signing
+from urllib.parse import quote
 
 
 def _normalize_role(role_name):
@@ -224,6 +235,12 @@ def initiate_renewal(request, license_id):
         'company_cin': old_app.company_cin,
         'company_email': old_app.company_email,
         'company_phone_number': old_app.company_phone_number,
+        # Documents (carry forward for renewal)
+        'pass_photo': old_app.pass_photo,
+        'pan_card': old_app.pan_card,
+        'sikkim_certificate': old_app.sikkim_certificate,
+        'dob_proof': old_app.dob_proof,
+        'noc_landlord': old_app.noc_landlord,
     }
 
     # Manual creation
@@ -285,12 +302,263 @@ def list_license_applications(request):
 
 
 # License Application Detail
-@permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('new_license_application', 'view')])
 @api_view(['GET'])
 def license_application_detail(request, pk):
-    application = get_object_or_404(NewLicenseApplication, pk=pk)
+    raw_pk = str(pk or "").strip()
+    if raw_pk.isdigit():
+        application = get_object_or_404(NewLicenseApplication, pk=int(raw_pk))
+    else:
+        application = get_object_or_404(NewLicenseApplication, application_id=raw_pk)
+
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role == "licensee" and application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
     serializer = NewLicenseApplicationSerializer(application)
     return Response(serializer.data)
+
+
+# Final License Detail (for printing/viewing in UI)
+@permission_classes([HasAppPermission('new_license_application', 'view')])
+@api_view(['GET'])
+def final_license_detail(request, application_id):
+    raw_id = str(application_id or "").strip()
+    token = raw_id
+    low = token.lower()
+    if low.startswith("val:"):
+        token = token[4:].strip()
+    elif low.startswith("val-"):
+        token = token[4:].strip()
+    elif low.startswith("val "):
+        token = token[4:].strip()
+
+    resolved_application_id = raw_id
+    validated_via_code = False
+    try:
+        payload = signing.loads(token, salt="final-license")
+        if isinstance(payload, dict) and payload.get("source") == "new_license_application" and payload.get("applicationId"):
+            resolved_application_id = str(payload["applicationId"])
+            validated_via_code = True
+    except Exception:
+        resolved_application_id = raw_id
+
+    application = get_object_or_404(NewLicenseApplication, application_id=resolved_application_id)
+
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role == "licensee" and application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
+    license_obj = License.objects.filter(
+        source_type="new_license_application",
+        source_content_type=new_app_ct,
+        source_object_id=application.application_id,
+    ).order_by("-issue_date").first()
+
+    def fmt_dt(d):
+        return d.strftime("%d/%m/%Y") if d else ""
+
+    def build_address():
+        parts = []
+        if getattr(application, "location_name", None):
+            parts.append(str(application.location_name).strip())
+        if getattr(application, "ward_name", None):
+            parts.append(f"Ward: {str(application.ward_name).strip()}")
+        if getattr(application, "business_address", None):
+            parts.append(str(application.business_address).strip())
+        if getattr(application, "police_station", None):
+            parts.append(f"P.S - {application.police_station.police_station}")
+        if getattr(application, "site_subdivision", None):
+            parts.append(f"Sub Division - {application.site_subdivision.subdivision}")
+        if getattr(application, "pin_code", None):
+            parts.append(f"Pin - {application.pin_code}")
+        return ", ".join([p for p in parts if p])
+
+    def _pick_passport_file():
+        candidates = [getattr(application, "pass_photo", None)]
+        if getattr(application, "renewal_of", None) and getattr(application.renewal_of, "source_application", None):
+            src = application.renewal_of.source_application
+            candidates.append(getattr(src, "pass_photo", None))
+        for c in candidates:
+            try:
+                if c and getattr(c, "name", None) and c.storage.exists(c.name):
+                    return c
+            except Exception:
+                continue
+        return None
+
+    photo_url = ""
+    photo_exists = False
+    passport_photo_data_url = ""
+    passport_file = _pick_passport_file()
+    if passport_file and hasattr(passport_file, "url"):
+        try:
+            photo_url = request.build_absolute_uri(passport_file.url)
+        except Exception:
+            photo_url = ""
+
+        photo_exists = True
+        try:
+            with passport_file.open("rb") as f:
+                raw = f.read()
+            mime = mimetypes.guess_type(passport_file.name)[0] or "application/octet-stream"
+            b64 = base64.b64encode(raw).decode("ascii")
+            passport_photo_data_url = f"data:{mime};base64,{b64}"
+        except Exception:
+            passport_photo_data_url = ""
+
+    def make_qr_data_url(licensee_id: str) -> str:
+        payload = f"Renewal of License vide Application Id No. : {application.application_id} and Licensee Id No : {licensee_id}"
+        qr = QrCode.encode_text(payload, QrCode.Ecc.MEDIUM)
+        size = qr.get_size()
+        border = 2
+        scale = 4
+        img_size = (size + border * 2) * scale
+
+        img = Image.new("RGB", (img_size, img_size), "white")
+        pixels = img.load()
+        for y in range(size):
+            for x in range(size):
+                if qr.get_module(x, y):
+                    for dy in range(scale):
+                        for dx in range(scale):
+                            px = (x + border) * scale + dx
+                            py = (y + border) * scale + dy
+                            pixels[px, py] = (0, 0, 0)
+
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{b64}"
+
+    validation_code = signing.dumps(
+        {"applicationId": application.application_id, "source": "new_license_application"},
+        salt="final-license",
+    )
+
+    response = {
+        "applicationId": application.application_id,
+        "licenseNumber": (license_obj.license_id if license_obj else application.application_id),
+        "licenseTitle": "",
+        "validationCode": validation_code,
+        "validationPdfUrl": request.build_absolute_uri(f"/v/{quote(validation_code, safe=':')}/"),
+        "validatedViaCode": validated_via_code,
+        "terms": [],
+        "licenseeName": application.applicant_name,
+        "fatherOrHusbandName": application.father_husband_name,
+        "kindOfShop": application.license_type.license_type if application.license_type else "",
+        "addressOfBusiness": build_address(),
+        "district": application.site_district.district if application.site_district else "",
+        "modeOfOperation": application.get_mode_of_operation_display() if hasattr(application, "get_mode_of_operation_display") else application.mode_of_operation,
+        "passportPhotoUrl": photo_url,
+        "passportPhotoExists": photo_exists,
+        "passportPhotoDataUrl": passport_photo_data_url,
+        "licenseFee": application.yearly_license_fee or "",
+        "transactionRef": "",
+        "transactionDate": "",
+        "validFrom": fmt_dt(license_obj.issue_date) if license_obj else fmt_dt(application.created_at.date()),
+        "validTo": fmt_dt(license_obj.valid_up_to) if license_obj else "",
+        "generatedOn": fmt_dt(timezone.now().date()),
+        "qrCodeDataUrl": make_qr_data_url(license_obj.license_id if license_obj else application.application_id),
+    }
+
+    cat_code = getattr(license_obj, "license_category_id", None) if license_obj else None
+    scat_code = getattr(license_obj, "license_sub_category_id", None) if license_obj else None
+    if cat_code is None:
+        cat_code = getattr(application, "license_category_id", None)
+    if scat_code is None:
+        scat_code = getattr(application, "license_sub_category_id", None)
+    if cat_code is not None and scat_code is not None:
+        cfg = MasterLicenseForm.get_license_config(int(cat_code), int(scat_code))
+        if cfg:
+            response["licenseTitle"] = cfg.license_title
+
+        qs = MasterLicenseFormTerms.objects.filter(
+            licensee_cat_code=int(cat_code),
+            licensee_scat_code=int(scat_code),
+        ).order_by("sl_no")
+        terms = [str(t.license_terms).strip() for t in qs if getattr(t, "license_terms", None)]
+        terms = [t for t in terms if t]
+        response["terms"] = terms
+
+    return Response(response, status=status.HTTP_200_OK)
+
+
+@permission_classes([HasAppPermission('new_license_application', 'view')])
+@api_view(['GET'])
+def final_license_passport_photo(request, application_id):
+    application = get_object_or_404(NewLicenseApplication, application_id=application_id)
+
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role == "licensee" and application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    def _pick_passport_file():
+        candidates = [getattr(application, "pass_photo", None)]
+        if getattr(application, "renewal_of", None) and getattr(application.renewal_of, "source_application", None):
+            src = application.renewal_of.source_application
+            candidates.append(getattr(src, "pass_photo", None))
+        for c in candidates:
+            try:
+                if c and getattr(c, "name", None) and c.storage.exists(c.name):
+                    return c
+            except Exception:
+                continue
+        return None
+
+    passport_file = _pick_passport_file()
+    if not passport_file:
+        return Response({"detail": "Photo not available."}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        f = passport_file.open("rb")
+    except Exception:
+        return Response({"detail": "Photo not available."}, status=status.HTTP_404_NOT_FOUND)
+
+    mime = mimetypes.guess_type(passport_file.name)[0] or "application/octet-stream"
+    return FileResponse(f, content_type=mime)
+
+
+@permission_classes([HasAppPermission('new_license_application', 'view')])
+@api_view(['GET'])
+def final_license_qr_code(request, application_id):
+    application = get_object_or_404(NewLicenseApplication, application_id=application_id)
+
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role == "licensee" and application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
+    license_obj = License.objects.filter(
+        source_type="new_license_application",
+        source_content_type=new_app_ct,
+        source_object_id=application.application_id,
+    ).order_by("-issue_date").first()
+
+    licensee_id = license_obj.license_id if license_obj else application.application_id
+    payload = f"Renewal of License vide Application Id No. : {application.application_id} and Licensee Id No : {licensee_id}"
+
+    qr = QrCode.encode_text(payload, QrCode.Ecc.MEDIUM)
+    size = qr.get_size()
+    border = 2
+    scale = 4
+    img_size = (size + border * 2) * scale
+
+    img = Image.new("RGB", (img_size, img_size), "white")
+    pixels = img.load()
+    for y in range(size):
+        for x in range(size):
+            if qr.get_module(x, y):
+                for dy in range(scale):
+                    for dx in range(scale):
+                        px = (x + border) * scale + dx
+                        py = (y + border) * scale + dy
+                        pixels[px, py] = (0, 0, 0)
+
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return HttpResponse(buf.getvalue(), content_type="image/png")
 
 
 # Print License View

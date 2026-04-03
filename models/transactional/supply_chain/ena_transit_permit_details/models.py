@@ -7,7 +7,14 @@ class EnaTransitPermitDetail(models.Model):
     date = models.DateField(default=timezone.now)
     depot_address = models.CharField(max_length=100, default='', blank=True)
     brand = models.CharField(max_length=255, default='', blank=True)
-    size_ml = models.IntegerField(default=0)
+    size_ml = models.ForeignKey(
+        'liquor_data.MasterLiquorCategory',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_column='size_ml',
+        related_name='transit_permit_details',
+    )
     cases = models.IntegerField(default=0)
     vehicle_number = models.CharField(max_length=20, default='', blank=True)
     licensee_id = models.CharField(max_length=50, blank=True, null=True)
@@ -19,7 +26,14 @@ class EnaTransitPermitDetail(models.Model):
     
     # New fields for pricing and product details
     brand_owner = models.CharField(max_length=255, default='', blank=True)
-    liquor_type = models.CharField(max_length=100, default='', blank=True)
+    liquor_type = models.ForeignKey(
+        'liquor_data.MasterLiquorType',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        db_column='liquor_type',
+        related_name='transit_permit_details',
+    )
     exfactory_price_rs_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
     excise_duty_rs_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
     education_cess_rs_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
