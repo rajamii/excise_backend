@@ -22,6 +22,12 @@ class LicenseCategory(models.Model):
         blank=False,
         help_text="Name of license category"
     )
+    old_license_cat_code = models.IntegerField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Legacy license category code used in old system"
+    )
 
     class Meta:
         db_table = 'masters_licensecategory'
@@ -198,6 +204,18 @@ class LicenseSubcategory(models.Model):
         default=None,
         null=False,
         validators=[validate_name_extended]
+    )
+    old_license_cat_code = models.IntegerField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Legacy license category code used in old system",
+    )
+    old_license_scat_code = models.IntegerField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Legacy license subcategory code used in old system",
     )
     category = models.ForeignKey(
         LicenseCategory,
