@@ -25,6 +25,7 @@ from utils.qrcodegen import QrCode
 import re
 from models.masters.license.master_license_form import MasterLicenseForm
 from models.masters.license.master_license_form_terms import MasterLicenseFormTerms
+from models.masters.license.legacy_codes import resolve_codes_for_license_form
 from django.core import signing
 from urllib.parse import quote
 import secrets
@@ -433,16 +434,21 @@ def final_license_detail(request, application_id):
     scat_code = getattr(license_obj, "license_sub_category_id", None) if license_obj else None
     if cat_code is None:
         cat_code = getattr(application, "license_category_id", None)
-    license_title = ""
+
+    resolved_cat = None
+    resolved_scat = None
     if cat_code is not None and scat_code is not None:
-        cfg = MasterLicenseForm.get_license_config(int(cat_code), int(scat_code))
+        resolved_cat, resolved_scat = resolve_codes_for_license_form(int(cat_code), int(scat_code))
+
+    license_title = ""
+    terms: list[str] = []
+    if resolved_cat is not None and resolved_scat is not None:
+        cfg = MasterLicenseForm.get_license_config(int(resolved_cat), int(resolved_scat))
         license_title = cfg.license_title if cfg else ""
 
-    terms: list[str] = []
-    if cat_code is not None and scat_code is not None:
         qs = MasterLicenseFormTerms.objects.filter(
-            licensee_cat_code=int(cat_code),
-            licensee_scat_code=int(scat_code),
+            licensee_cat_code=int(resolved_cat),
+            licensee_scat_code=int(resolved_scat),
         ).order_by("sl_no")
         terms = [str(t.license_terms).strip() for t in qs if getattr(t, "license_terms", None)]
         terms = [t for t in terms if t]
@@ -480,6 +486,10 @@ def final_license_detail(request, application_id):
         "validationPdfUrl": validation_url,
         "validatedViaCode": validated_via_code,
         "terms": terms,
+        # Debug/compat fields: the (legacy) codes used to pick terms/title.
+        # Frontend can ignore these safely.
+        "termsCatCode": resolved_cat,
+        "termsScatCode": resolved_scat,
         "licenseeName": application.member_name or application.establishment_name,
         "fatherOrHusbandName": application.father_husband_name,
         "kindOfShop": application.license_type.license_type if getattr(application, "license_type", None) else "",

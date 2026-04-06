@@ -20,6 +20,7 @@ from rest_framework.response import Response
 
 from models.masters.license.master_license_form import MasterLicenseForm
 from models.masters.license.master_license_form_terms import MasterLicenseFormTerms
+from models.masters.license.legacy_codes import resolve_codes_for_license_form
 from models.masters.license.models import License
 from models.masters.license.models import LicenseValidationToken
 from models.transactional.license_application.models import LicenseApplication
@@ -80,13 +81,17 @@ def _fetch_title_terms(cat_code: int | None, scat_code: int | None) -> tuple[str
     if cat_code is None or scat_code is None:
         return '', []
 
-    cfg = MasterLicenseForm.get_license_config(int(cat_code), int(scat_code))
+    resolved_cat, resolved_scat = resolve_codes_for_license_form(int(cat_code), int(scat_code))
+    if resolved_cat is None or resolved_scat is None:
+        return '', []
+
+    cfg = MasterLicenseForm.get_license_config(int(resolved_cat), int(resolved_scat))
     title = cfg.license_title if cfg else ''
 
     qs = (
         MasterLicenseFormTerms.objects.filter(
-            licensee_cat_code=int(cat_code),
-            licensee_scat_code=int(scat_code),
+            licensee_cat_code=int(resolved_cat),
+            licensee_scat_code=int(resolved_scat),
         )
         .order_by('sl_no')
         .all()

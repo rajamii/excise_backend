@@ -26,6 +26,7 @@ from utils.qrcodegen import QrCode
 import re
 from models.masters.license.master_license_form import MasterLicenseForm
 from models.masters.license.master_license_form_terms import MasterLicenseFormTerms
+from models.masters.license.legacy_codes import resolve_codes_for_license_form
 from django.core import signing
 from urllib.parse import quote
 import secrets
@@ -502,6 +503,10 @@ def final_license_detail(request, application_id):
         "validationPdfUrl": validation_url,
         "validatedViaCode": validated_via_code,
         "terms": [],
+        # Debug/compat fields: the (legacy) codes used to pick terms/title.
+        # Frontend can ignore these safely.
+        "termsCatCode": None,
+        "termsScatCode": None,
         "licenseeName": application.applicant_name,
         "fatherOrHusbandName": application.father_husband_name,
         "kindOfShop": application.license_type.license_type if application.license_type else "",
@@ -527,14 +532,21 @@ def final_license_detail(request, application_id):
     if scat_code is None:
         scat_code = getattr(application, "license_sub_category_id", None)
     if cat_code is not None and scat_code is not None:
-        cfg = MasterLicenseForm.get_license_config(int(cat_code), int(scat_code))
+        resolved_cat, resolved_scat = resolve_codes_for_license_form(int(cat_code), int(scat_code))
+        response["termsCatCode"] = resolved_cat
+        response["termsScatCode"] = resolved_scat
+        cfg = MasterLicenseForm.get_license_config(int(resolved_cat), int(resolved_scat)) if resolved_cat is not None and resolved_scat is not None else None
         if cfg:
             response["licenseTitle"] = cfg.license_title
 
-        qs = MasterLicenseFormTerms.objects.filter(
-            licensee_cat_code=int(cat_code),
-            licensee_scat_code=int(scat_code),
-        ).order_by("sl_no")
+        qs = (
+            MasterLicenseFormTerms.objects.filter(
+                licensee_cat_code=int(resolved_cat),
+                licensee_scat_code=int(resolved_scat),
+            ).order_by("sl_no")
+            if resolved_cat is not None and resolved_scat is not None
+            else MasterLicenseFormTerms.objects.none()
+        )
         terms = [str(t.license_terms).strip() for t in qs if getattr(t, "license_terms", None)]
         terms = [t for t in terms if t]
         response["terms"] = terms
