@@ -4,6 +4,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.exceptions import PermissionDenied
+from djangorestframework_camel_case.render import CamelCaseJSONRenderer
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework_simplejwt.views import TokenRefreshView
 from django.shortcuts import get_object_or_404
@@ -694,6 +695,7 @@ class UserDeleteView(generics.DestroyAPIView):
     queryset = CustomUser.objects.all()
     serializer_class = UserSerializer
     permission_classes = [make_permission('user', 'delete')]
+    renderer_classes = (CamelCaseJSONRenderer,)
 
     def _soft_delete_user(self, instance: CustomUser) -> None:
         timestamp_token = timezone.now().strftime('%Y%m%d%H%M%S')
@@ -733,8 +735,25 @@ class UserDeleteView(generics.DestroyAPIView):
             }
         )
 
-        self.perform_destroy(instance)
-        return Response({'message': 'User deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
+        try:
+            with transaction.atomic():
+                self.perform_destroy(instance)
+            return Response(
+                {'message': 'User deleted permanently.'},
+                status=status.HTTP_200_OK
+            )
+        except (ProtectedError, IntegrityError):
+            # When the user is referenced (e.g. by licenses / applications) hard delete is not allowed.
+            # Soft delete keeps audit history but frees unique identifiers (email/phone/username) for reuse.
+            self._soft_delete_user(instance)
+            return Response(
+                {
+                    'message': 'User is referenced in the system and cannot be deleted. User has been deactivated and identifiers cleared for reuse.',
+                    'deleted': False,
+                    'deactivated': True,
+                },
+                status=status.HTTP_200_OK
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
