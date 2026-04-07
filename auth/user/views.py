@@ -76,7 +76,7 @@ def verify_otp_for_registration(request):
 def licensee_register_after_verification(request):
     required_fields = [
         'phone_number', 'first_name', 'last_name', 'email',
-        'pan_number', 'father_name', 'dob', 'gender', 'nationality',
+        'pan_number',
         'address', 'district', 'subdivision', 'password', 'hashkey', 'response',
     ]
 
@@ -126,10 +126,10 @@ def licensee_register_after_verification(request):
         'password':           request.data['password'],
         # Profile fields
         'pan_number':         request.data['pan_number'],
-        'father_name':        request.data['father_name'],
-        'dob':                request.data['dob'],
-        'gender':             request.data['gender'],
-        'nationality':        request.data['nationality'],
+        'father_name':        request.data.get('father_name'),
+        'dob':                request.data.get('dob'),
+        'gender':             request.data.get('gender'),
+        'nationality':        request.data.get('nationality'),
         'marital_status':     request.data.get('marital_status', ''),
         'residential_status': request.data.get('residential_status', ''),
     }
