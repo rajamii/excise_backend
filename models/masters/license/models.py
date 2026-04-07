@@ -5,6 +5,9 @@ from django.contrib.contenttypes.models import ContentType
 from models.masters.core.models import District, LicenseCategory, LicenseSubcategory
 from auth.user.models import CustomUser
 
+from .master_license_form import MasterLicenseForm  # noqa: F401
+from .master_license_form_terms import MasterLicenseFormTerms  # noqa: F401
+
 class License(models.Model):
     SOURCE_TYPES = [
         ('new_license_application', 'New License Application'),
@@ -57,6 +60,10 @@ class License(models.Model):
 
     is_active = models.BooleanField(default=True)
 
+    # Validation link / QR rotation (anti-copy): only the latest nonce for a license stays valid.
+    validation_nonce = models.CharField(max_length=32, blank=True, default='', db_index=True)
+    validation_nonce_updated_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         db_table = 'licenses'
         ordering = ['-issue_date']
@@ -67,6 +74,7 @@ class License(models.Model):
             models.Index(fields=['license_sub_category']),
             models.Index(fields=['is_active']),
             models.Index(fields=['valid_up_to']),
+            models.Index(fields=['validation_nonce']),
         ]
 
     def __str__(self):
@@ -82,8 +90,13 @@ class License(models.Model):
 
     def record_license_print(self, fee_paid=False):
         self.print_count += 1
-        if self.print_count > 5 and fee_paid:
-            self.is_print_fee_paid = True
+        self.printed_on = now()
+        # Treat `is_print_fee_paid` as a one-time token for the next duplicate print
+        # (after 5 free prints, each additional print requires a fresh payment).
+        if fee_paid:
+            if not self.print_fee_paid_on:
+                self.print_fee_paid_on = now()
+            self.is_print_fee_paid = False
         self.save()
 
     def save(self, *args, **kwargs):
@@ -136,3 +149,26 @@ class License(models.Model):
             raise ValueError(f"Generated license_id '{new_license_id}' exceeds 30 characters")
 
         return new_license_id
+
+
+class LicenseValidationToken(models.Model):
+    """
+    Stores per-print validation nonces for a License.
+
+    Any previously printed copy can be verified in the future by matching its nonce.
+    """
+
+    license = models.ForeignKey(License, on_delete=models.CASCADE, related_name='validation_tokens')
+    nonce = models.CharField(max_length=32, unique=True, db_index=True)
+    signed_code = models.TextField(blank=True, default='')
+    validation_url = models.TextField(blank=True, default='')
+    verification_id = models.CharField(max_length=12, blank=True, default='', db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'license_validation_tokens'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['license']),
+            models.Index(fields=['created_at']),
+        ]

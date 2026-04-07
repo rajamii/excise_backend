@@ -71,24 +71,61 @@ class Command(BaseCommand):
 
         # 2. Define Stages
         # Mapping: Name -> (Description, IsInitial, IsFinal)
+        # NOTE: Historically the "Pending Review" stage was named
+        # "PaymentSuccessfulandForwardedToOfficerincharge". We keep a clear stage label so
+        # users understand payment is done and OIC approval is pending.
+        pending_stage_name = "Payment Successful, Pending OIC Approval"
         stages_data = {
             "Ready for Payment": ("Application submitted, pending payment", True, False),
-            "PaymentSuccessfulandForwardedToOfficerincharge": ("Payment successful, forwarded to Officer", False, False),
+            pending_stage_name: ("Payment successful and forwarded. Pending Officer In-Charge approval.", False, False),
             "TransitPermitSuccessfullyApproved": ("Approved by Officer", False, True),
             "Cancelled by Officer In-Charge - Refund Initiated Successfully": ("Rejected by Officer, refund initiated", False, True),
         }
 
         stage_objects = {}
         for name, (desc, is_init, is_final) in stages_data.items():
-            stage, created = WorkflowStage.objects.get_or_create(
-                workflow=workflow,
-                name=name,
-                defaults={
-                    "description": desc,
-                    "is_initial": is_init,
-                    "is_final": is_final
-                }
+            # Backward-compat: if an older stage name exists, rename it in-place to keep ids stable.
+            lookup_names = [name]
+            if name == pending_stage_name:
+                lookup_names = [
+                    pending_stage_name,
+                    "Pending",
+                    "PaymentSuccessfulandForwardedToOfficerincharge",
+                    "Payment Successful",
+                ]
+
+            stage = (
+                WorkflowStage.objects.filter(workflow=workflow, name__in=lookup_names)
+                .order_by("id")
+                .first()
             )
+            created = False
+            if not stage:
+                stage = WorkflowStage.objects.create(
+                    workflow=workflow,
+                    name=name,
+                    description=desc,
+                    is_initial=is_init,
+                    is_final=is_final,
+                )
+                created = True
+            else:
+                update_fields = []
+                if stage.name != name:
+                    stage.name = name
+                    update_fields.append("name")
+                if (stage.description or "") != desc:
+                    stage.description = desc
+                    update_fields.append("description")
+                if bool(stage.is_initial) != bool(is_init):
+                    stage.is_initial = is_init
+                    update_fields.append("is_initial")
+                if bool(stage.is_final) != bool(is_final):
+                    stage.is_final = is_final
+                    update_fields.append("is_final")
+                if update_fields:
+                    stage.save(update_fields=update_fields)
+
             stage_objects[name] = stage
             if created:
                 self.stdout.write(f"Created Stage: {name}")
@@ -98,18 +135,18 @@ class Command(BaseCommand):
         transitions_data = [
             (
                 "Ready for Payment",
-                "PaymentSuccessfulandForwardedToOfficerincharge",
+                pending_stage_name,
                 "licensee",
                 "PAY"
             ),
             (
-                "PaymentSuccessfulandForwardedToOfficerincharge",
+                pending_stage_name,
                 "TransitPermitSuccessfullyApproved",
                 "officer",
                 "APPROVE"
             ),
              (
-                "PaymentSuccessfulandForwardedToOfficerincharge",
+                pending_stage_name,
                 "Cancelled by Officer In-Charge - Refund Initiated Successfully",
                 "officer",
                 "REJECT"
@@ -139,7 +176,7 @@ class Command(BaseCommand):
         # Here we assume 'licensee' and 'officer' exist or are placeholders.
         permissions_data = [
             ("Ready for Payment", "licensee", True),
-            ("PaymentSuccessfulandForwardedToOfficerincharge", "officer", True),
+            (pending_stage_name, "officer", True),
             ("TransitPermitSuccessfullyApproved", "officer", True), 
         ]
 

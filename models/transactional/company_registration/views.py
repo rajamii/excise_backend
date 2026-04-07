@@ -106,7 +106,7 @@ def list_company_registrations(request):
     return Response(serializer.data)
 
 
-@permission_classes([HasAppPermission('company_registration', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('company_registration', 'view')])
 @api_view(['GET'])
 def company_registration_detail(request, application_id):
     app = get_object_or_404(CompanyRegistration, application_id=application_id)

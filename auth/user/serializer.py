@@ -9,7 +9,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
 
 # Fields that are set once at creation and must never change afterwards
-IMMUTABLE_PROFILE_FIELDS = ('father_name', 'dob', 'gender', 'nationality', 'pan_number')
+IMMUTABLE_PROFILE_FIELDS = ('pan_number')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -280,12 +280,15 @@ class LicenseeProfileSerializer(serializers.ModelSerializer):
     # ── Field-level validation ────────────────────────────────────
 
     def validate_dob(self, value):
-        if value >= timezone.now().date():
+        
+        if value is not None and value >= timezone.now().date():
             raise serializers.ValidationError("Date of birth must be a past date.")
         return value
 
     def validate_father_name(self, value):
-        return ' '.join(value.strip().split())
+        if value is not None:
+            return ' '.join(value.strip().split())
+        return value
 
     # ── Object-level validation ───────────────────────────────────
 
@@ -315,16 +318,18 @@ class LicenseeProfileSerializer(serializers.ModelSerializer):
 class LicenseeSignupSerializer(serializers.ModelSerializer):
     """
     Used for self-registration of a licensee user.
-    Creates both the CustomUser and the linked LicenseeProfile atomically.
+    Creates both the CustomUser and the links LicenseeProfile automatically.
     """
     password = serializers.CharField(write_only=True, min_length=8)
 
     # LicenseeProfile fields — collected at signup
-    pan_number = serializers.CharField(max_length=10)
-    father_name = serializers.CharField(max_length=100)
-    dob = serializers.DateField()
-    gender = serializers.ChoiceField(choices=['M', 'F', 'O'])
-    nationality = serializers.CharField(max_length=50)
+    pan_number = serializers.CharField(max_length=10, required=True, allow_blank=False)
+    
+    # LicenseeProfile fields — collected after signup
+    father_name = serializers.CharField(max_length=100, required=False, allow_null=True, allow_blank=True)
+    dob = serializers.DateField(required=False, allow_null=True)
+    gender = serializers.ChoiceField(choices=['M', 'F', 'O'], required=False, allow_null=True, allow_blank=True)
+    nationality = serializers.CharField(max_length=50, required=False, allow_null=True, allow_blank=True)
     marital_status = serializers.ChoiceField(
         choices=['SINGLE', 'MARRIED', 'DIVORCED', 'WIDOWED'],
         required=False,
@@ -360,25 +365,28 @@ class LicenseeSignupSerializer(serializers.ModelSerializer):
         return value
 
     def validate_dob(self, value):
-        if value >= timezone.now().date():
+        if value is not None and value >= timezone.now().date():
             raise serializers.ValidationError("Date of birth must be a past date.")
         return value
 
     def validate_father_name(self, value):
-        return ' '.join(value.strip().split())
 
+        if value is not None:
+            return ' '.join(value.strip().split())
+        return value
+    
     # ── Create ────────────────────────────────────────────────────
 
     def create(self, validated_data):
         # Extract profile-only fields before creating the user
         profile_fields = {
             'pan_number':         validated_data.pop('pan_number'),
-            'father_name':        validated_data.pop('father_name'),
-            'dob':                validated_data.pop('dob'),
-            'gender':             validated_data.pop('gender'),
-            'nationality':        validated_data.pop('nationality'),
-            'marital_status':     validated_data.pop('marital_status', ''),
-            'residential_status': validated_data.pop('residential_status', ''),
+            'father_name':        validated_data.pop('father_name', None),
+            'dob':                validated_data.pop('dob', None),
+            'gender':             validated_data.pop('gender', None),
+            'nationality':        validated_data.pop('nationality', None),
+            'marital_status':     validated_data.pop('marital_status', None),
+            'residential_status': validated_data.pop('residential_status', None),
         }
 
         # Resolve the Licensee role

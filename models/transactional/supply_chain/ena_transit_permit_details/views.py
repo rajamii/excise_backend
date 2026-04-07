@@ -58,13 +58,29 @@ def _get_size_ml_value(item) -> int:
 class SubmitTransitPermitAPIView(views.APIView):
     permission_classes = [IsAuthenticated]
 
+    def _parse_int_from_size(self, value) -> int:
+        """
+        Parse pack size ml from common UI inputs: 750, "750", "750ml", "750 ML".
+        """
+        try:
+            if value is None:
+                return 0
+            if isinstance(value, int):
+                return int(value)
+            if isinstance(value, float):
+                return int(value)
+            raw = str(value).strip().lower()
+            if not raw:
+                return 0
+            digits = re.findall(r'\d+', raw)
+            return int(digits[0]) if digits else 0
+        except Exception:
+            return 0
+
     def _resolve_master_liquor_category(self, size_ml):
         from models.masters.supply_chain.liquor_data.models import MasterLiquorCategory
 
-        try:
-            normalized = int(size_ml or 0)
-        except Exception:
-            normalized = 0
+        normalized = self._parse_int_from_size(size_ml)
 
         obj, _ = MasterLiquorCategory.objects.get_or_create(size_ml=normalized)
         return obj
@@ -75,6 +91,130 @@ class SubmitTransitPermitAPIView(views.APIView):
         name = str(liquor_type or '').strip() or 'Other'
         obj, _ = MasterLiquorType.objects.get_or_create(liquor_type=name)
         return obj
+
+    def _resolve_brand_warehouse_row(self, brand_name: str, size_ml: int, licensee_id: str):
+        try:
+            from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
+
+            normalized_brand = str(brand_name or '').strip()
+            size_ml_val = int(size_ml or 0)
+            normalized_license = str(licensee_id or '').strip()
+            if not normalized_brand or size_ml_val <= 0:
+                return None
+
+            base = BrandWarehouse.objects.select_related(
+                'brand', 'factory', 'liquor_type', 'capacity_size'
+            ).filter(
+                brand__brand_name__iexact=normalized_brand,
+                capacity_size__size_ml=size_ml_val,
+            )
+
+            row = None
+            if normalized_license:
+                row = base.filter(license_id__iexact=normalized_license).first()
+            if not row:
+                row = base.first()
+            return row
+        except Exception:
+            return None
+
+    def _resolve_liquor_data_row(self, warehouse_row, brand_name: str, size_ml: int):
+        try:
+            from models.masters.supply_chain.liquor_data.models import LiquorData
+
+            liquor_data_id = getattr(warehouse_row, 'liquor_data_id', None) if warehouse_row else None
+            if liquor_data_id:
+                return LiquorData.objects.filter(id=liquor_data_id).first()
+
+            normalized_brand = str(brand_name or '').strip()
+            size_ml_val = int(size_ml or 0)
+            if not normalized_brand or size_ml_val <= 0:
+                return None
+
+            return (
+                LiquorData.objects.filter(brand_name__iexact=normalized_brand, pack_size_ml=size_ml_val)
+                .order_by('-updated_at', '-id')
+                .first()
+            )
+        except Exception:
+            return None
+
+    def _enrich_product_payload_from_masters(self, product: dict, licensee_id: str) -> dict:
+        """
+        Ensure product payload has brand owner, manufacturing unit, liquor type and rates.
+
+        Some deployments/UI flows submit only brand/size/cases (without rates/meta). To keep
+        server-side data consistent (and to make hosted environment work), derive missing
+        values from BrandWarehouse + LiquorData.
+        """
+        if not isinstance(product, dict):
+            return product
+
+        brand = str(product.get('brand') or '').strip()
+        size_ml_val = self._parse_int_from_size(product.get('size'))
+        if not brand or size_ml_val <= 0:
+            return product
+
+        warehouse_row = self._resolve_brand_warehouse_row(brand, size_ml_val, licensee_id)
+        liquor_data_row = self._resolve_liquor_data_row(warehouse_row, brand, size_ml_val)
+
+        def has_value(v) -> bool:
+            return str(v or '').strip() != ''
+
+        # Meta fields
+        if not has_value(product.get('manufacturing_unit_name')):
+            manufacturing_unit = ''
+            if warehouse_row:
+                manufacturing_unit = str(getattr(warehouse_row, 'distillery_name', '') or '').strip()
+            if not manufacturing_unit and liquor_data_row:
+                manufacturing_unit = str(getattr(liquor_data_row, 'manufacturing_unit_name', '') or '').strip()
+            if manufacturing_unit:
+                product['manufacturing_unit_name'] = manufacturing_unit
+
+        if not has_value(product.get('brand_owner')) and liquor_data_row:
+            brand_owner = str(getattr(liquor_data_row, 'brand_owner', '') or '').strip()
+            if brand_owner:
+                product['brand_owner'] = brand_owner
+
+        if not has_value(product.get('liquor_type')):
+            liquor_type_name = ''
+            try:
+                if warehouse_row and getattr(warehouse_row, 'liquor_type', None):
+                    liquor_type_name = str(warehouse_row.liquor_type or '').strip()
+            except Exception:
+                liquor_type_name = ''
+            if not liquor_type_name and liquor_data_row:
+                liquor_type_name = str(getattr(liquor_data_row, 'liquor_type', '') or '').strip()
+            if liquor_type_name:
+                product['liquor_type'] = liquor_type_name
+
+        # Rate fields (per case)
+        def ensure_rate(product_key: str, warehouse_attr: str):
+            try:
+                current = Decimal(str(product.get(product_key, 0) or 0))
+            except Exception:
+                current = Decimal('0')
+
+            if current > 0:
+                return
+
+            if not warehouse_row:
+                return
+
+            try:
+                derived = Decimal(str(getattr(warehouse_row, warehouse_attr, 0) or 0))
+            except Exception:
+                derived = Decimal('0')
+
+            if derived > 0:
+                product[product_key] = float(derived)
+
+        ensure_rate('ex_factory_price', 'ex_factory_price_rs_per_case')
+        ensure_rate('excise_duty', 'excise_duty_rs_per_case')
+        ensure_rate('education_cess', 'education_cess_rs_per_case')
+        ensure_rate('additional_excise', 'additional_excise_duty_rs_per_case')
+
+        return product
 
     def _resolve_submit_target_stage(self):
         """
@@ -454,6 +594,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                     )
 
                     for product in products:
+                        product = self._enrich_product_payload_from_masters(product, licensee_id)
                         obj = EnaTransitPermitDetail(
                             bill_no=bill_no,
                             sole_distributor_name=sole_distributor_name,
@@ -629,7 +770,21 @@ class PublicTransitPermitAPIView(generics.ListAPIView):
         bill_no = self._get_bill_no()
         if not bill_no:
             return EnaTransitPermitDetail.objects.none()
-        return EnaTransitPermitDetail.objects.filter(bill_no=bill_no).order_by('-id')
+        # Public endpoint must only expose permits AFTER OIC approval.
+        # We treat TRP_03 (APPROVE) / approved workflow stage as approved.
+        base = EnaTransitPermitDetail.objects.filter(bill_no=bill_no)
+        approved = base.filter(
+            Q(status_code__iexact='TRP_03')
+            | Q(current_stage__name__iexact='TransitPermitSuccessfullyApproved')
+            | (
+                Q(current_stage__is_final=True)
+                & Q(current_stage__name__icontains='approv')
+                & ~Q(current_stage__name__icontains='cancel')
+                & ~Q(current_stage__name__icontains='reject')
+                & ~Q(current_stage__name__icontains='refund')
+            )
+        )
+        return approved.order_by('-id')
 
     def list(self, request, *args, **kwargs):
         bill_no = self._get_bill_no()
@@ -638,7 +793,47 @@ class PublicTransitPermitAPIView(generics.ListAPIView):
                 {"detail": "bill_no query param is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        return super().list(request, *args, **kwargs)
+        # If a permit exists but is not approved yet, don't expose any details.
+        base = EnaTransitPermitDetail.objects.filter(bill_no=bill_no)
+        if not base.exists():
+            return Response(
+                {"detail": "Transit permit not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        approved_exists = base.filter(
+            Q(status_code__iexact='TRP_03')
+            | Q(current_stage__name__iexact='TransitPermitSuccessfullyApproved')
+            | (
+                Q(current_stage__is_final=True)
+                & Q(current_stage__name__icontains='approv')
+                & ~Q(current_stage__name__icontains='cancel')
+                & ~Q(current_stage__name__icontains='reject')
+                & ~Q(current_stage__name__icontains='refund')
+            )
+        ).exists()
+
+        if approved_exists:
+            return super().list(request, *args, **kwargs)
+
+        cancelled_exists = base.filter(
+            Q(status_code__iexact='TRP_04')
+            | Q(current_stage__name__icontains='cancel')
+            | Q(current_stage__name__icontains='reject')
+            | Q(current_stage__name__icontains='refund')
+        ).exists()
+        if cancelled_exists:
+            return Response(
+                {"detail": "Transit permit is cancelled.", "status": "Cancelled"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Pending / in-review (paid but not approved) case.
+        return Response(
+            {"detail": "Transit permit is not approved yet.", "status": "Pending"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+        
 
 
 class PerformTransitPermitActionAPIView(views.APIView):
@@ -812,8 +1007,15 @@ class PerformTransitPermitActionAPIView(views.APIView):
                     'message': 'Action is required'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Get the transit permit
+            # Get the transit permit (one line item). Actions must apply to the entire bill/reference (bill_no),
+            # since a single permit can have multiple product rows.
             permit = EnaTransitPermitDetail.objects.get(pk=pk)
+            bill_no = str(getattr(permit, 'bill_no', '') or '').strip()
+            if not bill_no:
+                return Response(
+                    {'status': 'error', 'message': 'Permit reference (bill_no) is missing.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             # Ownership/permission check (dynamic, DB-driven).
             # Workflow users (OIC/officers) can process mapped workflow items.
@@ -834,80 +1036,130 @@ class PerformTransitPermitActionAPIView(views.APIView):
             # --- Use WorkflowService to advance stage ---
             from auth.workflow.services import WorkflowService
             from auth.workflow.models import WorkflowStage
-            
-            # Ensure current_stage is set (if missing)
-            if not permit.current_stage or not permit.workflow:
-                 try:
-                     from auth.workflow.models import Workflow
-                     workflow_obj = Workflow.objects.get(id=WORKFLOW_IDS['TRANSIT_PERMIT'])
-                     permit.workflow = workflow_obj
-                     current_stage = self._resolve_stage_from_status_code(workflow_obj, permit.status_code)
-                     if not current_stage:
-                         current_stage = WorkflowStage.objects.filter(workflow=workflow_obj, is_initial=True).first()
-                     if not current_stage:
-                         raise WorkflowStage.DoesNotExist("Initial workflow stage not found")
-                     permit.current_stage = current_stage
-                     permit.status = current_stage.name
-                     permit.save()
-                 except (Workflow.DoesNotExist, WorkflowStage.DoesNotExist):
-                      return Response({
-                         'status': 'error',
-                         'message': 'Workflow configuration not found. Please run "python manage.py populate_transit_permit_workflow".'
-                     }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-                 except Exception as e:
-                     return Response({
-                        'status': 'error',
-                        'message': f"Database Error during workflow initialization: {str(e)}"
-                     }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            # Extra check to be sure
-            if not permit.current_stage:
-                 return Response({
-                    'status': 'error',
-                    'message': 'Current Stage is Null. Workflow initialization failed.'
-                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            def _ensure_workflow_initialized(row: EnaTransitPermitDetail):
+                if row.current_stage and row.workflow:
+                    return
+                from auth.workflow.models import Workflow
 
-            # Context for validation
-            context = {
-                "action": action
-            }
+                workflow_obj = Workflow.objects.get(id=WORKFLOW_IDS['TRANSIT_PERMIT'])
+                row.workflow = workflow_obj
+                current_stage = self._resolve_stage_from_status_code(workflow_obj, row.status_code)
+                if not current_stage:
+                    current_stage = WorkflowStage.objects.filter(workflow=workflow_obj, is_initial=True).first()
+                if not current_stage:
+                    raise WorkflowStage.DoesNotExist("Initial workflow stage not found")
+                row.current_stage = current_stage
+                row.status = current_stage.name
+                row.save()
 
-            transitions = WorkflowService.get_next_stages(permit)
-            target_transition = None
+            def _status_code_for_action(row_action: str, to_stage) -> str:
+                if getattr(to_stage, 'is_initial', False):
+                    return 'TRP_01'
+                if row_action == 'PAY':
+                    return 'TRP_02'
+                if row_action == 'APPROVE':
+                    return 'TRP_03'
+                if row_action == 'REJECT':
+                    return 'TRP_04'
+                return str(getattr(row_action, 'status_code', '') or row_action or '').strip() or 'TRP_01'
             
-            for t in transitions:
-                if transition_matches(t, request.user, action):
-                    target_transition = t
-                    break
+            context = {"action": action}
 
-            if not target_transition:
-                return Response({
-                    'status': 'error',
-                    'message': f'No valid transition for Action: {action} on Status: {permit.status}'
-                }, status=status.HTTP_400_BAD_REQUEST)
-                
-            WorkflowService.advance_stage(
-                application=permit,
-                user=request.user,
-                target_stage=target_transition.to_stage,
-                context=context,
-                remarks=remarks or f"Action: {action}"
-            )
-            
-            # Sync back to status/status_code
-            new_stage_name = target_transition.to_stage.name
-            permit.status = new_stage_name
-            # Keep status_code compatibility without relying on stage names.
-            if target_transition.to_stage.is_initial:
-                permit.status_code = 'TRP_01'
-            elif action == 'PAY':
-                permit.status_code = 'TRP_02'
-            elif action == 'APPROVE':
-                permit.status_code = 'TRP_03'
-            elif action == 'REJECT':
-                permit.status_code = 'TRP_04'
-            
-            permit.save()
+            # Apply the action to ALL rows with the same bill_no so the permit stays consistent.
+            with transaction.atomic():
+                rows = list(
+                    EnaTransitPermitDetail.objects.select_for_update()
+                    .filter(bill_no=bill_no)
+                    .order_by('id')
+                )
+                if not rows:
+                    return Response(
+                        {'status': 'error', 'message': 'Permit not found.'},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+
+                # Initialize workflow + validate transitions for every row first.
+                transition_map: dict[int, object] = {}
+                transition_errors: list[dict] = []
+
+                for row in rows:
+                    try:
+                        _ensure_workflow_initialized(row)
+                    except (WorkflowStage.DoesNotExist,) as e:
+                        return Response(
+                            {
+                                'status': 'error',
+                                'message': 'Workflow configuration not found. Please run "python manage.py populate_transit_permit_workflow".'
+                            },
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        )
+                    except Exception as e:
+                        return Response(
+                            {'status': 'error', 'message': f"Database Error during workflow initialization: {str(e)}"},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        )
+
+                    transitions = WorkflowService.get_next_stages(row)
+                    target_transition = None
+                    for t in transitions:
+                        if transition_matches(t, request.user, action):
+                            target_transition = t
+                            break
+
+                    if not target_transition:
+                        # Allow idempotent calls: if already in desired state, skip.
+                        desired_code = {
+                            'PAY': 'TRP_02',
+                            'APPROVE': 'TRP_03',
+                            'REJECT': 'TRP_04',
+                        }.get(action, '')
+                        already = bool(desired_code and row.status_code == desired_code)
+                        if already:
+                            continue
+                        transition_errors.append(
+                            {
+                                'id': row.pk,
+                                'status': row.status,
+                                'status_code': row.status_code,
+                                'message': f'No valid transition for Action: {action} on Status: {row.status}',
+                            }
+                        )
+                        continue
+
+                    transition_map[row.pk] = target_transition
+
+                if transition_errors:
+                    return Response(
+                        {
+                            'status': 'error',
+                            'message': 'Some permit rows cannot be transitioned. No changes were applied.',
+                            'errors': transition_errors,
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                # Execute transitions + sync status fields.
+                for row in rows:
+                    t = transition_map.get(row.pk)
+                    if not t:
+                        continue
+                    WorkflowService.advance_stage(
+                        application=row,
+                        user=request.user,
+                        target_stage=t.to_stage,
+                        context=context,
+                        remarks=remarks or f"Action: {action}",
+                    )
+                    row.status = t.to_stage.name
+                    row.status_code = _status_code_for_action(action, t.to_stage)
+                    row.save()
+
+                if transition_map:
+                    any_transition = next(iter(transition_map.values()))
+                    new_stage_name = any_transition.to_stage.name
+                else:
+                    new_stage_name = rows[0].status
             
             # Check for stock deduction trigger
             if action == 'PAY':
@@ -921,12 +1173,16 @@ class PerformTransitPermitActionAPIView(views.APIView):
 
             elif action == 'REJECT':
                 self._handle_rejection(request, permit, remarks=remarks)
-            
-            serializer = EnaTransitPermitDetailSerializer(permit)
+
+            serializer = EnaTransitPermitDetailSerializer(
+                EnaTransitPermitDetail.objects.filter(bill_no=bill_no).order_by('id'),
+                many=True,
+            )
             return Response({
                 'status': 'success',
                 'message': f'Transit Permit status updated to {new_stage_name}',
-                'data': serializer.data
+                'bill_no': bill_no,
+                'data': serializer.data,
             }, status=status.HTTP_200_OK)
 
         except (PermissionDenied, DjangoPermissionDenied) as e:

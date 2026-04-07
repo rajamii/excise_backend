@@ -6,7 +6,7 @@ from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework.response import Response
 from auth.roles.permissions import HasAppPermission
 from .models import LicenseApplication
-from models.masters.license.models import License
+from models.masters.license.models import License, LicenseValidationToken
 from models.masters.core.models import LicenseFee
 from .serializers import LicenseApplicationSerializer, LicenseFeeSerializer
 from rest_framework import status
@@ -14,7 +14,22 @@ from auth.workflow.models import Workflow, WorkflowStage
 from auth.workflow.constants import WORKFLOW_IDS
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
+from django.contrib.contenttypes.models import ContentType
+from django.utils import timezone
+from django.http import FileResponse, HttpResponse
+from io import BytesIO
+import base64
+import mimetypes
+from PIL import Image
+from utils.qrcodegen import QrCode
 import re
+from models.masters.license.master_license_form import MasterLicenseForm
+from models.masters.license.master_license_form_terms import MasterLicenseFormTerms
+from models.masters.license.legacy_codes import resolve_codes_for_license_form
+from django.core import signing
+from urllib.parse import quote
+import secrets
+import hashlib
 
 
 def _normalize_role(role_name):
@@ -29,6 +44,44 @@ def _normalize_role(role_name):
         'siteadmin': 'site_admin',
     }
     return aliases.get(normalized, normalized)
+
+
+def _ensure_license_validation_nonce(license_obj: License | None) -> str:
+    if not license_obj:
+        return ''
+
+    try:
+        latest = LicenseValidationToken.objects.filter(license=license_obj).order_by('-created_at').first()
+        if latest and latest.nonce:
+            # keep license.validation_nonce as a handy "latest" cache
+            if str(getattr(license_obj, 'validation_nonce', '') or '').strip() != latest.nonce:
+                license_obj.validation_nonce = latest.nonce
+                license_obj.validation_nonce_updated_at = timezone.now()
+                license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+            return latest.nonce
+    except Exception:
+        pass
+
+    nonce = secrets.token_hex(16)
+    try:
+        LicenseValidationToken.objects.create(license=license_obj, nonce=nonce)
+    except Exception:
+        # Collision is extremely unlikely, but retry once.
+        nonce = secrets.token_hex(16)
+        LicenseValidationToken.objects.create(license=license_obj, nonce=nonce)
+
+    license_obj.validation_nonce = nonce
+    license_obj.validation_nonce_updated_at = timezone.now()
+    license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+    return nonce
+
+
+def _build_validation_link(request, *, application_id: str, source: str, nonce: str) -> tuple[str, str, str]:
+    signing_payload = {"applicationId": application_id, "source": source, "nonce": nonce}
+    signed_code = signing.dumps(signing_payload, salt="final-license")
+    validation_url = request.build_absolute_uri(f"/v/{quote(signed_code, safe=':')}/")
+    verification_id = hashlib.sha256(signed_code.encode("utf-8")).hexdigest()[:12]
+    return signed_code, validation_url, verification_id
 
 
 def _extract_level_index(stage_name):
@@ -253,12 +306,300 @@ def list_license_applications(request):
     return Response(serializer.data)
 
 
-@permission_classes([HasAppPermission('license_application', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('license_application', 'view')])
 @api_view(['GET'])
 def license_application_detail(request, pk):
-    application = get_object_or_404(LicenseApplication, pk=pk)
+    raw_pk = str(pk or "").strip()
+    if raw_pk.isdigit():
+        application = get_object_or_404(LicenseApplication, pk=int(raw_pk))
+    else:
+        application = get_object_or_404(LicenseApplication, application_id=raw_pk)
+
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role == "licensee" and application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
     serializer = LicenseApplicationSerializer(application)
     return Response(serializer.data)
+
+
+@permission_classes([HasAppPermission('license_application', 'view')])
+@api_view(['GET'])
+def final_license_detail(request, application_id):
+    raw_id = str(application_id or "").strip()
+    token = raw_id
+    low = token.lower()
+    if low.startswith("val:"):
+        token = token[4:].strip()
+    elif low.startswith("val-"):
+        token = token[4:].strip()
+    elif low.startswith("val "):
+        token = token[4:].strip()
+
+    resolved_application_id = raw_id
+    validated_via_code = False
+    try:
+        payload = signing.loads(token, salt="final-license")
+        if isinstance(payload, dict) and payload.get("source") == "license_application" and payload.get("applicationId"):
+            resolved_application_id = str(payload["applicationId"])
+            validated_via_code = True
+    except Exception:
+        resolved_application_id = raw_id
+
+    application = get_object_or_404(LicenseApplication, application_id=resolved_application_id)
+
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role == "licensee" and application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    la_ct = ContentType.objects.get_for_model(LicenseApplication)
+    license_obj = License.objects.filter(
+        source_type="license_application",
+        source_content_type=la_ct,
+        source_object_id=application.application_id,
+    ).order_by("-issue_date").first()
+
+    def fmt_dt(d):
+        return d.strftime("%d/%m/%Y") if d else ""
+
+    def build_address():
+        parts = []
+        if getattr(application, "location_name", None):
+            parts.append(str(application.location_name).strip())
+        if getattr(application, "ward_name", None):
+            parts.append(f"Ward: {str(application.ward_name).strip()}")
+        if getattr(application, "business_address", None):
+            parts.append(str(application.business_address).strip())
+        if getattr(application, "police_station", None):
+            parts.append(f"P.S - {application.police_station.police_station}")
+        if getattr(application, "site_subdivision", None):
+            parts.append(f"Sub Division - {application.site_subdivision.subdivision}")
+        if getattr(application, "pin_code", None):
+            parts.append(f"Pin - {application.pin_code}")
+        return ", ".join([p for p in parts if p])
+
+    photo_url = ""
+    photo_exists = False
+    passport_photo_data_url = ""
+    try:
+        if application.photo and hasattr(application.photo, "url"):
+            photo_url = request.build_absolute_uri(application.photo.url)
+            photo_exists = application.photo.storage.exists(application.photo.name)
+            if photo_exists:
+                try:
+                    with application.photo.open("rb") as f:
+                        raw = f.read()
+                    mime = mimetypes.guess_type(application.photo.name)[0] or "application/octet-stream"
+                    b64 = base64.b64encode(raw).decode("ascii")
+                    passport_photo_data_url = f"data:{mime};base64,{b64}"
+                except Exception:
+                    passport_photo_data_url = ""
+    except Exception:
+        photo_url = ""
+        photo_exists = False
+        passport_photo_data_url = ""
+
+    def make_qr_data_url(payload: str) -> str:
+        qr = QrCode.encode_text(str(payload), QrCode.Ecc.MEDIUM)
+        size = qr.get_size()
+        border = 2
+        scale = 4
+        img_size = (size + border * 2) * scale
+
+        img = Image.new("RGB", (img_size, img_size), "white")
+        pixels = img.load()
+        for y in range(size):
+            for x in range(size):
+                if qr.get_module(x, y):
+                    for dy in range(scale):
+                        for dx in range(scale):
+                            px = (x + border) * scale + dx
+                            py = (y + border) * scale + dy
+                            pixels[px, py] = (0, 0, 0)
+
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{b64}"
+
+    license_number = ""
+    if license_obj:
+        license_number = license_obj.license_id
+    elif getattr(application, "license_no", None):
+        license_number = str(application.license_no)
+    else:
+        license_number = application.application_id
+
+    cat_code = getattr(license_obj, "license_category_id", None) if license_obj else None
+    scat_code = getattr(license_obj, "license_sub_category_id", None) if license_obj else None
+    if cat_code is None:
+        cat_code = getattr(application, "license_category_id", None)
+
+    resolved_cat = None
+    resolved_scat = None
+    if cat_code is not None and scat_code is not None:
+        resolved_cat, resolved_scat = resolve_codes_for_license_form(int(cat_code), int(scat_code))
+
+    license_title = ""
+    terms: list[str] = []
+    if resolved_cat is not None and resolved_scat is not None:
+        cfg = MasterLicenseForm.get_license_config(int(resolved_cat), int(resolved_scat))
+        license_title = cfg.license_title if cfg else ""
+
+        qs = MasterLicenseFormTerms.objects.filter(
+            licensee_cat_code=int(resolved_cat),
+            licensee_scat_code=int(resolved_scat),
+        ).order_by("sl_no")
+        terms = [str(t.license_terms).strip() for t in qs if getattr(t, "license_terms", None)]
+        terms = [t for t in terms if t]
+
+    validation_code = ""
+    validation_url = ""
+    if license_obj:
+        latest_token = LicenseValidationToken.objects.filter(license=license_obj).order_by("-created_at").first()
+        if latest_token and getattr(latest_token, "signed_code", "") and getattr(latest_token, "validation_url", ""):
+            validation_code = str(latest_token.signed_code)
+            validation_url = str(latest_token.validation_url)
+        else:
+            nonce = _ensure_license_validation_nonce(license_obj)
+            if nonce:
+                signed_code, full_url, verification_id = _build_validation_link(
+                    request, application_id=application.application_id, source="license_application", nonce=nonce
+                )
+                LicenseValidationToken.objects.update_or_create(
+                    license=license_obj,
+                    nonce=nonce,
+                    defaults={
+                        "signed_code": signed_code,
+                        "validation_url": full_url,
+                        "verification_id": verification_id,
+                    },
+                )
+                validation_code = signed_code
+                validation_url = full_url
+
+    response = {
+        "applicationId": application.application_id,
+        "licenseNumber": license_number,
+        "licenseTitle": license_title,
+        "validationCode": validation_code,
+        "validationPdfUrl": validation_url,
+        "validatedViaCode": validated_via_code,
+        "terms": terms,
+        # Debug/compat fields: the (legacy) codes used to pick terms/title.
+        # Frontend can ignore these safely.
+        "termsCatCode": resolved_cat,
+        "termsScatCode": resolved_scat,
+        "licenseeName": application.member_name or application.establishment_name,
+        "fatherOrHusbandName": application.father_husband_name,
+        "kindOfShop": application.license_type.license_type if getattr(application, "license_type", None) else "",
+        "addressOfBusiness": build_address(),
+        "district": application.excise_district.district if application.excise_district else "",
+        "modeOfOperation": application.mode_of_operation or "",
+        "passportPhotoUrl": photo_url,
+        "passportPhotoExists": photo_exists,
+        "passportPhotoDataUrl": passport_photo_data_url,
+        "licenseFee": application.yearly_license_fee or "",
+        "transactionRef": "",
+        "transactionDate": "",
+        "validFrom": fmt_dt(license_obj.issue_date) if license_obj else "",
+        "validTo": fmt_dt(license_obj.valid_up_to) if license_obj else (fmt_dt(application.valid_up_to) if getattr(application, "valid_up_to", None) else ""),
+        "generatedOn": fmt_dt(timezone.now().date()),
+        "qrCodeDataUrl": make_qr_data_url(validation_url),
+    }
+    return Response(response, status=status.HTTP_200_OK)
+
+
+@permission_classes([HasAppPermission('license_application', 'view')])
+@api_view(['GET'])
+def final_license_passport_photo(request, application_id):
+    application = get_object_or_404(LicenseApplication, application_id=application_id)
+
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role == "licensee" and application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if not getattr(application, "photo", None):
+        return Response({"detail": "Photo not available."}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        f = application.photo.open("rb")
+    except Exception:
+        return Response({"detail": "Photo not available."}, status=status.HTTP_404_NOT_FOUND)
+
+    return FileResponse(f, content_type="image/jpeg")
+
+
+@permission_classes([HasAppPermission('license_application', 'view')])
+@api_view(['GET'])
+def final_license_qr_code(request, application_id):
+    application = get_object_or_404(LicenseApplication, application_id=application_id)
+
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role == "licensee" and application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    la_ct = ContentType.objects.get_for_model(LicenseApplication)
+    license_obj = License.objects.filter(
+        source_type="license_application",
+        source_content_type=la_ct,
+        source_object_id=application.application_id,
+    ).order_by("-issue_date").first()
+
+    # Keep the license's cached "latest nonce" in sync with token history.
+    if license_obj:
+        try:
+            latest_token = LicenseValidationToken.objects.filter(license=license_obj).order_by('-created_at').first()
+            if latest_token and latest_token.nonce:
+                if str(getattr(license_obj, 'validation_nonce', '') or '').strip() != latest_token.nonce:
+                    license_obj.validation_nonce = latest_token.nonce
+                    license_obj.validation_nonce_updated_at = timezone.now()
+                    license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+        except Exception:
+            pass
+
+    payload = ""
+    if license_obj:
+        latest_token = LicenseValidationToken.objects.filter(license=license_obj).order_by("-created_at").first()
+        if latest_token and getattr(latest_token, "validation_url", ""):
+            payload = str(latest_token.validation_url)
+        else:
+            nonce = _ensure_license_validation_nonce(license_obj)
+            if nonce:
+                signed_code, full_url, verification_id = _build_validation_link(
+                    request, application_id=application.application_id, source="license_application", nonce=nonce
+                )
+                LicenseValidationToken.objects.update_or_create(
+                    license=license_obj,
+                    nonce=nonce,
+                    defaults={
+                        "signed_code": signed_code,
+                        "validation_url": full_url,
+                        "verification_id": verification_id,
+                    },
+                )
+                payload = full_url
+
+    qr = QrCode.encode_text(str(payload), QrCode.Ecc.MEDIUM)
+    size = qr.get_size()
+    border = 2
+    scale = 4
+    img_size = (size + border * 2) * scale
+
+    img = Image.new("RGB", (img_size, img_size), "white")
+    pixels = img.load()
+    for y in range(size):
+        for x in range(size):
+            if qr.get_module(x, y):
+                for dy in range(scale):
+                    for dx in range(scale):
+                        px = (x + border) * scale + dx
+                        py = (y + border) * scale + dy
+                        pixels[px, py] = (0, 0, 0)
+
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return HttpResponse(buf.getvalue(), content_type="image/png")
 
 
 @permission_classes([HasAppPermission('license_application', 'update')])
@@ -267,7 +608,15 @@ def license_application_detail(request, pk):
 def print_license_view(request, application_id):
     license = get_object_or_404(LicenseApplication, application_id=application_id)
 
-    if not license.is_approved:
+    la_ct = ContentType.objects.get_for_model(LicenseApplication)
+    license_obj = License.objects.filter(
+        source_type="license_application",
+        source_content_type=la_ct,
+        source_object_id=license.application_id,
+    ).order_by("-issue_date").first()
+
+    # If a License exists but application approval flag isn't synced, allow printing.
+    if not license.is_approved and not license_obj:
         return Response({"error": "License is not approved yet."}, status=403)
 
     can_print, fee = license.can_print_license()
@@ -283,9 +632,48 @@ def print_license_view(request, application_id):
 
     license.record_license_print(fee_paid=(fee > 0))
 
+    if license_obj:
+        # New token per print; old tokens remain valid for future verification.
+        nonce = secrets.token_hex(16)
+        signed_code, full_url, verification_id = _build_validation_link(
+            request, application_id=license.application_id, source="license_application", nonce=nonce
+        )
+        try:
+            LicenseValidationToken.objects.create(
+                license=license_obj,
+                nonce=nonce,
+                signed_code=signed_code,
+                validation_url=full_url,
+                verification_id=verification_id,
+            )
+        except Exception:
+            nonce = secrets.token_hex(16)
+            signed_code, full_url, verification_id = _build_validation_link(
+                request, application_id=license.application_id, source="license_application", nonce=nonce
+            )
+            LicenseValidationToken.objects.create(
+                license=license_obj,
+                nonce=nonce,
+                signed_code=signed_code,
+                validation_url=full_url,
+                verification_id=verification_id,
+            )
+
+        license_obj.validation_nonce = nonce
+        license_obj.validation_nonce_updated_at = timezone.now()
+        license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+
+        validation_code = signed_code
+        validation_url = full_url
+    else:
+        validation_code = ""
+        validation_url = ""
+
     return Response({
         "success": "License printed.",
-        "print_count": license.print_count
+        "print_count": license.print_count,
+        "validationCode": validation_code,
+        "validationPdfUrl": validation_url,
     })
 
 @permission_classes([HasAppPermission('license_application', 'view')])

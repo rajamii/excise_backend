@@ -1,6 +1,6 @@
 from django.db import models
 from django.core.exceptions import ValidationError
-from .validators import validate_name, validate_name_extended
+from models.masters.core.validators import validate_name, validate_name_extended
 # models.py
 from typing import TYPE_CHECKING
 
@@ -8,7 +8,6 @@ from django.core.exceptions import ValidationError
 from django.db import models
 
 from .helper import ROAD_TYPE_CHOICES
-from .validators import validate_name, validate_name_extended
 
 if TYPE_CHECKING:
     from django.db.models.manager import Manager
@@ -21,6 +20,12 @@ class LicenseCategory(models.Model):
         null=False,
         blank=False,
         help_text="Name of license category"
+    )
+    old_license_cat_code = models.IntegerField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Legacy license category code used in old system"
     )
 
     class Meta:
@@ -198,6 +203,18 @@ class LicenseSubcategory(models.Model):
         default=None,
         null=False,
         validators=[validate_name_extended]
+    )
+    old_license_cat_code = models.IntegerField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Legacy license category code used in old system",
+    )
+    old_license_scat_code = models.IntegerField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Legacy license subcategory code used in old system",
     )
     category = models.ForeignKey(
         LicenseCategory,

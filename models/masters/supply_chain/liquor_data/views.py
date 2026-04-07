@@ -1,10 +1,20 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
+from rest_framework.permissions import AllowAny
 from django.db.models import Q, Max, Count
 import logging
 from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
-from .models import MasterLiquorType, MasterLiquorCategory, MasterBottleType, MasterBrandList, MasterFactoryList
+from auth.roles.permissions import HasAppPermission  # type: ignore
+from .models import (
+    MasterLiquorType,
+    MasterLiquorCategory,
+    MasterBottleType,
+    MasterBrandList,
+    MasterFactoryList,
+    LiquorData,
+)
 from .serializers import (
     MasterLiquorTypeSerializer,
     MasterLiquorCategorySerializer,
@@ -108,6 +118,40 @@ class BrandSizeListView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class LiquorRatesView(APIView):
+    @staticmethod
+    def _resolve_brand_owner(warehouse_row, normalized_brand: str, pack_size_ml: int) -> str:
+        """
+        Resolve brand owner for a given brand + pack size.
+
+        BrandWarehouse does not store brand_owner, so fall back to LiquorData.
+        """
+        try:
+            liquor_data_id = getattr(warehouse_row, 'liquor_data_id', None)
+            if liquor_data_id:
+                row = LiquorData.objects.filter(id=liquor_data_id).first()
+                if row and row.brand_owner:
+                    return str(row.brand_owner).strip()
+        except Exception:
+            pass
+
+        try:
+            row = (
+                LiquorData.objects.filter(
+                    brand_name__iexact=normalized_brand,
+                    pack_size_ml=pack_size_ml,
+                )
+                .exclude(brand_owner__isnull=True)
+                .exclude(brand_owner='')
+                .order_by('-updated_at', '-id')
+                .first()
+            )
+            if row and row.brand_owner:
+                return str(row.brand_owner).strip()
+        except Exception:
+            pass
+
+        return ''
+
     def get(self, request):
         try:
             brand_name = request.query_params.get('brand_name')
@@ -158,7 +202,7 @@ class LiquorRatesView(APIView):
                 'additionalExcise': float(warehouse_row.additional_excise_duty_rs_per_case or 0),
                 
                 # New fields
-                'brandOwner': '',
+                'brandOwner': self._resolve_brand_owner(warehouse_row, normalized_brand, pack_size_ml),
                 'liquorType': warehouse_row.brand_type,
                 'exFactoryPrice': float(warehouse_row.ex_factory_price_rs_per_case or 0),
                 'manufacturingUnitName': warehouse_row.distillery_name,
@@ -204,31 +248,45 @@ class MasterLiquorCategoryListView(APIView):
         return Response({'success': True, 'data': data, 'total': len(data)})
 
 
-class MasterBottleTypeListCreateView(APIView):
+@permission_classes([AllowAny])
+@authentication_classes([])
+@api_view(['GET'])
+def master_bottle_type_list(request):
     """
-    Master table endpoint for bottle types (used by transit permits).
+    Public master table endpoint for bottle types (used by transit permits).
 
-    GET: list bottle types (optionally active-only)
-      - active_only=true|false (default true)
-
-    POST: create bottle type
+    Query params:
+    - active_only=true|false (default true)
     """
+    active_only = str(request.query_params.get('active_only') or '').strip().lower() not in {'0', 'false', 'no'}
 
-    def get(self, request):
-        active_only = str(request.query_params.get('active_only') or '').strip().lower() not in {'0', 'false', 'no'}
+    qs = MasterBottleType.objects.all()
+    if active_only:
+        qs = qs.filter(is_active=True)
 
-        qs = MasterBottleType.objects.all()
-        if active_only:
-            qs = qs.filter(is_active=True)
+    data = MasterBottleTypeSerializer(qs.order_by('bottle_type'), many=True).data
+    return Response({'success': True, 'data': data, 'total': len(data)})
 
-        data = MasterBottleTypeSerializer(qs.order_by('bottle_type'), many=True).data
-        return Response({'success': True, 'data': data, 'total': len(data)})
 
-    def post(self, request):
-        serializer = MasterBottleTypeSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        obj = serializer.save()
-        return Response({'success': True, 'data': MasterBottleTypeSerializer(obj).data}, status=status.HTTP_201_CREATED)
+@permission_classes([HasAppPermission('masters', 'create')])
+@api_view(['POST'])
+def master_bottle_type_create(request):
+    """Create a new bottle type."""
+    serializer = MasterBottleTypeSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    obj = serializer.save()
+    return Response({'success': True, 'data': MasterBottleTypeSerializer(obj).data}, status=status.HTTP_201_CREATED)
+
+
+@permission_classes([AllowAny])
+@authentication_classes([])
+@api_view(['GET'])
+def master_bottle_type_detail(request, pk: int):
+    """Public detail endpoint for bottle types (GET only)."""
+    obj = MasterBottleType.objects.filter(pk=pk).first()
+    if not obj:
+        return Response({'success': False, 'error': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+    return Response({'success': True, 'data': MasterBottleTypeSerializer(obj).data})
 
 
 class MasterBottleTypeDetailView(APIView):
@@ -267,6 +325,29 @@ class MasterBottleTypeDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@permission_classes([AllowAny])
+@authentication_classes([])
+@api_view(['GET'])
+def master_brand_list(request):
+    """Public master table endpoint for brands (GET only)."""
+    qs = MasterBrandList.objects.all()
+    q = str(request.query_params.get('q') or '').strip()
+    if q:
+        qs = qs.filter(brand_name__icontains=q)
+    data = MasterBrandListSerializer(qs.order_by('brand_name'), many=True).data
+    return Response({'success': True, 'data': data, 'total': len(data)})
+
+
+@permission_classes([HasAppPermission('masters', 'create')])
+@api_view(['POST'])
+def master_brand_create(request):
+    """Create a new master brand."""
+    serializer = MasterBrandListSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    obj = serializer.save()
+    return Response({'success': True, 'data': MasterBrandListSerializer(obj).data}, status=status.HTTP_201_CREATED)
+
+
 class MasterBrandListListCreateView(APIView):
     """
     Master table endpoint for brands.
@@ -288,6 +369,29 @@ class MasterBrandListListCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         obj = serializer.save()
         return Response({'success': True, 'data': MasterBrandListSerializer(obj).data}, status=status.HTTP_201_CREATED)
+
+
+@permission_classes([AllowAny])
+@authentication_classes([])
+@api_view(['GET'])
+def master_factory_list(request):
+    """Public master table endpoint for factories (GET only)."""
+    qs = MasterFactoryList.objects.all()
+    q = str(request.query_params.get('q') or '').strip()
+    if q:
+        qs = qs.filter(factory_name__icontains=q)
+    data = MasterFactoryListSerializer(qs.order_by('factory_name'), many=True).data
+    return Response({'success': True, 'data': data, 'total': len(data)})
+
+
+@permission_classes([HasAppPermission('masters', 'create')])
+@api_view(['POST'])
+def master_factory_create(request):
+    """Create a new master factory."""
+    serializer = MasterFactoryListSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    obj = serializer.save()
+    return Response({'success': True, 'data': MasterFactoryListSerializer(obj).data}, status=status.HTTP_201_CREATED)
 
 
 class MasterFactoryListListCreateView(APIView):
