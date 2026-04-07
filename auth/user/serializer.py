@@ -9,7 +9,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
 
 # Fields that are set once at creation and must never change afterwards
-IMMUTABLE_PROFILE_FIELDS = ('father_name', 'dob', 'gender', 'nationality', 'pan_number')
+IMMUTABLE_PROFILE_FIELDS = ('pan_number')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
