@@ -46,7 +46,7 @@ def _resolve_license(identifier: str) -> License:
     if direct:
         return direct
 
-    by_source = License.objects.filter(source_object_id=token).order_by("-issue_date").first()
+    by_source = License.objects.filter(source_object_id=token).order_by("-printed_on", "-issue_date").first()
     if by_source:
         return by_source
 
