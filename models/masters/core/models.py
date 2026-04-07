@@ -1,6 +1,6 @@
 from django.db import models
 from django.core.exceptions import ValidationError
-from .validators import validate_name, validate_name_extended
+from models.masters.core.validators import validate_name, validate_name_extended
 # models.py
 from typing import TYPE_CHECKING
 
@@ -8,7 +8,6 @@ from django.core.exceptions import ValidationError
 from django.db import models
 
 from .helper import ROAD_TYPE_CHOICES
-from .validators import validate_name, validate_name_extended
 
 if TYPE_CHECKING:
     from django.db.models.manager import Manager
