@@ -2,6 +2,7 @@ import secrets
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
@@ -166,9 +167,28 @@ def payment_wallet_balance(request, licensee_id):
 def wallet_summary(request, licensee_id):
     module_type = request.query_params.get("module_type")
     candidates = _wallet_license_candidates(licensee_id)
+    request_user = str(getattr(request.user, "username", "") or "").strip()
+
+    # Also include the authenticated supply-chain profile license id (if present),
+    # to avoid NA/ vs NLI/ mismatches between modules that post wallet txns.
+    try:
+        profile = getattr(request.user, "supply_chain_profile", None)
+        profile_licensee_id = str(getattr(profile, "licensee_id", "") or "").strip()
+        if profile_licensee_id:
+            candidates.extend(_wallet_license_candidates(profile_licensee_id))
+    except Exception:
+        pass
+
     if not candidates:
         candidates = [str(licensee_id or "").strip()]
-    qs = WalletBalance.objects.filter(licensee_id__in=candidates).order_by("wallet_type", "head_of_account")
+
+    # De-dupe while preserving order.
+    seen = set()
+    candidates = [c for c in candidates if c and not (c in seen or seen.add(c))]
+    wallet_filter = Q(licensee_id__in=candidates)
+    if request_user:
+        wallet_filter |= Q(user_id__iexact=request_user)
+    qs = WalletBalance.objects.filter(wallet_filter).order_by("wallet_type", "head_of_account")
     if module_type:
         qs = qs.filter(module_type__iexact=module_type)
 
@@ -187,11 +207,25 @@ def wallet_summary(request, licensee_id):
 @permission_classes([IsAuthenticated])
 def wallet_recharge_list(request, licensee_id):
     candidates = _wallet_license_candidates(licensee_id)
+    request_user = str(getattr(request.user, "username", "") or "").strip()
+    try:
+        profile = getattr(request.user, "supply_chain_profile", None)
+        profile_licensee_id = str(getattr(profile, "licensee_id", "") or "").strip()
+        if profile_licensee_id:
+            candidates.extend(_wallet_license_candidates(profile_licensee_id))
+    except Exception:
+        pass
     if not candidates:
         candidates = [str(licensee_id or "").strip()]
+    seen = set()
+    candidates = [c for c in candidates if c and not (c in seen or seen.add(c))]
+    tx_filter = Q(licensee_id__in=candidates)
+    if request_user:
+        tx_filter |= Q(user_id__iexact=request_user)
+
     qs = (
         WalletTransaction.objects.filter(
-            licensee_id__in=candidates,
+            tx_filter,
             transaction_type__iexact="recharge",
         )
         .order_by("-created_at")
@@ -221,9 +255,22 @@ def wallet_recharge_list(request, licensee_id):
 @permission_classes([IsAuthenticated])
 def wallet_history_list(request, licensee_id):
     candidates = _wallet_license_candidates(licensee_id)
+    request_user = str(getattr(request.user, "username", "") or "").strip()
+    try:
+        profile = getattr(request.user, "supply_chain_profile", None)
+        profile_licensee_id = str(getattr(profile, "licensee_id", "") or "").strip()
+        if profile_licensee_id:
+            candidates.extend(_wallet_license_candidates(profile_licensee_id))
+    except Exception:
+        pass
     if not candidates:
         candidates = [str(licensee_id or "").strip()]
-    qs = WalletTransaction.objects.filter(licensee_id__in=candidates).order_by("-created_at")
+    seen = set()
+    candidates = [c for c in candidates if c and not (c in seen or seen.add(c))]
+    tx_filter = Q(licensee_id__in=candidates)
+    if request_user:
+        tx_filter |= Q(user_id__iexact=request_user)
+    qs = WalletTransaction.objects.filter(tx_filter).order_by("-created_at")
 
     wallet_type = request.query_params.get("wallet_type")
     if wallet_type:

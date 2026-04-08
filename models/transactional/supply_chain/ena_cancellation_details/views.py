@@ -26,6 +26,55 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     CANCELLATION_FEE_AMOUNT = Decimal('1000.00')
 
+    def _resolve_cancellation_amount(self, cancellation) -> Decimal:
+        amount = Decimal(str(getattr(cancellation, 'total_cancellation_amount', 0) or 0))
+        if amount <= 0:
+            amount = Decimal(str(getattr(cancellation, 'cancellation_br_amount', 0) or 0))
+
+        if amount > 0:
+            return amount
+
+        permit_numbers_raw = (
+            getattr(cancellation, 'cancelled_permit_numbers', None)
+            or getattr(cancellation, 'cancelled_permit_number', None)
+            or ''
+        )
+        permit_count = len([num.strip() for num in str(permit_numbers_raw).split(',') if num.strip()])
+
+        if permit_count <= 0:
+            try:
+                permit_count = int(str(getattr(cancellation, 'permit_nocount', '') or '0'))
+            except Exception:
+                permit_count = 0
+
+        if permit_count > 0:
+            return self.CANCELLATION_FEE_AMOUNT * Decimal(permit_count)
+
+        return Decimal('0')
+
+    def _try_auto_sync_wallet_debit(self, cancellation, user):
+        try:
+            if self._is_rejected_cancellation(cancellation):
+                return
+
+            amount = self._resolve_cancellation_amount(cancellation)
+            if amount <= 0:
+                return
+
+            with transaction.atomic():
+                self._debit_wallet_for_cancellation_submission(
+                    cancellation=cancellation,
+                    user=user,
+                    amount=amount,
+                )
+        except Exception:
+            logger.exception(
+                "Auto wallet debit sync failed for cancellation_id=%s ref=%s user=%s",
+                getattr(cancellation, "id", None),
+                getattr(cancellation, "our_ref_no", None),
+                getattr(user, "username", None),
+            )
+
     def _normalize_stage_text(self, value: str) -> str:
         return re.sub(r'[^a-z0-9]+', '', str(value or '').lower())
 
@@ -99,16 +148,16 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     def _resolve_wallet_license_candidates(self, cancellation, user):
         candidates = []
 
+        profile_license = ''
+        if hasattr(user, 'supply_chain_profile'):
+            profile_license = str(getattr(user.supply_chain_profile, 'licensee_id', '') or '').strip()
+        candidates.extend(self._expand_license_aliases(profile_license))
+
         cancellation_license_id = str(getattr(cancellation, 'license_id', '') or '').strip()
         candidates.extend(self._expand_license_aliases(cancellation_license_id))
 
         req_licensee = str(getattr(cancellation, 'licensee_id', '') or '').strip()
         candidates.extend(self._expand_license_aliases(req_licensee))
-
-        profile_license = ''
-        if hasattr(user, 'supply_chain_profile'):
-            profile_license = str(getattr(user.supply_chain_profile, 'licensee_id', '') or '').strip()
-        candidates.extend(self._expand_license_aliases(profile_license))
 
         try:
             from models.masters.license.models import License
@@ -151,11 +200,32 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
         already_debited = WalletTransaction.objects.filter(
             transaction_id=transaction_id,
+            entry_type='DR',
             source_module='ena_cancellation',
-            entry_type='DR'
+            reference_no=reference_no,
         ).exists()
         if already_debited:
-            return {'debited': False, 'reason': 'already_debited'}
+            existing = (
+                WalletTransaction.objects.filter(
+                    transaction_id=transaction_id,
+                    entry_type='DR',
+                    source_module='ena_cancellation',
+                    reference_no=reference_no,
+                )
+                .order_by('-created_at', '-wallet_transaction_id')
+                .first()
+            )
+            return {
+                'debited': False,
+                'reason': 'already_debited',
+                'transaction_id': transaction_id,
+                'reference_no': reference_no,
+                'licensee_id': str(getattr(existing, 'licensee_id', '') or ''),
+                'wallet_type': str(getattr(existing, 'wallet_type', '') or ''),
+                'amount': str(getattr(existing, 'amount', '') or ''),
+                'balance_before': str(getattr(existing, 'balance_before', '') or ''),
+                'balance_after': str(getattr(existing, 'balance_after', '') or ''),
+            }
 
         candidates = self._resolve_wallet_license_candidates(cancellation, user)
         if not candidates:
@@ -228,9 +298,13 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
         return {
             'debited': True,
-            'license_id': resolved_license_id,
+            'licensee_id': resolved_license_id,
             'wallet_type': wallet.wallet_type,
-            'amount': str(amount_decimal)
+            'amount': str(amount_decimal),
+            'balance_before': str(current_balance),
+            'balance_after': str(after),
+            'transaction_id': transaction_id,
+            'reference_no': reference_no,
         }
 
     def get_queryset(self):
@@ -259,6 +333,23 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             
         return queryset
 
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # Server-side self-heal for licensee view:
+        # when a cancellation exists but wallet debit row is missing, create it idempotently.
+        if hasattr(request.user, 'supply_chain_profile'):
+            for cancellation in queryset:
+                self._try_auto_sync_wallet_debit(cancellation, request.user)
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
     @action(detail=False, methods=['post'], url_path='submit', serializer_class=CancellationCreateSerializer)
     def submit_cancellation(self, request):
         logger.debug("ENA cancellation submit request received")
@@ -274,6 +365,12 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         permit_numbers = serializer.validated_data['permit_numbers']
         normalized_permit_numbers = [str(num).strip() for num in permit_numbers if str(num).strip()]
         logger.debug("ENA cancellation submit: ref_no=%s permit_count=%s", ref_no, len(normalized_permit_numbers))
+
+        if not normalized_permit_numbers:
+            return Response(
+                {'error': 'At least one permit number must be selected for cancellation.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         
         # Never trust client-provided licensee_id for authenticated licensee users.
         if hasattr(request.user, 'supply_chain_profile'):
@@ -326,9 +423,9 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             # Charge per selected permit, so wallet deduction matches the UI selection.
             total_amount = self.CANCELLATION_FEE_AMOUNT * Decimal(len(normalized_permit_numbers))
             logger.debug("ENA cancellation submit: total_amount=%s", total_amount)
-            license_id = str(getattr(req, 'licensee_id', '') or '').strip()
+            license_id = str(licensee_id or '').strip()
             if not license_id:
-                license_id = str(licensee_id or '').strip()
+                license_id = str(getattr(req, 'licensee_id', '') or '').strip()
 
             # Fetch workflow/stage dynamically (works even after stage label renames).
             from auth.workflow.models import Workflow
@@ -500,6 +597,8 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                 return Response({'error': 'Unauthorized role for this workflow'}, status=status.HTTP_403_FORBIDDEN)
             
             from auth.workflow.services import WorkflowService
+            normalized_action = self._normalize_stage_text(action_type)
+            wallet_result = None
             
             # Ensure workflow/stage is set (with compatibility for renamed stage labels).
             if not cancellation.workflow:
@@ -526,41 +625,54 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
             # Match Logic
             try:
-                # Find Transition
-                target_transition = None
-                transitions = WorkflowService.get_next_stages(cancellation)
-                
-                for t in transitions:
-                    if transition_matches(t, user, action_type):
-                        target_transition = t
-                        break
-                
-                if not target_transition:
-                    return Response({
-                        'error': f'Invalid action {action_type} at stage {cancellation.current_stage.name}'
-                    }, status=status.HTTP_400_BAD_REQUEST)
+                with transaction.atomic():
+                    # Find Transition
+                    target_transition = None
+                    transitions = WorkflowService.get_next_stages(cancellation)
 
-                # Use values from the matching transition condition to ensure validation passes
-                context_data = target_transition.condition.copy() if target_transition.condition else {}
-                
-                WorkflowService.advance_stage(
-                    application=cancellation,
-                    user=user,
-                    target_stage=target_transition.to_stage,
-                    context=context_data,
-                    remarks=remarks
-                )
-                
-                # Update status
-                cancellation.status = target_transition.to_stage.name
-                # cancellation.status_code = ... # Removed dependency
-                cancellation.save()
+                    for t in transitions:
+                        if transition_matches(t, user, action_type):
+                            target_transition = t
+                            break
 
-                return Response({
+                    if not target_transition:
+                        return Response({
+                            'error': f'Invalid action {action_type} at stage {cancellation.current_stage.name}'
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+                    # Deduct wallet on licensee pay action (SubmitPayslip) if not already deducted.
+                    if normalized_action in ['submitpayslip', 'payslip', 'pay', 'payment']:
+                        amount = Decimal(str(getattr(cancellation, 'total_cancellation_amount', 0) or 0))
+                        wallet_result = self._debit_wallet_for_cancellation_submission(
+                            cancellation=cancellation,
+                            user=user,
+                            amount=amount,
+                        )
+
+                    # Use values from the matching transition condition to ensure validation passes
+                    context_data = target_transition.condition.copy() if target_transition.condition else {}
+
+                    WorkflowService.advance_stage(
+                        application=cancellation,
+                        user=user,
+                        target_stage=target_transition.to_stage,
+                        context=context_data,
+                        remarks=remarks
+                    )
+
+                    # Update status
+                    cancellation.status = target_transition.to_stage.name
+                    # cancellation.status_code = ... # Removed dependency
+                    cancellation.save()
+
+                response = {
                     'message': f'Action {action_type} performed successfully',
                     'new_status': cancellation.status,
                     'new_status_code': cancellation.status_code
-                })
+                }
+                if wallet_result is not None:
+                    response['wallet_deduction'] = wallet_result
+                return Response(response)
 
             except ValueError as e:
                 return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -569,5 +681,41 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
         except Exception as e:
             logger.exception("Unhandled error during cancellation perform_action")
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'], url_path='sync_wallet_debit')
+    def sync_wallet_debit(self, request, pk=None):
+        """
+        Idempotent repair endpoint: ensures the cancellation wallet debit exists.
+        Useful for legacy records that were created without debiting the wallet.
+        """
+        try:
+            cancellation = self.get_object()
+            user = request.user
+
+            if not has_workflow_access(user, WORKFLOW_IDS['ENA_CANCELLATION']) and not hasattr(user, 'supply_chain_profile'):
+                return Response({'error': 'Unauthorized role for this workflow'}, status=status.HTTP_403_FORBIDDEN)
+
+            amount = self._resolve_cancellation_amount(cancellation)
+
+            with transaction.atomic():
+                wallet_result = self._debit_wallet_for_cancellation_submission(
+                    cancellation=cancellation,
+                    user=user,
+                    amount=amount,
+                )
+
+            return Response(
+                {
+                    'message': 'Wallet debit sync completed.',
+                    'wallet_deduction': wallet_result,
+                    'cancellation_ref': getattr(cancellation, 'our_ref_no', ''),
+                },
+                status=status.HTTP_200_OK,
+            )
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.exception("Unhandled error during cancellation sync_wallet_debit")
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
