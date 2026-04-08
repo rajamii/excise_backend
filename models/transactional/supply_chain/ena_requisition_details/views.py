@@ -7,9 +7,10 @@ from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction, models
 from django.utils import timezone
+from datetime import timedelta
 from decimal import Decimal
 import re
-from .models import EnaRequisitionDetail, RequisitionBulkLiterDetail
+from .models import EnaRequisitionDetail, RequisitionBulkLiterDetail, EnaRevalidationActivationSchedule
 from .serializers import EnaRequisitionDetailSerializer, RequisitionBulkLiterDetailSerializer
 from auth.workflow.constants import WORKFLOW_IDS
 from models.transactional.supply_chain.access_control import (
@@ -503,6 +504,78 @@ class PerformRequisitionActionAPIView(APIView):
             ('forward' in token and 'payslip' in token and ('permitsection' in token or 'permit' in token))
         )
 
+    def _normalize_stage_token(self, value: str) -> str:
+        return ''.join(ch for ch in str(value or '').lower() if ch.isalnum())
+
+    def _is_final_approved_stage(self, stage) -> bool:
+        stage_name = str(getattr(stage, 'name', '') or '')
+        token = self._normalize_stage_token(stage_name)
+        if not token:
+            return False
+        if 'reject' in token:
+            return False
+        if 'approv' not in token:
+            return False
+
+        if bool(getattr(stage, 'is_final', False)):
+            return True
+
+        try:
+            from auth.workflow.models import WorkflowTransition
+
+            has_outgoing = WorkflowTransition.objects.filter(from_stage=stage).exists()
+            return not has_outgoing
+        except Exception:
+            return False
+
+    def _resolve_revalidation_activation_delay_seconds(self) -> int:
+        """
+        Delay after requisition approval before auto-creating revalidation.
+        Source: public.timer (SupplyChainTimerConfig) code=ENA_REVALIDATION_ACTIVATION
+        """
+        default_seconds = 10
+        try:
+            from models.masters.core.models import SupplyChainTimerConfig
+
+            cfg = (
+                SupplyChainTimerConfig.objects
+                .filter(code='ENA_REVALIDATION_ACTIVATION', is_active=True)
+                .order_by('-updated_at', '-id')
+                .first()
+            )
+            if not cfg:
+                return default_seconds
+
+            unit = str(getattr(cfg, 'delay_unit', '') or '').lower().strip()
+            value = int(getattr(cfg, 'delay_value', 0) or 0)
+            if value < 0:
+                value = 0
+
+            multipliers = {
+                SupplyChainTimerConfig.TIMER_UNIT_SECOND: 1,
+                SupplyChainTimerConfig.TIMER_UNIT_MINUTE: 60,
+                SupplyChainTimerConfig.TIMER_UNIT_HOUR: 60 * 60,
+                SupplyChainTimerConfig.TIMER_UNIT_DAY: 24 * 60 * 60,
+            }
+            multiplier = multipliers.get(unit, 1)
+            return max(0, value * multiplier)
+        except Exception:
+            return default_seconds
+
+    def _schedule_revalidation_activation(self, requisition, approved_at):
+        delay_seconds = self._resolve_revalidation_activation_delay_seconds()
+        due_at = approved_at + timedelta(seconds=delay_seconds)
+        EnaRevalidationActivationSchedule.objects.update_or_create(
+            requisition=requisition,
+            defaults={
+                'requisition_ref_no': str(getattr(requisition, 'our_ref_no', '') or ''),
+                'approval_date': approved_at,
+                'activation_due_at': due_at,
+                'status': EnaRevalidationActivationSchedule.STATUS_PENDING,
+                'notes': '',
+            }
+        )
+
     def _resolve_stage_for_requisition(self, requisition):
         from auth.workflow.models import WorkflowStage
 
@@ -766,6 +839,12 @@ class PerformRequisitionActionAPIView(APIView):
                     # from models.masters.supply_chain.status_master.models import StatusMaster # Removed
                     new_stage_name = target_transition.to_stage.name
                     requisition.status = new_stage_name
+
+                    approved_at = None
+                    if action == 'APPROVE' and self._is_final_approved_stage(target_transition.to_stage):
+                        approved_at = timezone.now()
+                        requisition.approval_date = approved_at
+
                     if action == 'REJECT':
                         requisition.rejected_by_role = str(getattr(getattr(request.user, 'role', None), 'name', '') or '').strip()
                         requisition.cancellation_reason = remarks
@@ -777,7 +856,10 @@ class PerformRequisitionActionAPIView(APIView):
                     # if status_obj:
                     #     requisition.status_code = status_obj.status_code
 
-                    requisition.save() # status/rejected_by_role/cancellation_reason update
+                    requisition.save() # status/rejected_by_role/cancellation_reason/approval_date update
+
+                    if approved_at is not None:
+                        self._schedule_revalidation_activation(requisition=requisition, approved_at=approved_at)
 
                     wallet_result = None
                     if action == 'APPROVE' and self._is_forwarded_payslip_stage(new_stage_name):

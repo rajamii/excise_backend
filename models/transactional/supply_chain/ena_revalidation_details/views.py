@@ -6,10 +6,12 @@ from rest_framework.permissions import IsAuthenticated
 from django.db import transaction, models, IntegrityError
 from django.utils import timezone
 from decimal import Decimal
+from datetime import timedelta
 import logging
 from .models import EnaRevalidationDetail
 from .serializers import EnaRevalidationDetailSerializer
 from models.transactional.supply_chain.ena_requisition_details.models import EnaRequisitionDetail
+from models.transactional.supply_chain.ena_requisition_details.models import EnaRevalidationActivationSchedule
 from auth.workflow.constants import WORKFLOW_IDS
 from models.transactional.supply_chain.access_control import (
     has_workflow_access,
@@ -26,6 +28,275 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     REVALIDATION_FEE_AMOUNT = Decimal('1000.00')
+
+    def _normalize_token(self, value: str) -> str:
+        return ''.join(ch for ch in str(value or '').lower() if ch.isalnum())
+
+    def _looks_final_approved_requisition(self, requisition) -> bool:
+        stage = getattr(requisition, 'current_stage', None)
+        stage_name = str(getattr(stage, 'name', '') or '') or str(getattr(requisition, 'status', '') or '')
+        token = self._normalize_token(stage_name)
+        if not token:
+            return False
+        if 'reject' in token:
+            return False
+        if 'approv' not in token:
+            return False
+
+        if stage is not None and bool(getattr(stage, 'is_final', False)):
+            return True
+
+        try:
+            from auth.workflow.models import WorkflowTransition
+            if stage is not None:
+                has_outgoing = WorkflowTransition.objects.filter(from_stage=stage).exists()
+                return not has_outgoing
+        except Exception:
+            pass
+
+        # Fallback: treat as approved if the status text looks approved.
+        return True
+
+    def _resolve_revalidation_activation_delay_seconds(self) -> int:
+        default_seconds = 10
+        try:
+            from models.masters.core.models import SupplyChainTimerConfig
+
+            cfg = (
+                SupplyChainTimerConfig.objects
+                .filter(code='ENA_REVALIDATION_ACTIVATION', is_active=True)
+                .order_by('-updated_at', '-id')
+                .first()
+            )
+            if not cfg:
+                return default_seconds
+
+            unit = str(getattr(cfg, 'delay_unit', '') or '').lower().strip()
+            value = int(getattr(cfg, 'delay_value', 0) or 0)
+            if value < 0:
+                value = 0
+
+            multipliers = {
+                SupplyChainTimerConfig.TIMER_UNIT_SECOND: 1,
+                SupplyChainTimerConfig.TIMER_UNIT_MINUTE: 60,
+                SupplyChainTimerConfig.TIMER_UNIT_HOUR: 60 * 60,
+                SupplyChainTimerConfig.TIMER_UNIT_DAY: 24 * 60 * 60,
+            }
+            multiplier = multipliers.get(unit, 1)
+            return max(0, value * multiplier)
+        except Exception:
+            return default_seconds
+
+    def _find_existing_revalidation_for_requisition(self, requisition):
+        details_token = str(getattr(requisition, 'details_permits_number', '') or '').strip()
+        license_token = str(getattr(requisition, 'licensee_id', '') or '').strip()
+
+        # IMPORTANT:
+        # Do not treat "any revalidation for the same licensee" as a match.
+        # That would block creating new revalidations for subsequent requisitions.
+        if details_token and license_token:
+            return (
+                EnaRevalidationDetail.objects
+                .filter(licensee_id=license_token, details_permits_number=details_token)
+                .order_by('-created_at')
+                .first()
+            )
+
+        if details_token:
+            return (
+                EnaRevalidationDetail.objects
+                .filter(details_permits_number=details_token)
+                .order_by('-created_at')
+                .first()
+            )
+
+        # If details_permits_number is missing, we can't reliably de-duplicate.
+        return None
+
+    def _create_revalidation_from_requisition(self, requisition):
+        now = timezone.now()
+        license_token = str(getattr(requisition, 'licensee_id', '') or '').strip()
+        if not license_token:
+            raise ValueError("Requisition is missing licensee_id; cannot auto-create revalidation.")
+
+        payload = {
+            'requisition_date': requisition.requisition_date,
+            'grain_ena_number': requisition.grain_ena_number,
+            'bulk_spirit_type': requisition.bulk_spirit_type or '',
+            'strength': requisition.strength or '',
+            'lifted_from': requisition.lifted_from or '',
+            'via_route': requisition.via_route or '',
+            'total_bl': requisition.totalbl or 0,
+            'br_amount': requisition.totalbl or 0,
+            'requisiton_number_of_permits': requisition.requisiton_number_of_permits or 0,
+            'branch_name': requisition.lifted_from_distillery_name or requisition.check_post_name or '',
+            # EnaRevalidationDetail.branch_address is non-blank; use a safe placeholder if not available.
+            'branch_address': (
+                str(getattr(requisition, 'via_route', '') or '').strip()
+                or str(getattr(requisition, 'check_post_name', '') or '').strip()
+                or 'N/A'
+            ),
+            'branch_purpose': requisition.branch_purpose or requisition.purpose_name or '',
+            # EnaRevalidationDetail.govt_officer is non-blank; requisition doesn't store officer name.
+            'govt_officer': 'N/A',
+            'state': requisition.state or '',
+            'revalidation_date': now,
+            'status': 'IMPORT PERMIT EXTENDS 45 DAYS INVALID',
+            'status_code': 'RV_00',
+            'revalidation_br_amount': str(self.REVALIDATION_FEE_AMOUNT),
+            'details_permits_number': requisition.details_permits_number or '',
+            'distillery_name': requisition.lifted_from_distillery_name or requisition.lifted_from or '',
+        }
+        payload['licensee_id'] = license_token
+
+        serializer = self.get_serializer(data=payload)
+        serializer.is_valid(raise_exception=True)
+        return serializer.save()
+
+    def _backfill_missing_activation_schedules(self, scoped_requisitions_qs, now):
+        delay_seconds = self._resolve_revalidation_activation_delay_seconds()
+        if delay_seconds <= 0:
+            return
+
+        # Only backfill rows missing a schedule.
+        candidate_qs = scoped_requisitions_qs.filter(
+            models.Q(revalidation_activation_schedule__isnull=True)
+        ).select_related('current_stage')
+
+        # Reduce scan size using SQL-friendly hints (status_code/stage name),
+        # then do the robust check in Python before creating schedules.
+        candidate_qs = candidate_qs.filter(
+            models.Q(status_code__iexact='RQ_09')
+            | models.Q(status__icontains='approv')
+            | models.Q(current_stage__name__icontains='approv')
+            | models.Q(current_stage__is_final=True)
+        )
+
+        for req in candidate_qs.order_by('-updated_at', '-id')[:1000]:
+            if not self._looks_final_approved_requisition(req):
+                continue
+            anchor = (
+                getattr(req, 'approval_date', None)
+                or getattr(req, 'updated_at', None)
+                or getattr(req, 'created_at', None)
+                or now
+            )
+            due_at = anchor + timedelta(seconds=delay_seconds)
+            EnaRevalidationActivationSchedule.objects.create(
+                requisition=req,
+                requisition_ref_no=str(getattr(req, 'our_ref_no', '') or ''),
+                approval_date=anchor,
+                activation_due_at=due_at,
+                status=EnaRevalidationActivationSchedule.STATUS_PENDING,
+                notes='Backfilled schedule',
+            )
+
+    def _process_due_activation_schedules(self):
+        """
+        Ensure approved requisitions become visible in the Revalidation tab after the configured delay.
+
+        We avoid requiring a separate background worker by processing due schedules lazily
+        when the revalidation list endpoint is called.
+        """
+        now = timezone.now()
+        user = getattr(self.request, 'user', None)
+
+        scoped_reqs = scope_by_profile_or_workflow(
+            user,
+            EnaRequisitionDetail.objects.filter(updated_at__gte=now - timedelta(days=90)),
+            WORKFLOW_IDS['ENA_REQUISITION'],
+            licensee_field='licensee_id',
+        )
+        eligible_req_ids = list(scoped_reqs.values_list('id', flat=True)[:5000])
+
+        # Create missing schedules so older approved requisitions start flowing too.
+        try:
+            self._backfill_missing_activation_schedules(scoped_reqs, now=now)
+        except Exception:
+            logger.exception("Unable to backfill activation schedules")
+
+        # Process due pending schedules, and also repair recently-processed schedules
+        # that may have been marked processed without actually creating the matching revalidation.
+        repair_cutoff = now - timedelta(days=7)
+        schedules_qs = (
+            EnaRevalidationActivationSchedule.objects
+            .select_related('requisition', 'requisition__current_stage')
+            .filter(
+                activation_due_at__lte=now,
+                status__in=[
+                    EnaRevalidationActivationSchedule.STATUS_PENDING,
+                    EnaRevalidationActivationSchedule.STATUS_PROCESSED,
+                ],
+            )
+            .filter(
+                models.Q(status=EnaRevalidationActivationSchedule.STATUS_PENDING)
+                | models.Q(activated_at__gte=repair_cutoff)
+                | models.Q(updated_at__gte=repair_cutoff)
+            )
+            .order_by('activation_due_at', 'id')
+        )
+        if eligible_req_ids:
+            schedules_qs = schedules_qs.filter(requisition_id__in=eligible_req_ids)
+        else:
+            return
+
+        for schedule_id in schedules_qs.values_list('id', flat=True)[:250]:
+            try:
+                with transaction.atomic():
+                    schedule = (
+                        EnaRevalidationActivationSchedule.objects
+                        .select_for_update()
+                        .filter(id=schedule_id)
+                        .first()
+                    )
+                    if not schedule:
+                        continue
+
+                    requisition = (
+                        EnaRequisitionDetail.objects
+                        .select_related('current_stage')
+                        .filter(id=schedule.requisition_id)
+                        .first()
+                    )
+                    if requisition is None or not self._looks_final_approved_requisition(requisition):
+                        schedule.status = EnaRevalidationActivationSchedule.STATUS_CANCELLED
+                        schedule.activated_at = timezone.now()
+                        schedule.notes = (schedule.notes or '') + ' Not eligible for activation'
+                        schedule.save(update_fields=['status', 'activated_at', 'notes', 'updated_at'])
+                        continue
+
+                    if not str(getattr(requisition, 'licensee_id', '') or '').strip():
+                        schedule.status = EnaRevalidationActivationSchedule.STATUS_CANCELLED
+                        schedule.activated_at = timezone.now()
+                        schedule.notes = (schedule.notes or '') + ' Missing requisition.licensee_id'
+                        schedule.save(update_fields=['status', 'activated_at', 'notes', 'updated_at'])
+                        continue
+
+                    existing = self._find_existing_revalidation_for_requisition(requisition)
+                    if existing is None:
+                        self._create_revalidation_from_requisition(requisition)
+
+                    schedule.status = EnaRevalidationActivationSchedule.STATUS_PROCESSED
+                    schedule.activated_at = timezone.now()
+                    schedule.save(update_fields=['status', 'activated_at', 'updated_at'])
+            except Exception as exc:
+                try:
+                    err = "Failed processing activation schedule"
+                    logger.exception("%s id=%s", err, schedule_id)
+                    schedule = EnaRevalidationActivationSchedule.objects.filter(id=schedule_id).first()
+                    if schedule:
+                        stamp = timezone.now().isoformat()
+                        msg = str(exc).strip()
+                        if not msg:
+                            msg = repr(exc)
+                        detail = f"{type(exc).__name__}: {msg}".strip()
+                        if len(detail) > 800:
+                            detail = detail[:800] + "..."
+                        schedule.notes = (schedule.notes or '').strip()
+                        schedule.notes = (schedule.notes + f"\n{stamp} {err} id={schedule_id} {detail}").strip()
+                        schedule.save(update_fields=['notes', 'updated_at'])
+                except Exception:
+                    logger.exception("Failed updating activation schedule notes id=%s", schedule_id)
 
     def _expand_license_aliases(self, license_id: str):
         normalized = str(license_id or '').strip()
@@ -244,6 +515,10 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         context['request'] = self.request
         return context
 
+    def list(self, request, *args, **kwargs):
+        self._process_due_activation_schedules()
+        return super().list(request, *args, **kwargs)
+
     @action(detail=False, methods=['post'], url_path='from-requisition')
     def create_from_requisition(self, request):
         """
@@ -274,6 +549,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         details_token = str(getattr(requisition, 'details_permits_number', '') or '').strip()
         license_token = str(getattr(requisition, 'licensee_id', '') or '').strip()
 
+        # Same rationale as schedule processor: avoid licensee-only matches.
         if license_token and details_token:
             existing = EnaRevalidationDetail.objects.filter(
                 licensee_id=license_token,
@@ -283,11 +559,6 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         if existing is None and details_token:
             existing = EnaRevalidationDetail.objects.filter(
                 details_permits_number=details_token
-            ).order_by('-created_at').first()
-
-        if existing is None and license_token:
-            existing = EnaRevalidationDetail.objects.filter(
-                licensee_id=license_token
             ).order_by('-created_at').first()
 
         if existing:

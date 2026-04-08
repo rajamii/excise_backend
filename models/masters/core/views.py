@@ -42,6 +42,7 @@ def timer_config(request):
     # Backend fallback only; frontend should rely on DB config.
     # Defaults vary by timer code.
     default_seconds_by_code = {
+        'ENA_REVALIDATION_ACTIVATION': 10,
         'INACTIVITY_LOGOUT': 4 * 60,
         'INACTIVITY_WARNING': 30,
         # Minutes-from-midnight (recommended): set delay_unit=minute, delay_value=1020 for 5:00 PM.
