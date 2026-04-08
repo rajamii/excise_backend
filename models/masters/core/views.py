@@ -73,6 +73,21 @@ def timer_config(request):
     if value < 0:
         value = 0
 
+    # Accept common plural/alias forms stored in DB.
+    if unit.endswith('s'):
+        unit = unit[:-1]
+    unit_aliases = {
+        'sec': masters_model.SupplyChainTimerConfig.TIMER_UNIT_SECOND,
+        'secs': masters_model.SupplyChainTimerConfig.TIMER_UNIT_SECOND,
+        'min': masters_model.SupplyChainTimerConfig.TIMER_UNIT_MINUTE,
+        'mins': masters_model.SupplyChainTimerConfig.TIMER_UNIT_MINUTE,
+        'hr': masters_model.SupplyChainTimerConfig.TIMER_UNIT_HOUR,
+        'hrs': masters_model.SupplyChainTimerConfig.TIMER_UNIT_HOUR,
+        'mon': masters_model.SupplyChainTimerConfig.TIMER_UNIT_MONTH,
+        'mos': masters_model.SupplyChainTimerConfig.TIMER_UNIT_MONTH,
+    }
+    unit = unit_aliases.get(unit, unit)
+
     multiplier = 1
     if unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_MINUTE:
         multiplier = 60
@@ -80,6 +95,8 @@ def timer_config(request):
         multiplier = 60 * 60
     elif unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_DAY:
         multiplier = 24 * 60 * 60
+    elif unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_MONTH:
+        multiplier = 30 * 24 * 60 * 60
 
     seconds = max(0, value * multiplier)
     return Response(

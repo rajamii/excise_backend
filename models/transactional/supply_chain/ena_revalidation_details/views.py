@@ -76,11 +76,26 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             if value < 0:
                 value = 0
 
+            if unit.endswith('s'):
+                unit = unit[:-1]
+            unit_aliases = {
+                'sec': SupplyChainTimerConfig.TIMER_UNIT_SECOND,
+                'secs': SupplyChainTimerConfig.TIMER_UNIT_SECOND,
+                'min': SupplyChainTimerConfig.TIMER_UNIT_MINUTE,
+                'mins': SupplyChainTimerConfig.TIMER_UNIT_MINUTE,
+                'hr': SupplyChainTimerConfig.TIMER_UNIT_HOUR,
+                'hrs': SupplyChainTimerConfig.TIMER_UNIT_HOUR,
+                'mon': getattr(SupplyChainTimerConfig, 'TIMER_UNIT_MONTH', 'month'),
+                'mos': getattr(SupplyChainTimerConfig, 'TIMER_UNIT_MONTH', 'month'),
+            }
+            unit = unit_aliases.get(unit, unit)
+
             multipliers = {
                 SupplyChainTimerConfig.TIMER_UNIT_SECOND: 1,
                 SupplyChainTimerConfig.TIMER_UNIT_MINUTE: 60,
                 SupplyChainTimerConfig.TIMER_UNIT_HOUR: 60 * 60,
                 SupplyChainTimerConfig.TIMER_UNIT_DAY: 24 * 60 * 60,
+                getattr(SupplyChainTimerConfig, 'TIMER_UNIT_MONTH', 'month'): 30 * 24 * 60 * 60,
             }
             multiplier = multipliers.get(unit, 1)
             return max(0, value * multiplier)
