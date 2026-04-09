@@ -81,6 +81,9 @@ class RequisitionBulkLiterDetail(models.Model):
     reviewed_at = models.DateTimeField(blank=True, null=True)
     reviewed_by = models.CharField(max_length=150, blank=True, default='')
     review_remarks = models.TextField(blank=True, default='')
+    edited_by_oic = models.BooleanField(default=False, db_index=True)
+    edited_at = models.DateTimeField(blank=True, null=True)
+    edited_by = models.CharField(max_length=150, blank=True, default='')
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 

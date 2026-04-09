@@ -779,6 +779,9 @@ class RequisitionBulkLiterDetailSerializer(serializers.ModelSerializer):
             'reviewed_at',
             'reviewed_by',
             'review_remarks',
+            'edited_by_oic',
+            'edited_at',
+            'edited_by',
             'created_at',
             'updated_at'
         ]
