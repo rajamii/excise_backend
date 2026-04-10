@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.db import transaction, models
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.utils import ProgrammingError, OperationalError
 from django.contrib.contenttypes.models import ContentType
@@ -819,11 +819,64 @@ class RequisitionBulkLiterDetailSerializer(serializers.ModelSerializer):
         normalized_rows = []
         total_bulk_liter = Decimal('0')
 
+        requisition = attrs.get('requisition') or getattr(self.instance, 'requisition', None)
+        requested_total_bl = Decimal('0')
+        permit_tokens = []
+        permit_count = 0
+        if requisition is not None:
+            try:
+                requested_total_bl = Decimal(str(getattr(requisition, 'totalbl', '0') or '0'))
+            except (InvalidOperation, ValueError, TypeError):
+                requested_total_bl = Decimal('0')
+
+            details_token = str(getattr(requisition, 'details_permits_number', '') or '').strip()
+            permit_tokens = [str(token).strip() for token in details_token.split(',') if str(token).strip()]
+            if not permit_tokens:
+                try:
+                    permit_count = int(getattr(requisition, 'requisiton_number_of_permits', 0) or 0)
+                except (TypeError, ValueError):
+                    permit_count = 0
+                permit_count = max(0, permit_count)
+                if permit_count > 0:
+                    permit_tokens = [str(i) for i in range(1, permit_count + 1)]
+            permit_count = len(permit_tokens)
+
+        expected_by_permit = {}
+        if permit_count > 0 and requested_total_bl > 0:
+            base = (requested_total_bl / Decimal(str(permit_count))).quantize(Decimal('0.01'), rounding=ROUND_DOWN)
+            remainder = (requested_total_bl - (base * Decimal(str(permit_count - 1)))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            for idx, token in enumerate(permit_tokens):
+                expected_by_permit[token] = remainder if idx == permit_count - 1 else base
+
+        permit_numbers_in_rows = []
+        for row in tanker_details:
+            if isinstance(row, dict):
+                token = str(row.get('permit_no') or row.get('permitNo') or row.get('permit') or '').strip()
+                permit_numbers_in_rows.append(token)
+            else:
+                permit_numbers_in_rows.append('')
+        any_permit_provided = any(bool(x) for x in permit_numbers_in_rows)
+
+        sum_by_permit = {}
         for idx, row in enumerate(tanker_details, start=1):
             if not isinstance(row, dict):
                 raise serializers.ValidationError({
                     'tanker_details': f'Row {idx} must be an object with tanker_no and bulk_liter.'
                 })
+
+            permit_no = str(row.get('permit_no') or row.get('permitNo') or row.get('permit') or '').strip()
+            if permit_count > 0:
+                # Backward compatibility: older submissions had one row per permit and no permit_no.
+                if not any_permit_provided and len(tanker_details) == permit_count:
+                    permit_no = permit_tokens[idx - 1]
+                if not permit_no:
+                    raise serializers.ValidationError({
+                        'tanker_details': f'Permit number is required for row {idx}.'
+                    })
+                if permit_no not in expected_by_permit:
+                    raise serializers.ValidationError({
+                        'tanker_details': f'Invalid permit number "{permit_no}" for row {idx}.'
+                    })
 
             tanker_no = str(row.get('tanker_no', '')).strip()
             if not tanker_no:
@@ -843,24 +896,46 @@ class RequisitionBulkLiterDetailSerializer(serializers.ModelSerializer):
                     'tanker_details': f'Bulk liter must be greater than 0 for row {idx}.'
                 })
 
+            if permit_count > 0:
+                sum_by_permit[permit_no] = (sum_by_permit.get(permit_no, Decimal('0')) + bulk_liter)
+
             total_bulk_liter += bulk_liter
             normalized_rows.append({
+                'permit_no': permit_no if permit_no else None,
                 'tanker_no': tanker_no,
                 'bulk_liter': str(bulk_liter)
             })
 
-        requisition = attrs.get('requisition') or getattr(self.instance, 'requisition', None)
-        requested_total_bl = Decimal('0')
-        if requisition is not None:
-            try:
-                requested_total_bl = Decimal(str(getattr(requisition, 'totalbl', '0') or '0'))
-            except (InvalidOperation, ValueError, TypeError):
-                requested_total_bl = Decimal('0')
+        if permit_count > 0 and requested_total_bl > 0:
+            missing = [token for token in permit_tokens if sum_by_permit.get(token, Decimal('0')) <= 0]
+            if missing:
+                raise serializers.ValidationError({
+                    'tanker_details': f"Missing tanker entries for permit(s): {', '.join(missing)}."
+                })
+
+            mismatched = []
+            for token in permit_tokens:
+                expected = expected_by_permit.get(token, Decimal('0'))
+                got = sum_by_permit.get(token, Decimal('0')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                if expected > 0 and got != expected:
+                    mismatched.append(f"{token} (expected {expected}, got {got})")
+            if mismatched:
+                raise serializers.ValidationError({
+                    'tanker_details': f"Permit-wise bulk liter mismatch: {', '.join(mismatched)}."
+                })
 
         if requested_total_bl > 0 and total_bulk_liter > requested_total_bl:
             raise serializers.ValidationError({
                 'tanker_details': (
                     f"Total bulk liter ({total_bulk_liter}) cannot exceed requisition total quantity "
+                    f"({requested_total_bl})."
+                )
+            })
+
+        if requested_total_bl > 0 and total_bulk_liter != requested_total_bl:
+            raise serializers.ValidationError({
+                'tanker_details': (
+                    f"Total bulk liter ({total_bulk_liter}) must exactly match requisition total quantity "
                     f"({requested_total_bl})."
                 )
             })
