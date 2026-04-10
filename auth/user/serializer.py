@@ -7,6 +7,9 @@ from models.masters.core.models import District, Subdivision
 from captcha.models import CaptchaStore
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
 
 # Fields that are set once at creation and must never change afterwards
 IMMUTABLE_PROFILE_FIELDS = ('pan_number')
@@ -499,3 +502,16 @@ class OICOfficerAssignmentSerializer(serializers.ModelSerializer):
         first_name = str(getattr(obj.officer, 'first_name', '') or '').strip()
         last_name = str(getattr(obj.officer, 'last_name', '') or '').strip()
         return f"{first_name} {last_name}".strip()
+    
+class PasswordResetRequestSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        if not CustomUser.objects.filter(email=value).exists():
+            raise serializers.ValidationError("No user is associated with this email address.")
+        return value
+    
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    new_password = serializers.CharField(write_only=True, min_length=8)
+    uidb64 = serializers.CharField(write_only=True)
+    token = serializers.CharField(write_only=True)
