@@ -515,3 +515,18 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
     new_password = serializers.CharField(write_only=True, min_length=8)
     uidb64 = serializers.CharField(write_only=True)
     token = serializers.CharField(write_only=True)
+
+    def to_internal_value(self, data):
+        # Convert QueryDict or dict-like object to a standard mutable dict
+        incoming = dict(data.items()) if hasattr(data, 'items') else dict(data)
+        
+        # The djangorestframework-camel-case parser converts 'uidb64' to 'uidb_64'.
+        # We map it back so the serializer recognizes it.
+        if 'uidb_64' in incoming and 'uidb64' not in incoming:
+            incoming['uidb64'] = incoming.pop('uidb_64')
+            
+        # Optional safeguard: If frontend ever sends camelCase 'newPassword' instead of 'new_password'
+        if 'newPassword' in incoming and 'new_password' not in incoming:
+            incoming['new_password'] = incoming.pop('newPassword')
+
+        return super().to_internal_value(incoming)

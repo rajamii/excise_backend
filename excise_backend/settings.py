@@ -155,30 +155,31 @@ REST_FRAMEWORK = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'eAbkari_db1',       # Database name
+        'NAME': 'eAbkari_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'sameer123',  # Your PostgreSQL password
+        'PASSWORD': 'admin',  # Your PostgreSQL password
         'HOST': 'localhost',        # Default host
-        'PORT': '5433',             # Default PostgreSQL port
+        'PORT': '5432',             # Default PostgreSQL port
         'CONN_MAX_AGE': 0,          # Don't reuse connections — avoids aborted transaction state
     }
 }
 
 # Forgot Password Email Settings
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # For production, use SMTP:
-# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-# EMAIL_HOST = 'smtp.gmail.com'
-# EMAIL_PORT = 587
-# EMAIL_USE_TLS = True
-# EMAIL_HOST_USER = 'your-email@gmail.com'
-# EMAIL_HOST_PASSWORD = 'your-app-password'
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'amritraj97.nic@gmail.com'
+EMAIL_HOST_PASSWORD = 'gzrt qieo egth zjpt'
 DEFAULT_FROM_EMAIL = 'amritraj97.nic@gmail.com'
 
 # Frontend URL used for password reset emails (no trailing slash).
 PASSWORD_RESET_FRONTEND_URL = os.getenv(
     "PASSWORD_RESET_FRONTEND_URL",
-    "http://localhost:4200/reset-password",
+    "https://sems.sikkim.gov.in/reset-password",
+    # "http://localhost:4200/reset-password"
 ).rstrip("/")
 
 
