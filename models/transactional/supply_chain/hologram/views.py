@@ -1427,6 +1427,9 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
+        if normalized_action == 'reject' and not str(remarks or '').strip():
+            return Response({'error': 'Rejection reason is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
         transitions = WorkflowTransition.objects.filter(
             workflow=instance.workflow,
             from_stage=instance.current_stage
@@ -1460,6 +1463,11 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                     getattr(selected_transition.from_stage, "id", None),
                 )
                 return Response({'error': 'Stage changed, please retry.'}, status=status.HTTP_409_CONFLICT)
+
+            if normalized_action == 'reject':
+                instance.rejection_reason = str(remarks or '').strip()
+                instance.rejected_at = timezone.now()
+                instance.rejected_by = request.user
             
             instance.current_stage = selected_transition.to_stage
             instance.save()

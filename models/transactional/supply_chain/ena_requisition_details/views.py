@@ -10,7 +10,12 @@ from django.utils import timezone
 from datetime import timedelta
 from decimal import Decimal
 import re
-from .models import EnaRequisitionDetail, RequisitionBulkLiterDetail, EnaRevalidationActivationSchedule
+from .models import (
+    EnaRequisitionDetail,
+    RequisitionBulkLiterDetail,
+    RequisitionBulkLiterReviewAudit,
+    EnaRevalidationActivationSchedule,
+)
 from .serializers import EnaRequisitionDetailSerializer, RequisitionBulkLiterDetailSerializer
 from auth.workflow.constants import WORKFLOW_IDS
 from models.transactional.supply_chain.access_control import (
@@ -38,6 +43,18 @@ def _is_oic_user(user):
         or hasattr(user, 'oic_assignment')
         or role_token in {'officerincharge', 'offcierincharge', 'oic'}
     )
+
+
+def _resolve_user_display_name(user, max_len=150):
+    first = str(getattr(user, 'first_name', '') or '').strip()
+    middle = str(getattr(user, 'middle_name', '') or '').strip()
+    last = str(getattr(user, 'last_name', '') or '').strip()
+    name = ' '.join([part for part in [first, middle, last] if part]).strip()
+    if not name:
+        name = str(getattr(user, 'username', '') or '').strip() or 'User'
+    if max_len and len(name) > max_len:
+        return name[:max_len].rstrip()
+    return name
 
 
 def _filter_commissioner_visible_requisitions(user, queryset):
@@ -215,10 +232,15 @@ class RequisitionArrivalBulkLiterDetailAPIView(APIView):
                 hasattr(request.user, 'supply_chain_profile')
                 or hasattr(request.user, 'manufacturing_units')
             )
-            if not is_licensee_user:
+            is_oic_user = _is_oic_user(request.user)
+            # Prefer OIC capabilities when the user matches both shapes.
+            if is_oic_user:
+                is_licensee_user = False
+
+            if not is_licensee_user and not is_oic_user:
                 return Response({
                     'status': 'error',
-                    'message': 'Only licensee users can update arrival details.'
+                    'message': 'Only licensee/OIC users can update arrival details.'
                 }, status=status.HTTP_403_FORBIDDEN)
 
             requisition = self._get_scoped_requisition(request, pk)
@@ -229,25 +251,106 @@ class RequisitionArrivalBulkLiterDetailAPIView(APIView):
             payload['licensee_id'] = requisition.licensee_id
 
             existing = RequisitionBulkLiterDetail.objects.filter(requisition=requisition).first()
+            if is_oic_user and not existing:
+                return Response({
+                    'status': 'error',
+                    'message': 'No arrival details found to edit.'
+                }, status=status.HTTP_404_NOT_FOUND)
+            if is_oic_user and existing and existing.approval_status != RequisitionBulkLiterDetail.ApprovalStatus.PENDING:
+                return Response({
+                    'status': 'error',
+                    'message': 'Only pending arrival details can be edited.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
             serializer = RequisitionBulkLiterDetailSerializer(
                 existing,
                 data=payload,
                 partial=bool(existing)
             )
             serializer.is_valid(raise_exception=True)
-            record = serializer.save(
-                reference_no=requisition.our_ref_no,
-                licensee_id=requisition.licensee_id,
-                approval_status=RequisitionBulkLiterDetail.ApprovalStatus.PENDING,
-                submitted_at=timezone.now(),
-                reviewed_at=None,
-                reviewed_by='',
-                review_remarks=''
-            )
+
+            record = serializer.save()
+
+            # Licensee edits/creates should re-submit for OIC review (reset review info).
+            # OIC edits should keep the record pending and clear any review flags.
+            if is_licensee_user:
+                record.reference_no = requisition.our_ref_no
+                record.licensee_id = requisition.licensee_id
+                record.approval_status = RequisitionBulkLiterDetail.ApprovalStatus.PENDING
+                record.submitted_at = timezone.now()
+                record.reviewed_at = None
+                record.reviewed_by = ''
+                record.review_remarks = ''
+                record.edited_by_oic = False
+                record.edited_at = None
+                record.edited_by = ''
+                record.save(update_fields=[
+                    'reference_no',
+                    'licensee_id',
+                    'approval_status',
+                    'submitted_at',
+                    'reviewed_at',
+                    'reviewed_by',
+                    'review_remarks',
+                    'edited_by_oic',
+                    'edited_at',
+                    'edited_by',
+                    'updated_at'
+                ])
+                try:
+                    RequisitionBulkLiterReviewAudit.objects.update_or_create(
+                        requisition=requisition,
+                        defaults={
+                            'reference_no': requisition.our_ref_no,
+                            'licensee_id': requisition.licensee_id,
+                            'last_status': RequisitionBulkLiterReviewAudit.ReviewStatus.PENDING,
+                            'reviewed_at': None,
+                            'reviewed_by': '',
+                            'review_remarks': ''
+                        }
+                    )
+                except Exception:
+                    pass
+            elif is_oic_user:
+                record.approval_status = RequisitionBulkLiterDetail.ApprovalStatus.PENDING
+                record.reviewed_at = None
+                record.reviewed_by = ''
+                record.review_remarks = ''
+                record.edited_by_oic = True
+                record.edited_at = timezone.now()
+                record.edited_by = _resolve_user_display_name(request.user)
+                record.save(update_fields=[
+                    'approval_status',
+                    'reviewed_at',
+                    'reviewed_by',
+                    'review_remarks',
+                    'edited_by_oic',
+                    'edited_at',
+                    'edited_by',
+                    'updated_at'
+                ])
+                try:
+                    RequisitionBulkLiterReviewAudit.objects.update_or_create(
+                        requisition=requisition,
+                        defaults={
+                            'reference_no': requisition.our_ref_no,
+                            'licensee_id': requisition.licensee_id,
+                            'last_status': RequisitionBulkLiterReviewAudit.ReviewStatus.PENDING,
+                            'reviewed_at': None,
+                            'reviewed_by': '',
+                            'review_remarks': ''
+                        }
+                    )
+                except Exception:
+                    pass
 
             return Response({
                 'status': 'success',
-                'message': 'Arrival details submitted successfully and sent to OIC for approval.',
+                'message': (
+                    'Arrival details updated successfully.'
+                    if is_oic_user
+                    else 'Arrival details submitted successfully and sent to OIC for approval.'
+                ),
                 'data': RequisitionBulkLiterDetailSerializer(record).data
             }, status=status.HTTP_200_OK if existing else status.HTTP_201_CREATED)
 
@@ -360,6 +463,9 @@ class RequisitionArrivalBulkLiterDetailsListAPIView(APIView):
                     'reviewed_at': row.reviewed_at.isoformat() if row.reviewed_at else None,
                     'reviewed_by': row.reviewed_by or '',
                     'review_remarks': row.review_remarks or '',
+                    'edited_by_oic': bool(getattr(row, 'edited_by_oic', False)),
+                    'edited_at': row.edited_at.isoformat() if getattr(row, 'edited_at', None) else None,
+                    'edited_by': getattr(row, 'edited_by', '') or '',
                     'arrival_date': row.submitted_at.date().isoformat() if row.submitted_at else (row.updated_at.date().isoformat() if row.updated_at else ''),
                     'requisition_total_quantity': str(getattr(req, 'totalbl', 0) or 0) if req else '0',
                     'distillery_name': (getattr(req, 'lifted_from_distillery_name', '') or '') if req else '',
@@ -404,6 +510,31 @@ class RequisitionArrivalBulkLiterReviewAPIView(APIView):
                 requisition_id__in=requisitions.values_list('id', flat=True)
             )
 
+            if action == 'APPROVE':
+                requested_total_bl = Decimal('0')
+                requisition = getattr(detail, 'requisition', None)
+                if requisition is not None:
+                    try:
+                        requested_total_bl = Decimal(str(getattr(requisition, 'totalbl', '0') or '0'))
+                    except Exception:
+                        requested_total_bl = Decimal('0')
+
+                # Approval should only happen when arrival total exactly matches requisition total.
+                if requested_total_bl > 0:
+                    try:
+                        actual_total_bl = Decimal(str(getattr(detail, 'total_bulk_liter', '0') or '0'))
+                    except Exception:
+                        actual_total_bl = Decimal('0')
+
+                    if actual_total_bl.quantize(Decimal('0.01')) != requested_total_bl.quantize(Decimal('0.01')):
+                        return Response({
+                            'status': 'error',
+                            'message': (
+                                f"Cannot approve: total bulk liter ({actual_total_bl}) must match requisition total "
+                                f"({requested_total_bl})."
+                            )
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
             remarks = str(request.data.get('remarks', '') or '').strip()
             detail.approval_status = (
                 RequisitionBulkLiterDetail.ApprovalStatus.APPROVED
@@ -411,9 +542,47 @@ class RequisitionArrivalBulkLiterReviewAPIView(APIView):
                 else RequisitionBulkLiterDetail.ApprovalStatus.REJECTED
             )
             detail.reviewed_at = timezone.now()
-            detail.reviewed_by = str(getattr(request.user, 'username', '') or '')
+            detail.reviewed_by = _resolve_user_display_name(request.user)
             detail.review_remarks = remarks
-            detail.save(update_fields=['approval_status', 'reviewed_at', 'reviewed_by', 'review_remarks', 'updated_at'])
+
+            # On rejection, clear submitted tanker data so licensee must re-enter and resubmit for approval.
+            if action == 'REJECT':
+                requisition = getattr(detail, 'requisition', None)
+                if requisition is not None:
+                    try:
+                        RequisitionBulkLiterReviewAudit.objects.update_or_create(
+                            requisition=requisition,
+                            defaults={
+                                'reference_no': detail.reference_no,
+                                'licensee_id': detail.licensee_id,
+                                'last_status': RequisitionBulkLiterReviewAudit.ReviewStatus.REJECTED,
+                                'reviewed_at': detail.reviewed_at,
+                                'reviewed_by': detail.reviewed_by,
+                                'review_remarks': detail.review_remarks
+                            }
+                        )
+                    except Exception:
+                        pass
+
+                detail.delete()
+            else:
+                detail.save(update_fields=['approval_status', 'reviewed_at', 'reviewed_by', 'review_remarks', 'updated_at'])
+                requisition = getattr(detail, 'requisition', None)
+                if requisition is not None:
+                    try:
+                        RequisitionBulkLiterReviewAudit.objects.update_or_create(
+                            requisition=requisition,
+                            defaults={
+                                'reference_no': detail.reference_no,
+                                'licensee_id': detail.licensee_id,
+                                'last_status': RequisitionBulkLiterReviewAudit.ReviewStatus.APPROVED,
+                                'reviewed_at': detail.reviewed_at,
+                                'reviewed_by': detail.reviewed_by,
+                                'review_remarks': detail.review_remarks
+                            }
+                        )
+                    except Exception:
+                        pass
 
             return Response({
                 'status': 'success',

@@ -81,6 +81,9 @@ class RequisitionBulkLiterDetail(models.Model):
     reviewed_at = models.DateTimeField(blank=True, null=True)
     reviewed_by = models.CharField(max_length=150, blank=True, default='')
     review_remarks = models.TextField(blank=True, default='')
+    edited_by_oic = models.BooleanField(default=False, db_index=True)
+    edited_at = models.DateTimeField(blank=True, null=True)
+    edited_by = models.CharField(max_length=150, blank=True, default='')
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -90,6 +93,39 @@ class RequisitionBulkLiterDetail(models.Model):
 
     def __str__(self) -> str:
         return f"{self.reference_no} ({self.licensee_id or 'NA'})"
+
+
+class RequisitionBulkLiterReviewAudit(models.Model):
+    class ReviewStatus(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        APPROVED = 'APPROVED', 'Approved'
+        REJECTED = 'REJECTED', 'Rejected'
+
+    requisition = models.OneToOneField(
+        EnaRequisitionDetail,
+        on_delete=models.CASCADE,
+        related_name='bulk_liter_review_audit'
+    )
+    reference_no = models.CharField(max_length=50, db_index=True)
+    licensee_id = models.CharField(max_length=50, blank=True, null=True, db_index=True)
+    last_status = models.CharField(
+        max_length=20,
+        choices=ReviewStatus.choices,
+        default=ReviewStatus.PENDING,
+        db_index=True
+    )
+    reviewed_at = models.DateTimeField(blank=True, null=True)
+    reviewed_by = models.CharField(max_length=150, blank=True, default='')
+    review_remarks = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'reqution_bulk_liter_review_audit'
+        ordering = ['-updated_at']
+
+    def __str__(self) -> str:
+        return f"{self.reference_no} ({self.last_status})"
 
 
 class EnaRevalidationActivationSchedule(models.Model):

@@ -2,8 +2,9 @@ from rest_framework import serializers
 from django.db import transaction, models
 from decimal import Decimal, InvalidOperation
 from django.core.exceptions import ObjectDoesNotExist
+from django.db.utils import ProgrammingError, OperationalError
 from django.contrib.contenttypes.models import ContentType
-from .models import EnaRequisitionDetail, RequisitionBulkLiterDetail
+from .models import EnaRequisitionDetail, RequisitionBulkLiterDetail, RequisitionBulkLiterReviewAudit
 from auth.workflow.constants import WORKFLOW_IDS
 from auth.workflow.models import Rejection
 from models.masters.license.models import License
@@ -83,6 +84,14 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             data['arrival_reviewed_at'] = None
             data['arrival_reviewed_by'] = ''
             data['arrival_review_remarks'] = ''
+            try:
+                audit = instance.bulk_liter_review_audit
+                data['arrival_approval_status'] = audit.last_status or ''
+                data['arrival_reviewed_at'] = audit.reviewed_at.isoformat() if audit.reviewed_at else None
+                data['arrival_reviewed_by'] = audit.reviewed_by or ''
+                data['arrival_review_remarks'] = audit.review_remarks or ''
+            except (ObjectDoesNotExist, ProgrammingError, OperationalError):
+                pass
         
         # Ensure status_code is set - derive from stage if not set
         if not instance.status_code or instance.status_code == 'RQ_00':
@@ -779,6 +788,9 @@ class RequisitionBulkLiterDetailSerializer(serializers.ModelSerializer):
             'reviewed_at',
             'reviewed_by',
             'review_remarks',
+            'edited_by_oic',
+            'edited_at',
+            'edited_by',
             'created_at',
             'updated_at'
         ]
