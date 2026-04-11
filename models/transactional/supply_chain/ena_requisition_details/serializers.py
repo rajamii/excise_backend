@@ -125,15 +125,24 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
                     return set(permit_tokens)
                 return set()
 
-            approved_permits = set()
-            pending_permits = set()
-            rejected_permits = set()
-            for row in approved_details:
-                approved_permits |= _permits_in_detail(row)
-            for row in pending_details:
-                pending_permits |= _permits_in_detail(row)
-            for row in rejected_details:
-                rejected_permits |= _permits_in_detail(row)
+            def _merge_status(existing_status: str, next_status: str) -> str:
+                order = {'APPROVED': 3, 'PENDING': 2, 'REJECTED': 1, '': 0}
+                a = str(existing_status or '').upper()
+                b = str(next_status or '').upper()
+                return b if order.get(b, 0) >= order.get(a, 0) else a
+
+            # Compute effective/latest status per permit (APPROVED > PENDING > REJECTED).
+            permit_status_by_permit = {}
+            for row in details_qs:
+                status_token = str(getattr(row, 'approval_status', '') or '').upper()
+                for token in _permits_in_detail(row):
+                    if token in cancelled_permits:
+                        continue
+                    permit_status_by_permit[token] = _merge_status(permit_status_by_permit.get(token, ''), status_token)
+
+            approved_permits = {p for p, s in permit_status_by_permit.items() if str(s).upper() == 'APPROVED'}
+            pending_permits = {p for p, s in permit_status_by_permit.items() if str(s).upper() == 'PENDING'}
+            rejected_permits = {p for p, s in permit_status_by_permit.items() if str(s).upper() == 'REJECTED'}
 
             # Remaining permits are those not approved/pending (rejected permits count as remaining to be re-submitted).
             remaining_permits = max(0, total_permits - len(approved_permits) - len(pending_permits) - len(cancelled_permits))
