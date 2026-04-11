@@ -6,6 +6,7 @@ from rest_framework.exceptions import PermissionDenied
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction, models
+from django.db.utils import IntegrityError
 from django.utils import timezone
 from datetime import timedelta
 from decimal import Decimal
@@ -733,6 +734,13 @@ class RequisitionArrivalBulkLiterReviewAPIView(APIView):
                     'message': 'Invalid action. Use APPROVE or REJECT.'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
+            permit_no = str(
+                request.data.get('permit_no')
+                or request.data.get('permitNo')
+                or request.data.get('permit')
+                or ''
+            ).strip()
+
             requisitions = scope_by_profile_or_workflow(
                 request.user,
                 EnaRequisitionDetail.objects.all(),
@@ -770,6 +778,142 @@ class RequisitionArrivalBulkLiterReviewAPIView(APIView):
                         }, status=status.HTTP_400_BAD_REQUEST)
 
             remarks = str(request.data.get('remarks', '') or '').strip()
+
+            # Permit-wise review: allow OIC to approve/reject a single permit from a multi-permit submission.
+            if permit_no:
+                tanker_rows = detail.tanker_details or []
+                selected_rows = []
+                remaining_rows = []
+                for item in tanker_rows:
+                    if not isinstance(item, dict):
+                        continue
+                    token = str(item.get('permit_no') or item.get('permitNo') or item.get('permit') or '').strip()
+                    if token == permit_no:
+                        selected_rows.append(item)
+                    else:
+                        remaining_rows.append(item)
+
+                if not selected_rows:
+                    return Response({
+                        'status': 'error',
+                        'message': f'Permit {permit_no} not found in this submission.'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+                reviewed_status = (
+                    RequisitionBulkLiterDetail.ApprovalStatus.APPROVED
+                    if action == 'APPROVE'
+                    else RequisitionBulkLiterDetail.ApprovalStatus.REJECTED
+                )
+
+                def _sum_bulk_liter(rows):
+                    total = Decimal('0')
+                    for r in rows:
+                        if isinstance(r, dict):
+                            try:
+                                total += Decimal(str(r.get('bulk_liter', '0') or '0'))
+                            except Exception:
+                                pass
+                    return total
+
+                now = timezone.now()
+                try:
+                    reviewed = RequisitionBulkLiterDetail.objects.create(
+                        requisition=detail.requisition,
+                        reference_no=detail.reference_no,
+                        licensee_id=detail.licensee_id,
+                        tanker_count=len(selected_rows),
+                        tanker_details=selected_rows,
+                        total_bulk_liter=_sum_bulk_liter(selected_rows),
+                        approval_status=reviewed_status,
+                        submitted_at=detail.submitted_at or now,
+                        reviewed_at=now,
+                        reviewed_by=_resolve_user_display_name(request.user),
+                        review_remarks=remarks,
+                        edited_by_oic=bool(getattr(detail, 'edited_by_oic', False)),
+                        edited_at=getattr(detail, 'edited_at', None),
+                        edited_by=getattr(detail, 'edited_by', '') or '',
+                    )
+                except IntegrityError as e:
+                    msg = str(e)
+                    if 'reqution_bulk_liter_details_requisition_id_key' in msg or ('requisition_id' in msg and 'unique' in msg.lower()):
+                        return Response({
+                            'status': 'error',
+                            'message': (
+                                "Database schema is outdated (unique constraint on requisition_id still exists). "
+                                "Run `python manage.py migrate ena_requisition_details` to apply "
+                                "migration `0006_drop_bulk_liter_requisition_unique`, then retry."
+                            )
+                        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                    raise
+
+                # Keep the original record pending for any remaining permits; delete if empty.
+                if remaining_rows:
+                    detail.tanker_details = remaining_rows
+                    detail.tanker_count = len(remaining_rows)
+                    detail.total_bulk_liter = _sum_bulk_liter(remaining_rows)
+                    detail.approval_status = RequisitionBulkLiterDetail.ApprovalStatus.PENDING
+                    detail.reviewed_at = None
+                    detail.reviewed_by = ''
+                    detail.review_remarks = ''
+                    detail.save(update_fields=[
+                        'tanker_details',
+                        'tanker_count',
+                        'total_bulk_liter',
+                        'approval_status',
+                        'reviewed_at',
+                        'reviewed_by',
+                        'review_remarks',
+                        'updated_at'
+                    ])
+                else:
+                    detail.delete()
+
+                # Update audit to reflect overall review state of the requisition.
+                requisition = getattr(reviewed, 'requisition', None)
+                if requisition is not None:
+                    try:
+                        pending_exists = RequisitionBulkLiterDetail.objects.filter(
+                            requisition=requisition,
+                            approval_status=RequisitionBulkLiterDetail.ApprovalStatus.PENDING
+                        ).exists()
+                        rejected_exists = RequisitionBulkLiterDetail.objects.filter(
+                            requisition=requisition,
+                            approval_status=RequisitionBulkLiterDetail.ApprovalStatus.REJECTED
+                        ).exists()
+                        last_status = (
+                            RequisitionBulkLiterReviewAudit.ReviewStatus.PENDING
+                            if pending_exists
+                            else (
+                                RequisitionBulkLiterReviewAudit.ReviewStatus.REJECTED
+                                if rejected_exists
+                                else RequisitionBulkLiterReviewAudit.ReviewStatus.APPROVED
+                            )
+                        )
+                        RequisitionBulkLiterReviewAudit.objects.update_or_create(
+                            requisition=requisition,
+                            defaults={
+                                'reference_no': reviewed.reference_no,
+                                'licensee_id': reviewed.licensee_id,
+                                'last_status': last_status,
+                                'reviewed_at': reviewed.reviewed_at,
+                                'reviewed_by': reviewed.reviewed_by,
+                                'review_remarks': reviewed.review_remarks
+                            }
+                        )
+                    except Exception:
+                        pass
+
+                return Response({
+                    'status': 'success',
+                    'message': (
+                        f'Permit {permit_no} approved successfully.'
+                        if action == 'APPROVE'
+                        else f'Permit {permit_no} rejected successfully.'
+                    ),
+                    'data': RequisitionBulkLiterDetailSerializer(reviewed).data
+                }, status=status.HTTP_200_OK)
+
+            # Whole-record review (legacy / single-permit submissions).
             detail.approval_status = (
                 RequisitionBulkLiterDetail.ApprovalStatus.APPROVED
                 if action == 'APPROVE'
