@@ -89,13 +89,24 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
                 permit_tokens = [str(i) for i in range(1, count + 1)] if count > 0 else []
             total_permits = len(permit_tokens)
 
-            cancelled_permits = set()
+            cancelled_permits_approved = set()
             try:
-                cancelled_permits = set(self._approved_cancelled_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or ''))
+                cancelled_permits_approved = set(self._approved_cancelled_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or ''))
             except Exception:
-                cancelled_permits = set()
-            if permit_tokens and cancelled_permits:
-                cancelled_permits = {token for token in cancelled_permits if token in set(permit_tokens)}
+                cancelled_permits_approved = set()
+
+            cancel_requested_permits = set()
+            try:
+                cancel_requested_permits = set(self._cancellation_requested_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or ''))
+            except Exception:
+                cancel_requested_permits = set()
+
+            cancelled_permits = set(cancelled_permits_approved or set()).union(set(cancel_requested_permits or set()))
+            if permit_tokens:
+                permitted = set(permit_tokens)
+                cancelled_permits_approved = {token for token in cancelled_permits_approved if token in permitted}
+                cancel_requested_permits = {token for token in cancel_requested_permits if token in permitted}
+                cancelled_permits = {token for token in cancelled_permits if token in permitted}
 
             approved_details = details_qs.filter(approval_status=RequisitionBulkLiterDetail.ApprovalStatus.APPROVED)
             pending_details = details_qs.filter(approval_status=RequisitionBulkLiterDetail.ApprovalStatus.PENDING)
@@ -170,8 +181,10 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
 
             if pending_permits:
                 data['arrival_approval_status'] = 'PENDING'
-            elif total_permits > 0 and (len(approved_permits) + len(cancelled_permits)) == total_permits:
+            elif total_permits > 0 and (len(approved_permits) + len(cancelled_permits_approved)) == total_permits:
                 data['arrival_approval_status'] = 'APPROVED'
+            elif total_permits > 0 and remaining_permits == 0 and len(cancel_requested_permits) > 0:
+                data['arrival_approval_status'] = 'PARTIAL'
             elif len(approved_permits) > 0 and remaining_permits > 0:
                 data['arrival_approval_status'] = 'PARTIAL'
             elif len(rejected_permits) > 0 and len(approved_permits) == 0:
@@ -198,13 +211,24 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
                 permit_tokens = [str(i) for i in range(1, count + 1)] if count > 0 else []
             total_permits = len(permit_tokens)
 
-            cancelled_permits = set()
+            cancelled_permits_approved = set()
             try:
-                cancelled_permits = set(self._approved_cancelled_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or ''))
+                cancelled_permits_approved = set(self._approved_cancelled_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or ''))
             except Exception:
-                cancelled_permits = set()
-            if permit_tokens and cancelled_permits:
-                cancelled_permits = {token for token in cancelled_permits if token in set(permit_tokens)}
+                cancelled_permits_approved = set()
+
+            cancel_requested_permits = set()
+            try:
+                cancel_requested_permits = set(self._cancellation_requested_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or ''))
+            except Exception:
+                cancel_requested_permits = set()
+
+            cancelled_permits = set(cancelled_permits_approved or set()).union(set(cancel_requested_permits or set()))
+            if permit_tokens:
+                permitted = set(permit_tokens)
+                cancelled_permits_approved = {token for token in cancelled_permits_approved if token in permitted}
+                cancel_requested_permits = {token for token in cancel_requested_permits if token in permitted}
+                cancelled_permits = {token for token in cancelled_permits if token in permitted}
 
             remaining = max(0, total_permits - len(cancelled_permits))
 
@@ -685,6 +709,16 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         merged = f"{status_token} {stage_token}"
         return 'approved' in merged and 'commissioner' in merged
 
+    def _is_rejected_cancellation(self, cancellation_obj) -> bool:
+        status_token = self._normalize_stage_token(getattr(cancellation_obj, 'status', ''))
+        stage_name = ''
+        if getattr(cancellation_obj, 'current_stage', None):
+            stage_name = getattr(cancellation_obj.current_stage, 'name', '')
+        stage_token = self._normalize_stage_token(stage_name)
+
+        merged = f"{status_token} {stage_token}"
+        return 'reject' in merged
+
     def _approved_cancelled_permit_numbers_for_requisition(self, requisition_ref_no):
         if not requisition_ref_no:
             return set()
@@ -705,6 +739,29 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
                 approved_numbers.add(token)
 
         return approved_numbers
+
+    def _cancellation_requested_permit_numbers_for_requisition(self, requisition_ref_no):
+        if not requisition_ref_no:
+            return set()
+
+        from models.transactional.supply_chain.ena_cancellation_details.models import EnaCancellationDetail
+
+        rows = EnaCancellationDetail.objects.filter(
+            models.Q(requisition_ref_no=requisition_ref_no) |
+            models.Q(our_ref_no=requisition_ref_no)
+        ).select_related('current_stage')
+
+        requested_numbers = set()
+        for row in rows:
+            if self._is_rejected_cancellation(row):
+                continue
+            if self._is_commissioner_approved_cancellation(row):
+                continue
+            cancelled_raw = getattr(row, 'cancelled_permit_numbers', None) or getattr(row, 'cancelled_permit_number', None) or ''
+            for token in self._parse_permit_tokens(cancelled_raw):
+                requested_numbers.add(token)
+
+        return requested_numbers
 
     def _all_requisition_permit_numbers(self, obj):
         permit_tokens = self._parse_permit_tokens(getattr(obj, 'details_permits_number', ''))

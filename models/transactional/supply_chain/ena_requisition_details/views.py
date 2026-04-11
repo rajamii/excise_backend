@@ -71,6 +71,16 @@ def _is_commissioner_approved_cancellation(cancellation_obj) -> bool:
     return 'approved' in merged and 'commissioner' in merged
 
 
+def _is_rejected_cancellation(cancellation_obj) -> bool:
+    status_token = _normalize_stage_token(getattr(cancellation_obj, 'status', ''))
+    stage_name = ''
+    if getattr(cancellation_obj, 'current_stage', None):
+        stage_name = getattr(cancellation_obj.current_stage, 'name', '')
+    stage_token = _normalize_stage_token(stage_name)
+    merged = f"{status_token} {stage_token}"
+    return 'reject' in merged
+
+
 def _parse_permit_tokens(value: str):
     return [
         str(token).strip()
@@ -102,6 +112,39 @@ def _approved_cancelled_permit_numbers_for_requisition(requisition_ref_no: str):
         for t in _parse_permit_tokens(cancelled_raw):
             approved_numbers.add(t)
     return approved_numbers
+
+
+def _cancellation_requested_permit_numbers_for_requisition(requisition_ref_no: str):
+    """
+    Permits that are currently under ENA cancellation workflow (submitted to commissioner)
+    but not yet commissioner-approved.
+
+    These should be treated as locked in BL Arrival entry until the cancellation is finalized.
+    """
+    token = str(requisition_ref_no or '').strip()
+    if not token:
+        return set()
+
+    try:
+        from models.transactional.supply_chain.ena_cancellation_details.models import EnaCancellationDetail
+    except Exception:
+        return set()
+
+    rows = EnaCancellationDetail.objects.filter(
+        models.Q(requisition_ref_no=token) |
+        models.Q(our_ref_no=token)
+    ).select_related('current_stage')
+
+    requested_numbers = set()
+    for row in rows:
+        if _is_rejected_cancellation(row):
+            continue
+        if _is_commissioner_approved_cancellation(row):
+            continue
+        cancelled_raw = getattr(row, 'cancelled_permit_numbers', None) or getattr(row, 'cancelled_permit_number', None) or ''
+        for t in _parse_permit_tokens(cancelled_raw):
+            requested_numbers.add(t)
+    return requested_numbers
 
 
 def _filter_commissioner_visible_requisitions(user, queryset):
@@ -255,8 +298,17 @@ class RequisitionArrivalBulkLiterDetailAPIView(APIView):
             rows = list(rows_qs)
             if not rows:
                 cancelled = _approved_cancelled_permit_numbers_for_requisition(getattr(requisition, 'our_ref_no', '') or '')
-                if cancelled:
-                    permit_statuses = {str(p).strip(): 'CANCELLED' for p in cancelled if str(p).strip()}
+                cancel_requested = _cancellation_requested_permit_numbers_for_requisition(getattr(requisition, 'our_ref_no', '') or '')
+                if cancelled or cancel_requested:
+                    permit_statuses = {}
+                    for p in (cancel_requested or set()):
+                        token = str(p).strip()
+                        if token:
+                            permit_statuses[token] = 'CANCEL_REQUESTED'
+                    for p in (cancelled or set()):
+                        token = str(p).strip()
+                        if token:
+                            permit_statuses[token] = 'CANCELLED'
                     return Response({
                         'status': 'success',
                         'data': {
@@ -306,6 +358,14 @@ class RequisitionArrivalBulkLiterDetailAPIView(APIView):
                                 pass
                             if permit_no:
                                 permit_statuses[permit_no] = _merge_status(permit_statuses.get(permit_no, ''), status_token)
+
+            # Mark cancellation-requested permits so UI can lock them immediately after request submission.
+            cancel_requested = _cancellation_requested_permit_numbers_for_requisition(getattr(requisition, 'our_ref_no', '') or '')
+            if cancel_requested:
+                for permit_no in cancel_requested:
+                    token = str(permit_no or '').strip()
+                    if token and token not in permit_statuses:
+                        permit_statuses[token] = 'CANCEL_REQUESTED'
 
             # Mark commissioner-approved cancelled permits so UI can lock them.
             cancelled = _approved_cancelled_permit_numbers_for_requisition(getattr(requisition, 'our_ref_no', '') or '')
@@ -405,6 +465,14 @@ class RequisitionArrivalBulkLiterDetailAPIView(APIView):
                         return Response({
                             'status': 'error',
                             'message': f"Permit(s) cancelled: {', '.join(cancelled_overlap)}."
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+                    cancel_requested = _cancellation_requested_permit_numbers_for_requisition(getattr(requisition, 'our_ref_no', '') or '')
+                    cancel_requested_overlap = sorted(incoming_permits.intersection(set(cancel_requested or set())))
+                    if cancel_requested_overlap:
+                        return Response({
+                            'status': 'error',
+                            'message': f"Permit(s) cancellation already requested: {', '.join(cancel_requested_overlap)}."
                         }, status=status.HTTP_400_BAD_REQUEST)
 
                     blocked = set()
