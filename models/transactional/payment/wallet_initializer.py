@@ -19,6 +19,8 @@ SUBCATEGORY_TO_MODULE_TYPE = {
 
 COMMON_EDUCATION_CESS_HOA = "0045-00-112-45-03"
 COMMON_HOLOGRAM_HOA = "0039-00-800-45-01"
+COMMON_SECURITY_DEPOSIT_HOA = "0088-00-888-88-88"
+COMMON_LICENSE_FEE_HOA = "0099-00-999-99-99"
 
 
 HOA_CANDIDATES = {
@@ -26,12 +28,16 @@ HOA_CANDIDATES = {
         "excise": ["0039-00-105-45-01"],
         "education_cess": [COMMON_EDUCATION_CESS_HOA],
         "hologram": [COMMON_HOLOGRAM_HOA],
+        "security_deposit": [COMMON_SECURITY_DEPOSIT_HOA],
+        "license_fee": [COMMON_LICENSE_FEE_HOA],
     },
     "brewery": {
         "excise": ["0038-00-102-45-00"],
         # Same HOA as distillery for these two wallets by business rule.
         "education_cess": [COMMON_EDUCATION_CESS_HOA],
         "hologram": [COMMON_HOLOGRAM_HOA],
+        "security_deposit": [COMMON_SECURITY_DEPOSIT_HOA],
+        "license_fee": [COMMON_LICENSE_FEE_HOA],
     },
 }
 
@@ -40,6 +46,8 @@ WALLET_LABELS = {
     "excise": "Excise / Additional Wallet",
     "education_cess": "Education Cess Wallet",
     "hologram": "Hologram",
+    "security_deposit": "Security Deposit Wallet",
+    "license_fee": "License Fee Wallet",
 }
 
 
@@ -216,7 +224,7 @@ def initialize_wallet_balances_for_license(license_obj) -> None:
     user_id = _build_user_id(license_obj)
     now = timezone.now()
 
-    wallet_types = ["excise", "education_cess", "hologram"]
+    wallet_types = ["excise", "education_cess", "hologram", "security_deposit", "license_fee"]
 
     with transaction.atomic():
         for wallet_type in wallet_types:

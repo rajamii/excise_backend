@@ -346,6 +346,18 @@ def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = 
 #         db_table = "wallet_transaction_history"
 
 
+class PaymentHeadOfAccount(models.Model):
+    head_of_account = models.CharField(max_length=50, primary_key=True)
+    visible_status = models.CharField(max_length=1, default="Y")
+
+    class Meta:
+        managed = False
+        db_table = "eabgari_master_head_of_accounts"
+
+    def __str__(self):
+        return str(self.head_of_account)
+
+
 class WalletBalance(models.Model):
     wallet_balance_id = models.BigAutoField(primary_key=True)
     licensee_id = models.CharField(max_length=50)

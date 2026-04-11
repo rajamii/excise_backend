@@ -21,6 +21,7 @@ from .models import (
     # PaymentWalletMaster,
     WalletBalance,
     WalletTransaction,
+    _resolve_module_type_from_license_id,
 )
 from .serializers import (
     # PaymentBilldeskTransactionSerializer,
@@ -377,13 +378,38 @@ def wallet_recharge_credit(request, licensee_id):
             .first()
         )
         if not wallet:
-            raise serializers.ValidationError(
-                {
-                    "detail": (
-                        "Wallet balance not found for the selected wallet/head-of-account. "
-                        f"wallet_type={wallet_type}, head_of_account={head_of_account}"
-                    )
-                }
+            # Auto-create wallet balance row for existing licenses where initializer didn't run yet.
+            now_ts = timezone.now()
+            template = (
+                WalletBalance.objects.select_for_update()
+                .filter(wallet_filter)
+                .order_by("wallet_balance_id")
+                .first()
+            )
+
+            template_licensee_id = str(getattr(template, "licensee_id", "") or "").strip() if template else ""
+            resolved_licensee_id = template_licensee_id or str(licensee_id or "").strip()
+
+            template_module_type = str(getattr(template, "module_type", "") or "").strip() if template else ""
+            resolved_module_type = template_module_type or _resolve_module_type_from_license_id(
+                resolved_licensee_id,
+                fallback="distillery",
+            )
+
+            wallet = WalletBalance.objects.create(
+                licensee_id=resolved_licensee_id,
+                licensee_name=getattr(template, "licensee_name", "") if template else "",
+                manufacturing_unit=getattr(template, "manufacturing_unit", "") if template else "",
+                user_id=request_user or (getattr(template, "user_id", "") if template else ""),
+                module_type=resolved_module_type or "distillery",
+                wallet_type=wallet_type,
+                head_of_account=head_of_account,
+                opening_balance=Decimal("0.00"),
+                total_credit=Decimal("0.00"),
+                total_debit=Decimal("0.00"),
+                current_balance=Decimal("0.00"),
+                last_updated_at=now_ts,
+                created_at=now_ts,
             )
 
         before = Decimal(str(wallet.current_balance or 0)).quantize(Decimal("0.01"))
