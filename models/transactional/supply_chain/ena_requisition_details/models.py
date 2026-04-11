@@ -61,10 +61,10 @@ class RequisitionBulkLiterDetail(models.Model):
         APPROVED = 'APPROVED', 'Approved'
         REJECTED = 'REJECTED', 'Rejected'
 
-    requisition = models.OneToOneField(
+    requisition = models.ForeignKey(
         EnaRequisitionDetail,
         on_delete=models.CASCADE,
-        related_name='bulk_liter_detail'
+        related_name='bulk_liter_details'
     )
     reference_no = models.CharField(max_length=50, db_index=True)
     licensee_id = models.CharField(max_length=50, blank=True, null=True, db_index=True)

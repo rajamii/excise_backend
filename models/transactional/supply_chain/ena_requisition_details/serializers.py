@@ -65,21 +65,155 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         data['bulk_spirit_type'] = instance.bulk_spirit_type or ''
         data['strength'] = instance.strength or ''
         data['status'] = instance.status or 'PENDING'
+        # Arrival details summary (permit-wise partial approvals supported)
         try:
-            arrival = instance.bulk_liter_detail
+            details_qs = RequisitionBulkLiterDetail.objects.filter(requisition=instance).order_by('-updated_at')
+        except Exception:
+            details_qs = RequisitionBulkLiterDetail.objects.none()
+
+        if details_qs.exists():
             data['has_arrival_details'] = True
-            data['arrival_total_bulk_liter'] = str(arrival.total_bulk_liter or '0')
-            data['arrival_tanker_count'] = int(arrival.tanker_count or 0)
-            data['arrival_approval_status'] = arrival.approval_status or 'PENDING'
-            data['arrival_submitted_at'] = arrival.submitted_at.isoformat() if arrival.submitted_at else None
-            data['arrival_reviewed_at'] = arrival.reviewed_at.isoformat() if arrival.reviewed_at else None
-            data['arrival_reviewed_by'] = arrival.reviewed_by or ''
-            data['arrival_review_remarks'] = arrival.review_remarks or ''
-        except ObjectDoesNotExist:
+
+            # Determine total permits for the requisition.
+            permit_tokens = [
+                str(token).strip()
+                for token in str(getattr(instance, 'details_permits_number', '') or '').split(',')
+                if str(token).strip()
+            ]
+            if not permit_tokens:
+                try:
+                    count = int(getattr(instance, 'requisiton_number_of_permits', 0) or 0)
+                except (TypeError, ValueError):
+                    count = 0
+                count = max(0, count)
+                permit_tokens = [str(i) for i in range(1, count + 1)] if count > 0 else []
+            total_permits = len(permit_tokens)
+
+            cancelled_permits = set()
+            try:
+                cancelled_permits = set(self._approved_cancelled_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or ''))
+            except Exception:
+                cancelled_permits = set()
+            if permit_tokens and cancelled_permits:
+                cancelled_permits = {token for token in cancelled_permits if token in set(permit_tokens)}
+
+            approved_details = details_qs.filter(approval_status=RequisitionBulkLiterDetail.ApprovalStatus.APPROVED)
+            pending_details = details_qs.filter(approval_status=RequisitionBulkLiterDetail.ApprovalStatus.PENDING)
+            rejected_details = details_qs.filter(approval_status=RequisitionBulkLiterDetail.ApprovalStatus.REJECTED)
+
+            def _permits_in_detail(detail_row):
+                tanker_rows = detail_row.tanker_details or []
+                tokens = [
+                    str(item.get('permit_no') or '').strip()
+                    for item in tanker_rows
+                    if isinstance(item, dict) and str(item.get('permit_no') or '').strip()
+                ]
+                if tokens:
+                    return set(tokens)
+                if total_permits and isinstance(tanker_rows, list) and len(tanker_rows) == total_permits:
+                    return set(permit_tokens)
+                return set()
+
+            approved_permits = set()
+            pending_permits = set()
+            rejected_permits = set()
+            for row in approved_details:
+                approved_permits |= _permits_in_detail(row)
+            for row in pending_details:
+                pending_permits |= _permits_in_detail(row)
+            for row in rejected_details:
+                rejected_permits |= _permits_in_detail(row)
+
+            # Remaining permits are those not approved/pending (rejected permits count as remaining to be re-submitted).
+            remaining_permits = max(0, total_permits - len(approved_permits) - len(pending_permits) - len(cancelled_permits))
+
+            approved_total = Decimal('0')
+            approved_tanker_count = 0
+            for row in approved_details:
+                try:
+                    approved_total += Decimal(str(row.total_bulk_liter or '0'))
+                except Exception:
+                    pass
+                try:
+                    approved_tanker_count += int(row.tanker_count or 0)
+                except Exception:
+                    pass
+
+            pending_total = Decimal('0')
+            pending_tanker_count = 0
+            for row in pending_details:
+                try:
+                    pending_total += Decimal(str(row.total_bulk_liter or '0'))
+                except Exception:
+                    pass
+                try:
+                    pending_tanker_count += int(row.tanker_count or 0)
+                except Exception:
+                    pass
+
+            latest_row = details_qs.first()
+            # Inventory total should include APPROVED + PENDING (exclude rejected).
+            inventory_total = (approved_total + pending_total)
+            inventory_tankers = (approved_tanker_count + pending_tanker_count)
+            data['arrival_total_bulk_liter'] = str(inventory_total or '0')
+            data['arrival_tanker_count'] = int(inventory_tankers or 0)
+            data['arrival_total_permits_count'] = total_permits
+            data['arrival_approved_permits_count'] = len(approved_permits)
+            data['arrival_pending_permits_count'] = len(pending_permits)
+            data['arrival_rejected_permits_count'] = len(rejected_permits)
+            data['arrival_cancelled_permits_count'] = len(cancelled_permits)
+            data['arrival_remaining_permits_count'] = remaining_permits
+            data['arrival_submitted_at'] = latest_row.submitted_at.isoformat() if latest_row and latest_row.submitted_at else None
+            data['arrival_reviewed_at'] = latest_row.reviewed_at.isoformat() if latest_row and latest_row.reviewed_at else None
+            data['arrival_reviewed_by'] = latest_row.reviewed_by or '' if latest_row else ''
+            data['arrival_review_remarks'] = latest_row.review_remarks or '' if latest_row else ''
+
+            if pending_permits:
+                data['arrival_approval_status'] = 'PENDING'
+            elif total_permits > 0 and (len(approved_permits) + len(cancelled_permits)) == total_permits:
+                data['arrival_approval_status'] = 'APPROVED'
+            elif len(approved_permits) > 0 and remaining_permits > 0:
+                data['arrival_approval_status'] = 'PARTIAL'
+            elif len(rejected_permits) > 0 and len(approved_permits) == 0:
+                data['arrival_approval_status'] = 'REJECTED'
+            else:
+                data['arrival_approval_status'] = 'PENDING'
+        else:
             data['has_arrival_details'] = False
             data['arrival_total_bulk_liter'] = '0'
             data['arrival_tanker_count'] = 0
             data['arrival_approval_status'] = ''
+
+            permit_tokens = [
+                str(token).strip()
+                for token in str(getattr(instance, 'details_permits_number', '') or '').split(',')
+                if str(token).strip()
+            ]
+            if not permit_tokens:
+                try:
+                    count = int(getattr(instance, 'requisiton_number_of_permits', 0) or 0)
+                except (TypeError, ValueError):
+                    count = 0
+                count = max(0, count)
+                permit_tokens = [str(i) for i in range(1, count + 1)] if count > 0 else []
+            total_permits = len(permit_tokens)
+
+            cancelled_permits = set()
+            try:
+                cancelled_permits = set(self._approved_cancelled_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or ''))
+            except Exception:
+                cancelled_permits = set()
+            if permit_tokens and cancelled_permits:
+                cancelled_permits = {token for token in cancelled_permits if token in set(permit_tokens)}
+
+            remaining = max(0, total_permits - len(cancelled_permits))
+
+            data['arrival_total_permits_count'] = total_permits
+            data['arrival_approved_permits_count'] = 0
+            data['arrival_pending_permits_count'] = 0
+            data['arrival_rejected_permits_count'] = 0
+            data['arrival_cancelled_permits_count'] = len(cancelled_permits)
+            data['arrival_remaining_permits_count'] = remaining
             data['arrival_submitted_at'] = None
             data['arrival_reviewed_at'] = None
             data['arrival_reviewed_by'] = ''
@@ -819,6 +953,7 @@ class RequisitionBulkLiterDetailSerializer(serializers.ModelSerializer):
         normalized_rows = []
         total_bulk_liter = Decimal('0')
 
+        expected_by_permit = {}
         requisition = attrs.get('requisition') or getattr(self.instance, 'requisition', None)
         requested_total_bl = Decimal('0')
         permit_tokens = []
@@ -841,7 +976,6 @@ class RequisitionBulkLiterDetailSerializer(serializers.ModelSerializer):
                     permit_tokens = [str(i) for i in range(1, permit_count + 1)]
             permit_count = len(permit_tokens)
 
-        expected_by_permit = {}
         if permit_count > 0 and requested_total_bl > 0:
             base = (requested_total_bl / Decimal(str(permit_count))).quantize(Decimal('0.01'), rounding=ROUND_DOWN)
             remainder = (requested_total_bl - (base * Decimal(str(permit_count - 1)))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
@@ -907,16 +1041,11 @@ class RequisitionBulkLiterDetailSerializer(serializers.ModelSerializer):
             })
 
         if permit_count > 0 and requested_total_bl > 0:
-            missing = [token for token in permit_tokens if sum_by_permit.get(token, Decimal('0')) <= 0]
-            if missing:
-                raise serializers.ValidationError({
-                    'tanker_details': f"Missing tanker entries for permit(s): {', '.join(missing)}."
-                })
-
+            # Partial submissions allowed: validate only the permits present in this payload.
             mismatched = []
-            for token in permit_tokens:
+            for token, total in sum_by_permit.items():
                 expected = expected_by_permit.get(token, Decimal('0'))
-                got = sum_by_permit.get(token, Decimal('0')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+                got = total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
                 if expected > 0 and got != expected:
                     mismatched.append(f"{token} (expected {expected}, got {got})")
             if mismatched:
@@ -928,14 +1057,6 @@ class RequisitionBulkLiterDetailSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'tanker_details': (
                     f"Total bulk liter ({total_bulk_liter}) cannot exceed requisition total quantity "
-                    f"({requested_total_bl})."
-                )
-            })
-
-        if requested_total_bl > 0 and total_bulk_liter != requested_total_bl:
-            raise serializers.ValidationError({
-                'tanker_details': (
-                    f"Total bulk liter ({total_bulk_liter}) must exactly match requisition total quantity "
                     f"({requested_total_bl})."
                 )
             })
