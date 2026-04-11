@@ -9,6 +9,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework import serializers
 
 from .models import (
     # PaymentBilldeskTransaction,
@@ -31,6 +32,7 @@ from .serializers import (
     # PaymentStatusUpdateSerializer,
     # PaymentWalletMasterSerializer,
     WalletBalanceSerializer,
+    WalletRechargeCreditSerializer,
     WalletTransactionSerializer,
 )
 
@@ -293,6 +295,135 @@ def wallet_history_list(request, licensee_id):
             "count": len(qs),
             "results": WalletTransactionSerializer(qs, many=True).data,
         }
+    )
+
+
+def _normalize_wallet_type(wallet_type: str) -> str:
+    value = str(wallet_type or "").strip().lower()
+    if value in {"education", "educationcess", "education_cess", "education-cess"}:
+        return "education_cess"
+    return value
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def wallet_recharge_credit(request, licensee_id):
+    """
+    Dummy wallet recharge endpoint (testing only).
+
+    Credits the selected wallet balance and inserts a row in wallet_transactions.
+    The `transaction_id` provided by the frontend (Payment Details) is persisted as-is.
+    """
+
+    serializer = WalletRechargeCreditSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    data = serializer.validated_data
+    request_user = str(getattr(request.user, "username", "") or "").strip()
+    transaction_id = str(data["transaction_id"]).strip()
+    wallet_type = _normalize_wallet_type(data["wallet_type"])
+    head_of_account = str(data["head_of_account"]).strip()
+    amount = Decimal(str(data["amount"])).quantize(Decimal("0.01"))
+    remarks = str(data.get("remarks") or "").strip() or "Dummy wallet recharge credited (testing)."
+
+    if not transaction_id:
+        return Response({"detail": "transaction_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not wallet_type:
+        return Response({"detail": "wallet_type is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not head_of_account:
+        return Response({"detail": "head_of_account is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Idempotency: avoid double credit when user clicks twice / retries.
+    existing = WalletTransaction.objects.filter(
+        transaction_id=transaction_id,
+        transaction_type__iexact="recharge",
+        entry_type__iexact="CR",
+    ).order_by("-wallet_transaction_id").first()
+    if existing:
+        return Response(
+            {
+                "status": "ok",
+                "already_processed": True,
+                "wallet_transaction": WalletTransactionSerializer(existing).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    candidates = _wallet_license_candidates(licensee_id)
+    try:
+        profile = getattr(request.user, "supply_chain_profile", None)
+        profile_licensee_id = str(getattr(profile, "licensee_id", "") or "").strip()
+        if profile_licensee_id:
+            candidates.extend(_wallet_license_candidates(profile_licensee_id))
+    except Exception:
+        pass
+    if not candidates:
+        candidates = [str(licensee_id or "").strip()]
+    seen = set()
+    candidates = [c for c in candidates if c and not (c in seen or seen.add(c))]
+
+    wallet_filter = Q(licensee_id__in=candidates)
+    if request_user:
+        wallet_filter |= Q(user_id__iexact=request_user)
+
+    with transaction.atomic():
+        wallet = (
+            WalletBalance.objects.select_for_update()
+            .filter(wallet_filter, wallet_type__iexact=wallet_type, head_of_account=head_of_account)
+            .order_by("wallet_balance_id")
+            .first()
+        )
+        if not wallet:
+            raise serializers.ValidationError(
+                {
+                    "detail": (
+                        "Wallet balance not found for the selected wallet/head-of-account. "
+                        f"wallet_type={wallet_type}, head_of_account={head_of_account}"
+                    )
+                }
+            )
+
+        before = Decimal(str(wallet.current_balance or 0)).quantize(Decimal("0.01"))
+        after = (before + amount).quantize(Decimal("0.01"))
+        now_ts = timezone.now()
+
+        wallet.current_balance = after
+        wallet.total_credit = (Decimal(str(wallet.total_credit or 0)) + amount).quantize(Decimal("0.01"))
+        wallet.last_updated_at = now_ts
+        wallet.save(update_fields=["current_balance", "total_credit", "last_updated_at"])
+
+        created = WalletTransaction.objects.create(
+            wallet_balance=wallet,
+            transaction_id=transaction_id,
+            licensee_id=str(wallet.licensee_id or licensee_id),
+            licensee_name=wallet.licensee_name,
+            user_id=request_user or str(wallet.user_id or ""),
+            module_type=str(wallet.module_type or ""),
+            wallet_type=str(wallet.wallet_type or wallet_type),
+            head_of_account=str(wallet.head_of_account or head_of_account),
+            entry_type="CR",
+            transaction_type="recharge",
+            amount=amount,
+            balance_before=before,
+            balance_after=after,
+            reference_no=transaction_id,
+            source_module="wallet_recharge_dummy",
+            payment_status="success",
+            remarks=remarks,
+            created_at=now_ts,
+        )
+
+    return Response(
+        {
+            "status": "ok",
+            "already_processed": False,
+            "wallet_transaction": WalletTransactionSerializer(created).data,
+            "wallet_balance": WalletBalanceSerializer(wallet).data,
+        },
+        status=status.HTTP_201_CREATED,
     )
 
 

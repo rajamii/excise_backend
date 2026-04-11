@@ -1,6 +1,11 @@
 from django.urls import path
 
-from .views import wallet_summary, wallet_recharge_list, wallet_history_list
+from .views import (
+    wallet_history_list,
+    wallet_recharge_credit,
+    wallet_recharge_list,
+    wallet_summary,
+)
 
 app_name = "payment"
 
@@ -12,6 +17,11 @@ urlpatterns = [
     # so wallet routes must use <path:...>.
     # Keep specific routes above generic wallet-balance route.
     path("wallet/<path:licensee_id>/summary/", wallet_summary, name="wallet-summary"),
+    path(
+        "wallet/<path:licensee_id>/recharge/credit/",
+        wallet_recharge_credit,
+        name="wallet-recharge-credit",
+    ),
     path("wallet/<path:licensee_id>/recharge/", wallet_recharge_list, name="wallet-recharge-list"),
     path("wallet/<path:licensee_id>/history/", wallet_history_list, name="wallet-history-list"),
     # path("wallet/<path:licensee_id>/", views.payment_wallet_balance, name="wallet-balance"),
