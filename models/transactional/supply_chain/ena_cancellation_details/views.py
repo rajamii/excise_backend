@@ -27,9 +27,10 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     CANCELLATION_FEE_AMOUNT = Decimal('1000.00')
 
     def _resolve_cancellation_amount(self, cancellation) -> Decimal:
-        amount = Decimal(str(getattr(cancellation, 'total_cancellation_amount', 0) or 0))
+        # cancellation_br_amount stores the fee debit; total_cancellation_amount stores the refund credit.
+        amount = Decimal(str(getattr(cancellation, 'cancellation_br_amount', 0) or 0))
         if amount <= 0:
-            amount = Decimal(str(getattr(cancellation, 'cancellation_br_amount', 0) or 0))
+            amount = Decimal(str(getattr(cancellation, 'total_cancellation_amount', 0) or 0))
 
         if amount > 0:
             return amount
@@ -52,20 +53,52 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
         return Decimal('0')
 
+    def _resolve_requisition_total_payment_amount(self, requisition) -> Decimal:
+        try:
+            total_bl = Decimal(str(getattr(requisition, 'totalbl', '0') or '0'))
+        except Exception:
+            total_bl = Decimal('0')
+        if total_bl <= 0:
+            return Decimal('0')
+
+        spirit_kind = str(getattr(requisition, 'bulk_spirit_type', '') or '').strip()
+        strength = str(getattr(requisition, 'strength', '') or '').strip()
+        if not spirit_kind:
+            return Decimal('0')
+
+        try:
+            from models.masters.supply_chain.bulk_spirit.models import BulkSpiritType
+
+            qs = BulkSpiritType.objects.filter(
+                bulk_spirit_kind_type__iexact=spirit_kind
+            )
+            if strength:
+                qs = qs.filter(strength__iexact=strength)
+            row = qs.order_by('sprit_id').first()
+            if row and row.price_bl is not None:
+                amount = Decimal(str(row.price_bl or 0)) * total_bl
+                return amount.quantize(Decimal('0.01'))
+        except Exception:
+            pass
+
+        return Decimal('0')
+
     def _try_auto_sync_wallet_debit(self, cancellation, user):
         try:
             if self._is_rejected_cancellation(cancellation):
                 return
 
-            amount = self._resolve_cancellation_amount(cancellation)
-            if amount <= 0:
+            fee_amount = self._resolve_cancellation_amount(cancellation)
+            refund_amount = self._resolve_permit_refund_amount(cancellation)
+            if fee_amount <= 0 and refund_amount <= 0:
                 return
 
             with transaction.atomic():
-                self._debit_wallet_for_cancellation_submission(
+                self._apply_wallet_refund_and_fee_for_cancellation_submission(
                     cancellation=cancellation,
                     user=user,
-                    amount=amount,
+                    refund_amount=refund_amount,
+                    fee_amount=fee_amount,
                 )
         except Exception:
             logger.exception(
@@ -189,6 +222,8 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         return ordered
 
     def _debit_wallet_for_cancellation_submission(self, cancellation, user, amount):
+        # Backward-compatible wrapper retained for older callers.
+        # New logic uses _apply_wallet_refund_and_fee_for_cancellation_submission.
         from models.transactional.payment.models import WalletBalance, WalletTransaction
 
         amount_decimal = Decimal(str(amount or 0))
@@ -307,6 +342,222 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             'reference_no': reference_no,
         }
 
+    def _resolve_permit_refund_amount(self, cancellation) -> Decimal:
+        """
+        Amount to be refunded back to wallet when cancellation is requested.
+        Stored on the cancellation row as the total refund across selected permits.
+        """
+        amount = Decimal(str(getattr(cancellation, 'total_cancellation_amount', 0) or 0))
+        if amount > 0:
+            return amount.quantize(Decimal('0.01'))
+        return Decimal('0')
+
+    def _apply_wallet_refund_and_fee_for_cancellation_submission(
+        self,
+        cancellation,
+        user,
+        refund_amount: Decimal,
+        fee_amount: Decimal,
+    ):
+        """
+        Apply both wallet operations atomically (idempotent):
+        - Refund (credit) selected permit amount back to wallet
+        - Deduct (debit) cancellation fee
+        """
+        from models.transactional.payment.models import WalletBalance, WalletTransaction
+
+        refund_amount = Decimal(str(refund_amount or 0)).quantize(Decimal('0.01'))
+        fee_amount = Decimal(str(fee_amount or 0)).quantize(Decimal('0.01'))
+
+        reference_no = str(getattr(cancellation, 'our_ref_no', '') or f"CAN-{cancellation.pk}")
+        refund_txn_id = f"CAN-{cancellation.pk}-REFUND"
+        fee_txn_id = f"CAN-{cancellation.pk}-FEE"
+        legacy_fee_txn_id = f"CAN-{cancellation.pk}-PAYMENT"
+
+        candidates = self._resolve_wallet_license_candidates(cancellation, user)
+        if not candidates:
+            raise ValueError("Unable to resolve license id for wallet operation.")
+
+        wallet = None
+        resolved_license_id = ''
+
+        for cid in candidates:
+            wallet = (
+                WalletBalance.objects.select_for_update()
+                .filter(licensee_id=cid, wallet_type__iexact='excise')
+                .order_by('wallet_balance_id')
+                .first()
+            )
+            if wallet:
+                resolved_license_id = cid
+                break
+
+        if not wallet:
+            for cid in candidates:
+                wallet = (
+                    WalletBalance.objects.select_for_update()
+                    .filter(licensee_id=cid, wallet_type__iexact='brewery')
+                    .order_by('wallet_balance_id')
+                    .first()
+                )
+                if wallet:
+                    resolved_license_id = cid
+                    break
+
+        if not wallet:
+            raise ValueError(
+                f"Wallet not found for license id. Tried: {', '.join(candidates)}"
+            )
+
+        existing_refund = (
+            WalletTransaction.objects.filter(
+                transaction_id=refund_txn_id,
+                entry_type='CR',
+                source_module='ena_cancellation',
+                reference_no=reference_no,
+            )
+            .order_by('-created_at', '-wallet_transaction_id')
+            .first()
+        )
+
+        existing_fee = (
+            WalletTransaction.objects.filter(
+                entry_type='DR',
+                source_module='ena_cancellation',
+                reference_no=reference_no,
+                transaction_id__in=[fee_txn_id, legacy_fee_txn_id],
+            )
+            .order_by('-created_at', '-wallet_transaction_id')
+            .first()
+        )
+
+        now_ts = timezone.now()
+        starting_balance = Decimal(str(wallet.current_balance or 0)).quantize(Decimal('0.01'))
+        current_balance = starting_balance
+        total_credit = Decimal(str(wallet.total_credit or 0)).quantize(Decimal('0.01'))
+        total_debit = Decimal(str(wallet.total_debit or 0)).quantize(Decimal('0.01'))
+
+        refund_result = None
+        fee_result = None
+
+        if existing_refund:
+            refund_result = {
+                'credited': False,
+                'reason': 'already_credited',
+                'transaction_id': str(existing_refund.transaction_id or refund_txn_id),
+                'reference_no': reference_no,
+                'licensee_id': str(getattr(existing_refund, 'licensee_id', '') or ''),
+                'wallet_type': str(getattr(existing_refund, 'wallet_type', '') or ''),
+                'amount': str(getattr(existing_refund, 'amount', '') or ''),
+                'balance_before': str(getattr(existing_refund, 'balance_before', '') or ''),
+                'balance_after': str(getattr(existing_refund, 'balance_after', '') or ''),
+            }
+        elif refund_amount > 0:
+            after = (current_balance + refund_amount).quantize(Decimal('0.01'))
+            WalletTransaction.objects.create(
+                wallet_balance=wallet,
+                transaction_id=refund_txn_id,
+                licensee_id=resolved_license_id,
+                licensee_name=wallet.licensee_name,
+                user_id=str(getattr(user, 'username', '') or wallet.user_id or ''),
+                module_type=wallet.module_type,
+                wallet_type=wallet.wallet_type,
+                head_of_account=wallet.head_of_account,
+                entry_type='CR',
+                transaction_type='refund',
+                amount=refund_amount,
+                balance_before=current_balance,
+                balance_after=after,
+                reference_no=reference_no,
+                source_module='ena_cancellation',
+                payment_status='refunded',
+                remarks='Permit amount refund on cancellation submission',
+                created_at=now_ts,
+            )
+            total_credit = (total_credit + refund_amount).quantize(Decimal('0.01'))
+            current_balance = after
+            refund_result = {
+                'credited': True,
+                'licensee_id': resolved_license_id,
+                'wallet_type': wallet.wallet_type,
+                'amount': str(refund_amount),
+                'balance_before': str((after - refund_amount).quantize(Decimal('0.01'))),
+                'balance_after': str(after),
+                'transaction_id': refund_txn_id,
+                'reference_no': reference_no,
+            }
+        else:
+            refund_result = {'credited': False, 'reason': 'zero_amount'}
+
+        if existing_fee:
+            fee_result = {
+                'debited': False,
+                'reason': 'already_debited',
+                'transaction_id': str(existing_fee.transaction_id or fee_txn_id),
+                'reference_no': reference_no,
+                'licensee_id': str(getattr(existing_fee, 'licensee_id', '') or ''),
+                'wallet_type': str(getattr(existing_fee, 'wallet_type', '') or ''),
+                'amount': str(getattr(existing_fee, 'amount', '') or ''),
+                'balance_before': str(getattr(existing_fee, 'balance_before', '') or ''),
+                'balance_after': str(getattr(existing_fee, 'balance_after', '') or ''),
+            }
+        elif fee_amount > 0:
+            if current_balance < fee_amount:
+                raise ValueError(
+                    f"Insufficient wallet balance. Available: {current_balance}, Required: {fee_amount}"
+                )
+            after = (current_balance - fee_amount).quantize(Decimal('0.01'))
+            WalletTransaction.objects.create(
+                wallet_balance=wallet,
+                transaction_id=fee_txn_id,
+                licensee_id=resolved_license_id,
+                licensee_name=wallet.licensee_name,
+                user_id=str(getattr(user, 'username', '') or wallet.user_id or ''),
+                module_type=wallet.module_type,
+                wallet_type=wallet.wallet_type,
+                head_of_account=wallet.head_of_account,
+                entry_type='DR',
+                transaction_type='debit',
+                amount=fee_amount,
+                balance_before=current_balance,
+                balance_after=after,
+                reference_no=reference_no,
+                source_module='ena_cancellation',
+                payment_status='success',
+                remarks='Cancellation fee debit',
+                created_at=now_ts,
+            )
+            total_debit = (total_debit + fee_amount).quantize(Decimal('0.01'))
+            current_balance = after
+            fee_result = {
+                'debited': True,
+                'licensee_id': resolved_license_id,
+                'wallet_type': wallet.wallet_type,
+                'amount': str(fee_amount),
+                'balance_before': str((after + fee_amount).quantize(Decimal('0.01'))),
+                'balance_after': str(after),
+                'transaction_id': fee_txn_id,
+                'reference_no': reference_no,
+            }
+        else:
+            fee_result = {'debited': False, 'reason': 'zero_amount'}
+
+        wallet.current_balance = current_balance
+        wallet.total_credit = total_credit
+        wallet.total_debit = total_debit
+        wallet.last_updated_at = now_ts
+        wallet.save(update_fields=['current_balance', 'total_credit', 'total_debit', 'last_updated_at'])
+
+        return {
+            'licensee_id': resolved_license_id,
+            'wallet_type': wallet.wallet_type,
+            'reference_no': reference_no,
+            'balance_before': str(starting_balance),
+            'balance_after': str(current_balance),
+            'refund': refund_result,
+            'fee': fee_result,
+        }
+
     def get_queryset(self):
         """
         Optionally restricts the returned cancellations by filtering against
@@ -420,9 +671,29 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                     'duplicate_permits': duplicate_permits
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Charge per selected permit, so wallet deduction matches the UI selection.
-            total_amount = self.CANCELLATION_FEE_AMOUNT * Decimal(len(normalized_permit_numbers))
-            logger.debug("ENA cancellation submit: total_amount=%s", total_amount)
+            # Cancellation fee is fixed per permit, while refund comes from the requisition's
+            # actual payment amount split evenly across its permits.
+            permit_count = Decimal(len(normalized_permit_numbers))
+            cancellation_fee_amount = (self.CANCELLATION_FEE_AMOUNT * permit_count).quantize(Decimal('0.01'))
+            total_requisition_payment_amount = self._resolve_requisition_total_payment_amount(req)
+            requisition_permit_count = Decimal(str(getattr(req, 'requisiton_number_of_permits', 0) or 0))
+            if requisition_permit_count <= 0:
+                requisition_permit_count = permit_count
+
+            per_permit_refund_amount = Decimal('0.00')
+            if total_requisition_payment_amount > 0 and requisition_permit_count > 0:
+                per_permit_refund_amount = (
+                    total_requisition_payment_amount / requisition_permit_count
+                ).quantize(Decimal('0.01'))
+
+            permit_refund_amount = (per_permit_refund_amount * permit_count).quantize(Decimal('0.01'))
+            logger.debug(
+                "ENA cancellation submit: fee=%s refund=%s per_permit_refund=%s permits=%s",
+                cancellation_fee_amount,
+                permit_refund_amount,
+                per_permit_refund_amount,
+                len(normalized_permit_numbers),
+            )
             license_id = str(licensee_id or '').strip()
             if not license_id:
                 license_id = str(getattr(req, 'licensee_id', '') or '').strip()
@@ -482,10 +753,12 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                     govt_officer="N/A",
                     state=req.state,
                     cancellation_date=timezone.now(),
-                    cancellation_br_amount=Decimal(str(total_amount)),
+                    # cancellation_br_amount = cancellation fee debit
+                    cancellation_br_amount=Decimal(str(cancellation_fee_amount)),
                     cancelled_permit_number=",".join(normalized_permit_numbers),
                     cancelled_permit_numbers=",".join(normalized_permit_numbers),
-                    total_cancellation_amount=Decimal(str(total_amount)),
+                    # total_cancellation_amount = total permit amount refunded
+                    total_cancellation_amount=Decimal(str(permit_refund_amount)),
                     permit_nocount=str(len(normalized_permit_numbers)),
                     licensee_id=licensee_id,
                     license_id=license_id,
@@ -497,17 +770,22 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                     getattr(req, "details_permits_number", None),
                 )
                 cancellation.save()
-                wallet_result = self._debit_wallet_for_cancellation_submission(
+                wallet_effects = self._apply_wallet_refund_and_fee_for_cancellation_submission(
                     cancellation=cancellation,
                     user=request.user,
-                    amount=Decimal(str(total_amount))
+                    refund_amount=permit_refund_amount,
+                    fee_amount=cancellation_fee_amount,
                 )
             logger.info("ENA cancellation submitted successfully (id=%s)", cancellation.id)
             
             response_payload = {
                 'message': 'Cancellation request submitted successfully!',
                 'id': cancellation.id,
-                'wallet_deduction': wallet_result
+                # Backward-compatible keys
+                'wallet_deduction': wallet_effects.get('fee'),
+                'wallet_refund': wallet_effects.get('refund'),
+                # New structured payload
+                'wallet_effects': wallet_effects,
             }
             return Response(response_payload, status=status.HTTP_201_CREATED)
 
@@ -640,13 +918,15 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                             'error': f'Invalid action {action_type} at stage {cancellation.current_stage.name}'
                         }, status=status.HTTP_400_BAD_REQUEST)
 
-                    # Deduct wallet on licensee pay action (SubmitPayslip) if not already deducted.
+                    # Apply wallet effects on licensee pay action (SubmitPayslip) if not already applied.
                     if normalized_action in ['submitpayslip', 'payslip', 'pay', 'payment']:
-                        amount = Decimal(str(getattr(cancellation, 'total_cancellation_amount', 0) or 0))
-                        wallet_result = self._debit_wallet_for_cancellation_submission(
+                        fee_amount = self._resolve_cancellation_amount(cancellation)
+                        refund_amount = self._resolve_permit_refund_amount(cancellation)
+                        wallet_effects = self._apply_wallet_refund_and_fee_for_cancellation_submission(
                             cancellation=cancellation,
                             user=user,
-                            amount=amount,
+                            refund_amount=refund_amount,
+                            fee_amount=fee_amount,
                         )
 
                     # Use values from the matching transition condition to ensure validation passes
@@ -670,8 +950,10 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                     'new_status': cancellation.status,
                     'new_status_code': cancellation.status_code
                 }
-                if wallet_result is not None:
-                    response['wallet_deduction'] = wallet_result
+                if 'wallet_effects' in locals() and wallet_effects is not None:
+                    response['wallet_deduction'] = wallet_effects.get('fee')
+                    response['wallet_refund'] = wallet_effects.get('refund')
+                    response['wallet_effects'] = wallet_effects
                 return Response(response)
 
             except ValueError as e:
@@ -696,19 +978,23 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             if not has_workflow_access(user, WORKFLOW_IDS['ENA_CANCELLATION']) and not hasattr(user, 'supply_chain_profile'):
                 return Response({'error': 'Unauthorized role for this workflow'}, status=status.HTTP_403_FORBIDDEN)
 
-            amount = self._resolve_cancellation_amount(cancellation)
+            fee_amount = self._resolve_cancellation_amount(cancellation)
+            refund_amount = self._resolve_permit_refund_amount(cancellation)
 
             with transaction.atomic():
-                wallet_result = self._debit_wallet_for_cancellation_submission(
+                wallet_effects = self._apply_wallet_refund_and_fee_for_cancellation_submission(
                     cancellation=cancellation,
                     user=user,
-                    amount=amount,
+                    refund_amount=refund_amount,
+                    fee_amount=fee_amount,
                 )
 
             return Response(
                 {
                     'message': 'Wallet debit sync completed.',
-                    'wallet_deduction': wallet_result,
+                    'wallet_deduction': wallet_effects.get('fee'),
+                    'wallet_refund': wallet_effects.get('refund'),
+                    'wallet_effects': wallet_effects,
                     'cancellation_ref': getattr(cancellation, 'our_ref_no', ''),
                 },
                 status=status.HTTP_200_OK,
