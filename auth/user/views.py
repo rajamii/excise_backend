@@ -742,7 +742,7 @@ class UserDeleteView(generics.DestroyAPIView):
             }
         )
 
-        self.perform_destroy(instance)
+        self._soft_delete_user(instance)
         return Response({'message': 'User deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
 
 
