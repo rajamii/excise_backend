@@ -393,7 +393,7 @@ def wallet_recharge_credit(request, licensee_id):
             template_module_type = str(getattr(template, "module_type", "") or "").strip() if template else ""
             resolved_module_type = template_module_type or _resolve_module_type_from_license_id(
                 resolved_licensee_id,
-                fallback="distillery",
+                fallback="other",
             )
 
             wallet = WalletBalance.objects.create(
