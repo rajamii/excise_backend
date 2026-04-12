@@ -39,7 +39,181 @@ def _resolve_approved_license_id(raw_value: str) -> str:
         if hit and hit.license_id:
             return str(hit.license_id).strip()
 
+    # Applicant username (e.g. legacy wallet rows keyed by user id) → latest active new license.
+    try:
+        from auth.user.models import CustomUser
+    except Exception:
+        CustomUser = None
+    if CustomUser:
+        user = CustomUser.objects.filter(username__iexact=value).first()
+        if user:
+            hit = (
+                active_qs.filter(applicant=user, license_id__istartswith="NA/")
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+            hit = (
+                active_qs.filter(applicant=user, source_type="new_license_application")
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+
+    # Legacy supply-chain profile / unit stored a non-NA id (e.g. TH...) before license was issued.
+    try:
+        from models.masters.supply_chain.profile.models import (
+            SupplyChainUserProfile,
+            UserManufacturingUnit,
+        )
+    except Exception:
+        SupplyChainUserProfile = None
+        UserManufacturingUnit = None
+
+    if SupplyChainUserProfile:
+        prof = (
+            SupplyChainUserProfile.objects.filter(licensee_id=value)
+            .select_related("user")
+            .first()
+        )
+        if prof and getattr(prof, "user_id", None):
+            hit = (
+                active_qs.filter(
+                    applicant_id=prof.user_id,
+                    license_id__istartswith="NA/",
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+            hit = (
+                active_qs.filter(
+                    applicant_id=prof.user_id, source_type="new_license_application"
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+
+    if UserManufacturingUnit:
+        unit = (
+            UserManufacturingUnit.objects.filter(licensee_id=value)
+            .select_related("user")
+            .first()
+        )
+        if unit and getattr(unit, "user_id", None):
+            hit = (
+                active_qs.filter(
+                    applicant_id=unit.user_id,
+                    license_id__istartswith="NA/",
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+            hit = (
+                active_qs.filter(
+                    applicant_id=unit.user_id, source_type="new_license_application"
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+
+    # Direct match: wallet row used applicant username (TH...) but profile was later updated to NA/...
+    # so SupplyChainUserProfile no longer has licensee_id=TH. Join License.applicant.username.
+    if CustomUser and "/" not in value:
+        hit = (
+            License.objects.filter(
+                applicant__username__iexact=value,
+                is_active=True,
+                license_id__istartswith="NA/",
+            )
+            .order_by("-issue_date", "-license_id")
+            .first()
+        )
+        if hit and hit.license_id:
+            return str(hit.license_id).strip()
+        hit = (
+            License.objects.filter(
+                source_type="new_license_application",
+                applicant__username__iexact=value,
+            )
+            .order_by("-is_active", "-issue_date", "-license_id")
+            .first()
+        )
+        if hit and hit.license_id:
+            return str(hit.license_id).strip()
+
+    # Numeric primary key passed instead of username (some clients send user id).
+    if CustomUser and value.isdigit():
+        hit = (
+            active_qs.filter(
+                applicant_id=int(value),
+                license_id__istartswith="NA/",
+            )
+            .order_by("-issue_date", "-license_id")
+            .first()
+        )
+        if hit and hit.license_id:
+            return str(hit.license_id).strip()
+        hit = (
+            active_qs.filter(
+                applicant_id=int(value),
+                source_type="new_license_application",
+            )
+            .order_by("-issue_date", "-license_id")
+            .first()
+        )
+        if hit and hit.license_id:
+            return str(hit.license_id).strip()
+
+    # Last resort: include inactive licenses for the same applicant + username.
+    if CustomUser and "/" not in value:
+        user = CustomUser.objects.filter(username__iexact=value).first()
+        if user:
+            hit = (
+                License.objects.filter(
+                    applicant=user,
+                    license_id__istartswith="NA/",
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+            hit = (
+                License.objects.filter(
+                    applicant=user, source_type="new_license_application"
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+
     return value
+
+
+def _resolve_wallet_row_licensee_id(licensee_id: str, user_id: str = "") -> str:
+    """
+    Resolve licensee_id for a wallet row: try licensee_id, then user_id (often same as username).
+    """
+    raw_lic = str(licensee_id or "").strip()
+    raw_uid = str(user_id or "").strip()
+    for candidate in (raw_lic, raw_uid):
+        if not candidate:
+            continue
+        resolved = _resolve_approved_license_id(candidate)
+        if resolved and "/" in resolved:
+            return resolved
+    return _resolve_approved_license_id(raw_lic) or raw_lic
 
 def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = "") -> str:
     value = str(license_id_value or "").strip()
@@ -378,6 +552,32 @@ class WalletBalance(models.Model):
         managed = False
         db_table = "wallet_balances"
 
+    def save(self, *args, **kwargs):
+        """
+        Always persist wallet rows under the canonical issued license_id (NA/...), not legacy
+        username or profile codes (TH..., etc.). Uses user_id when licensee_id alone cannot map
+        (e.g. profile already updated to NA/...).
+        """
+        merged = _resolve_wallet_row_licensee_id(
+            self.licensee_id,
+            getattr(self, "user_id", "") or "",
+        )
+        if merged:
+            self.licensee_id = merged
+        self.module_type = _resolve_module_type_from_license_id(
+            self.licensee_id,
+            fallback=self.module_type or "other",
+        )
+        # Partial updates (e.g. only balances) must still persist normalized licensee_id/module_type.
+        uf = kwargs.get("update_fields")
+        if uf is not None:
+            uf = list(uf)
+            for name in ("licensee_id", "module_type"):
+                if name not in uf:
+                    uf.append(name)
+            kwargs["update_fields"] = uf
+        super().save(*args, **kwargs)
+
 
 class WalletTransaction(models.Model):
     wallet_transaction_id = models.BigAutoField(primary_key=True)
@@ -410,9 +610,19 @@ class WalletTransaction(models.Model):
         db_table = "wallet_transactions"
 
     def save(self, *args, **kwargs):
-        self.licensee_id = _resolve_approved_license_id(self.licensee_id)
+        self.licensee_id = _resolve_wallet_row_licensee_id(
+            self.licensee_id,
+            getattr(self, "user_id", "") or "",
+        )
         self.module_type = _resolve_module_type_from_license_id(
             self.licensee_id,
             fallback=self.module_type
         )
+        uf = kwargs.get("update_fields")
+        if uf is not None:
+            uf = list(uf)
+            for name in ("licensee_id", "module_type"):
+                if name not in uf:
+                    uf.append(name)
+            kwargs["update_fields"] = uf
         super().save(*args, **kwargs)

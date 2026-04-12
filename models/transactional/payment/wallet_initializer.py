@@ -214,6 +214,14 @@ def _build_user_id(license_obj) -> str:
 
 
 def initialize_wallet_balances_for_license(license_obj) -> None:
+    """
+    Create one wallet_balances row per wallet type for this license (all balances 0.00).
+
+    Called when the issued License row exists (e.g. commissioner approval and/or
+    `awaiting_payment` / "Awaiting License Fee Payment" for new license applications).
+    `licensee_id` is always `License.license_id` (e.g. NA/...) so the first insert matches
+    the canonical id — not legacy username codes.
+    """
     if license_obj is None:
         return
 
