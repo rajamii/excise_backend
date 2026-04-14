@@ -62,10 +62,71 @@ class BrandWarehouseUtilizationSerializer(serializers.ModelSerializer):
     previousStock = serializers.IntegerField(source='previous_stock', read_only=True)
     newStock = serializers.IntegerField(source='new_stock', read_only=True)
     approved_by_display = serializers.SerializerMethodField()
+    transit_permit_status = serializers.SerializerMethodField()
+    transit_permit_status_code = serializers.SerializerMethodField()
 
     def get_approved_by_display(self, obj):
-        """Return stored approved_by value (full name stored directly in DB)."""
+        """
+        Return stored approved_by value (full name stored directly in DB),
+        but only after the OIC actually approves the transit permit.
+        """
+        try:
+            if self.get_transit_permit_status_code(obj) != 'TRP_03':
+                return ''
+        except Exception:
+            pass
         return obj.approved_by or ''
+
+    def _get_transit_permit_row(self, obj):
+        permit_no = str(getattr(obj, 'permit_no', '') or '').strip()
+        if not permit_no:
+            return None
+        try:
+            from models.transactional.supply_chain.ena_transit_permit_details.models import EnaTransitPermitDetail
+            return (
+                EnaTransitPermitDetail.objects.select_related('current_stage')
+                .filter(bill_no=permit_no)
+                .order_by('-id')
+                .first()
+            )
+        except Exception:
+            return None
+
+    def get_transit_permit_status_code(self, obj) -> str:
+        row = self._get_transit_permit_row(obj)
+        if not row:
+            return ''
+        return str(getattr(row, 'status_code', '') or '').strip().upper()
+
+    def get_transit_permit_status(self, obj) -> str:
+        """
+        UI-facing workflow status for transit permit utilization rows.
+        We keep utilization.status as-is for stock logic, but expose a derived
+        workflow status:
+          - TRP_02 -> PENDING (payment successful, pending OIC approval)
+          - TRP_03 -> APPROVED
+          - TRP_04 -> CANCELLED
+        """
+        code = self.get_transit_permit_status_code(obj)
+        if code == 'TRP_03':
+            return 'APPROVED'
+        if code == 'TRP_04':
+            return 'CANCELLED'
+        if code == 'TRP_02':
+            return 'PENDING'
+
+        row = self._get_transit_permit_row(obj)
+        if row and getattr(row, 'current_stage', None):
+            stage = row.current_stage
+            name = str(getattr(stage, 'name', '') or '').strip().lower()
+            if 'cancel' in name or 'reject' in name or 'refund' in name:
+                return 'CANCELLED'
+            if 'approv' in name and bool(getattr(stage, 'is_final', False)):
+                return 'APPROVED'
+            return 'PENDING'
+
+        # Fallback to utilization status if permit row missing.
+        return str(getattr(obj, 'status', '') or '').strip().upper()
 
     class Meta:
         model = BrandWarehouseUtilization
@@ -86,12 +147,24 @@ class BrandWarehouseUtilizationSerializer(serializers.ModelSerializer):
             'approved_by',
             'approved_by_display',
             'approval_date',
+            'transit_permit_status',
+            'transit_permit_status_code',
             'previousStock',
             'newStock',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'total_bottles', 'previousStock', 'newStock', 'approved_by_display']
+        read_only_fields = [
+            'id',
+            'created_at',
+            'updated_at',
+            'total_bottles',
+            'previousStock',
+            'newStock',
+            'approved_by_display',
+            'transit_permit_status',
+            'transit_permit_status_code',
+        ]
 
     def validate_quantity(self, value):
         """Validate that quantity is positive"""

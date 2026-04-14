@@ -11,7 +11,7 @@ from auth.workflow.services import WorkflowService
 from auth.workflow.models import Workflow
 from auth.workflow.constants import WORKFLOW_IDS
 from .models import NewLicenseApplication
-from models.masters.license.models import License
+from models.masters.license.models import License, LicenseValidationToken
 from .serializers import NewLicenseApplicationSerializer, ObjectionSerializer, ResolveObjectionSerializer
 from auth.workflow.models import WorkflowStage, WorkflowTransition, Objection
 from django.core.exceptions import ValidationError, PermissionDenied
@@ -26,8 +26,11 @@ from utils.qrcodegen import QrCode
 import re
 from models.masters.license.master_license_form import MasterLicenseForm
 from models.masters.license.master_license_form_terms import MasterLicenseFormTerms
+from models.masters.license.legacy_codes import resolve_codes_for_license_form
 from django.core import signing
 from urllib.parse import quote
+import secrets
+import hashlib
 
 
 def _normalize_role(role_name):
@@ -41,6 +44,42 @@ def _normalize_role(role_name):
         'siteadmin': 'site_admin',
     }
     return aliases.get(normalized, normalized)
+
+
+def _ensure_license_validation_nonce(license_obj: License | None) -> str:
+    if not license_obj:
+        return ''
+
+    try:
+        latest = LicenseValidationToken.objects.filter(license=license_obj).order_by('-created_at').first()
+        if latest and latest.nonce:
+            if str(getattr(license_obj, 'validation_nonce', '') or '').strip() != latest.nonce:
+                license_obj.validation_nonce = latest.nonce
+                license_obj.validation_nonce_updated_at = timezone.now()
+                license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+            return latest.nonce
+    except Exception:
+        pass
+
+    nonce = secrets.token_hex(16)
+    try:
+        LicenseValidationToken.objects.create(license=license_obj, nonce=nonce)
+    except Exception:
+        nonce = secrets.token_hex(16)
+        LicenseValidationToken.objects.create(license=license_obj, nonce=nonce)
+
+    license_obj.validation_nonce = nonce
+    license_obj.validation_nonce_updated_at = timezone.now()
+    license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+    return nonce
+
+
+def _build_validation_link(request, *, application_id: str, source: str, nonce: str) -> tuple[str, str, str]:
+    signing_payload = {"applicationId": application_id, "source": source, "nonce": nonce}
+    signed_code = signing.dumps(signing_payload, salt="final-license")
+    validation_url = request.build_absolute_uri(f"/v/{quote(signed_code, safe=':')}/")
+    verification_id = hashlib.sha256(signed_code.encode("utf-8")).hexdigest()[:12]
+    return signed_code, validation_url, verification_id
 
 
 def _extract_level_index(stage_name):
@@ -408,9 +447,8 @@ def final_license_detail(request, application_id):
         except Exception:
             passport_photo_data_url = ""
 
-    def make_qr_data_url(licensee_id: str) -> str:
-        payload = f"Renewal of License vide Application Id No. : {application.application_id} and Licensee Id No : {licensee_id}"
-        qr = QrCode.encode_text(payload, QrCode.Ecc.MEDIUM)
+    def make_qr_data_url(payload: str) -> str:
+        qr = QrCode.encode_text(str(payload), QrCode.Ecc.MEDIUM)
         size = qr.get_size()
         border = 2
         scale = 4
@@ -432,19 +470,45 @@ def final_license_detail(request, application_id):
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
         return f"data:image/png;base64,{b64}"
 
-    validation_code = signing.dumps(
-        {"applicationId": application.application_id, "source": "new_license_application"},
-        salt="final-license",
-    )
+    validation_code = ""
+    validation_url = ""
+    if license_obj:
+        latest_token = LicenseValidationToken.objects.filter(license=license_obj).order_by("-created_at").first()
+        if latest_token and getattr(latest_token, "signed_code", "") and getattr(latest_token, "validation_url", ""):
+            validation_code = str(latest_token.signed_code)
+            validation_url = str(latest_token.validation_url)
+        else:
+            nonce = _ensure_license_validation_nonce(license_obj)
+            if nonce:
+                signed_code, full_url, verification_id = _build_validation_link(
+                    request, application_id=application.application_id, source="new_license_application", nonce=nonce
+                )
+                LicenseValidationToken.objects.update_or_create(
+                    license=license_obj,
+                    nonce=nonce,
+                    defaults={
+                        "signed_code": signed_code,
+                        "validation_url": full_url,
+                        "verification_id": verification_id,
+                    },
+                )
+                validation_code = signed_code
+                validation_url = full_url
 
     response = {
         "applicationId": application.application_id,
         "licenseNumber": (license_obj.license_id if license_obj else application.application_id),
         "licenseTitle": "",
         "validationCode": validation_code,
-        "validationPdfUrl": request.build_absolute_uri(f"/v/{quote(validation_code, safe=':')}/"),
+        "validationPdfUrl": validation_url,
         "validatedViaCode": validated_via_code,
+        "print_count": int(getattr(license_obj, "print_count", 0) or 0) if license_obj else 0,
+        "is_print_fee_paid": bool(getattr(license_obj, "is_print_fee_paid", False)) if license_obj else False,
         "terms": [],
+        # Debug/compat fields: the (legacy) codes used to pick terms/title.
+        # Frontend can ignore these safely.
+        "termsCatCode": None,
+        "termsScatCode": None,
         "licenseeName": application.applicant_name,
         "fatherOrHusbandName": application.father_husband_name,
         "kindOfShop": application.license_type.license_type if application.license_type else "",
@@ -460,7 +524,7 @@ def final_license_detail(request, application_id):
         "validFrom": fmt_dt(license_obj.issue_date) if license_obj else fmt_dt(application.created_at.date()),
         "validTo": fmt_dt(license_obj.valid_up_to) if license_obj else "",
         "generatedOn": fmt_dt(timezone.now().date()),
-        "qrCodeDataUrl": make_qr_data_url(license_obj.license_id if license_obj else application.application_id),
+        "qrCodeDataUrl": make_qr_data_url(validation_url),
     }
 
     cat_code = getattr(license_obj, "license_category_id", None) if license_obj else None
@@ -470,14 +534,21 @@ def final_license_detail(request, application_id):
     if scat_code is None:
         scat_code = getattr(application, "license_sub_category_id", None)
     if cat_code is not None and scat_code is not None:
-        cfg = MasterLicenseForm.get_license_config(int(cat_code), int(scat_code))
+        resolved_cat, resolved_scat = resolve_codes_for_license_form(int(cat_code), int(scat_code))
+        response["termsCatCode"] = resolved_cat
+        response["termsScatCode"] = resolved_scat
+        cfg = MasterLicenseForm.get_license_config(int(resolved_cat), int(resolved_scat)) if resolved_cat is not None and resolved_scat is not None else None
         if cfg:
             response["licenseTitle"] = cfg.license_title
 
-        qs = MasterLicenseFormTerms.objects.filter(
-            licensee_cat_code=int(cat_code),
-            licensee_scat_code=int(scat_code),
-        ).order_by("sl_no")
+        qs = (
+            MasterLicenseFormTerms.objects.filter(
+                licensee_cat_code=int(resolved_cat),
+                licensee_scat_code=int(resolved_scat),
+            ).order_by("sl_no")
+            if resolved_cat is not None and resolved_scat is not None
+            else MasterLicenseFormTerms.objects.none()
+        )
         terms = [str(t.license_terms).strip() for t in qs if getattr(t, "license_terms", None)]
         terms = [t for t in terms if t]
         response["terms"] = terms
@@ -536,10 +607,40 @@ def final_license_qr_code(request, application_id):
         source_object_id=application.application_id,
     ).order_by("-issue_date").first()
 
-    licensee_id = license_obj.license_id if license_obj else application.application_id
-    payload = f"Renewal of License vide Application Id No. : {application.application_id} and Licensee Id No : {licensee_id}"
+    if license_obj:
+        try:
+            latest_token = LicenseValidationToken.objects.filter(license=license_obj).order_by('-created_at').first()
+            if latest_token and latest_token.nonce:
+                if str(getattr(license_obj, 'validation_nonce', '') or '').strip() != latest_token.nonce:
+                    license_obj.validation_nonce = latest_token.nonce
+                    license_obj.validation_nonce_updated_at = timezone.now()
+                    license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+        except Exception:
+            pass
 
-    qr = QrCode.encode_text(payload, QrCode.Ecc.MEDIUM)
+    payload = ""
+    if license_obj:
+        latest_token = LicenseValidationToken.objects.filter(license=license_obj).order_by("-created_at").first()
+        if latest_token and getattr(latest_token, "validation_url", ""):
+            payload = str(latest_token.validation_url)
+        else:
+            nonce = _ensure_license_validation_nonce(license_obj)
+            if nonce:
+                signed_code, full_url, verification_id = _build_validation_link(
+                    request, application_id=application.application_id, source="new_license_application", nonce=nonce
+                )
+                LicenseValidationToken.objects.update_or_create(
+                    license=license_obj,
+                    nonce=nonce,
+                    defaults={
+                        "signed_code": signed_code,
+                        "validation_url": full_url,
+                        "verification_id": verification_id,
+                    },
+                )
+                payload = full_url
+
+    qr = QrCode.encode_text(str(payload), QrCode.Ecc.MEDIUM)
     size = qr.get_size()
     border = 2
     scale = 4
@@ -568,7 +669,16 @@ def final_license_qr_code(request, application_id):
 def print_license_view(request, application_id):
     license = get_object_or_404(NewLicenseApplication, application_id=application_id)
 
-    if not license.is_approved:
+    new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
+    license_obj = License.objects.filter(
+        source_type="new_license_application",
+        source_content_type=new_app_ct,
+        source_object_id=license.application_id,
+    ).order_by("-issue_date").first()
+
+    # Some datasets have License issued but `is_approved` not synced on the application row.
+    # If a License exists, allow printing and token rotation.
+    if not license.is_approved and not license_obj:
         return Response({"error": "License is not approved yet."}, status=403)
 
     can_print, fee = license.can_print_license()
@@ -584,9 +694,47 @@ def print_license_view(request, application_id):
 
     license.record_license_print(fee_paid=(fee > 0))
 
+    if license_obj:
+        nonce = secrets.token_hex(16)
+        signed_code, full_url, verification_id = _build_validation_link(
+            request, application_id=license.application_id, source="new_license_application", nonce=nonce
+        )
+        try:
+            LicenseValidationToken.objects.create(
+                license=license_obj,
+                nonce=nonce,
+                signed_code=signed_code,
+                validation_url=full_url,
+                verification_id=verification_id,
+            )
+        except Exception:
+            nonce = secrets.token_hex(16)
+            signed_code, full_url, verification_id = _build_validation_link(
+                request, application_id=license.application_id, source="new_license_application", nonce=nonce
+            )
+            LicenseValidationToken.objects.create(
+                license=license_obj,
+                nonce=nonce,
+                signed_code=signed_code,
+                validation_url=full_url,
+                verification_id=verification_id,
+            )
+
+        license_obj.validation_nonce = nonce
+        license_obj.validation_nonce_updated_at = timezone.now()
+        license_obj.save(update_fields=['validation_nonce', 'validation_nonce_updated_at'])
+
+        validation_code = signed_code
+        validation_url = full_url
+    else:
+        validation_code = ""
+        validation_url = ""
+
     return Response({
         "success": "License printed.",
-        "print_count": license.print_count
+        "print_count": license.print_count,
+        "validationCode": validation_code,
+        "validationPdfUrl": validation_url,
     })
 
 # Dashboard Counts

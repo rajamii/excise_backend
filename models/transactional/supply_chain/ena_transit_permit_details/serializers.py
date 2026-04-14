@@ -20,6 +20,24 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
 
     def get_approved_by_display(self, obj):
         """Return the OIC name who approved this permit (from utilization record)."""
+        # Stock utilization rows are created at PAY time (auto-deduction) and may set
+        # `approved_by` to the payer/system. Only display "Approved By" to UI once the
+        # Officer In-Charge has actually approved the permit.
+        try:
+            status_code = str(getattr(obj, 'status_code', '') or '').strip().upper()
+            stage = getattr(obj, 'current_stage', None)
+            stage_name = str(getattr(stage, 'name', '') or '').strip().lower()
+            is_final = bool(getattr(stage, 'is_final', False))
+
+            is_cancelled = 'cancel' in stage_name or 'reject' in stage_name or 'refund' in stage_name
+            is_oic_approved = status_code == 'TRP_03' or (is_final and not is_cancelled and 'approv' in stage_name)
+
+            if not is_oic_approved:
+                return ''
+        except Exception:
+            # Fail safe: don't block API; fall through to existing logic.
+            pass
+
         try:
             from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouseUtilization
             util = BrandWarehouseUtilization.objects.filter(
@@ -389,6 +407,10 @@ class PublicTransitPermitDetailSerializer(serializers.ModelSerializer):
 
     size_ml = serializers.SerializerMethodField()
     liquor_type = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+    status_code = serializers.CharField(read_only=True)
+    current_stage_name = serializers.SerializerMethodField()
+    current_stage_description = serializers.SerializerMethodField()
 
     class Meta:
         model = EnaTransitPermitDetail
@@ -402,6 +424,10 @@ class PublicTransitPermitDetailSerializer(serializers.ModelSerializer):
             'cases',
             'vehicle_number',
             'licensee_id',
+            'status',
+            'status_code',
+            'current_stage_name',
+            'current_stage_description',
             'bottle_type',
             'bottles_per_case',
             'brand_owner',
@@ -430,3 +456,30 @@ class PublicTransitPermitDetailSerializer(serializers.ModelSerializer):
         except Exception:
             pass
         return ''
+
+    def get_current_stage_name(self, obj) -> str:
+        try:
+            stage = getattr(obj, 'current_stage', None)
+            return str(getattr(stage, 'name', '') or '').strip()
+        except Exception:
+            return ''
+
+    def get_current_stage_description(self, obj) -> str:
+        try:
+            stage = getattr(obj, 'current_stage', None)
+            return str(getattr(stage, 'description', '') or '').strip()
+        except Exception:
+            return ''
+
+    def get_status(self, obj) -> str:
+        """
+        Public API should present a user-friendly status label.
+        Prefer workflow stage description; fall back to stage name / stored status.
+        """
+        desc = self.get_current_stage_description(obj)
+        if desc:
+            return desc
+        name = self.get_current_stage_name(obj)
+        if name:
+            return name
+        return str(getattr(obj, 'status', '') or '').strip()

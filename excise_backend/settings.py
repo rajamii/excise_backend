@@ -77,7 +77,7 @@ INSTALLED_APPS = [
     'models.masters.supply_chain.ena_distillery_details',
     'models.masters.supply_chain.profile',
     'models.masters.supply_chain.transit_permit',
-    # 'models.masters.supply_chain.vehicles',
+    'models.masters.supply_chain.vehicles',
     # 'models.masters.supply_chain.status_master',
 
     # transcational models
@@ -164,6 +164,25 @@ DATABASES = {
         'CONN_MAX_AGE': 0,          # Don't reuse connections — avoids aborted transaction state
     }
 }
+
+# Forgot Password Email Settings
+# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+# For production, use SMTP:
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'amritraj97.nic@gmail.com'
+EMAIL_HOST_PASSWORD = 'gzrt qieo egth zjpt'
+DEFAULT_FROM_EMAIL = 'amritraj97.nic@gmail.com'
+
+# Frontend URL used for password reset emails (no trailing slash).
+PASSWORD_RESET_FRONTEND_URL = os.getenv(
+    "PASSWORD_RESET_FRONTEND_URL",
+    "https://sems.sikkim.gov.in/reset-password",
+    # "http://localhost:4200/reset-password"
+).rstrip("/")
+
 
 AUTH_USER_MODEL = 'user.CustomUser'
 

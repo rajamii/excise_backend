@@ -211,19 +211,31 @@ class HologramRequestSerializer(serializers.ModelSerializer):
     rolls_assigned = serializers.SerializerMethodField()
     available_cartons = serializers.SerializerMethodField()
     production_updated_by = serializers.SerializerMethodField()
+    rejected_by_display_name = serializers.SerializerMethodField()
 
     class Meta:
         model = HologramRequest
         fields = [
             'id', 'ref_no', 'submission_date', 'usage_date', 'quantity', 'hologram_type',
             'issued_assets', 'rolls_assigned', 'licensee', 'license_id', 'licensee_name',
+            'rejection_reason', 'rejected_at', 'rejected_by', 'rejected_by_display_name',
             'workflow', 'workflow_name', 'current_stage', 'status', 'stage_id',
             'current_stage_name', 'current_stage_is_initial', 'current_stage_is_final',
             'current_stage_entry_actions', 'allowed_actions', 'allowed_action_configs',
             'available_cartons',
             'production_updated_by',
         ]
-        read_only_fields = ('ref_no', 'submission_date', 'workflow', 'current_stage', 'licensee', 'license_id')
+        read_only_fields = (
+            'ref_no',
+            'submission_date',
+            'workflow',
+            'current_stage',
+            'licensee',
+            'license_id',
+            'rejection_reason',
+            'rejected_at',
+            'rejected_by',
+        )
     
     def to_representation(self, instance):
         """Add logging to debug issued_assets"""
@@ -257,6 +269,15 @@ class HologramRequestSerializer(serializers.ModelSerializer):
 
         val = by_request_id.get(req_id) or by_ref_no.get(ref_no) or ''
         return val or None
+
+    def get_rejected_by_display_name(self, obj):
+        user = getattr(obj, 'rejected_by', None)
+        if not user:
+            return None
+        full = str(getattr(user, 'full_name', '') or '').strip()
+        if full:
+            return full
+        return str(getattr(user, 'username', '') or '').strip() or None
 
     # CRITICAL FIX: Dynamically fetch latest roll stats from HologramRollsDetails
     # This prevents stale JSON data from showing incorrect Available/Used counts in UI

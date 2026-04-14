@@ -19,6 +19,8 @@ SUBCATEGORY_TO_MODULE_TYPE = {
 
 COMMON_EDUCATION_CESS_HOA = "0045-00-112-45-03"
 COMMON_HOLOGRAM_HOA = "0039-00-800-45-01"
+COMMON_SECURITY_DEPOSIT_HOA = "0088-00-888-88-88"
+COMMON_LICENSE_FEE_HOA = "0099-00-999-99-99"
 
 
 HOA_CANDIDATES = {
@@ -26,12 +28,20 @@ HOA_CANDIDATES = {
         "excise": ["0039-00-105-45-01"],
         "education_cess": [COMMON_EDUCATION_CESS_HOA],
         "hologram": [COMMON_HOLOGRAM_HOA],
+        "security_deposit": [COMMON_SECURITY_DEPOSIT_HOA],
+        "license_fee": [COMMON_LICENSE_FEE_HOA],
     },
     "brewery": {
         "excise": ["0038-00-102-45-00"],
         # Same HOA as distillery for these two wallets by business rule.
         "education_cess": [COMMON_EDUCATION_CESS_HOA],
         "hologram": [COMMON_HOLOGRAM_HOA],
+        "security_deposit": [COMMON_SECURITY_DEPOSIT_HOA],
+        "license_fee": [COMMON_LICENSE_FEE_HOA],
+    },
+    "other": {
+        "security_deposit": [COMMON_SECURITY_DEPOSIT_HOA],
+        "license_fee": [COMMON_LICENSE_FEE_HOA],
     },
 }
 
@@ -40,6 +50,8 @@ WALLET_LABELS = {
     "excise": "Excise / Additional Wallet",
     "education_cess": "Education Cess Wallet",
     "hologram": "Hologram",
+    "security_deposit": "Security Deposit Wallet",
+    "license_fee": "License Fee Wallet",
 }
 
 
@@ -53,7 +65,7 @@ def _resolve_module_type(license_obj) -> str:
     if "brew" in sub_desc or "beer" in sub_desc:
         return "brewery"
     if sub_desc:
-        return "distillery"
+        return "other"
 
     module_type = SUBCATEGORY_TO_MODULE_TYPE.get(sub_category_id)
     if module_type:
@@ -67,14 +79,14 @@ def _resolve_module_type(license_obj) -> str:
     if "brew" in type_name or "beer" in type_name:
         return "brewery"
     if type_name:
-        return "distillery"
+        return "other"
 
     logger.warning(
         "Unknown license_sub_category_id=%s for license_id=%s. Falling back to distillery mapping.",
         sub_category_id,
         getattr(license_obj, "license_id", None),
     )
-    return "distillery"
+    return "other"
 
 
 def _resolve_hoa_code(module_type: str, wallet_type: str) -> str:
@@ -202,6 +214,14 @@ def _build_user_id(license_obj) -> str:
 
 
 def initialize_wallet_balances_for_license(license_obj) -> None:
+    """
+    Create one wallet_balances row per wallet type for this license (all balances 0.00).
+
+    Called when the issued License row exists (e.g. commissioner approval and/or
+    `awaiting_payment` / "Awaiting License Fee Payment" for new license applications).
+    `licensee_id` is always `License.license_id` (e.g. NA/...) so the first insert matches
+    the canonical id — not legacy username codes.
+    """
     if license_obj is None:
         return
 
@@ -216,7 +236,10 @@ def initialize_wallet_balances_for_license(license_obj) -> None:
     user_id = _build_user_id(license_obj)
     now = timezone.now()
 
-    wallet_types = ["excise", "education_cess", "hologram"]
+    if module_type in {"distillery", "brewery"}:
+        wallet_types = ["excise", "education_cess", "hologram", "security_deposit", "license_fee"]
+    else:
+        wallet_types = ["security_deposit", "license_fee"]
 
     with transaction.atomic():
         for wallet_type in wallet_types:
