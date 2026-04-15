@@ -526,7 +526,7 @@ class PaymentHeadOfAccount(models.Model):
 
     class Meta:
         managed = False
-        db_table = "eabgari_master_head_of_accounts"
+        db_table = "wallet_master_head_of_accounts"
 
     def __str__(self):
         return str(self.head_of_account)
