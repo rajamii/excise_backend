@@ -1,6 +1,14 @@
 from rest_framework import serializers
 
-from .models import BrandOwner, BrandOwnerFee, BrandOwnerType, LiquorBrand, LiquorCategory, LiquorKind, LiquorType
+from .models import BrandOwner, BrandOwnerFee, BrandOwnerType, LiquorBrand, LiquorKind
+
+
+def _category_label(code):
+    return f"Category {code}" if code is not None else ""
+
+
+def _type_label(code):
+    return f"Type {code}" if code is not None else ""
 
 
 class BrandOwnerTypeSerializer(serializers.ModelSerializer):
@@ -41,14 +49,18 @@ class BrandOwnerSerializer(serializers.ModelSerializer):
         read_only_fields = ['opr_date']
 
 
-class LiquorCategorySerializer(serializers.ModelSerializer):
-    class Meta:
-        model = LiquorCategory
-        fields = ['liquor_cat_code', 'liquor_cat_desc', 'liquor_cat_abbr', 'delete_status']
+class LiquorCategorySerializer(serializers.Serializer):
+    liquor_cat_code = serializers.IntegerField()
+    liquor_cat_desc = serializers.CharField()
+    liquor_cat_abbr = serializers.CharField()
+    delete_status = serializers.CharField()
 
 
 class LiquorKindSerializer(serializers.ModelSerializer):
-    liquor_cat_desc = serializers.CharField(source='liquor_cat.liquor_cat_desc', read_only=True)
+    liquor_cat_desc = serializers.SerializerMethodField()
+
+    def get_liquor_cat_desc(self, obj):
+        return _category_label(getattr(obj, 'liquor_cat', None))
 
     class Meta:
         model = LiquorKind
@@ -63,30 +75,26 @@ class LiquorKindSerializer(serializers.ModelSerializer):
         ]
 
 
-class LiquorTypeSerializer(serializers.ModelSerializer):
-    liquor_cat_desc  = serializers.CharField(source='liquor_cat.liquor_cat_desc',   read_only=True)
-    liquor_kind_desc = serializers.CharField(source='liquor_kind.liquor_kind_desc', read_only=True)
-
-    class Meta:
-        model = LiquorType
-        fields = [
-            'id',
-            'liquor_cat',
-            'liquor_cat_desc',
-            'liquor_kind',
-            'liquor_kind_desc',
-            'liquor_type_code',
-            'liquor_type_desc',
-            'liquor_type_code_old',
-            'delete_status',
-        ]
+class LiquorTypeSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    liquor_cat = serializers.IntegerField()
+    liquor_kind = serializers.IntegerField()
+    liquor_type_code = serializers.IntegerField()
+    liquor_type_desc = serializers.CharField()
+    delete_status = serializers.CharField()
 
 
 class LiquorBrandSerializer(serializers.ModelSerializer):
-    liquor_cat_desc  = serializers.CharField(source='liquor_cat.liquor_cat_desc',   read_only=True)
+    liquor_cat_desc  = serializers.SerializerMethodField()
     liquor_kind_desc = serializers.CharField(source='liquor_kind.liquor_kind_desc', read_only=True)
     liquor_kind_abbr = serializers.CharField(source='liquor_kind.liquor_kind_abbr', read_only=True)
-    liquor_type_desc = serializers.CharField(source='liquor_type.liquor_type_desc', read_only=True)
+    liquor_type_desc = serializers.SerializerMethodField()
+
+    def get_liquor_cat_desc(self, obj):
+        return _category_label(getattr(obj, 'liquor_cat', None))
+
+    def get_liquor_type_desc(self, obj):
+        return _type_label(getattr(obj, 'liquor_type', None))
 
     class Meta:
         model = LiquorBrand

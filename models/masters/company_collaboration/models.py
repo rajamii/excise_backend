@@ -17,6 +17,7 @@ class BrandOwnerType(models.Model):
 
     class Meta:
         db_table = 'master_brand_owner_type'
+        managed = False
         ordering = ['brand_owner_type_code']
 
     def __str__(self):
@@ -67,6 +68,7 @@ class BrandOwner(models.Model):
 
     class Meta:
         db_table = 'master_brand_owner'
+        managed = False
         ordering = ['brand_owner_code']
         indexes = [
             models.Index(fields=['brand_owner_name'], name='mbo_name_idx'),
@@ -79,27 +81,6 @@ class BrandOwner(models.Model):
 
 
 # ---------------------------------------------------------------------------
-# MM_Liquor_Category  →  master_liquor_category
-# ---------------------------------------------------------------------------
-
-class LiquorCategory(models.Model):
-    """
-    Top-level liquor classification: Country Liquor, Foreign Liquor, Beer, Homemade.
-    """
-    liquor_cat_code = models.PositiveSmallIntegerField(primary_key=True)
-    liquor_cat_desc = models.CharField(max_length=100)
-    liquor_cat_abbr = models.CharField(max_length=10)
-    delete_status = models.CharField(max_length=1, default='N')
-
-    class Meta:
-        db_table = 'master_liquor_category'
-        ordering = ['liquor_cat_code']
-
-    def __str__(self):
-        return f"{self.liquor_cat_abbr} — {self.liquor_cat_desc}"
-
-
-# ---------------------------------------------------------------------------
 # MM_Liquor_Kind  →  master_liquor_kind
 # ---------------------------------------------------------------------------
 
@@ -108,12 +89,7 @@ class LiquorKind(models.Model):
     Sub-classification within a category: IMFL, OSBI, Beer, etc.
     Composite PK: (liquor_cat_code, liquor_kind_code).
     """
-    liquor_cat = models.ForeignKey(
-        LiquorCategory,
-        on_delete=models.PROTECT,
-        related_name='kinds',
-        db_column='liquor_cat_code',
-    )
+    liquor_cat = models.PositiveSmallIntegerField(db_column='liquor_cat_code')
     liquor_kind_code = models.PositiveSmallIntegerField()
     liquor_kind_desc = models.CharField(max_length=100)
     liquor_kind_abbr = models.CharField(max_length=20)
@@ -121,46 +97,12 @@ class LiquorKind(models.Model):
 
     class Meta:
         db_table = 'master_liquor_kind'
+        managed = False
         unique_together = [('liquor_cat', 'liquor_kind_code')]
         ordering = ['liquor_cat', 'liquor_kind_code']
 
     def __str__(self):
         return f"{self.liquor_kind_abbr} — {self.liquor_kind_desc}"
-
-
-# ---------------------------------------------------------------------------
-# MM_Liquor_Type  →  master_liquor_type
-# ---------------------------------------------------------------------------
-
-class LiquorType(models.Model):
-    """
-    Specific liquor type within a kind: Whisky, Rum, Beer, Wine, etc.
-    Composite PK: (liquor_cat_code, liquor_kind_code, liquor_type_code).
-    """
-    liquor_cat = models.ForeignKey(
-        LiquorCategory,
-        on_delete=models.PROTECT,
-        related_name='types',
-        db_column='liquor_cat_code',
-    )
-    liquor_kind = models.ForeignKey(
-        LiquorKind,
-        on_delete=models.PROTECT,
-        related_name='types',
-        db_column='liquor_kind_id',
-    )
-    liquor_type_code = models.PositiveSmallIntegerField()
-    liquor_type_desc = models.CharField(max_length=100)
-    liquor_type_code_old = models.PositiveSmallIntegerField(blank=True, null=True)
-    delete_status = models.CharField(max_length=1, default='N')
-
-    class Meta:
-        db_table = 'master_liquor_type'
-        unique_together = [('liquor_cat', 'liquor_kind', 'liquor_type_code')]
-        ordering = ['liquor_cat', 'liquor_kind', 'liquor_type_code']
-
-    def __str__(self):
-        return f"{self.liquor_type_desc}"
 
 
 # ---------------------------------------------------------------------------
@@ -173,24 +115,14 @@ class LiquorBrand(models.Model):
     liquor_brand_code is the natural PK (e.g. 2013/0002).
     """
     liquor_brand_code = models.CharField(max_length=20, primary_key=True)
-    liquor_cat = models.ForeignKey(
-        LiquorCategory,
-        on_delete=models.PROTECT,
-        related_name='brands',
-        db_column='liquor_cat_code',
-    )
+    liquor_cat = models.PositiveSmallIntegerField(db_column='liquor_cat_code')
     liquor_kind = models.ForeignKey(
         LiquorKind,
         on_delete=models.PROTECT,
         related_name='brands',
         db_column='liquor_kind_id',
     )
-    liquor_type = models.ForeignKey(
-        LiquorType,
-        on_delete=models.PROTECT,
-        related_name='brands',
-        db_column='liquor_type_id',
-    )
+    liquor_type = models.PositiveBigIntegerField(db_column='liquor_type_id')
     liquor_brand_desc = models.CharField(max_length=255)
     brand_name_alias = models.CharField(max_length=20, blank=True, null=True)
     liquor_type_code_old = models.CharField(max_length=20, blank=True, null=True)
@@ -199,6 +131,7 @@ class LiquorBrand(models.Model):
 
     class Meta:
         db_table = 'master_liquor_brand'
+        managed = False
         ordering = ['liquor_brand_code']
         indexes = [
             models.Index(fields=['liquor_brand_desc'], name='mlb_desc_idx'),
@@ -233,6 +166,7 @@ class BrandOwnerFee(models.Model):
 
     class Meta:
         db_table = 'master_brand_owner_fee'
+        managed = False
         ordering = ['-from_date']
 
     def __str__(self):
