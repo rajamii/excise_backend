@@ -2,6 +2,7 @@ from rest_framework import generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -599,6 +600,11 @@ class RequisitionArrivalBulkLiterDetailAPIView(APIView):
                 'status': 'error',
                 'message': str(e)
             }, status=status.HTTP_403_FORBIDDEN)
+        except serializers.ValidationError as e:
+            return Response({
+                'status': 'error',
+                'message': e.detail
+            }, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({
                 'status': 'error',
@@ -703,6 +709,8 @@ class RequisitionArrivalBulkLiterDetailsListAPIView(APIView):
                     'edited_by': getattr(row, 'edited_by', '') or '',
                     'arrival_date': row.submitted_at.date().isoformat() if row.submitted_at else (row.updated_at.date().isoformat() if row.updated_at else ''),
                     'requisition_total_quantity': str(getattr(req, 'totalbl', 0) or 0) if req else '0',
+                    'requisition_number_of_permits': int(getattr(req, 'requisiton_number_of_permits', 0) or 0) if req else 0,
+                    'details_permits_number': str(getattr(req, 'details_permits_number', '') or '') if req else '',
                     'distillery_name': (getattr(req, 'lifted_from_distillery_name', '') or '') if req else '',
                     'approval_date': getattr(req, 'approval_date', None) if req else None,
                 })

@@ -1112,7 +1112,8 @@ class RequisitionBulkLiterDetailSerializer(serializers.ModelSerializer):
             for token, total in sum_by_permit.items():
                 expected = expected_by_permit.get(token, Decimal('0'))
                 got = total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-                if expected > 0 and got != expected:
+                # Allow short receipt (got < expected) but do not allow exceeding per-permit allocation.
+                if expected > 0 and got > expected:
                     mismatched.append(f"{token} (expected {expected}, got {got})")
             if mismatched:
                 raise serializers.ValidationError({
