@@ -303,7 +303,7 @@ def list_salesman_barman(request):
     return Response(serializer.data)
 
 
-@permission_classes([HasAppPermission('salesman_barman_registration', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('salesman_barman_registration', 'view')])
 @api_view(['GET'])
 def salesman_barman_detail(request, application_id):
     app = get_object_or_404(SalesmanBarmanModel, application_id=application_id)

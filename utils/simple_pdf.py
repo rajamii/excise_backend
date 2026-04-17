@@ -240,10 +240,51 @@ def build_validation_pdf(
         y = page_h - 120
         draw_image(qi, x, y, size, size)
 
+    def _estimate_text_width(text: str) -> int:
+        # Rough Helvetica width estimate (good enough for highlight background sizing)
+        return int(len(str(text or '')) * font_size * 0.55) + 6
+
+    def _extract_highlights(text_lines: list[str]):
+        ok_prefix = "__VALID_OK__"
+        bad_prefix = "__VALID_BAD__"
+        highlights: list[tuple[int, tuple[float, float, float], tuple[float, float, float], int]] = []
+        cleaned: list[str] = []
+        for idx, ln in enumerate(text_lines):
+            s = str(ln or "")
+            if s.startswith(ok_prefix):
+                label = s[len(ok_prefix) :]
+                cleaned.append(label)
+                highlights.append((idx, (0.85, 1.0, 0.85), (0.0, 0.55, 0.0), _estimate_text_width(label)))
+                continue
+            if s.startswith(bad_prefix):
+                label = s[len(bad_prefix) :]
+                cleaned.append(label)
+                highlights.append((idx, (1.0, 0.88, 0.88), (0.7, 0.0, 0.0), _estimate_text_width(label)))
+                continue
+            cleaned.append(s)
+        return cleaned, highlights
+
+    text_lines, highlights = _extract_highlights(text_lines)
+
     # Text block
     left = 44
     top = page_h - 150
     leading = int(max(12, round(font_size * 1.35)))
+
+    # Highlight rectangles (draw before text so it appears behind)
+    rect_h = font_size + 6
+    max_w = page_w - left - 44
+    for idx, fill_rgb, stroke_rgb, w_est in highlights:
+        rect_w = min(max_w, max(40, w_est))
+        rect_x = left - 2
+        rect_y = int(top - (idx * leading) - font_size - 2)
+        content_parts.append("q")
+        content_parts.append(f"{fill_rgb[0]} {fill_rgb[1]} {fill_rgb[2]} rg")
+        content_parts.append(f"{stroke_rgb[0]} {stroke_rgb[1]} {stroke_rgb[2]} RG")
+        content_parts.append("1 w")
+        content_parts.append(f"{rect_x} {rect_y} {rect_w} {rect_h} re")
+        content_parts.append("B")
+        content_parts.append("Q")
 
     content_parts.append("BT")
     content_parts.append(f"/F1 {font_size} Tf")
@@ -363,6 +404,29 @@ def build_validation_pdf_multi(
     def build_content(page_idx: int, text_lines: list[str]) -> bytes:
         parts: list[str] = []
 
+        def estimate_text_width(text: str) -> int:
+            return int(len(str(text or '')) * font_size * 0.55) + 6
+
+        def extract_highlights(lines: list[str]):
+            ok_prefix = "__VALID_OK__"
+            bad_prefix = "__VALID_BAD__"
+            highlights_local: list[tuple[int, tuple[float, float, float], tuple[float, float, float], int]] = []
+            cleaned_local: list[str] = []
+            for idx, ln in enumerate(lines):
+                s = str(ln or "")
+                if s.startswith(ok_prefix):
+                    label = s[len(ok_prefix) :]
+                    cleaned_local.append(label)
+                    highlights_local.append((idx, (0.85, 1.0, 0.85), (0.0, 0.55, 0.0), estimate_text_width(label)))
+                    continue
+                if s.startswith(bad_prefix):
+                    label = s[len(bad_prefix) :]
+                    cleaned_local.append(label)
+                    highlights_local.append((idx, (1.0, 0.88, 0.88), (0.7, 0.0, 0.0), estimate_text_width(label)))
+                    continue
+                cleaned_local.append(s)
+            return cleaned_local, highlights_local
+
         def draw_image(img: PdfImage, x: int, y: int, w: int, h: int):
             parts.append("q")
             parts.append(f"{w} 0 0 {h} {x} {y} cm")
@@ -394,6 +458,24 @@ def build_validation_pdf_multi(
         left = 44
         top = page_h - 150
         leading = int(max(12, round(font_size * 1.35)))
+
+        text_lines, highlights_local = extract_highlights(text_lines)
+
+        # Highlight rectangles (draw before text so it appears behind)
+        rect_h = font_size + 6
+        max_w = page_w - left - 44
+        for idx, fill_rgb, stroke_rgb, w_est in highlights_local:
+            rect_w = min(max_w, max(40, w_est))
+            rect_x = left - 2
+            rect_y = int(top - (idx * leading) - font_size - 2)
+            parts.append("q")
+            parts.append(f"{fill_rgb[0]} {fill_rgb[1]} {fill_rgb[2]} rg")
+            parts.append(f"{stroke_rgb[0]} {stroke_rgb[1]} {stroke_rgb[2]} RG")
+            parts.append("1 w")
+            parts.append(f"{rect_x} {rect_y} {rect_w} {rect_h} re")
+            parts.append("B")
+            parts.append("Q")
+
         parts.append("BT")
         parts.append(f"/F1 {font_size} Tf")
         parts.append(f"{left} {top} Td")

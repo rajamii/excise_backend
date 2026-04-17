@@ -83,6 +83,16 @@ class HologramRequest(models.Model):
     issued_assets = models.JSONField(default=list, blank=True) # allocated rolls/serials
     rolls_assigned = models.JSONField(default=list, blank=True, help_text='Assigned rolls for daily register - cartoon_number, from_serial, to_serial, quantity')
 
+    rejection_reason = models.TextField(blank=True, null=True)
+    rejected_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    rejected_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='rejected_hologram_requests',
+    )
+
     workflow = models.ForeignKey(Workflow, on_delete=models.PROTECT, related_name='hologram_requests', null=True, blank=True)
     current_stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name='hologram_requests', null=True, blank=True)
     

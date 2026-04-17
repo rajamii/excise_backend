@@ -127,6 +127,10 @@ class LicenseDetailSerializer(serializers.ModelSerializer):
         return {}
 
 class MyLicenseDetailsSerializer(serializers.ModelSerializer):
+    """Includes source application fee flags so the licensee UI can hide supply-chain menus until fee payment."""
+
+    source_object_id = serializers.CharField(read_only=True)
+    is_license_fee_paid = serializers.SerializerMethodField()
 
     first_name = serializers.CharField(source='source_application.applicant.first_name', read_only=True)
     middle_name = serializers.CharField(source='source_application.applicant.middle_name', read_only=True)
@@ -144,10 +148,18 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
     establishment_name = serializers.CharField(source='source_application.establishment_name', read_only=True)
     site_district = serializers.CharField(source='excise_district.district', read_only=True)
 
+    def get_is_license_fee_paid(self, obj):
+        src = getattr(obj, "source_application", None)
+        if src is None:
+            return None
+        return bool(getattr(src, "is_license_fee_paid", False))
+
     class Meta:
         model = License
         fields = [
             'license_id',
+            'source_object_id',
+            'is_license_fee_paid',
             'first_name',
             'middle_name',
             'last_name',

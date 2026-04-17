@@ -770,7 +770,21 @@ class PublicTransitPermitAPIView(generics.ListAPIView):
         bill_no = self._get_bill_no()
         if not bill_no:
             return EnaTransitPermitDetail.objects.none()
-        return EnaTransitPermitDetail.objects.filter(bill_no=bill_no).order_by('-id')
+        # Public endpoint must only expose permits AFTER OIC approval.
+        # We treat TRP_03 (APPROVE) / approved workflow stage as approved.
+        base = EnaTransitPermitDetail.objects.filter(bill_no=bill_no)
+        approved = base.filter(
+            Q(status_code__iexact='TRP_03')
+            | Q(current_stage__name__iexact='TransitPermitSuccessfullyApproved')
+            | (
+                Q(current_stage__is_final=True)
+                & Q(current_stage__name__icontains='approv')
+                & ~Q(current_stage__name__icontains='cancel')
+                & ~Q(current_stage__name__icontains='reject')
+                & ~Q(current_stage__name__icontains='refund')
+            )
+        )
+        return approved.order_by('-id')
 
     def list(self, request, *args, **kwargs):
         bill_no = self._get_bill_no()
@@ -779,7 +793,47 @@ class PublicTransitPermitAPIView(generics.ListAPIView):
                 {"detail": "bill_no query param is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        return super().list(request, *args, **kwargs)
+        # If a permit exists but is not approved yet, don't expose any details.
+        base = EnaTransitPermitDetail.objects.filter(bill_no=bill_no)
+        if not base.exists():
+            return Response(
+                {"detail": "Transit permit not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        approved_exists = base.filter(
+            Q(status_code__iexact='TRP_03')
+            | Q(current_stage__name__iexact='TransitPermitSuccessfullyApproved')
+            | (
+                Q(current_stage__is_final=True)
+                & Q(current_stage__name__icontains='approv')
+                & ~Q(current_stage__name__icontains='cancel')
+                & ~Q(current_stage__name__icontains='reject')
+                & ~Q(current_stage__name__icontains='refund')
+            )
+        ).exists()
+
+        if approved_exists:
+            return super().list(request, *args, **kwargs)
+
+        cancelled_exists = base.filter(
+            Q(status_code__iexact='TRP_04')
+            | Q(current_stage__name__icontains='cancel')
+            | Q(current_stage__name__icontains='reject')
+            | Q(current_stage__name__icontains='refund')
+        ).exists()
+        if cancelled_exists:
+            return Response(
+                {"detail": "Transit permit is cancelled.", "status": "Cancelled"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Pending / in-review (paid but not approved) case.
+        return Response(
+            {"detail": "Transit permit is not approved yet.", "status": "Pending"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+        
 
 
 class PerformTransitPermitActionAPIView(views.APIView):
@@ -953,8 +1007,15 @@ class PerformTransitPermitActionAPIView(views.APIView):
                     'message': 'Action is required'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Get the transit permit
+            # Get the transit permit (one line item). Actions must apply to the entire bill/reference (bill_no),
+            # since a single permit can have multiple product rows.
             permit = EnaTransitPermitDetail.objects.get(pk=pk)
+            bill_no = str(getattr(permit, 'bill_no', '') or '').strip()
+            if not bill_no:
+                return Response(
+                    {'status': 'error', 'message': 'Permit reference (bill_no) is missing.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             # Ownership/permission check (dynamic, DB-driven).
             # Workflow users (OIC/officers) can process mapped workflow items.
@@ -975,80 +1036,130 @@ class PerformTransitPermitActionAPIView(views.APIView):
             # --- Use WorkflowService to advance stage ---
             from auth.workflow.services import WorkflowService
             from auth.workflow.models import WorkflowStage
-            
-            # Ensure current_stage is set (if missing)
-            if not permit.current_stage or not permit.workflow:
-                 try:
-                     from auth.workflow.models import Workflow
-                     workflow_obj = Workflow.objects.get(id=WORKFLOW_IDS['TRANSIT_PERMIT'])
-                     permit.workflow = workflow_obj
-                     current_stage = self._resolve_stage_from_status_code(workflow_obj, permit.status_code)
-                     if not current_stage:
-                         current_stage = WorkflowStage.objects.filter(workflow=workflow_obj, is_initial=True).first()
-                     if not current_stage:
-                         raise WorkflowStage.DoesNotExist("Initial workflow stage not found")
-                     permit.current_stage = current_stage
-                     permit.status = current_stage.name
-                     permit.save()
-                 except (Workflow.DoesNotExist, WorkflowStage.DoesNotExist):
-                      return Response({
-                         'status': 'error',
-                         'message': 'Workflow configuration not found. Please run "python manage.py populate_transit_permit_workflow".'
-                     }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-                 except Exception as e:
-                     return Response({
-                        'status': 'error',
-                        'message': f"Database Error during workflow initialization: {str(e)}"
-                     }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            # Extra check to be sure
-            if not permit.current_stage:
-                 return Response({
-                    'status': 'error',
-                    'message': 'Current Stage is Null. Workflow initialization failed.'
-                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            def _ensure_workflow_initialized(row: EnaTransitPermitDetail):
+                if row.current_stage and row.workflow:
+                    return
+                from auth.workflow.models import Workflow
 
-            # Context for validation
-            context = {
-                "action": action
-            }
+                workflow_obj = Workflow.objects.get(id=WORKFLOW_IDS['TRANSIT_PERMIT'])
+                row.workflow = workflow_obj
+                current_stage = self._resolve_stage_from_status_code(workflow_obj, row.status_code)
+                if not current_stage:
+                    current_stage = WorkflowStage.objects.filter(workflow=workflow_obj, is_initial=True).first()
+                if not current_stage:
+                    raise WorkflowStage.DoesNotExist("Initial workflow stage not found")
+                row.current_stage = current_stage
+                row.status = current_stage.name
+                row.save()
 
-            transitions = WorkflowService.get_next_stages(permit)
-            target_transition = None
+            def _status_code_for_action(row_action: str, to_stage) -> str:
+                if getattr(to_stage, 'is_initial', False):
+                    return 'TRP_01'
+                if row_action == 'PAY':
+                    return 'TRP_02'
+                if row_action == 'APPROVE':
+                    return 'TRP_03'
+                if row_action == 'REJECT':
+                    return 'TRP_04'
+                return str(getattr(row_action, 'status_code', '') or row_action or '').strip() or 'TRP_01'
             
-            for t in transitions:
-                if transition_matches(t, request.user, action):
-                    target_transition = t
-                    break
+            context = {"action": action}
 
-            if not target_transition:
-                return Response({
-                    'status': 'error',
-                    'message': f'No valid transition for Action: {action} on Status: {permit.status}'
-                }, status=status.HTTP_400_BAD_REQUEST)
-                
-            WorkflowService.advance_stage(
-                application=permit,
-                user=request.user,
-                target_stage=target_transition.to_stage,
-                context=context,
-                remarks=remarks or f"Action: {action}"
-            )
-            
-            # Sync back to status/status_code
-            new_stage_name = target_transition.to_stage.name
-            permit.status = new_stage_name
-            # Keep status_code compatibility without relying on stage names.
-            if target_transition.to_stage.is_initial:
-                permit.status_code = 'TRP_01'
-            elif action == 'PAY':
-                permit.status_code = 'TRP_02'
-            elif action == 'APPROVE':
-                permit.status_code = 'TRP_03'
-            elif action == 'REJECT':
-                permit.status_code = 'TRP_04'
-            
-            permit.save()
+            # Apply the action to ALL rows with the same bill_no so the permit stays consistent.
+            with transaction.atomic():
+                rows = list(
+                    EnaTransitPermitDetail.objects.select_for_update()
+                    .filter(bill_no=bill_no)
+                    .order_by('id')
+                )
+                if not rows:
+                    return Response(
+                        {'status': 'error', 'message': 'Permit not found.'},
+                        status=status.HTTP_404_NOT_FOUND,
+                    )
+
+                # Initialize workflow + validate transitions for every row first.
+                transition_map: dict[int, object] = {}
+                transition_errors: list[dict] = []
+
+                for row in rows:
+                    try:
+                        _ensure_workflow_initialized(row)
+                    except (WorkflowStage.DoesNotExist,) as e:
+                        return Response(
+                            {
+                                'status': 'error',
+                                'message': 'Workflow configuration not found. Please run "python manage.py populate_transit_permit_workflow".'
+                            },
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        )
+                    except Exception as e:
+                        return Response(
+                            {'status': 'error', 'message': f"Database Error during workflow initialization: {str(e)}"},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        )
+
+                    transitions = WorkflowService.get_next_stages(row)
+                    target_transition = None
+                    for t in transitions:
+                        if transition_matches(t, request.user, action):
+                            target_transition = t
+                            break
+
+                    if not target_transition:
+                        # Allow idempotent calls: if already in desired state, skip.
+                        desired_code = {
+                            'PAY': 'TRP_02',
+                            'APPROVE': 'TRP_03',
+                            'REJECT': 'TRP_04',
+                        }.get(action, '')
+                        already = bool(desired_code and row.status_code == desired_code)
+                        if already:
+                            continue
+                        transition_errors.append(
+                            {
+                                'id': row.pk,
+                                'status': row.status,
+                                'status_code': row.status_code,
+                                'message': f'No valid transition for Action: {action} on Status: {row.status}',
+                            }
+                        )
+                        continue
+
+                    transition_map[row.pk] = target_transition
+
+                if transition_errors:
+                    return Response(
+                        {
+                            'status': 'error',
+                            'message': 'Some permit rows cannot be transitioned. No changes were applied.',
+                            'errors': transition_errors,
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                # Execute transitions + sync status fields.
+                for row in rows:
+                    t = transition_map.get(row.pk)
+                    if not t:
+                        continue
+                    WorkflowService.advance_stage(
+                        application=row,
+                        user=request.user,
+                        target_stage=t.to_stage,
+                        context=context,
+                        remarks=remarks or f"Action: {action}",
+                    )
+                    row.status = t.to_stage.name
+                    row.status_code = _status_code_for_action(action, t.to_stage)
+                    row.save()
+
+                if transition_map:
+                    any_transition = next(iter(transition_map.values()))
+                    new_stage_name = any_transition.to_stage.name
+                else:
+                    new_stage_name = rows[0].status
             
             # Check for stock deduction trigger
             if action == 'PAY':
@@ -1062,12 +1173,16 @@ class PerformTransitPermitActionAPIView(views.APIView):
 
             elif action == 'REJECT':
                 self._handle_rejection(request, permit, remarks=remarks)
-            
-            serializer = EnaTransitPermitDetailSerializer(permit)
+
+            serializer = EnaTransitPermitDetailSerializer(
+                EnaTransitPermitDetail.objects.filter(bill_no=bill_no).order_by('id'),
+                many=True,
+            )
             return Response({
                 'status': 'success',
                 'message': f'Transit Permit status updated to {new_stage_name}',
-                'data': serializer.data
+                'bill_no': bill_no,
+                'data': serializer.data,
             }, status=status.HTTP_200_OK)
 
         except (PermissionDenied, DjangoPermissionDenied) as e:
@@ -1352,68 +1467,68 @@ class PerformTransitPermitActionAPIView(views.APIView):
 
 
 
-    def _handle_wallet_deduction(self, user, permit):
-        """
-        Deduct the permit's financial amounts from the user's wallet.
-        Raises exception if insufficient funds.
-        """
-        try:
-            from .models import Wallet, WalletTransaction
+    # def _handle_wallet_deduction(self, user, permit):
+    #     """
+    #     Deduct the permit's financial amounts from the user's wallet.
+    #     Raises exception if insufficient funds.
+    #     """
+    #     try:
+    #         from .models import Wallet, WalletTransaction
             
-            # 1. Get Wallet
-            wallet = Wallet.objects.filter(user=user).first()
-            if not wallet:
-                wallet = Wallet.objects.create(
-                    user=user,
-                    excise_balance=10000000.00, # Default high balance for dev
-                    additional_excise_balance=10000000.00,
-                    education_cess_balance=10000000.00
-                )
+    #         # 1. Get Wallet
+    #         wallet = Wallet.objects.filter(user=user).first()
+    #         if not wallet:
+    #             wallet = Wallet.objects.create(
+    #                 user=user,
+    #                 excise_balance=10000000.00, # Default high balance for dev
+    #                 additional_excise_balance=10000000.00,
+    #                 education_cess_balance=10000000.00
+    #             )
             
-            # 2. Calculate Amounts for THIS permit item
-            # Using float conversion to be safe, though Decimal is better
-            excise_amount = float(permit.total_excise_duty or 0)
-            additional_excise_amount = float(permit.total_additional_excise or 0)
-            cess_amount = float(permit.total_education_cess or 0)
+    #         # 2. Calculate Amounts for THIS permit item
+    #         # Using float conversion to be safe, though Decimal is better
+    #         excise_amount = float(permit.total_excise_duty or 0)
+    #         additional_excise_amount = float(permit.total_additional_excise or 0)
+    #         cess_amount = float(permit.total_education_cess or 0)
             
-            total_required_excise = excise_amount
-            total_required_additional = additional_excise_amount
-            total_required_cess = cess_amount
+    #         total_required_excise = excise_amount
+    #         total_required_additional = additional_excise_amount
+    #         total_required_cess = cess_amount
             
             
-            # 3. Check Balances
-            if float(wallet.excise_balance) < total_required_excise:
-                raise Exception(f"Insufficient Excise Wallet Balance. Available: {wallet.excise_balance}, Required: {total_required_excise}")
+    #         # 3. Check Balances
+    #         if float(wallet.excise_balance) < total_required_excise:
+    #             raise Exception(f"Insufficient Excise Wallet Balance. Available: {wallet.excise_balance}, Required: {total_required_excise}")
             
-            if float(wallet.additional_excise_balance) < total_required_additional:
-                 raise Exception(f"Insufficient Additional Excise Wallet Balance. Available: {wallet.additional_excise_balance}, Required: {total_required_additional}")
+    #         if float(wallet.additional_excise_balance) < total_required_additional:
+    #              raise Exception(f"Insufficient Additional Excise Wallet Balance. Available: {wallet.additional_excise_balance}, Required: {total_required_additional}")
                  
-            if float(wallet.education_cess_balance) < total_required_cess:
-                raise Exception(f"Insufficient Education Cess Wallet Balance. Available: {wallet.education_cess_balance}, Required: {total_required_cess}")
+    #         if float(wallet.education_cess_balance) < total_required_cess:
+    #             raise Exception(f"Insufficient Education Cess Wallet Balance. Available: {wallet.education_cess_balance}, Required: {total_required_cess}")
                 
-            # 4. Deduct
-            wallet.excise_balance = float(wallet.excise_balance) - total_required_excise
-            wallet.additional_excise_balance = float(wallet.additional_excise_balance) - total_required_additional
-            wallet.education_cess_balance = float(wallet.education_cess_balance) - total_required_cess
-            wallet.save()
+    #         # 4. Deduct
+    #         wallet.excise_balance = float(wallet.excise_balance) - total_required_excise
+    #         wallet.additional_excise_balance = float(wallet.additional_excise_balance) - total_required_additional
+    #         wallet.education_cess_balance = float(wallet.education_cess_balance) - total_required_cess
+    #         wallet.save()
             
-            # 5. Log Transactions
-            if total_required_excise > 0:
-                WalletTransaction.objects.create(
-                    wallet=wallet, transaction_type='DEBIT', amount=total_required_excise, 
-                    head='EXCISE', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
-                )
-            if total_required_additional > 0:
-                WalletTransaction.objects.create(
-                    wallet=wallet, transaction_type='DEBIT', amount=total_required_additional, 
-                    head='ADDITIONAL_EXCISE', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
-                )
-            if total_required_cess > 0:
-                WalletTransaction.objects.create(
-                    wallet=wallet, transaction_type='DEBIT', amount=total_required_cess, 
-                    head='EDUCATION_CESS', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
-                )
+    #         # 5. Log Transactions
+    #         if total_required_excise > 0:
+    #             WalletTransaction.objects.create(
+    #                 wallet=wallet, transaction_type='DEBIT', amount=total_required_excise, 
+    #                 head='EXCISE', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
+    #             )
+    #         if total_required_additional > 0:
+    #             WalletTransaction.objects.create(
+    #                 wallet=wallet, transaction_type='DEBIT', amount=total_required_additional, 
+    #                 head='ADDITIONAL_EXCISE', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
+    #             )
+    #         if total_required_cess > 0:
+    #             WalletTransaction.objects.create(
+    #                 wallet=wallet, transaction_type='DEBIT', amount=total_required_cess, 
+    #                 head='EDUCATION_CESS', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
+    #             )
                 
 
-        except Exception as e:
-            raise e # Re-raise to stop the transaction/response
+    #     except Exception as e:
+    #         raise e # Re-raise to stop the transaction/response

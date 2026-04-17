@@ -6,6 +6,7 @@ from . import views
 
 
 class EverythingConverter:
+    """Matches any non-empty string including slashes — used for application IDs."""
     regex = '.+'
 
     def to_python(self, value):
@@ -20,15 +21,18 @@ register_converter(EverythingConverter, 'everything')
 app_name = 'company_collaboration'
 
 urlpatterns = [
-    path('brand-owners/', views.list_brand_owners, name='brand-owners'),
-    path('brands/', views.list_brands, name='brands'),
-    path('fee-structure/', views.get_fee_structure, name='fee-structure'),
-    path('apply/', views.create_company_collaboration, name='apply'),
-    path('list/', views.list_company_collaborations, name='list'),
+    # Application lifecycle
+    path('apply/',            views.create_company_collaboration, name='apply'),
+    path('list/',             views.list_company_collaborations,  name='list'),
     path('detail/<everything:application_id>/', views.company_collaboration_detail, name='detail'),
-    path('dashboard-counts/', views.dashboard_counts, name='dashboard-counts'),
-    path('list-by-status/', views.application_group, name='applications-by-status'),
+
+    # Workflow actions  ← NEW
+    # POST body: { "action": "FORWARD|APPROVE|REJECT|RAISE_OBJECTION|RESPOND_OBJECTION|WITHDRAW", "remarks": "..." }
+    path('workflow-action/<everything:application_id>/', views.workflow_action, name='workflow-action'),
+
+    # Dashboard / reporting
+    path('dashboard-counts/', views.dashboard_counts,  name='dashboard-counts'),
+    path('list-by-status/',   views.application_group, name='applications-by-status'),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-

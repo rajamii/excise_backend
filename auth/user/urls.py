@@ -27,6 +27,9 @@ from .views import (
     oic_officer_update,
     oic_officer_set_active,
     oic_officer_delete,
+
+    PasswordResetRequestView,
+    PasswordResetConfirmView,
 )
 
 # ── LicenseeProfile sub-patterns ─────────────────────────────────────────────
@@ -71,4 +74,8 @@ urlpatterns = [
     path('oic/officers/<int:assignment_id>/update/', oic_officer_update, name='oic-officer-update'),
     path('oic/officers/<int:assignment_id>/set-active/', oic_officer_set_active, name='oic-officer-set-active'),
     path('oic/officers/<int:assignment_id>/delete/', oic_officer_delete, name='oic-officer-delete'),
+
+    path('password-reset/', PasswordResetRequestView.as_view(), name='password_reset_request'),
+    path('password-reset-confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
 ]
+

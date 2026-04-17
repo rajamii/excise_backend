@@ -1013,7 +1013,8 @@ class BrandWarehouseUtilizationViewSet(viewsets.ModelViewSet):
         if status_filter:
             queryset = queryset.filter(status=status_filter)
             
-        return queryset.order_by('-date')
+        # Newest first: date desc, then id desc for same-day rows.
+        return queryset.order_by('-date', '-id')
 
 
 class ProductionBatchViewSet(viewsets.ModelViewSet):
