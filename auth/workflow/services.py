@@ -9,7 +9,7 @@ from .models import (
     Transaction, Objection, Rejection
 )
 
-# UI Configuration for Workflow Actions (Moved from Frontend)
+# UI Configuration for Workflow Actions
 ACTION_CONFIGS = {
     'APPROVE': {
         'label': 'Approve',

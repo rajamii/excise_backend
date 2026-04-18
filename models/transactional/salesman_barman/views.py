@@ -141,6 +141,7 @@ def _create_application(request, workflow_id: int, serializer_cls):
     
     serializer = serializer_cls(data=request.data)
     if not serializer.is_valid():
+        print("Validation errors:", serializer.errors)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     with transaction.atomic():
@@ -181,8 +182,8 @@ def _create_application(request, workflow_id: int, serializer_cls):
 
         # 4. Return the *fresh* object (includes generic relations)
         fresh = SalesmanBarmanModel.objects.get(pk=application.pk)
-        fresh_serializer = serializer_cls(fresh)
-        return Response(fresh_serializer.data, status=status.HTTP_201_CREATED)
+    fresh_serializer = serializer_cls(fresh)
+    return Response(fresh_serializer.data, status=status.HTTP_201_CREATED)
 
 
 @api_view(['POST'])
