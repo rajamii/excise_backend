@@ -1467,68 +1467,68 @@ class PerformTransitPermitActionAPIView(views.APIView):
 
 
 
-    def _handle_wallet_deduction(self, user, permit):
-        """
-        Deduct the permit's financial amounts from the user's wallet.
-        Raises exception if insufficient funds.
-        """
-        try:
-            from .models import Wallet, WalletTransaction
+    # def _handle_wallet_deduction(self, user, permit):
+    #     """
+    #     Deduct the permit's financial amounts from the user's wallet.
+    #     Raises exception if insufficient funds.
+    #     """
+    #     try:
+    #         from .models import Wallet, WalletTransaction
             
-            # 1. Get Wallet
-            wallet = Wallet.objects.filter(user=user).first()
-            if not wallet:
-                wallet = Wallet.objects.create(
-                    user=user,
-                    excise_balance=10000000.00, # Default high balance for dev
-                    additional_excise_balance=10000000.00,
-                    education_cess_balance=10000000.00
-                )
+    #         # 1. Get Wallet
+    #         wallet = Wallet.objects.filter(user=user).first()
+    #         if not wallet:
+    #             wallet = Wallet.objects.create(
+    #                 user=user,
+    #                 excise_balance=10000000.00, # Default high balance for dev
+    #                 additional_excise_balance=10000000.00,
+    #                 education_cess_balance=10000000.00
+    #             )
             
-            # 2. Calculate Amounts for THIS permit item
-            # Using float conversion to be safe, though Decimal is better
-            excise_amount = float(permit.total_excise_duty or 0)
-            additional_excise_amount = float(permit.total_additional_excise or 0)
-            cess_amount = float(permit.total_education_cess or 0)
+    #         # 2. Calculate Amounts for THIS permit item
+    #         # Using float conversion to be safe, though Decimal is better
+    #         excise_amount = float(permit.total_excise_duty or 0)
+    #         additional_excise_amount = float(permit.total_additional_excise or 0)
+    #         cess_amount = float(permit.total_education_cess or 0)
             
-            total_required_excise = excise_amount
-            total_required_additional = additional_excise_amount
-            total_required_cess = cess_amount
+    #         total_required_excise = excise_amount
+    #         total_required_additional = additional_excise_amount
+    #         total_required_cess = cess_amount
             
             
-            # 3. Check Balances
-            if float(wallet.excise_balance) < total_required_excise:
-                raise Exception(f"Insufficient Excise Wallet Balance. Available: {wallet.excise_balance}, Required: {total_required_excise}")
+    #         # 3. Check Balances
+    #         if float(wallet.excise_balance) < total_required_excise:
+    #             raise Exception(f"Insufficient Excise Wallet Balance. Available: {wallet.excise_balance}, Required: {total_required_excise}")
             
-            if float(wallet.additional_excise_balance) < total_required_additional:
-                 raise Exception(f"Insufficient Additional Excise Wallet Balance. Available: {wallet.additional_excise_balance}, Required: {total_required_additional}")
+    #         if float(wallet.additional_excise_balance) < total_required_additional:
+    #              raise Exception(f"Insufficient Additional Excise Wallet Balance. Available: {wallet.additional_excise_balance}, Required: {total_required_additional}")
                  
-            if float(wallet.education_cess_balance) < total_required_cess:
-                raise Exception(f"Insufficient Education Cess Wallet Balance. Available: {wallet.education_cess_balance}, Required: {total_required_cess}")
+    #         if float(wallet.education_cess_balance) < total_required_cess:
+    #             raise Exception(f"Insufficient Education Cess Wallet Balance. Available: {wallet.education_cess_balance}, Required: {total_required_cess}")
                 
-            # 4. Deduct
-            wallet.excise_balance = float(wallet.excise_balance) - total_required_excise
-            wallet.additional_excise_balance = float(wallet.additional_excise_balance) - total_required_additional
-            wallet.education_cess_balance = float(wallet.education_cess_balance) - total_required_cess
-            wallet.save()
+    #         # 4. Deduct
+    #         wallet.excise_balance = float(wallet.excise_balance) - total_required_excise
+    #         wallet.additional_excise_balance = float(wallet.additional_excise_balance) - total_required_additional
+    #         wallet.education_cess_balance = float(wallet.education_cess_balance) - total_required_cess
+    #         wallet.save()
             
-            # 5. Log Transactions
-            if total_required_excise > 0:
-                WalletTransaction.objects.create(
-                    wallet=wallet, transaction_type='DEBIT', amount=total_required_excise, 
-                    head='EXCISE', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
-                )
-            if total_required_additional > 0:
-                WalletTransaction.objects.create(
-                    wallet=wallet, transaction_type='DEBIT', amount=total_required_additional, 
-                    head='ADDITIONAL_EXCISE', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
-                )
-            if total_required_cess > 0:
-                WalletTransaction.objects.create(
-                    wallet=wallet, transaction_type='DEBIT', amount=total_required_cess, 
-                    head='EDUCATION_CESS', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
-                )
+    #         # 5. Log Transactions
+    #         if total_required_excise > 0:
+    #             WalletTransaction.objects.create(
+    #                 wallet=wallet, transaction_type='DEBIT', amount=total_required_excise, 
+    #                 head='EXCISE', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
+    #             )
+    #         if total_required_additional > 0:
+    #             WalletTransaction.objects.create(
+    #                 wallet=wallet, transaction_type='DEBIT', amount=total_required_additional, 
+    #                 head='ADDITIONAL_EXCISE', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
+    #             )
+    #         if total_required_cess > 0:
+    #             WalletTransaction.objects.create(
+    #                 wallet=wallet, transaction_type='DEBIT', amount=total_required_cess, 
+    #                 head='EDUCATION_CESS', reference_no=permit.bill_no, description=f'Payment for Permit Item {permit.id}'
+    #             )
                 
 
-        except Exception as e:
-            raise e # Re-raise to stop the transaction/response
+    #     except Exception as e:
+    #         raise e # Re-raise to stop the transaction/response

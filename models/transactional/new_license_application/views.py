@@ -502,6 +502,8 @@ def final_license_detail(request, application_id):
         "validationCode": validation_code,
         "validationPdfUrl": validation_url,
         "validatedViaCode": validated_via_code,
+        "print_count": int(getattr(license_obj, "print_count", 0) or 0) if license_obj else 0,
+        "is_print_fee_paid": bool(getattr(license_obj, "is_print_fee_paid", False)) if license_obj else False,
         "terms": [],
         # Debug/compat fields: the (legacy) codes used to pick terms/title.
         # Frontend can ignore these safely.

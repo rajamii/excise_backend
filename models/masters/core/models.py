@@ -471,12 +471,15 @@ class SupplyChainTimerConfig(models.Model):
     TIMER_UNIT_MINUTE = 'minute'
     TIMER_UNIT_HOUR = 'hour'
     TIMER_UNIT_DAY = 'day'
+    # Note: calendar months vary; treated as 30 days where converted to seconds.
+    TIMER_UNIT_MONTH = 'month'
 
     TIMER_UNIT_CHOICES = [
         (TIMER_UNIT_SECOND, 'Second'),
         (TIMER_UNIT_MINUTE, 'Minute'),
         (TIMER_UNIT_HOUR, 'Hour'),
         (TIMER_UNIT_DAY, 'Day'),
+        (TIMER_UNIT_MONTH, 'Month'),
     ]
 
     code = models.CharField(max_length=100, unique=True)

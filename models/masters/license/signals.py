@@ -8,6 +8,75 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _stage_is_commissioner_approval(stage, *, application_model: str) -> bool:
+    """
+    New license applications: license + wallet_balances (0 balance) are issued only when
+    the workflow stage is a commissioner approval (not OIC / other intermediate approvals).
+    Stage name must reference commissioner and an approval (not rejection).
+    """
+    if not stage:
+        return False
+    name_lower = str(getattr(stage, "name", "") or "").strip().lower()
+    if not name_lower or "reject" in name_lower:
+        return False
+    app = (application_model or "").lower()
+    if app != "newlicenseapplication":
+        return False
+    if "commissioner" not in name_lower and "commisioner" not in name_lower:
+        return False
+    if "approv" not in name_lower:
+        return False
+    return True
+
+
+def _stage_is_awaiting_license_fee_payment(stage, *, application_model: str) -> bool:
+    """
+    New license applications: e.g. workflow stage id 23 — name `awaiting_payment`,
+    label "Awaiting License Fee Payment". Issuing the NA/... license here ensures wallets
+    exist before the licensee pays the license fee (correct licensee_id on first insert).
+    """
+    if not stage:
+        return False
+    name_lower = str(getattr(stage, "name", "") or "").strip().lower()
+    if not name_lower or "reject" in name_lower:
+        return False
+    if (application_model or "").lower() != "newlicenseapplication":
+        return False
+    if name_lower == "awaiting_payment":
+        return True
+    if "awaiting" in name_lower and "payment" in name_lower:
+        return True
+    return False
+
+
+def _stage_should_issue_license(stage, *, application_model: str) -> bool:
+    """
+    Decide when a new Transaction should create a License (NA/... / LA/... / SB/...) and wallet rows.
+
+    New license applications: issue license_id (NA/...) and seed wallet_balances (0 balance) when
+    the workflow reaches commissioner approval and/or "Awaiting License Fee Payment" (`awaiting_payment`).
+
+    Other application types keep the legacy rule: exact stage name "approved".
+    """
+    if not stage:
+        return False
+    name_lower = str(getattr(stage, "name", "") or "").strip().lower()
+    if not name_lower:
+        return False
+    if "reject" in name_lower:
+        return False
+
+    app = (application_model or "").lower()
+    if app == "newlicenseapplication":
+        return (
+            _stage_is_commissioner_approval(stage, application_model=application_model)
+            or _stage_is_awaiting_license_fee_payment(stage, application_model=application_model)
+        )
+
+    return name_lower == "approved"
+
+
 def get_license_valid_up_to(issue_date: date) -> date:
     year = issue_date.year
     if issue_date.month >= 3:  
@@ -26,12 +95,13 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
     if not hasattr(instance, 'stage') or not instance.stage:
         return
 
-    if instance.stage.name != "approved":
-        return
-
     # CRITICAL: Manually resolve the generic relation
     if instance.content_type is None or instance.object_id is None:
         logger.warning(f"Transaction {instance.id} has no content_type or object_id")
+        return
+
+    application_model = str(getattr(instance.content_type, "model", "") or "").lower()
+    if not _stage_should_issue_license(instance.stage, application_model=application_model):
         return
 
     try:
@@ -44,13 +114,34 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
         logger.error(f"Unexpected error resolving application: {e}")
         return
 
-    # Prevent duplicate license
+    # Prevent duplicate license creation; still seed wallets on commissioner / awaiting_payment if missing.
     ct = instance.content_type
 
-    if License.objects.filter(
-        source_content_type=ct,
-        source_object_id=instance.object_id
-    ).exists():
+    existing_license = (
+        License.objects.filter(
+            source_content_type=ct,
+            source_object_id=instance.object_id,
+        )
+        .order_by("-issue_date", "-license_id")
+        .first()
+    )
+    if existing_license:
+        if application_model == "newlicenseapplication" and (
+            _stage_is_commissioner_approval(instance.stage, application_model=application_model)
+            or _stage_is_awaiting_license_fee_payment(instance.stage, application_model=application_model)
+        ):
+            try:
+                from models.transactional.payment.wallet_initializer import (
+                    initialize_wallet_balances_for_license,
+                )
+
+                initialize_wallet_balances_for_license(existing_license)
+            except Exception as wallet_error:
+                logger.error(
+                    "Wallet initialization failed for existing license_id=%s (commissioner/awaiting_payment): %s",
+                    existing_license.license_id,
+                    wallet_error,
+                )
         return
 
     # Map model name → source_type
@@ -176,7 +267,11 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
                 # Determine license type
                 license_type = 'Distillery'  # Default
                 if license_category:
-                    category_name = str(license_category.category_name or '').lower()
+                    category_name = str(
+                        getattr(license_category, "license_category", None)
+                        or getattr(license_category, "category_name", None)
+                        or ""
+                    ).lower()
                     if 'beer' in category_name or 'brewery' in category_name:
                         license_type = 'Brewery'
                 

@@ -169,6 +169,8 @@ class Command(BaseCommand):
             ('Submitted', 'In Use', 'officer_in_charge', 'approve'),
             # Backward-compatible action name used by older UI payloads
             ('Submitted', 'In Use', 'officer_in_charge', 'issue'),
+            # Rejection path (OIC can reject with a reason)
+            ('Submitted', 'Rejected by OIC', 'officer_in_charge', 'reject'),
             ('In Use', 'Production Completed', 'officer_in_charge', 'complete'),
         ]
 

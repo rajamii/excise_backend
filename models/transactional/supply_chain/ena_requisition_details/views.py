@@ -2,14 +2,22 @@ from rest_framework import generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction, models
+from django.db.utils import IntegrityError
 from django.utils import timezone
+from datetime import timedelta
 from decimal import Decimal
 import re
-from .models import EnaRequisitionDetail, RequisitionBulkLiterDetail
+from .models import (
+    EnaRequisitionDetail,
+    RequisitionBulkLiterDetail,
+    RequisitionBulkLiterReviewAudit,
+    EnaRevalidationActivationSchedule,
+)
 from .serializers import EnaRequisitionDetailSerializer, RequisitionBulkLiterDetailSerializer
 from auth.workflow.constants import WORKFLOW_IDS
 from models.transactional.supply_chain.access_control import (
@@ -37,6 +45,108 @@ def _is_oic_user(user):
         or hasattr(user, 'oic_assignment')
         or role_token in {'officerincharge', 'offcierincharge', 'oic'}
     )
+
+
+def _resolve_user_display_name(user, max_len=150):
+    first = str(getattr(user, 'first_name', '') or '').strip()
+    middle = str(getattr(user, 'middle_name', '') or '').strip()
+    last = str(getattr(user, 'last_name', '') or '').strip()
+    name = ' '.join([part for part in [first, middle, last] if part]).strip()
+    if not name:
+        name = str(getattr(user, 'username', '') or '').strip() or 'User'
+    if max_len and len(name) > max_len:
+        return name[:max_len].rstrip()
+    return name
+
+
+def _normalize_stage_token(value: str) -> str:
+    return ''.join(ch for ch in str(value or '').lower() if ch.isalnum())
+
+
+def _is_commissioner_approved_cancellation(cancellation_obj) -> bool:
+    status_token = _normalize_stage_token(getattr(cancellation_obj, 'status', ''))
+    stage_name = ''
+    if getattr(cancellation_obj, 'current_stage', None):
+        stage_name = getattr(cancellation_obj.current_stage, 'name', '')
+    stage_token = _normalize_stage_token(stage_name)
+    merged = f"{status_token} {stage_token}"
+    return 'approved' in merged and 'commissioner' in merged
+
+
+def _is_rejected_cancellation(cancellation_obj) -> bool:
+    status_token = _normalize_stage_token(getattr(cancellation_obj, 'status', ''))
+    stage_name = ''
+    if getattr(cancellation_obj, 'current_stage', None):
+        stage_name = getattr(cancellation_obj.current_stage, 'name', '')
+    stage_token = _normalize_stage_token(stage_name)
+    merged = f"{status_token} {stage_token}"
+    return 'reject' in merged
+
+
+def _parse_permit_tokens(value: str):
+    return [
+        str(token).strip()
+        for token in str(value or '').split(',')
+        if str(token).strip()
+    ]
+
+
+def _approved_cancelled_permit_numbers_for_requisition(requisition_ref_no: str):
+    token = str(requisition_ref_no or '').strip()
+    if not token:
+        return set()
+
+    try:
+        from models.transactional.supply_chain.ena_cancellation_details.models import EnaCancellationDetail
+    except Exception:
+        return set()
+
+    rows = EnaCancellationDetail.objects.filter(
+        models.Q(requisition_ref_no=token) |
+        models.Q(our_ref_no=token)
+    ).select_related('current_stage')
+
+    approved_numbers = set()
+    for row in rows:
+        if not _is_commissioner_approved_cancellation(row):
+            continue
+        cancelled_raw = getattr(row, 'cancelled_permit_numbers', None) or getattr(row, 'cancelled_permit_number', None) or ''
+        for t in _parse_permit_tokens(cancelled_raw):
+            approved_numbers.add(t)
+    return approved_numbers
+
+
+def _cancellation_requested_permit_numbers_for_requisition(requisition_ref_no: str):
+    """
+    Permits that are currently under ENA cancellation workflow (submitted to commissioner)
+    but not yet commissioner-approved.
+
+    These should be treated as locked in BL Arrival entry until the cancellation is finalized.
+    """
+    token = str(requisition_ref_no or '').strip()
+    if not token:
+        return set()
+
+    try:
+        from models.transactional.supply_chain.ena_cancellation_details.models import EnaCancellationDetail
+    except Exception:
+        return set()
+
+    rows = EnaCancellationDetail.objects.filter(
+        models.Q(requisition_ref_no=token) |
+        models.Q(our_ref_no=token)
+    ).select_related('current_stage')
+
+    requested_numbers = set()
+    for row in rows:
+        if _is_rejected_cancellation(row):
+            continue
+        if _is_commissioner_approved_cancellation(row):
+            continue
+        cancelled_raw = getattr(row, 'cancelled_permit_numbers', None) or getattr(row, 'cancelled_permit_number', None) or ''
+        for t in _parse_permit_tokens(cancelled_raw):
+            requested_numbers.add(t)
+    return requested_numbers
 
 
 def _filter_commissioner_visible_requisitions(user, queryset):
@@ -182,19 +292,104 @@ class RequisitionArrivalBulkLiterDetailAPIView(APIView):
     def get(self, request, pk):
         try:
             requisition = self._get_scoped_requisition(request, pk)
-            detail = RequisitionBulkLiterDetail.objects.filter(requisition=requisition).first()
+            scope = str(request.query_params.get('scope', '') or '').strip().upper()
+            rows_qs = RequisitionBulkLiterDetail.objects.filter(requisition=requisition).order_by('submitted_at', 'id')
+            if scope and scope != 'ALL':
+                rows_qs = rows_qs.filter(approval_status=scope)
 
-            if not detail:
+            rows = list(rows_qs)
+            if not rows:
+                cancelled = _approved_cancelled_permit_numbers_for_requisition(getattr(requisition, 'our_ref_no', '') or '')
+                cancel_requested = _cancellation_requested_permit_numbers_for_requisition(getattr(requisition, 'our_ref_no', '') or '')
+                if cancelled or cancel_requested:
+                    permit_statuses = {}
+                    for p in (cancel_requested or set()):
+                        token = str(p).strip()
+                        if token:
+                            permit_statuses[token] = 'CANCEL_REQUESTED'
+                    for p in (cancelled or set()):
+                        token = str(p).strip()
+                        if token:
+                            permit_statuses[token] = 'CANCELLED'
+                    return Response({
+                        'status': 'success',
+                        'data': {
+                            'requisition': requisition.id,
+                            'reference_no': requisition.our_ref_no,
+                            'licensee_id': requisition.licensee_id,
+                            'tanker_count': 0,
+                            'tanker_details': [],
+                            'total_bulk_liter': '0',
+                            'approval_status': '',
+                            'permit_statuses': permit_statuses
+                        }
+                    }, status=status.HTTP_200_OK)
+
                 return Response({
                     'status': 'success',
                     'message': 'No arrival details found.',
                     'data': None
                 }, status=status.HTTP_200_OK)
 
-            serializer = RequisitionBulkLiterDetailSerializer(detail)
+            merged_details = []
+            total_bulk_liter = Decimal('0')
+            permit_statuses = {}
+
+            def _merge_status(existing_status: str, next_status: str) -> str:
+                order = {'APPROVED': 3, 'PENDING': 2, 'REJECTED': 1, '': 0}
+                a = str(existing_status or '').upper()
+                b = str(next_status or '').upper()
+                return b if order.get(b, 0) >= order.get(a, 0) else a
+
+            for row in rows:
+                tanker_rows = row.tanker_details or []
+                if isinstance(tanker_rows, list):
+                    for item in tanker_rows:
+                        if isinstance(item, dict):
+                            permit_no = str(item.get('permit_no') or item.get('permitNo') or '').strip()
+                            status_token = str(row.approval_status or '').upper()
+                            merged_item = {
+                                **item,
+                                'detail_id': row.id,
+                                'approval_status': status_token
+                            }
+                            merged_details.append(merged_item)
+                            try:
+                                total_bulk_liter += Decimal(str(item.get('bulk_liter', '0') or '0'))
+                            except Exception:
+                                pass
+                            if permit_no:
+                                permit_statuses[permit_no] = _merge_status(permit_statuses.get(permit_no, ''), status_token)
+
+            # Mark cancellation-requested permits so UI can lock them immediately after request submission.
+            cancel_requested = _cancellation_requested_permit_numbers_for_requisition(getattr(requisition, 'our_ref_no', '') or '')
+            if cancel_requested:
+                for permit_no in cancel_requested:
+                    token = str(permit_no or '').strip()
+                    if token and token not in permit_statuses:
+                        permit_statuses[token] = 'CANCEL_REQUESTED'
+
+            # Mark commissioner-approved cancelled permits so UI can lock them.
+            cancelled = _approved_cancelled_permit_numbers_for_requisition(getattr(requisition, 'our_ref_no', '') or '')
+            if cancelled:
+                for permit_no in cancelled:
+                    token = str(permit_no or '').strip()
+                    if token:
+                        permit_statuses[token] = 'CANCELLED'
+
+            data = {
+                'requisition': requisition.id,
+                'reference_no': requisition.our_ref_no,
+                'licensee_id': requisition.licensee_id,
+                'tanker_count': len(merged_details),
+                'tanker_details': merged_details,
+                'total_bulk_liter': str(total_bulk_liter),
+                'approval_status': scope if scope and scope != 'ALL' else '',
+                'permit_statuses': permit_statuses
+            }
             return Response({
                 'status': 'success',
-                'data': serializer.data
+                'data': data
             }, status=status.HTTP_200_OK)
 
         except EnaRequisitionDetail.DoesNotExist:
@@ -214,39 +409,184 @@ class RequisitionArrivalBulkLiterDetailAPIView(APIView):
                 hasattr(request.user, 'supply_chain_profile')
                 or hasattr(request.user, 'manufacturing_units')
             )
-            if not is_licensee_user:
+            is_oic_user = _is_oic_user(request.user)
+            # Prefer OIC capabilities when the user matches both shapes.
+            if is_oic_user:
+                is_licensee_user = False
+
+            if not is_licensee_user and not is_oic_user:
                 return Response({
                     'status': 'error',
-                    'message': 'Only licensee users can update arrival details.'
+                    'message': 'Only licensee/OIC users can update arrival details.'
                 }, status=status.HTTP_403_FORBIDDEN)
 
             requisition = self._get_scoped_requisition(request, pk)
 
             payload = request.data.copy()
+            detail_id = payload.get('detail_id') or payload.get('detailId') or payload.get('id')
+            # Remove helper keys before serializer validation.
+            payload.pop('detail_id', None)
+            payload.pop('detailId', None)
+            payload.pop('id', None)
             payload['requisition'] = requisition.id
             payload['reference_no'] = requisition.our_ref_no
             payload['licensee_id'] = requisition.licensee_id
 
-            existing = RequisitionBulkLiterDetail.objects.filter(requisition=requisition).first()
+            existing = None
+            if is_oic_user:
+                if not detail_id:
+                    return Response({
+                        'status': 'error',
+                        'message': 'detail_id is required to edit arrival details.'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                existing = RequisitionBulkLiterDetail.objects.filter(requisition=requisition, pk=detail_id).first()
+                if not existing:
+                    return Response({
+                        'status': 'error',
+                        'message': 'No arrival details found to edit.'
+                    }, status=status.HTTP_404_NOT_FOUND)
+                if existing.approval_status != RequisitionBulkLiterDetail.ApprovalStatus.PENDING:
+                    return Response({
+                        'status': 'error',
+                        'message': 'Only pending arrival details can be edited.'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                # Licensee submission: block re-submission of permits already pending/approved.
+                incoming_rows = payload.get('tanker_details') or []
+                incoming_permits = set()
+                if isinstance(incoming_rows, list):
+                    for row in incoming_rows:
+                        if isinstance(row, dict):
+                            token = str(row.get('permit_no') or row.get('permitNo') or row.get('permit') or '').strip()
+                            if token:
+                                incoming_permits.add(token)
+                if incoming_permits:
+                    cancelled = _approved_cancelled_permit_numbers_for_requisition(getattr(requisition, 'our_ref_no', '') or '')
+                    cancelled_overlap = sorted(incoming_permits.intersection(set(cancelled or set())))
+                    if cancelled_overlap:
+                        return Response({
+                            'status': 'error',
+                            'message': f"Permit(s) cancelled: {', '.join(cancelled_overlap)}."
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+                    cancel_requested = _cancellation_requested_permit_numbers_for_requisition(getattr(requisition, 'our_ref_no', '') or '')
+                    cancel_requested_overlap = sorted(incoming_permits.intersection(set(cancel_requested or set())))
+                    if cancel_requested_overlap:
+                        return Response({
+                            'status': 'error',
+                            'message': f"Permit(s) cancellation already requested: {', '.join(cancel_requested_overlap)}."
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+                    blocked = set()
+                    existing_rows = RequisitionBulkLiterDetail.objects.filter(
+                        requisition=requisition,
+                        approval_status__in=[
+                            RequisitionBulkLiterDetail.ApprovalStatus.PENDING,
+                            RequisitionBulkLiterDetail.ApprovalStatus.APPROVED
+                        ]
+                    )
+                    for prev in existing_rows:
+                        for item in (prev.tanker_details or []):
+                            if isinstance(item, dict):
+                                token = str(item.get('permit_no') or '').strip()
+                                if token:
+                                    blocked.add(token)
+                    overlap = sorted(incoming_permits.intersection(blocked))
+                    if overlap:
+                        return Response({
+                            'status': 'error',
+                            'message': f"Permit(s) already submitted/approved: {', '.join(overlap)}."
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
             serializer = RequisitionBulkLiterDetailSerializer(
                 existing,
                 data=payload,
                 partial=bool(existing)
             )
             serializer.is_valid(raise_exception=True)
-            record = serializer.save(
-                reference_no=requisition.our_ref_no,
-                licensee_id=requisition.licensee_id,
-                approval_status=RequisitionBulkLiterDetail.ApprovalStatus.PENDING,
-                submitted_at=timezone.now(),
-                reviewed_at=None,
-                reviewed_by='',
-                review_remarks=''
-            )
+
+            record = serializer.save()
+
+            # Licensee edits/creates should re-submit for OIC review (reset review info).
+            # OIC edits should keep the record pending and clear any review flags.
+            if is_licensee_user:
+                record.reference_no = requisition.our_ref_no
+                record.licensee_id = requisition.licensee_id
+                record.approval_status = RequisitionBulkLiterDetail.ApprovalStatus.PENDING
+                record.submitted_at = timezone.now()
+                record.reviewed_at = None
+                record.reviewed_by = ''
+                record.review_remarks = ''
+                record.edited_by_oic = False
+                record.edited_at = None
+                record.edited_by = ''
+                record.save(update_fields=[
+                    'reference_no',
+                    'licensee_id',
+                    'approval_status',
+                    'submitted_at',
+                    'reviewed_at',
+                    'reviewed_by',
+                    'review_remarks',
+                    'edited_by_oic',
+                    'edited_at',
+                    'edited_by',
+                    'updated_at'
+                ])
+                try:
+                    RequisitionBulkLiterReviewAudit.objects.update_or_create(
+                        requisition=requisition,
+                        defaults={
+                            'reference_no': requisition.our_ref_no,
+                            'licensee_id': requisition.licensee_id,
+                            'last_status': RequisitionBulkLiterReviewAudit.ReviewStatus.PENDING,
+                            'reviewed_at': None,
+                            'reviewed_by': '',
+                            'review_remarks': ''
+                        }
+                    )
+                except Exception:
+                    pass
+            elif is_oic_user:
+                record.approval_status = RequisitionBulkLiterDetail.ApprovalStatus.PENDING
+                record.reviewed_at = None
+                record.reviewed_by = ''
+                record.review_remarks = ''
+                record.edited_by_oic = True
+                record.edited_at = timezone.now()
+                record.edited_by = _resolve_user_display_name(request.user)
+                record.save(update_fields=[
+                    'approval_status',
+                    'reviewed_at',
+                    'reviewed_by',
+                    'review_remarks',
+                    'edited_by_oic',
+                    'edited_at',
+                    'edited_by',
+                    'updated_at'
+                ])
+                try:
+                    RequisitionBulkLiterReviewAudit.objects.update_or_create(
+                        requisition=requisition,
+                        defaults={
+                            'reference_no': requisition.our_ref_no,
+                            'licensee_id': requisition.licensee_id,
+                            'last_status': RequisitionBulkLiterReviewAudit.ReviewStatus.PENDING,
+                            'reviewed_at': None,
+                            'reviewed_by': '',
+                            'review_remarks': ''
+                        }
+                    )
+                except Exception:
+                    pass
 
             return Response({
                 'status': 'success',
-                'message': 'Arrival details submitted successfully and sent to OIC for approval.',
+                'message': (
+                    'Arrival details updated successfully.'
+                    if is_oic_user
+                    else 'Arrival details submitted successfully and sent to OIC for approval.'
+                ),
                 'data': RequisitionBulkLiterDetailSerializer(record).data
             }, status=status.HTTP_200_OK if existing else status.HTTP_201_CREATED)
 
@@ -260,6 +600,11 @@ class RequisitionArrivalBulkLiterDetailAPIView(APIView):
                 'status': 'error',
                 'message': str(e)
             }, status=status.HTTP_403_FORBIDDEN)
+        except serializers.ValidationError as e:
+            return Response({
+                'status': 'error',
+                'message': e.detail
+            }, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({
                 'status': 'error',
@@ -359,8 +704,13 @@ class RequisitionArrivalBulkLiterDetailsListAPIView(APIView):
                     'reviewed_at': row.reviewed_at.isoformat() if row.reviewed_at else None,
                     'reviewed_by': row.reviewed_by or '',
                     'review_remarks': row.review_remarks or '',
+                    'edited_by_oic': bool(getattr(row, 'edited_by_oic', False)),
+                    'edited_at': row.edited_at.isoformat() if getattr(row, 'edited_at', None) else None,
+                    'edited_by': getattr(row, 'edited_by', '') or '',
                     'arrival_date': row.submitted_at.date().isoformat() if row.submitted_at else (row.updated_at.date().isoformat() if row.updated_at else ''),
                     'requisition_total_quantity': str(getattr(req, 'totalbl', 0) or 0) if req else '0',
+                    'requisition_number_of_permits': int(getattr(req, 'requisiton_number_of_permits', 0) or 0) if req else 0,
+                    'details_permits_number': str(getattr(req, 'details_permits_number', '') or '') if req else '',
                     'distillery_name': (getattr(req, 'lifted_from_distillery_name', '') or '') if req else '',
                     'approval_date': getattr(req, 'approval_date', None) if req else None,
                 })
@@ -392,6 +742,13 @@ class RequisitionArrivalBulkLiterReviewAPIView(APIView):
                     'message': 'Invalid action. Use APPROVE or REJECT.'
                 }, status=status.HTTP_400_BAD_REQUEST)
 
+            permit_no = str(
+                request.data.get('permit_no')
+                or request.data.get('permitNo')
+                or request.data.get('permit')
+                or ''
+            ).strip()
+
             requisitions = scope_by_profile_or_workflow(
                 request.user,
                 EnaRequisitionDetail.objects.all(),
@@ -403,16 +760,198 @@ class RequisitionArrivalBulkLiterReviewAPIView(APIView):
                 requisition_id__in=requisitions.values_list('id', flat=True)
             )
 
+            if action == 'APPROVE':
+                requested_total_bl = Decimal('0')
+                requisition = getattr(detail, 'requisition', None)
+                if requisition is not None:
+                    try:
+                        requested_total_bl = Decimal(str(getattr(requisition, 'totalbl', '0') or '0'))
+                    except Exception:
+                        requested_total_bl = Decimal('0')
+
+                # Partial permit-wise approvals allowed: ensure the submitted total does not exceed requisition total.
+                if requested_total_bl > 0:
+                    try:
+                        actual_total_bl = Decimal(str(getattr(detail, 'total_bulk_liter', '0') or '0'))
+                    except Exception:
+                        actual_total_bl = Decimal('0')
+
+                    if actual_total_bl.quantize(Decimal('0.01')) > requested_total_bl.quantize(Decimal('0.01')):
+                        return Response({
+                            'status': 'error',
+                            'message': (
+                                f"Cannot approve: total bulk liter ({actual_total_bl}) cannot exceed requisition total "
+                                f"({requested_total_bl})."
+                            )
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
             remarks = str(request.data.get('remarks', '') or '').strip()
+
+            # Permit-wise review: allow OIC to approve/reject a single permit from a multi-permit submission.
+            if permit_no:
+                tanker_rows = detail.tanker_details or []
+                selected_rows = []
+                remaining_rows = []
+                for item in tanker_rows:
+                    if not isinstance(item, dict):
+                        continue
+                    token = str(item.get('permit_no') or item.get('permitNo') or item.get('permit') or '').strip()
+                    if token == permit_no:
+                        selected_rows.append(item)
+                    else:
+                        remaining_rows.append(item)
+
+                if not selected_rows:
+                    return Response({
+                        'status': 'error',
+                        'message': f'Permit {permit_no} not found in this submission.'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+                reviewed_status = (
+                    RequisitionBulkLiterDetail.ApprovalStatus.APPROVED
+                    if action == 'APPROVE'
+                    else RequisitionBulkLiterDetail.ApprovalStatus.REJECTED
+                )
+
+                def _sum_bulk_liter(rows):
+                    total = Decimal('0')
+                    for r in rows:
+                        if isinstance(r, dict):
+                            try:
+                                total += Decimal(str(r.get('bulk_liter', '0') or '0'))
+                            except Exception:
+                                pass
+                    return total
+
+                now = timezone.now()
+                try:
+                    reviewed = RequisitionBulkLiterDetail.objects.create(
+                        requisition=detail.requisition,
+                        reference_no=detail.reference_no,
+                        licensee_id=detail.licensee_id,
+                        tanker_count=len(selected_rows),
+                        tanker_details=selected_rows,
+                        total_bulk_liter=_sum_bulk_liter(selected_rows),
+                        approval_status=reviewed_status,
+                        submitted_at=detail.submitted_at or now,
+                        reviewed_at=now,
+                        reviewed_by=_resolve_user_display_name(request.user),
+                        review_remarks=remarks,
+                        edited_by_oic=bool(getattr(detail, 'edited_by_oic', False)),
+                        edited_at=getattr(detail, 'edited_at', None),
+                        edited_by=getattr(detail, 'edited_by', '') or '',
+                    )
+                except IntegrityError as e:
+                    msg = str(e)
+                    if 'reqution_bulk_liter_details_requisition_id_key' in msg or ('requisition_id' in msg and 'unique' in msg.lower()):
+                        return Response({
+                            'status': 'error',
+                            'message': (
+                                "Database schema is outdated (unique constraint on requisition_id still exists). "
+                                "Run `python manage.py migrate ena_requisition_details` to apply "
+                                "migration `0006_drop_bulk_liter_requisition_unique`, then retry."
+                            )
+                        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                    raise
+
+                # Keep the original record pending for any remaining permits; delete if empty.
+                if remaining_rows:
+                    detail.tanker_details = remaining_rows
+                    detail.tanker_count = len(remaining_rows)
+                    detail.total_bulk_liter = _sum_bulk_liter(remaining_rows)
+                    detail.approval_status = RequisitionBulkLiterDetail.ApprovalStatus.PENDING
+                    detail.reviewed_at = None
+                    detail.reviewed_by = ''
+                    detail.review_remarks = ''
+                    detail.save(update_fields=[
+                        'tanker_details',
+                        'tanker_count',
+                        'total_bulk_liter',
+                        'approval_status',
+                        'reviewed_at',
+                        'reviewed_by',
+                        'review_remarks',
+                        'updated_at'
+                    ])
+                else:
+                    detail.delete()
+
+                # Update audit to reflect overall review state of the requisition.
+                requisition = getattr(reviewed, 'requisition', None)
+                if requisition is not None:
+                    try:
+                        pending_exists = RequisitionBulkLiterDetail.objects.filter(
+                            requisition=requisition,
+                            approval_status=RequisitionBulkLiterDetail.ApprovalStatus.PENDING
+                        ).exists()
+                        rejected_exists = RequisitionBulkLiterDetail.objects.filter(
+                            requisition=requisition,
+                            approval_status=RequisitionBulkLiterDetail.ApprovalStatus.REJECTED
+                        ).exists()
+                        last_status = (
+                            RequisitionBulkLiterReviewAudit.ReviewStatus.PENDING
+                            if pending_exists
+                            else (
+                                RequisitionBulkLiterReviewAudit.ReviewStatus.REJECTED
+                                if rejected_exists
+                                else RequisitionBulkLiterReviewAudit.ReviewStatus.APPROVED
+                            )
+                        )
+                        RequisitionBulkLiterReviewAudit.objects.update_or_create(
+                            requisition=requisition,
+                            defaults={
+                                'reference_no': reviewed.reference_no,
+                                'licensee_id': reviewed.licensee_id,
+                                'last_status': last_status,
+                                'reviewed_at': reviewed.reviewed_at,
+                                'reviewed_by': reviewed.reviewed_by,
+                                'review_remarks': reviewed.review_remarks
+                            }
+                        )
+                    except Exception:
+                        pass
+
+                return Response({
+                    'status': 'success',
+                    'message': (
+                        f'Permit {permit_no} approved successfully.'
+                        if action == 'APPROVE'
+                        else f'Permit {permit_no} rejected successfully.'
+                    ),
+                    'data': RequisitionBulkLiterDetailSerializer(reviewed).data
+                }, status=status.HTTP_200_OK)
+
+            # Whole-record review (legacy / single-permit submissions).
             detail.approval_status = (
                 RequisitionBulkLiterDetail.ApprovalStatus.APPROVED
                 if action == 'APPROVE'
                 else RequisitionBulkLiterDetail.ApprovalStatus.REJECTED
             )
             detail.reviewed_at = timezone.now()
-            detail.reviewed_by = str(getattr(request.user, 'username', '') or '')
+            detail.reviewed_by = _resolve_user_display_name(request.user)
             detail.review_remarks = remarks
+
             detail.save(update_fields=['approval_status', 'reviewed_at', 'reviewed_by', 'review_remarks', 'updated_at'])
+            requisition = getattr(detail, 'requisition', None)
+            if requisition is not None:
+                try:
+                    RequisitionBulkLiterReviewAudit.objects.update_or_create(
+                        requisition=requisition,
+                        defaults={
+                            'reference_no': detail.reference_no,
+                            'licensee_id': detail.licensee_id,
+                            'last_status': (
+                                RequisitionBulkLiterReviewAudit.ReviewStatus.APPROVED
+                                if action == 'APPROVE'
+                                else RequisitionBulkLiterReviewAudit.ReviewStatus.REJECTED
+                            ),
+                            'reviewed_at': detail.reviewed_at,
+                            'reviewed_by': detail.reviewed_by,
+                            'review_remarks': detail.review_remarks
+                        }
+                    )
+                except Exception:
+                    pass
 
             return Response({
                 'status': 'success',
@@ -501,6 +1040,93 @@ class PerformRequisitionActionAPIView(APIView):
         token = ''.join(ch for ch in str(stage_name or '').lower() if ch.isalnum())
         return (
             ('forward' in token and 'payslip' in token and ('permitsection' in token or 'permit' in token))
+        )
+
+    def _normalize_stage_token(self, value: str) -> str:
+        return ''.join(ch for ch in str(value or '').lower() if ch.isalnum())
+
+    def _is_final_approved_stage(self, stage) -> bool:
+        stage_name = str(getattr(stage, 'name', '') or '')
+        token = self._normalize_stage_token(stage_name)
+        if not token:
+            return False
+        if 'reject' in token:
+            return False
+        if 'approv' not in token:
+            return False
+
+        if bool(getattr(stage, 'is_final', False)):
+            return True
+
+        try:
+            from auth.workflow.models import WorkflowTransition
+
+            has_outgoing = WorkflowTransition.objects.filter(from_stage=stage).exists()
+            return not has_outgoing
+        except Exception:
+            return False
+
+    def _resolve_revalidation_activation_delay_seconds(self) -> int:
+        """
+        Delay after requisition approval before auto-creating revalidation.
+        Source: public.timer (SupplyChainTimerConfig) code=ENA_REVALIDATION_ACTIVATION
+        """
+        default_seconds = 10
+        try:
+            from models.masters.core.models import SupplyChainTimerConfig
+
+            cfg = (
+                SupplyChainTimerConfig.objects
+                .filter(code='ENA_REVALIDATION_ACTIVATION', is_active=True)
+                .order_by('-updated_at', '-id')
+                .first()
+            )
+            if not cfg:
+                return default_seconds
+
+            unit = str(getattr(cfg, 'delay_unit', '') or '').lower().strip()
+            value = int(getattr(cfg, 'delay_value', 0) or 0)
+            if value < 0:
+                value = 0
+
+            if unit.endswith('s'):
+                unit = unit[:-1]
+            unit_aliases = {
+                'sec': SupplyChainTimerConfig.TIMER_UNIT_SECOND,
+                'secs': SupplyChainTimerConfig.TIMER_UNIT_SECOND,
+                'min': SupplyChainTimerConfig.TIMER_UNIT_MINUTE,
+                'mins': SupplyChainTimerConfig.TIMER_UNIT_MINUTE,
+                'hr': SupplyChainTimerConfig.TIMER_UNIT_HOUR,
+                'hrs': SupplyChainTimerConfig.TIMER_UNIT_HOUR,
+                'mon': getattr(SupplyChainTimerConfig, 'TIMER_UNIT_MONTH', 'month'),
+                'mos': getattr(SupplyChainTimerConfig, 'TIMER_UNIT_MONTH', 'month'),
+            }
+            unit = unit_aliases.get(unit, unit)
+
+            multipliers = {
+                SupplyChainTimerConfig.TIMER_UNIT_SECOND: 1,
+                SupplyChainTimerConfig.TIMER_UNIT_MINUTE: 60,
+                SupplyChainTimerConfig.TIMER_UNIT_HOUR: 60 * 60,
+                SupplyChainTimerConfig.TIMER_UNIT_DAY: 24 * 60 * 60,
+                getattr(SupplyChainTimerConfig, 'TIMER_UNIT_MONTH', 'month'): 30 * 24 * 60 * 60,
+            }
+            multiplier = multipliers.get(unit, 1)
+            return max(0, value * multiplier)
+        except Exception:
+            return default_seconds
+
+    def _schedule_revalidation_activation(self, requisition, approved_at):
+        delay_seconds = self._resolve_revalidation_activation_delay_seconds()
+        due_at = approved_at + timedelta(seconds=delay_seconds)
+        EnaRevalidationActivationSchedule.objects.update_or_create(
+            requisition=requisition,
+            defaults={
+                'requisition_ref_no': str(getattr(requisition, 'our_ref_no', '') or ''),
+                'approval_date': approved_at,
+                'activation_due_at': due_at,
+                'status': EnaRevalidationActivationSchedule.STATUS_PENDING,
+                'notes': '',
+            }
         )
 
     def _resolve_stage_for_requisition(self, requisition):
@@ -766,6 +1392,12 @@ class PerformRequisitionActionAPIView(APIView):
                     # from models.masters.supply_chain.status_master.models import StatusMaster # Removed
                     new_stage_name = target_transition.to_stage.name
                     requisition.status = new_stage_name
+
+                    approved_at = None
+                    if action == 'APPROVE' and self._is_final_approved_stage(target_transition.to_stage):
+                        approved_at = timezone.now()
+                        requisition.approval_date = approved_at
+
                     if action == 'REJECT':
                         requisition.rejected_by_role = str(getattr(getattr(request.user, 'role', None), 'name', '') or '').strip()
                         requisition.cancellation_reason = remarks
@@ -777,7 +1409,10 @@ class PerformRequisitionActionAPIView(APIView):
                     # if status_obj:
                     #     requisition.status_code = status_obj.status_code
 
-                    requisition.save() # status/rejected_by_role/cancellation_reason update
+                    requisition.save() # status/rejected_by_role/cancellation_reason/approval_date update
+
+                    if approved_at is not None:
+                        self._schedule_revalidation_activation(requisition=requisition, approved_at=approved_at)
 
                     wallet_result = None
                     if action == 'APPROVE' and self._is_forwarded_payslip_stage(new_stage_name):

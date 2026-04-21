@@ -7,6 +7,10 @@ from models.masters.core.models import District, Subdivision
 from captcha.models import CaptchaStore
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
+from django.contrib.auth import get_user_model
+from django.db import transaction
+
+User = get_user_model()
 
 # Fields that are set once at creation and must never change afterwards
 IMMUTABLE_PROFILE_FIELDS = ('pan_number')
@@ -64,8 +68,10 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_panNumber(self, obj):
         try:
-            profile = getattr(obj, 'licensee_profile', None)
-            return getattr(profile, 'pan_number', None)
+            # Create a savepoint. If this fails, the main transaction survives!
+            with transaction.atomic():
+                profile = getattr(obj, 'licensee_profile', None)
+                return getattr(profile, 'pan_number', None)
         except (DatabaseError, ProgrammingError):
             # Older databases may not yet have the full licensee_profile schema.
             # Do not fail /auth/users/me/ for login/session bootstrap in that case.
@@ -499,3 +505,31 @@ class OICOfficerAssignmentSerializer(serializers.ModelSerializer):
         first_name = str(getattr(obj.officer, 'first_name', '') or '').strip()
         last_name = str(getattr(obj.officer, 'last_name', '') or '').strip()
         return f"{first_name} {last_name}".strip()
+    
+class PasswordResetRequestSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        if not CustomUser.objects.filter(email=value).exists():
+            raise serializers.ValidationError("No user is associated with this email address.")
+        return value
+    
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    new_password = serializers.CharField(write_only=True, min_length=8)
+    uidb64 = serializers.CharField(write_only=True)
+    token = serializers.CharField(write_only=True)
+
+    def to_internal_value(self, data):
+        # Convert QueryDict or dict-like object to a standard mutable dict
+        incoming = dict(data.items()) if hasattr(data, 'items') else dict(data)
+        
+        # The djangorestframework-camel-case parser converts 'uidb64' to 'uidb_64'.
+        # We map it back so the serializer recognizes it.
+        if 'uidb_64' in incoming and 'uidb64' not in incoming:
+            incoming['uidb64'] = incoming.pop('uidb_64')
+            
+        # Optional safeguard: If frontend ever sends camelCase 'newPassword' instead of 'new_password'
+        if 'newPassword' in incoming and 'new_password' not in incoming:
+            incoming['new_password'] = incoming.pop('newPassword')
+
+        return super().to_internal_value(incoming)

@@ -1427,6 +1427,9 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
+        if normalized_action == 'reject' and not str(remarks or '').strip():
+            return Response({'error': 'Rejection reason is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
         transitions = WorkflowTransition.objects.filter(
             workflow=instance.workflow,
             from_stage=instance.current_stage
@@ -1460,6 +1463,11 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                     getattr(selected_transition.from_stage, "id", None),
                 )
                 return Response({'error': 'Stage changed, please retry.'}, status=status.HTTP_409_CONFLICT)
+
+            if normalized_action == 'reject':
+                instance.rejection_reason = str(remarks or '').strip()
+                instance.rejected_at = timezone.now()
+                instance.rejected_by = request.user
             
             instance.current_stage = selected_transition.to_stage
             instance.save()
@@ -2975,6 +2983,20 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                     if value < 0:
                         value = 0
 
+                    if unit.endswith('s'):
+                        unit = unit[:-1]
+                    unit_aliases = {
+                        'sec': SupplyChainTimerConfig.TIMER_UNIT_SECOND,
+                        'secs': SupplyChainTimerConfig.TIMER_UNIT_SECOND,
+                        'min': SupplyChainTimerConfig.TIMER_UNIT_MINUTE,
+                        'mins': SupplyChainTimerConfig.TIMER_UNIT_MINUTE,
+                        'hr': SupplyChainTimerConfig.TIMER_UNIT_HOUR,
+                        'hrs': SupplyChainTimerConfig.TIMER_UNIT_HOUR,
+                        'mon': getattr(SupplyChainTimerConfig, 'TIMER_UNIT_MONTH', 'month'),
+                        'mos': getattr(SupplyChainTimerConfig, 'TIMER_UNIT_MONTH', 'month'),
+                    }
+                    unit = unit_aliases.get(unit, unit)
+
                     if unit == SupplyChainTimerConfig.TIMER_UNIT_MINUTE:
                         deadline_minutes = value
                     elif unit == SupplyChainTimerConfig.TIMER_UNIT_HOUR:
@@ -2983,6 +3005,8 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                         deadline_minutes = int(round(value / 60))
                     elif unit == SupplyChainTimerConfig.TIMER_UNIT_DAY:
                         deadline_minutes = value * 24 * 60
+                    elif unit == getattr(SupplyChainTimerConfig, 'TIMER_UNIT_MONTH', 'month'):
+                        deadline_minutes = value * 30 * 24 * 60
             except Exception:
                 deadline_minutes = default_deadline_minutes
 

@@ -39,7 +39,181 @@ def _resolve_approved_license_id(raw_value: str) -> str:
         if hit and hit.license_id:
             return str(hit.license_id).strip()
 
+    # Applicant username (e.g. legacy wallet rows keyed by user id) → latest active new license.
+    try:
+        from auth.user.models import CustomUser
+    except Exception:
+        CustomUser = None
+    if CustomUser:
+        user = CustomUser.objects.filter(username__iexact=value).first()
+        if user:
+            hit = (
+                active_qs.filter(applicant=user, license_id__istartswith="NA/")
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+            hit = (
+                active_qs.filter(applicant=user, source_type="new_license_application")
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+
+    # Legacy supply-chain profile / unit stored a non-NA id (e.g. TH...) before license was issued.
+    try:
+        from models.masters.supply_chain.profile.models import (
+            SupplyChainUserProfile,
+            UserManufacturingUnit,
+        )
+    except Exception:
+        SupplyChainUserProfile = None
+        UserManufacturingUnit = None
+
+    if SupplyChainUserProfile:
+        prof = (
+            SupplyChainUserProfile.objects.filter(licensee_id=value)
+            .select_related("user")
+            .first()
+        )
+        if prof and getattr(prof, "user_id", None):
+            hit = (
+                active_qs.filter(
+                    applicant_id=prof.user_id,
+                    license_id__istartswith="NA/",
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+            hit = (
+                active_qs.filter(
+                    applicant_id=prof.user_id, source_type="new_license_application"
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+
+    if UserManufacturingUnit:
+        unit = (
+            UserManufacturingUnit.objects.filter(licensee_id=value)
+            .select_related("user")
+            .first()
+        )
+        if unit and getattr(unit, "user_id", None):
+            hit = (
+                active_qs.filter(
+                    applicant_id=unit.user_id,
+                    license_id__istartswith="NA/",
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+            hit = (
+                active_qs.filter(
+                    applicant_id=unit.user_id, source_type="new_license_application"
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+
+    # Direct match: wallet row used applicant username (TH...) but profile was later updated to NA/...
+    # so SupplyChainUserProfile no longer has licensee_id=TH. Join License.applicant.username.
+    if CustomUser and "/" not in value:
+        hit = (
+            License.objects.filter(
+                applicant__username__iexact=value,
+                is_active=True,
+                license_id__istartswith="NA/",
+            )
+            .order_by("-issue_date", "-license_id")
+            .first()
+        )
+        if hit and hit.license_id:
+            return str(hit.license_id).strip()
+        hit = (
+            License.objects.filter(
+                source_type="new_license_application",
+                applicant__username__iexact=value,
+            )
+            .order_by("-is_active", "-issue_date", "-license_id")
+            .first()
+        )
+        if hit and hit.license_id:
+            return str(hit.license_id).strip()
+
+    # Numeric primary key passed instead of username (some clients send user id).
+    if CustomUser and value.isdigit():
+        hit = (
+            active_qs.filter(
+                applicant_id=int(value),
+                license_id__istartswith="NA/",
+            )
+            .order_by("-issue_date", "-license_id")
+            .first()
+        )
+        if hit and hit.license_id:
+            return str(hit.license_id).strip()
+        hit = (
+            active_qs.filter(
+                applicant_id=int(value),
+                source_type="new_license_application",
+            )
+            .order_by("-issue_date", "-license_id")
+            .first()
+        )
+        if hit and hit.license_id:
+            return str(hit.license_id).strip()
+
+    # Last resort: include inactive licenses for the same applicant + username.
+    if CustomUser and "/" not in value:
+        user = CustomUser.objects.filter(username__iexact=value).first()
+        if user:
+            hit = (
+                License.objects.filter(
+                    applicant=user,
+                    license_id__istartswith="NA/",
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+            hit = (
+                License.objects.filter(
+                    applicant=user, source_type="new_license_application"
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+
     return value
+
+
+def _resolve_wallet_row_licensee_id(licensee_id: str, user_id: str = "") -> str:
+    """
+    Resolve licensee_id for a wallet row: try licensee_id, then user_id (often same as username).
+    """
+    raw_lic = str(licensee_id or "").strip()
+    raw_uid = str(user_id or "").strip()
+    for candidate in (raw_lic, raw_uid):
+        if not candidate:
+            continue
+        resolved = _resolve_approved_license_id(candidate)
+        if resolved and "/" in resolved:
+            return resolved
+    return _resolve_approved_license_id(raw_lic) or raw_lic
 
 def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = "") -> str:
     value = str(license_id_value or "").strip()
@@ -89,7 +263,7 @@ def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = 
 
     return str(fallback or "").strip()
 
-
+# Main Table for storing payment gateway parameters
 class PaymentGatewayParameter(models.Model):
     sl_no = models.IntegerField(primary_key=True)
     payment_gateway_name = models.CharField(max_length=50)
@@ -103,12 +277,12 @@ class PaymentGatewayParameter(models.Model):
 
     class Meta:
         managed = False
-        db_table = "eabgari_payment_gateway_parameters"
+        db_table = "sems_payment_gateway_parameters"
 
     def __str__(self):
         return f"{self.sl_no} - {self.payment_gateway_name}"
 
-
+# Formerly eAbgari_Payment_Trsansaction_Billdesk				
 class PaymentBilldeskTransaction(models.Model):
     utr = models.CharField(max_length=100, primary_key=True)
     transaction_date = models.DateTimeField(default=timezone.now)
@@ -170,17 +344,17 @@ class PaymentBilldeskTransaction(models.Model):
 
     class Meta:
         managed = False
-        db_table = "eabgari_payment_trsansaction_billdesk"
+        db_table = "sems_payment_transaction_billdesk"
 
     def __str__(self):
         return f"{self.utr} ({self.payment_status})"
 
-
-class PaymentHoaSplit(models.Model):
+# Formerly eAbgari_Payment_Send_HOA
+class PaymentHeadOfAccount(models.Model):
     id = models.BigAutoField(primary_key=True)
     transaction_id_no = models.CharField(max_length=50)
     head_of_account = models.CharField(max_length=50)
-    payer_id = models.CharField(max_length=50)
+    # payer_id = models.CharField(max_length=50)
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     payment_module_code = models.CharField(max_length=20, null=True, blank=True)
     requisition_id_no = models.CharField(max_length=50, null=True, blank=True)
@@ -189,78 +363,25 @@ class PaymentHoaSplit(models.Model):
 
     class Meta:
         managed = False
-        db_table = "eabgari_payment_send_hoa"
+        db_table = "sems_payment_send_hoa"
 
 
-class PaymentStatusMasterBilldesk(models.Model):
-    authstatus = models.CharField(max_length=10, primary_key=True)
-    authstatus_description = models.CharField(max_length=500)
-    payment_status = models.CharField(max_length=1)
-    created_date = models.DateTimeField(default=timezone.now)
+# class PaymentStatusMasterBilldesk(models.Model):
+    # authstatus = models.CharField(max_length=10, primary_key=True)
+    # authstatus_description = models.CharField(max_length=500)
+    # payment_status = models.CharField(max_length=1)
+    # created_date = models.DateTimeField(default=timezone.now)
 
-    class Meta:
-        managed = False
-        db_table = "eabgari_payment_status_master_billdesk"
+    # class Meta:
+    #     managed = False
+    #     db_table = "eabgari_payment_status_master_billdesk"
 
-    def __str__(self):
-        return f"{self.authstatus} -> {self.payment_status}"
-
-
-class PaymentBilldeskFdrParameter(models.Model):
-    id = models.BigAutoField(primary_key=True)
-    payment_module_code = models.CharField(max_length=20)
-    requisition_id_no = models.CharField(max_length=50)
-    request_additionalinfo1 = models.CharField(max_length=200, null=True, blank=True)
-    request_additionalinfo2 = models.CharField(max_length=200, null=True, blank=True)
-    request_additionalinfo3 = models.CharField(max_length=200, null=True, blank=True)
-    request_additionalinfo4 = models.CharField(max_length=200, null=True, blank=True)
-    request_additionalinfo5 = models.CharField(max_length=200, null=True, blank=True)
-    request_additionalinfo6 = models.CharField(max_length=200, null=True, blank=True)
-    request_additionalinfo7 = models.CharField(max_length=200, null=True, blank=True)
-    created_date = models.DateTimeField(default=timezone.now)
-    created_by = models.CharField(max_length=50, null=True, blank=True)
-
-    class Meta:
-        managed = False
-        db_table = "eabgari_payment_billdesk_fdr_parameters"
+    # def __str__(self):
+    #     return f"{self.authstatus} -> {self.payment_status}"
 
 
-class PaymentWalletMaster(models.Model):
-    id = models.BigAutoField(primary_key=True)
-    licensee_id_no = models.CharField(max_length=50)
-    head_of_account = models.CharField(max_length=50)
-    wallet_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
-    created_date = models.DateTimeField(default=timezone.now)
-    modified_date = models.DateTimeField(null=True, blank=True)
 
-    class Meta:
-        managed = False
-        db_table = "eabgari_pay_wallet_master"
-
-
-class PaymentWalletTransaction(models.Model):
-    id = models.BigAutoField(primary_key=True)
-    implementing_state_code = models.CharField(max_length=10, default="28")
-    wallet_transaction_date = models.DateTimeField(default=timezone.now)
-    wallet_transaction_type = models.CharField(max_length=1)
-    licensee_id_no = models.CharField(max_length=50)
-    head_of_account = models.CharField(max_length=50)
-    transaction_amount = models.DecimalField(max_digits=18, decimal_places=2)
-    transaction_reference_number = models.CharField(max_length=100)
-    wallet_transaction_status = models.CharField(max_length=1, default="Y")
-    initialization_flag = models.CharField(max_length=1, default="T")
-    bank_utr = models.CharField(max_length=100, null=True, blank=True)
-    payment_module_code = models.CharField(max_length=20, null=True, blank=True)
-    transaction_remarks = models.CharField(max_length=500, null=True, blank=True)
-    user_id = models.CharField(max_length=50, null=True, blank=True)
-    opr_date = models.DateTimeField(default=timezone.now)
-
-    class Meta:
-        managed = False
-        db_table = "eabgari_pay_wallet_transaction"
-
-
-class PaymentHeadOfAccount(models.Model):
+class MasterHeadOfAccount(models.Model):
     head_of_account = models.CharField(max_length=50, primary_key=True)
     sl_no = models.BigIntegerField(unique=True, null=True, blank=True)
     major_head = models.CharField(max_length=10)
@@ -277,13 +398,13 @@ class PaymentHeadOfAccount(models.Model):
 
     class Meta:
         managed = False
-        db_table = "eabgari_master_head_of_accounts"
+        db_table = "sems_master_head_of_account"
 
     def __str__(self):
         return self.head_of_account
 
 
-class PaymentModule(models.Model):
+class MasterPaymentModule(models.Model):
     module_code = models.CharField(max_length=20, primary_key=True)
     module_desc = models.CharField(max_length=200)
     visibility_status = models.CharField(max_length=1, default="Y")
@@ -297,7 +418,7 @@ class PaymentModule(models.Model):
 
     class Meta:
         managed = False
-        db_table = "eabgari_master_module"
+        db_table = "sems_master_payment_module"
 
     def __str__(self):
         return f"{self.module_code} - {self.module_desc}"
@@ -306,7 +427,7 @@ class PaymentModule(models.Model):
 class PaymentModuleHoa(models.Model):
     id = models.BigAutoField(primary_key=True)
     module_code = models.ForeignKey(
-        PaymentModule,
+        MasterPaymentModule,
         on_delete=models.RESTRICT,
         db_column="module_code",
         to_field="module_code",
@@ -317,33 +438,14 @@ class PaymentModuleHoa(models.Model):
         db_column="head_of_account",
         to_field="head_of_account",
     )
-    user_id = models.CharField(max_length=50, null=True, blank=True)
+    # user_id = models.CharField(max_length=50, null=True, blank=True)
     opr_date = models.DateTimeField(default=timezone.now)
     is_active = models.CharField(max_length=1, default="Y")
     created_date = models.DateTimeField(default=timezone.now)
 
     class Meta:
         managed = False
-        db_table = "eabgari_module_hoa"
-
-
-class PaymentWalletTransactionHistory(models.Model):
-    wallet_txn_id = models.BigAutoField(primary_key=True)
-    user_id = models.CharField(max_length=50)
-    transaction_type = models.CharField(max_length=200)
-    amount = models.DecimalField(max_digits=18, decimal_places=2)
-    reference_id = models.CharField(max_length=100)
-    status = models.CharField(max_length=50)
-    created_at = models.DateTimeField(default=timezone.now)
-    licensee_id = models.CharField(max_length=50, null=True, blank=True)
-    approved_by = models.CharField(max_length=50, null=True, blank=True)
-    permitnumber = models.CharField(max_length=100, null=True, blank=True)
-    last_updated_date = models.DateTimeField(null=True, blank=True)
-    remarks = models.CharField(max_length=500, null=True, blank=True)
-
-    class Meta:
-        managed = False
-        db_table = "wallet_transaction_history"
+        db_table = "sems_module_hoa"
 
 
 class WalletBalance(models.Model):
@@ -365,6 +467,32 @@ class WalletBalance(models.Model):
     class Meta:
         managed = False
         db_table = "wallet_balances"
+
+    def save(self, *args, **kwargs):
+        """
+        Always persist wallet rows under the canonical issued license_id (NA/...), not legacy
+        username or profile codes (TH..., etc.). Uses user_id when licensee_id alone cannot map
+        (e.g. profile already updated to NA/...).
+        """
+        merged = _resolve_wallet_row_licensee_id(
+            self.licensee_id,
+            getattr(self, "user_id", "") or "",
+        )
+        if merged:
+            self.licensee_id = merged
+        self.module_type = _resolve_module_type_from_license_id(
+            self.licensee_id,
+            fallback=self.module_type or "other",
+        )
+        # Partial updates (e.g. only balances) must still persist normalized licensee_id/module_type.
+        uf = kwargs.get("update_fields")
+        if uf is not None:
+            uf = list(uf)
+            for name in ("licensee_id", "module_type"):
+                if name not in uf:
+                    uf.append(name)
+            kwargs["update_fields"] = uf
+        super().save(*args, **kwargs)
 
 
 class WalletTransaction(models.Model):
@@ -398,9 +526,19 @@ class WalletTransaction(models.Model):
         db_table = "wallet_transactions"
 
     def save(self, *args, **kwargs):
-        self.licensee_id = _resolve_approved_license_id(self.licensee_id)
+        self.licensee_id = _resolve_wallet_row_licensee_id(
+            self.licensee_id,
+            getattr(self, "user_id", "") or "",
+        )
         self.module_type = _resolve_module_type_from_license_id(
             self.licensee_id,
             fallback=self.module_type
         )
+        uf = kwargs.get("update_fields")
+        if uf is not None:
+            uf = list(uf)
+            for name in ("licensee_id", "module_type"):
+                if name not in uf:
+                    uf.append(name)
+            kwargs["update_fields"] = uf
         super().save(*args, **kwargs)
