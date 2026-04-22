@@ -353,7 +353,7 @@ class PaymentBilldeskTransaction(models.Model):
 class PaymentHeadOfAccount(models.Model):
     id = models.BigAutoField(primary_key=True)
     transaction_id_no = models.CharField(max_length=50)
-    head_of_account = models.CharField(max_length=50)
+    head_of_account = models.CharField(max_length=50, unique=True)
     # payer_id = models.CharField(max_length=50)
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     payment_module_code = models.CharField(max_length=20, null=True, blank=True)
