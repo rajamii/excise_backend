@@ -288,11 +288,11 @@ PaymentBilldeskTransaction moved to `models.transactional.payment_gateway.models
 so all BillDesk gateway-specific code lives under `payment_gateway/`.
 """
 
-# Formerly eAbgari_Payment_Send_HOA
-class PaymentHeadOfAccount(models.Model):
+# Formerly eAbgari_Payment_Send_HOA (pre-payment intent)
+class PaymentSendHOA(models.Model):
     id = models.BigAutoField(primary_key=True)
     transaction_id_no = models.CharField(max_length=50)
-    head_of_account = models.CharField(max_length=50, unique=True)
+    head_of_account = models.CharField(max_length=50)
     # payer_id = models.CharField(max_length=50)
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     payment_module_code = models.CharField(max_length=20, null=True, blank=True)
@@ -303,6 +303,19 @@ class PaymentHeadOfAccount(models.Model):
     class Meta:
         managed = False
         db_table = "sems_payment_send_hoa"
+
+
+# Master table: head of accounts (for validating/visibility)
+class PaymentHeadOfAccount(models.Model):
+    head_of_account = models.CharField(max_length=50, primary_key=True)
+    visible_status = models.CharField(max_length=1, default="Y")
+
+    class Meta:
+        managed = False
+        db_table = "eabgari_master_head_of_accounts"
+
+    def __str__(self):
+        return self.head_of_account
 
 
 # class PaymentStatusMasterBilldesk(models.Model):
@@ -361,6 +374,23 @@ class MasterPaymentModule(models.Model):
 
     def __str__(self):
         return f"{self.module_code} - {self.module_desc}"
+
+
+class EabgariMasterModule(models.Model):
+    """
+    Legacy/master module table referenced by payment gateway requirements.
+    """
+
+    module_code = models.CharField(max_length=20, primary_key=True)
+    module_desc = models.CharField(max_length=200, null=True, blank=True)
+    visibility_status = models.CharField(max_length=1, default="Y")
+
+    class Meta:
+        managed = False
+        db_table = "eabgari_master_module"
+
+    def __str__(self):
+        return str(self.module_code)
 
 
 class PaymentModuleHoa(models.Model):

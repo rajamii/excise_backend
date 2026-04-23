@@ -254,6 +254,10 @@ BILLDESK_GATEWAY_URL = os.getenv(
     "https://uat1.billdesk.com/pgidsk/PGIMerchantPayment",
 ).strip()
 
+# Local testing: simulate BillDesk ProcessPayment and callback without hitting BillDesk servers.
+BILLDESK_USE_MOCK = os.getenv("BILLDESK_USE_MOCK", "0").strip() in ("1", "true", "True", "YES", "yes")
+BILLDESK_MOCK_AUTH_STATUS = os.getenv("BILLDESK_MOCK_AUTH_STATUS", "0300").strip()  # 0300=success
+
 # Where Django redirects the user after BillDesk response is validated.
 PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL = os.getenv(
     "PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL",
