@@ -172,6 +172,9 @@ def _generate_transaction_id() -> str:
 
 
 def _generate_unique_utr() -> str:
+    # Kept for backward compatibility: BillDesk transaction model moved to payment_gateway.
+    from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+
     for _ in range(10):
         utr = f"UTR{timezone.now().strftime('%Y%m%d%H%M%S')}{secrets.token_hex(4).upper()}"
         if not PaymentBilldeskTransaction.objects.filter(pk=utr).exists():
