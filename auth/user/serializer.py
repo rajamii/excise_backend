@@ -8,6 +8,7 @@ from captcha.models import CaptchaStore
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
+from django.db import transaction
 
 User = get_user_model()
 
@@ -67,8 +68,10 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_panNumber(self, obj):
         try:
-            profile = getattr(obj, 'licensee_profile', None)
-            return getattr(profile, 'pan_number', None)
+            # Create a savepoint. If this fails, the main transaction survives!
+            with transaction.atomic():
+                profile = getattr(obj, 'licensee_profile', None)
+                return getattr(profile, 'pan_number', None)
         except (DatabaseError, ProgrammingError):
             # Older databases may not yet have the full licensee_profile schema.
             # Do not fail /auth/users/me/ for login/session bootstrap in that case.

@@ -158,7 +158,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'eAbkari_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'sameer123',  # Your PostgreSQL password
+        'PASSWORD': 'admin',  # Your PostgreSQL password
         'HOST': 'localhost',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
         'CONN_MAX_AGE': 0,          # Don't reuse connections — avoids aborted transaction state
@@ -176,12 +176,16 @@ EMAIL_HOST_USER = 'amritraj97.nic@gmail.com'
 EMAIL_HOST_PASSWORD = 'gzrt qieo egth zjpt'
 DEFAULT_FROM_EMAIL = 'amritraj97.nic@gmail.com'
 
-# Frontend URL used for password reset emails (no trailing slash).
+# Frontend URL used for password reset emails.
 PASSWORD_RESET_FRONTEND_URL = os.getenv(
     "PASSWORD_RESET_FRONTEND_URL",
     "https://sems.sikkim.gov.in/reset-password",
     # "http://localhost:4200/reset-password"
 ).rstrip("/")
+
+DATA_UPLOAD_MAX_MEMORY_SIZE = 20971520 
+
+FILE_UPLOAD_MAX_MEMORY_SIZE = 2621440
 
 
 AUTH_USER_MODEL = 'user.CustomUser'
