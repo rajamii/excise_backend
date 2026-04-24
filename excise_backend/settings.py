@@ -91,6 +91,7 @@ INSTALLED_APPS = [
     'models.transactional.salesman_barman',
     'models.transactional.logs',
     'models.transactional.payment',
+    'models.transactional.payment_gateway',
     'models.transactional.supply_chain.ena_transit_permit_details',
     'models.transactional.supply_chain.ena_revalidation_details',
     'models.transactional.supply_chain.ena_requisition_details',  
@@ -160,7 +161,7 @@ DATABASES = {
         'USER': 'postgres',         # Your PostgreSQL username
         'PASSWORD': 'postgres',  # Your PostgreSQL password
         'HOST': 'localhost',        # Default host
-        'PORT': '5432',             # Default PostgreSQL port
+        'PORT': '5433',             # Default PostgreSQL port
         'CONN_MAX_AGE': 0,          # Don't reuse connections — avoids aborted transaction state
     }
 }
@@ -246,6 +247,22 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
 }
+
+# Payment gateway (BillDesk) defaults for local/UAT.
+BILLDESK_GATEWAY_URL = os.getenv(
+    "BILLDESK_GATEWAY_URL",
+    "https://uat1.billdesk.com/pgidsk/PGIMerchantPayment",
+).strip()
+
+# Local testing: simulate BillDesk ProcessPayment and callback without hitting BillDesk servers.
+BILLDESK_USE_MOCK = os.getenv("BILLDESK_USE_MOCK", "0").strip() in ("1", "true", "True", "YES", "yes")
+BILLDESK_MOCK_AUTH_STATUS = os.getenv("BILLDESK_MOCK_AUTH_STATUS", "0300").strip()  # 0300=success
+
+# Where Django redirects the user after BillDesk response is validated.
+PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL = os.getenv(
+    "PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL",
+    "http://localhost:4200/dashboard/wallet-recharge/success",
+).strip()
 
 # Captcha tuning: keep it readable with only light line noise.
 CAPTCHA_LENGTH = 5
