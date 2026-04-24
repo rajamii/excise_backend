@@ -9,6 +9,7 @@ class PaymentGatewayParameters(models.Model):
     securityid = models.CharField(max_length=100)
     encryption_key = models.CharField(max_length=255)
     return_url = models.CharField(max_length=500)
+    frontend_success_url = models.CharField(max_length=500, null=True, blank=True)
     is_active = models.CharField(max_length=1, default="Y")
     created_date = models.DateTimeField(default=timezone.now)
     modified_date = models.DateTimeField(null=True, blank=True)
@@ -94,8 +95,7 @@ class PaymentSendHOA(models.Model):
     licensee_id = models.CharField(max_length=50, null=True, blank=True)
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     payment_module_code = models.CharField(max_length=20, null=True, blank=True)
-    requisition_id_no = models.CharField(max_length=50, null=True, blank=True)
-    user_id = models.CharField(max_length=50, null=True, blank=True)
+    requisition_no = models.CharField(max_length=50, null=True, blank=True)
     opr_date = models.DateTimeField(default=timezone.now)
 
     class Meta:

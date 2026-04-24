@@ -24,7 +24,7 @@ from models.transactional.payment.models import (
     MasterPaymentModule,
     EabgariMasterModule,
 )
-from models.transactional.payment.wallet_service import credit_wallet_balance
+from models.transactional.payment.wallet_service import credit_wallet_balance, record_wallet_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,36 @@ LICENSE_FEE_HOA = "0039-00-800-45-02"
 SECURITY_DEPOSIT_HOA_SENTINEL = "non"
 DEFAULT_LICENSE_RENEWAL_MODULE_CODE = "002"
 DEFAULT_WALLET_ADVANCE_MODULE_CODE = "999"
+
+
+def _normalize_wallet_type(wallet_type: str) -> str:
+    value = str(wallet_type or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if value in {"education", "educationcess", "education_cess", "educationcesswallet", "education_cess_wallet"}:
+        return "education_cess"
+    if value in {"excise", "excise_duty", "excise_duty_wallet", "exciseduty", "excise_wallet"}:
+        return "excise"
+    return value
+
+
+def _active_na_license_id_for_applicant(user) -> str:
+    if not user or not getattr(user, "is_authenticated", False):
+        return ""
+    try:
+        from models.masters.license.models import License
+
+        base = License.objects.filter(applicant=user, is_active=True)
+        lic = base.filter(license_id__istartswith="NA/").order_by("-issue_date", "-license_id").first()
+        if lic and lic.license_id:
+            return str(lic.license_id).strip()
+
+        lic = base.filter(source_type="new_license_application").order_by("-issue_date", "-license_id").first()
+        if lic and lic.license_id:
+            lid = str(lic.license_id).strip()
+            if lid.upper().startswith("NA/"):
+                return lid
+    except Exception:
+        pass
+    return ""
 
 
 def _billdesk_hmac_sha256(msg: str, key: str) -> str:
@@ -115,7 +145,7 @@ def billdesk_initiate_wallet_recharge(request):
     data = request.data or {}
 
     transaction_id = str(data.get("transaction_id") or "").strip()
-    wallet_type = str(data.get("wallet_type") or "").strip()
+    wallet_type = _normalize_wallet_type(data.get("wallet_type"))
     head_of_account = str(data.get("head_of_account") or "").strip()
     payment_module_code = str(data.get("payment_module_code") or "").strip()
     payer_id = str(data.get("payer_id") or getattr(request.user, "username", "") or "").strip()[:50]
@@ -192,7 +222,7 @@ def billdesk_initiate_wallet_recharge(request):
 
     amount_str = f"{amount:.2f}"
     additional_info1 = head_of_account
-    additional_info2 = "SIKPAY"
+    additional_info2 = "WALLET"
     # Keep walletType directly so the Angular success screen can display it as-is.
     additional_info3 = wallet_type
 
@@ -241,6 +271,18 @@ def billdesk_initiate_wallet_recharge(request):
             "payment_status": "P",
             "opr_date": timezone.now(),
             "user_id": str(getattr(request.user, "username", "") or "").strip()[:50],
+        },
+    )
+
+    PaymentSendHOA.objects.update_or_create(
+        transaction_id_no=transaction_id,
+        head_of_account=head_of_account,
+        defaults={
+            "licensee_id": str(data.get("licensee_id") or data.get("licenseeId") or payer_id or "").strip()[:50] or None,
+            "amount": amount,
+            "payment_module_code": payment_module_code,
+            "requisition_no": (_active_na_license_id_for_applicant(request.user) or "NA")[:50],
+            "opr_date": timezone.now(),
         },
     )
 
@@ -651,6 +693,10 @@ def billdesk_response(request):
                     credit_name = str(tx.request_additionalinfo1 or "").strip()
                     credit_wallet_type = "security_deposit"
                     credit_hoa = SECURITY_DEPOSIT_HOA_SENTINEL
+                else:
+                    credit_licensee_id = str(tx.payer_id or "").strip()
+                    credit_wallet_type = str(tx.request_additionalinfo3 or "").strip()
+                    credit_hoa = str(tx.request_additionalinfo1 or "").strip() or "non"
 
                 if credit_wallet_type and credit_licensee_id:
                     credit_wallet_balance(
@@ -661,15 +707,65 @@ def billdesk_response(request):
                         amount=parsed_amount or Decimal(str(tx.transaction_amount or 0)).quantize(Decimal("0.01")),
                         user_id=str(tx.user_id or "").strip(),
                         licensee_name=credit_name,
-                        source_module="billdesk",
+                        source_module="wallet_recharge",
+                        transaction_type="recharge",
                         remarks="BillDesk payment success",
                     )
             except Exception as exc:
                 logger.exception("Failed to credit wallet for txn_ref=%s: %s", txn_ref, exc)
+        elif status_code == "F":
+            try:
+                req_type = str(tx.request_additionalinfo2 or "").strip().upper()
+                log_licensee_id = ""
+                log_name = ""
+                log_wallet_type = ""
+                log_hoa = ""
 
-    frontend_success = str(getattr(settings, "PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL", "") or "").strip()
+                if req_type == "SIKPAY":
+                    log_licensee_id = str(tx.payer_id or "").strip()
+                    log_wallet_type = "license_fee"
+                    log_hoa = str(tx.request_additionalinfo1 or "").strip() or LICENSE_FEE_HOA
+                elif req_type == "SIKFDR":
+                    log_licensee_id = str(tx.payer_id or "").strip()
+                    log_name = str(tx.request_additionalinfo1 or "").strip()
+                    log_wallet_type = "security_deposit"
+                    log_hoa = SECURITY_DEPOSIT_HOA_SENTINEL
+                else:
+                    log_licensee_id = str(tx.payer_id or "").strip()
+                    log_wallet_type = str(tx.request_additionalinfo3 or "").strip()
+                    log_hoa = str(tx.request_additionalinfo1 or "").strip() or "non"
+
+                fail_reason = str(error_desc or "").strip() or ("checksum_mismatch" if not checksum_ok else "failed")
+
+                if log_wallet_type and log_licensee_id:
+                    record_wallet_transaction(
+                        transaction_id=str(txn_ref or tx.utr or "").strip(),
+                        licensee_id=log_licensee_id,
+                        wallet_type=log_wallet_type,
+                        head_of_account=log_hoa,
+                        amount=parsed_amount or Decimal(str(tx.transaction_amount or 0)).quantize(Decimal("0.01")),
+                        user_id=str(tx.user_id or "").strip(),
+                        licensee_name=log_name,
+                        source_module="wallet_recharge",
+                        transaction_type="recharge",
+                        payment_status="failed",
+                        remarks=f"BillDesk payment failed: {fail_reason}",
+                    )
+            except Exception as exc:
+                logger.exception("Failed to log failed wallet transaction for txn_ref=%s: %s", txn_ref, exc)
+
+    gateway = (
+        PaymentGatewayParameters.objects.filter(is_active="Y", payment_gateway_name__iexact="Billdesk")
+        .order_by("sl_no")
+        .first()
+    )
+    frontend_success = str(getattr(gateway, "frontend_success_url", "") or "").strip()
     if not frontend_success:
-        return HttpResponseBadRequest("PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL not configured")
+        frontend_success = str(getattr(settings, "PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL", "") or "").strip()
+    if not frontend_success:
+        return HttpResponseBadRequest(
+            "Frontend success URL not configured (set Payment_Gateway_Parameters.frontend_success_url or PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL)."
+        )
 
     if tx:
         req_type = str(tx.request_additionalinfo2 or "").strip().upper()
@@ -691,6 +787,9 @@ def billdesk_response(request):
         created_at = ""
 
     ui_status = "success" if auth_status == "0300" and checksum_ok else "failed"
+    ui_reason = ""
+    if ui_status != "success":
+        ui_reason = str(error_desc or "").strip() or ("checksum_mismatch" if not checksum_ok else "failed")
     query = urlencode(
         {
             "transactionId": txn_ref,
@@ -698,6 +797,7 @@ def billdesk_response(request):
             "hoa": hoa,
             "amount": amt,
             "status": ui_status,
+            "reason": ui_reason,
             "createdAt": created_at,
             "additionalInfo2": str(getattr(tx, "request_additionalinfo2", "") or "").strip() if tx else "",
             "additionalInfo3": str(getattr(tx, "request_additionalinfo3", "") or "").strip() if tx else "",
