@@ -8,10 +8,6 @@ from .models import PaymentHeadOfAccount, WalletBalance
 
 logger = logging.getLogger(__name__)
 
-
-# Runtime classification requested by business:
-# value comes from the selected license subcategory at application time.
-# 2 -> distillery, 1 -> brewery.
 SUBCATEGORY_TO_MODULE_TYPE = {
     1: "brewery",
     2: "distillery",
@@ -19,12 +15,8 @@ SUBCATEGORY_TO_MODULE_TYPE = {
 
 COMMON_EDUCATION_CESS_HOA = "0045-00-112-45-03"
 COMMON_HOLOGRAM_HOA = "0039-00-800-45-01"
-# Per payment logic document:
-# - License fee HOA: 0039-00-800-45-02
-# - Security deposit: no HOA (store sentinel value only; do not treat as a real HOA code)
 COMMON_SECURITY_DEPOSIT_HOA = "non"
 COMMON_LICENSE_FEE_HOA = "0039-00-800-45-02"
-
 
 HOA_CANDIDATES = {
     "distillery": {
@@ -36,7 +28,6 @@ HOA_CANDIDATES = {
     },
     "brewery": {
         "excise": ["0038-00-102-45-00"],
-        # Same HOA as distillery for these two wallets by business rule.
         "education_cess": [COMMON_EDUCATION_CESS_HOA],
         "hologram": [COMMON_HOLOGRAM_HOA],
         "security_deposit": [COMMON_SECURITY_DEPOSIT_HOA],
@@ -47,7 +38,6 @@ HOA_CANDIDATES = {
         "license_fee": [COMMON_LICENSE_FEE_HOA],
     },
 }
-
 
 WALLET_LABELS = {
     "excise": "Excise / Additional Wallet",
@@ -60,7 +50,6 @@ WALLET_LABELS = {
 
 def _resolve_module_type(license_obj) -> str:
     sub_category_id = getattr(license_obj, "license_sub_category_id", None)
-    # Prefer text-based inference first to avoid relying on environment-specific PKs.
     sub_category = getattr(license_obj, "license_sub_category", None)
     sub_desc = str(getattr(sub_category, "description", "") or "").strip().lower()
     if "distill" in sub_desc:
@@ -85,7 +74,7 @@ def _resolve_module_type(license_obj) -> str:
         return "other"
 
     logger.warning(
-        "Unknown license_sub_category_id=%s for license_id=%s. Falling back to distillery mapping.",
+        "Unknown license_sub_category_id=%s for license_id=%s. Falling back to other mapping.",
         sub_category_id,
         getattr(license_obj, "license_id", None),
     )
@@ -98,19 +87,16 @@ def _resolve_hoa_code(module_type: str, wallet_type: str) -> str:
         raise ValueError(f"No HOA candidates configured for module_type={module_type}, wallet_type={wallet_type}")
 
     active_codes = set(
-        PaymentHeadOfAccount.objects.filter(
-            head_of_account__in=candidates,
-            visible_status="Y",
-        ).values_list("head_of_account", flat=True)
+        PaymentHeadOfAccount.objects.filter(head_of_account__in=candidates, visible_status="Y").values_list(
+            "head_of_account", flat=True
+        )
     )
     for code in candidates:
         if code in active_codes:
             return code
 
     existing_codes = set(
-        PaymentHeadOfAccount.objects.filter(
-            head_of_account__in=candidates,
-        ).values_list("head_of_account", flat=True)
+        PaymentHeadOfAccount.objects.filter(head_of_account__in=candidates).values_list("head_of_account", flat=True)
     )
     for code in candidates:
         if code in existing_codes:
@@ -217,14 +203,6 @@ def _build_user_id(license_obj) -> str:
 
 
 def initialize_wallet_balances_for_license(license_obj) -> None:
-    """
-    Create one wallet_balances row per wallet type for this license (all balances 0.00).
-
-    Called when the issued License row exists (e.g. commissioner approval and/or
-    `awaiting_payment` / "Awaiting License Fee Payment" for new license applications).
-    `licensee_id` is always `License.license_id` (e.g. NA/...) so the first insert matches
-    the canonical id — not legacy username codes.
-    """
     if license_obj is None:
         return
 
@@ -247,14 +225,8 @@ def initialize_wallet_balances_for_license(license_obj) -> None:
     with transaction.atomic():
         for wallet_type in wallet_types:
             hoa_code = _resolve_hoa_code(module_type, wallet_type)
-            label = WALLET_LABELS[wallet_type]
 
-            # Idempotent behavior: if wallet rows already exist for this license + wallet type,
-            # keep monetary values and only refresh metadata + HOA.
-            existing_qs = WalletBalance.objects.filter(
-                licensee_id=licensee_id,
-                wallet_type=wallet_type,
-            )
+            existing_qs = WalletBalance.objects.filter(licensee_id=licensee_id, wallet_type=wallet_type)
             if existing_qs.exists():
                 existing_qs.update(
                     licensee_name=person_name,
@@ -282,11 +254,3 @@ def initialize_wallet_balances_for_license(license_obj) -> None:
                 created_at=now,
             )
 
-            logger.info(
-                "Initialized wallet balance: licensee_id=%s module_type=%s wallet_type=%s hoa=%s label=%s",
-                licensee_id,
-                module_type,
-                wallet_type,
-                hoa_code,
-                label,
-            )

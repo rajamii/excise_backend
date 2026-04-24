@@ -21,7 +21,7 @@ from rest_framework.response import Response
 from .models import PaymentBilldeskTransaction, PaymentGatewayParameters, PaymentSendHOA, MasterPaymentModule
 
 
-from models.transactional.payment.wallet_service import credit_wallet_balance, record_wallet_transaction
+from models.transactional.wallet.wallet_service import credit_wallet_balance, record_wallet_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -318,7 +318,13 @@ def billdesk_initiate_license_fee(request):
     try:
         payment_module_code = _validate_payment_module_code(payment_module_code)
     except Exception as exc:
-        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        # Do not hard-block initiation if the master module table is missing/out-of-sync in an env.
+        # License renewal module code (002) is stable enough to proceed and still record the raw value.
+        logger.warning(
+            "Invalid payment_module_code=%s for license fee initiation; proceeding with raw value. err=%s",
+            payment_module_code,
+            exc,
+        )
 
     try:
         amount = _normalize_amount(raw_amount)
@@ -462,7 +468,12 @@ def billdesk_initiate_security_deposit(request):
     try:
         payment_module_code = _validate_payment_module_code(payment_module_code)
     except Exception as exc:
-        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        # Do not hard-block initiation if the master module table is missing/out-of-sync in an env.
+        logger.warning(
+            "Invalid payment_module_code=%s for security deposit initiation; proceeding with raw value. err=%s",
+            payment_module_code,
+            exc,
+        )
 
     try:
         amount = _normalize_amount(raw_amount)

@@ -1,10 +1,10 @@
 from django.db import models
 from django.utils import timezone
 
+
 def _resolve_approved_license_id(raw_value: str) -> str:
     """
-    Normalize any incoming licensee/profile id to the approved license_id format
-    (typically NA/...).
+    Normalize any incoming licensee/profile id to the approved license_id format (typically NA/...).
     """
     value = str(raw_value or "").strip()
     if not value:
@@ -17,17 +17,14 @@ def _resolve_approved_license_id(raw_value: str) -> str:
 
     active_qs = License.objects.filter(is_active=True)
 
-    # Already an approved license_id.
     hit = active_qs.filter(license_id=value).order_by("-issue_date", "-license_id").first()
     if hit and hit.license_id:
         return str(hit.license_id).strip()
 
-    # If source object id was passed (often legacy/licensee profile id), map it.
     hit = active_qs.filter(source_object_id=value).order_by("-issue_date", "-license_id").first()
     if hit and hit.license_id:
         return str(hit.license_id).strip()
 
-    # Common alias mapping seen in supply-chain ids.
     if value.startswith("NLI/"):
         alias = f"NA/{value[4:]}"
         hit = active_qs.filter(license_id=alias).order_by("-issue_date", "-license_id").first()
@@ -39,11 +36,11 @@ def _resolve_approved_license_id(raw_value: str) -> str:
         if hit and hit.license_id:
             return str(hit.license_id).strip()
 
-    # Applicant username (e.g. legacy wallet rows keyed by user id) → latest active new license.
     try:
         from auth.user.models import CustomUser
     except Exception:
         CustomUser = None
+
     if CustomUser:
         user = CustomUser.objects.filter(username__iexact=value).first()
         if user:
@@ -62,37 +59,24 @@ def _resolve_approved_license_id(raw_value: str) -> str:
             if hit and hit.license_id:
                 return str(hit.license_id).strip()
 
-    # Legacy supply-chain profile / unit stored a non-NA id (e.g. TH...) before license was issued.
     try:
-        from models.masters.supply_chain.profile.models import (
-            SupplyChainUserProfile,
-            UserManufacturingUnit,
-        )
+        from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
     except Exception:
         SupplyChainUserProfile = None
         UserManufacturingUnit = None
 
     if SupplyChainUserProfile:
-        prof = (
-            SupplyChainUserProfile.objects.filter(licensee_id=value)
-            .select_related("user")
-            .first()
-        )
+        prof = SupplyChainUserProfile.objects.filter(licensee_id=value).select_related("user").first()
         if prof and getattr(prof, "user_id", None):
             hit = (
-                active_qs.filter(
-                    applicant_id=prof.user_id,
-                    license_id__istartswith="NA/",
-                )
+                active_qs.filter(applicant_id=prof.user_id, license_id__istartswith="NA/")
                 .order_by("-issue_date", "-license_id")
                 .first()
             )
             if hit and hit.license_id:
                 return str(hit.license_id).strip()
             hit = (
-                active_qs.filter(
-                    applicant_id=prof.user_id, source_type="new_license_application"
-                )
+                active_qs.filter(applicant_id=prof.user_id, source_type="new_license_application")
                 .order_by("-issue_date", "-license_id")
                 .first()
             )
@@ -100,34 +84,23 @@ def _resolve_approved_license_id(raw_value: str) -> str:
                 return str(hit.license_id).strip()
 
     if UserManufacturingUnit:
-        unit = (
-            UserManufacturingUnit.objects.filter(licensee_id=value)
-            .select_related("user")
-            .first()
-        )
+        unit = UserManufacturingUnit.objects.filter(licensee_id=value).select_related("user").first()
         if unit and getattr(unit, "user_id", None):
             hit = (
-                active_qs.filter(
-                    applicant_id=unit.user_id,
-                    license_id__istartswith="NA/",
-                )
+                active_qs.filter(applicant_id=unit.user_id, license_id__istartswith="NA/")
                 .order_by("-issue_date", "-license_id")
                 .first()
             )
             if hit and hit.license_id:
                 return str(hit.license_id).strip()
             hit = (
-                active_qs.filter(
-                    applicant_id=unit.user_id, source_type="new_license_application"
-                )
+                active_qs.filter(applicant_id=unit.user_id, source_type="new_license_application")
                 .order_by("-issue_date", "-license_id")
                 .first()
             )
             if hit and hit.license_id:
                 return str(hit.license_id).strip()
 
-    # Direct match: wallet row used applicant username (TH...) but profile was later updated to NA/...
-    # so SupplyChainUserProfile no longer has licensee_id=TH. Join License.applicant.username.
     if CustomUser and "/" not in value:
         hit = (
             License.objects.filter(
@@ -151,50 +124,33 @@ def _resolve_approved_license_id(raw_value: str) -> str:
         if hit and hit.license_id:
             return str(hit.license_id).strip()
 
-    # Numeric primary key passed instead of username (some clients send user id).
     if CustomUser and value.isdigit():
         hit = (
-            active_qs.filter(
-                applicant_id=int(value),
-                license_id__istartswith="NA/",
-            )
+            active_qs.filter(applicant_id=int(value), license_id__istartswith="NA/")
             .order_by("-issue_date", "-license_id")
             .first()
         )
         if hit and hit.license_id:
             return str(hit.license_id).strip()
         hit = (
-            active_qs.filter(
-                applicant_id=int(value),
-                source_type="new_license_application",
-            )
+            active_qs.filter(applicant_id=int(value), source_type="new_license_application")
             .order_by("-issue_date", "-license_id")
             .first()
         )
         if hit and hit.license_id:
             return str(hit.license_id).strip()
 
-    # Last resort: include inactive licenses for the same applicant + username.
     if CustomUser and "/" not in value:
         user = CustomUser.objects.filter(username__iexact=value).first()
         if user:
-            hit = (
-                License.objects.filter(
-                    applicant=user,
-                    license_id__istartswith="NA/",
-                )
-                .order_by("-issue_date", "-license_id")
-                .first()
-            )
+            hit = License.objects.filter(applicant=user, license_id__istartswith="NA/").order_by(
+                "-issue_date", "-license_id"
+            ).first()
             if hit and hit.license_id:
                 return str(hit.license_id).strip()
-            hit = (
-                License.objects.filter(
-                    applicant=user, source_type="new_license_application"
-                )
-                .order_by("-issue_date", "-license_id")
-                .first()
-            )
+            hit = License.objects.filter(applicant=user, source_type="new_license_application").order_by(
+                "-issue_date", "-license_id"
+            ).first()
             if hit and hit.license_id:
                 return str(hit.license_id).strip()
 
@@ -202,9 +158,6 @@ def _resolve_approved_license_id(raw_value: str) -> str:
 
 
 def _resolve_wallet_row_licensee_id(licensee_id: str, user_id: str = "") -> str:
-    """
-    Resolve licensee_id for a wallet row: try licensee_id, then user_id (often same as username).
-    """
     raw_lic = str(licensee_id or "").strip()
     raw_uid = str(user_id or "").strip()
     for candidate in (raw_lic, raw_uid):
@@ -214,6 +167,7 @@ def _resolve_wallet_row_licensee_id(licensee_id: str, user_id: str = "") -> str:
         if resolved and "/" in resolved:
             return resolved
     return _resolve_approved_license_id(raw_lic) or raw_lic
+
 
 def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = "") -> str:
     value = str(license_id_value or "").strip()
@@ -263,52 +217,18 @@ def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = 
 
     return str(fallback or "").strip()
 
-# Master table: head of accounts (for validating/visibility)
-# class PaymentHeadOfAccount(models.Model):
-#     head_of_account = models.CharField(max_length=50, primary_key=True)
-#     visible_status = models.CharField(max_length=1, default="Y")
 
-#     class Meta:
-#         managed = False
-#         db_table = "eabgari_master_head_of_accounts"
+class PaymentHeadOfAccount(models.Model):
+    head_of_account = models.CharField(max_length=50, primary_key=True)
+    visible_status = models.CharField(max_length=1, default="Y")
 
-#     def __str__(self):
-#         return self.head_of_account
+    class Meta:
+        managed = False
+        db_table = "eabgari_master_head_of_accounts"
 
+    def __str__(self):
+        return str(self.head_of_account)
 
-# class PaymentStatusMasterBilldesk(models.Model):
-    # authstatus = models.CharField(max_length=10, primary_key=True)
-    # authstatus_description = models.CharField(max_length=500)
-    # payment_status = models.CharField(max_length=1)
-    # created_date = models.DateTimeField(default=timezone.now)
-
-    # class Meta:
-    #     managed = False
-    #     db_table = "eabgari_payment_status_master_billdesk"
-
-    # def __str__(self):
-    #     return f"{self.authstatus} -> {self.payment_status}"
-
-
-
-# class EabgariMasterModule(models.Model):
-#     """
-#     Legacy/master module table referenced by payment gateway requirements.
-#     """
-
-#     module_code = models.CharField(max_length=20, primary_key=True)
-#     module_desc = models.CharField(max_length=200, null=True, blank=True)
-#     visibility_status = models.CharField(max_length=1, default="Y")
-
-#     class Meta:
-#         managed = False
-#         db_table = "eabgari_master_module"
-
-#     def __str__(self):
-#         return str(self.module_code)
-
-
-# Move to a new Django app (Wallet)
 
 class WalletBalance(models.Model):
     wallet_balance_id = models.BigAutoField(primary_key=True)
@@ -331,22 +251,10 @@ class WalletBalance(models.Model):
         db_table = "wallet_balances"
 
     def save(self, *args, **kwargs):
-        """
-        Always persist wallet rows under the canonical issued license_id (NA/...), not legacy
-        username or profile codes (TH..., etc.). Uses user_id when licensee_id alone cannot map
-        (e.g. profile already updated to NA/...).
-        """
-        merged = _resolve_wallet_row_licensee_id(
-            self.licensee_id,
-            getattr(self, "user_id", "") or "",
-        )
+        merged = _resolve_wallet_row_licensee_id(self.licensee_id, getattr(self, "user_id", "") or "")
         if merged:
             self.licensee_id = merged
-        self.module_type = _resolve_module_type_from_license_id(
-            self.licensee_id,
-            fallback=self.module_type or "other",
-        )
-        # Partial updates (e.g. only balances) must still persist normalized licensee_id/module_type.
+        self.module_type = _resolve_module_type_from_license_id(self.licensee_id, fallback=self.module_type or "other")
         uf = kwargs.get("update_fields")
         if uf is not None:
             uf = list(uf)
@@ -388,14 +296,8 @@ class WalletTransaction(models.Model):
         db_table = "wallet_transactions"
 
     def save(self, *args, **kwargs):
-        self.licensee_id = _resolve_wallet_row_licensee_id(
-            self.licensee_id,
-            getattr(self, "user_id", "") or "",
-        )
-        self.module_type = _resolve_module_type_from_license_id(
-            self.licensee_id,
-            fallback=self.module_type
-        )
+        self.licensee_id = _resolve_wallet_row_licensee_id(self.licensee_id, getattr(self, "user_id", "") or "")
+        self.module_type = _resolve_module_type_from_license_id(self.licensee_id, fallback=self.module_type)
         uf = kwargs.get("update_fields")
         if uf is not None:
             uf = list(uf)
@@ -404,3 +306,4 @@ class WalletTransaction(models.Model):
                     uf.append(name)
             kwargs["update_fields"] = uf
         super().save(*args, **kwargs)
+

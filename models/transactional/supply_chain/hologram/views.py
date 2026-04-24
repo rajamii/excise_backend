@@ -759,7 +759,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         Debit hologram wallet immediately when licensee pays for hologram procurement.
         Persists wallet history in wallet_transactions table.
         """
-        from models.transactional.payment.models import WalletBalance, WalletTransaction
+        from models.transactional.wallet.models import WalletBalance, WalletTransaction
 
         licensee_id = (
             str(getattr(getattr(instance, 'license', None), 'license_id', '') or '').strip() or

@@ -27,11 +27,6 @@ def credit_wallet_balance(
     payment_status: str = "success",
     remarks: str = "",
 ) -> tuple[WalletTransaction | None, WalletBalance | None, bool]:
-    """
-    Credits wallet_balances + inserts wallet_transactions (idempotent).
-
-    Returns: (wallet_transaction, wallet_balance, already_processed)
-    """
     txn = str(transaction_id or "").strip()
     if not txn:
         raise ValueError("transaction_id is required")
@@ -78,12 +73,7 @@ def credit_wallet_balance(
             .first()
         )
         if not wallet:
-            template = (
-                WalletBalance.objects.select_for_update()
-                .filter(wallet_filter)
-                .order_by("wallet_balance_id")
-                .first()
-            )
+            template = WalletBalance.objects.select_for_update().filter(wallet_filter).order_by("wallet_balance_id").first()
             wallet = WalletBalance.objects.create(
                 licensee_id=resolved_licensee_id,
                 licensee_name=str(licensee_name or getattr(template, "licensee_name", "") or "").strip(),
@@ -147,12 +137,6 @@ def record_wallet_transaction(
     payment_status: str = "failed",
     remarks: str = "",
 ) -> tuple[WalletTransaction | None, WalletBalance | None, bool]:
-    """
-    Inserts a row in wallet_transactions without changing wallet balance.
-
-    Useful for logging failed/aborted payment attempts so they show up in wallet history.
-    Returns: (wallet_transaction, wallet_balance, already_processed)
-    """
     txn = str(transaction_id or "").strip()
     if not txn:
         raise ValueError("transaction_id is required")
@@ -166,7 +150,6 @@ def record_wallet_transaction(
         raise ValueError("wallet_type is required")
 
     hoa = str(head_of_account or "").strip() or "non"
-
     amt = Decimal(str(amount or "0")).quantize(Decimal("0.01"))
 
     resolved_licensee_id = _resolve_wallet_row_licensee_id(raw_licensee, str(user_id or "").strip()) or raw_licensee
@@ -197,12 +180,7 @@ def record_wallet_transaction(
             .first()
         )
         if not wallet:
-            template = (
-                WalletBalance.objects.select_for_update()
-                .filter(wallet_filter)
-                .order_by("wallet_balance_id")
-                .first()
-            )
+            template = WalletBalance.objects.select_for_update().filter(wallet_filter).order_by("wallet_balance_id").first()
             wallet = WalletBalance.objects.create(
                 licensee_id=resolved_licensee_id,
                 licensee_name=str(licensee_name or getattr(template, "licensee_name", "") or "").strip(),
@@ -244,3 +222,4 @@ def record_wallet_transaction(
         )
 
     return created, wallet, False
+

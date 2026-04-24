@@ -131,7 +131,7 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
             or _stage_is_awaiting_license_fee_payment(instance.stage, application_model=application_model)
         ):
             try:
-                from models.transactional.payment.wallet_initializer import (
+                from models.transactional.wallet.wallet_initializer import (
                     initialize_wallet_balances_for_license,
                 )
 
@@ -235,7 +235,7 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
 
         # Initialize module wallets for newly issued license.
         try:
-            from models.transactional.payment.wallet_initializer import (
+            from models.transactional.wallet.wallet_initializer import (
                 initialize_wallet_balances_for_license,
             )
 
