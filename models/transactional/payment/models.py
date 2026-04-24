@@ -263,43 +263,17 @@ def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = 
 
     return str(fallback or "").strip()
 
-# Main Table for storing payment gateway parameters
-class PaymentGatewayParameter(models.Model):
-    sl_no = models.IntegerField(primary_key=True)
-    payment_gateway_name = models.CharField(max_length=50)
-    merchantid = models.CharField(max_length=100)
-    securityid = models.CharField(max_length=100)
-    encryption_key = models.CharField(max_length=255)
-    return_url = models.CharField(max_length=500)
-    created_date = models.DateTimeField(default=timezone.now)
-    modified_date = models.DateTimeField(null=True, blank=True)
-    is_active = models.CharField(max_length=1, default="Y")
-
-    class Meta:
-        managed = False
-        db_table = "sems_payment_gateway_parameters"
-
-    def __str__(self):
-        return f"{self.sl_no} - {self.payment_gateway_name}"
-
-"""
-NOTE:
-PaymentBilldeskTransaction moved to `models.transactional.payment_gateway.models`
-so all BillDesk gateway-specific code lives under `payment_gateway/`.
-"""
-
-
 # Master table: head of accounts (for validating/visibility)
-class PaymentHeadOfAccount(models.Model):
-    head_of_account = models.CharField(max_length=50, primary_key=True)
-    visible_status = models.CharField(max_length=1, default="Y")
+# class PaymentHeadOfAccount(models.Model):
+#     head_of_account = models.CharField(max_length=50, primary_key=True)
+#     visible_status = models.CharField(max_length=1, default="Y")
 
-    class Meta:
-        managed = False
-        db_table = "eabgari_master_head_of_accounts"
+#     class Meta:
+#         managed = False
+#         db_table = "eabgari_master_head_of_accounts"
 
-    def __str__(self):
-        return self.head_of_account
+#     def __str__(self):
+#         return self.head_of_account
 
 
 # class PaymentStatusMasterBilldesk(models.Model):
@@ -317,89 +291,24 @@ class PaymentHeadOfAccount(models.Model):
 
 
 
-class MasterHeadOfAccount(models.Model):
-    head_of_account = models.CharField(max_length=50, primary_key=True)
-    sl_no = models.BigIntegerField(unique=True, null=True, blank=True)
-    major_head = models.CharField(max_length=10)
-    sub_major_head = models.CharField(max_length=10, null=True, blank=True)
-    minor_head = models.CharField(max_length=10)
-    sub_head = models.CharField(max_length=10, null=True, blank=True)
-    detailed_head = models.CharField(max_length=20)
-    object_head = models.CharField(max_length=10, null=True, blank=True)
-    detailed_head_driscription = models.CharField(max_length=500)
-    pay_type = models.CharField(max_length=20, null=True, blank=True)
-    visible_status = models.CharField(max_length=1, default="Y")
-    created_date = models.DateTimeField(default=timezone.now)
-    modified_date = models.DateTimeField(null=True, blank=True)
+# class EabgariMasterModule(models.Model):
+#     """
+#     Legacy/master module table referenced by payment gateway requirements.
+#     """
 
-    class Meta:
-        managed = False
-        db_table = "sems_master_head_of_account"
+#     module_code = models.CharField(max_length=20, primary_key=True)
+#     module_desc = models.CharField(max_length=200, null=True, blank=True)
+#     visibility_status = models.CharField(max_length=1, default="Y")
 
-    def __str__(self):
-        return self.head_of_account
+#     class Meta:
+#         managed = False
+#         db_table = "eabgari_master_module"
+
+#     def __str__(self):
+#         return str(self.module_code)
 
 
-class MasterPaymentModule(models.Model):
-    module_code = models.CharField(max_length=20, primary_key=True)
-    module_desc = models.CharField(max_length=200)
-    visibility_status = models.CharField(max_length=1, default="Y")
-    active_payment_mode = models.CharField(max_length=1, default="O")
-    payment_invoking_page = models.CharField(max_length=500, null=True, blank=True)
-    payment_response_page = models.CharField(max_length=500, null=True, blank=True)
-    user_id = models.CharField(max_length=50, null=True, blank=True)
-    opr_date = models.DateTimeField(null=True, blank=True)
-    created_date = models.DateTimeField(default=timezone.now)
-    modified_date = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        managed = False
-        db_table = "sems_master_payment_module"
-
-    def __str__(self):
-        return f"{self.module_code} - {self.module_desc}"
-
-
-class EabgariMasterModule(models.Model):
-    """
-    Legacy/master module table referenced by payment gateway requirements.
-    """
-
-    module_code = models.CharField(max_length=20, primary_key=True)
-    module_desc = models.CharField(max_length=200, null=True, blank=True)
-    visibility_status = models.CharField(max_length=1, default="Y")
-
-    class Meta:
-        managed = False
-        db_table = "eabgari_master_module"
-
-    def __str__(self):
-        return str(self.module_code)
-
-
-class PaymentModuleHoa(models.Model):
-    id = models.BigAutoField(primary_key=True)
-    module_code = models.ForeignKey(
-        MasterPaymentModule,
-        on_delete=models.RESTRICT,
-        db_column="module_code",
-        to_field="module_code",
-    )
-    head_of_account = models.ForeignKey(
-        PaymentHeadOfAccount,
-        on_delete=models.RESTRICT,
-        db_column="head_of_account",
-        to_field="head_of_account",
-    )
-    # user_id = models.CharField(max_length=50, null=True, blank=True)
-    opr_date = models.DateTimeField(default=timezone.now)
-    is_active = models.CharField(max_length=1, default="Y")
-    created_date = models.DateTimeField(default=timezone.now)
-
-    class Meta:
-        managed = False
-        db_table = "sems_module_hoa"
-
+# Move to a new Django app (Wallet)
 
 class WalletBalance(models.Model):
     wallet_balance_id = models.BigAutoField(primary_key=True)

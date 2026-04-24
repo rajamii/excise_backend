@@ -18,12 +18,9 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import PaymentBilldeskTransaction, PaymentGatewayParameters, PaymentSendHOA
+from .models import PaymentBilldeskTransaction, PaymentGatewayParameters, PaymentSendHOA, MasterPaymentModule
 
-from models.transactional.payment.models import (
-    MasterPaymentModule,
-    EabgariMasterModule,
-)
+
 from models.transactional.payment.wallet_service import credit_wallet_balance, record_wallet_transaction
 
 logger = logging.getLogger(__name__)
@@ -82,7 +79,7 @@ def _validate_payment_module_code(module_code: str) -> str:
 
     # Prefer legacy eabgari_master_module if it exists in the DB.
     try:
-        if EabgariMasterModule.objects.filter(module_code=code).exists():
+        if MasterPaymentModule.objects.filter(module_code=code).exists():
             return code
     except (OperationalError, ProgrammingError):
         pass
