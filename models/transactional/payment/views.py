@@ -304,6 +304,14 @@ def wallet_recharge_list(request, licensee_id):
         .order_by("-created_at")
     )
 
+    scope = str(request.query_params.get("scope") or "").strip().lower()
+    if scope == "license":
+        qs = qs.filter(wallet_type__in=["license_fee", "security_deposit"])
+    elif scope == "wallets":
+        qs = qs.exclude(wallet_type__in=["license_fee", "security_deposit"])
+    elif scope in {"excise", "education_cess", "hologram"}:
+        qs = qs.filter(wallet_type__iexact=scope)
+
     wallet_type = request.query_params.get("wallet_type")
     if wallet_type:
         qs = qs.filter(wallet_type__iexact=wallet_type)
@@ -334,6 +342,14 @@ def wallet_history_list(request, licensee_id):
     if request_user:
         tx_filter |= Q(user_id__iexact=request_user)
     qs = WalletTransaction.objects.filter(tx_filter).order_by("-created_at")
+
+    scope = str(request.query_params.get("scope") or "").strip().lower()
+    if scope == "license":
+        qs = qs.filter(wallet_type__in=["license_fee", "security_deposit"])
+    elif scope == "wallets":
+        qs = qs.exclude(wallet_type__in=["license_fee", "security_deposit"])
+    elif scope in {"excise", "education_cess", "hologram"}:
+        qs = qs.filter(wallet_type__iexact=scope)
 
     wallet_type = request.query_params.get("wallet_type")
     if wallet_type:

@@ -313,7 +313,6 @@ def billdesk_initiate_license_fee(request):
     # sems_payment_transaction_billdesk.payment_module_code must store a module_code from eabgari_master_module.
     # Defaulting to Licensee Renewal (002) keeps legacy clients working.
     payment_module_code = str(data.get("payment_module_code") or "").strip() or DEFAULT_LICENSE_RENEWAL_MODULE_CODE
-    requisition_id_no = str(data.get("application_id") or data.get("requisition_id_no") or "").strip()[:50]
     raw_amount = data.get("amount")
 
     if not payer_id:
@@ -375,20 +374,17 @@ def billdesk_initiate_license_fee(request):
     request_msg = f"{msg_without_checksum}|{checksum}"
 
     # Pre-payment intent table (formerly eAbgari_Payment_Send_HOA).
-    try:
-        PaymentSendHOA.objects.create(
-            transaction_id_no=transaction_id,
-            head_of_account=LICENSE_FEE_HOA,
-            licensee_id=payer_id or None,
-            amount=amount,
-            payment_module_code=payment_module_code,
-            requisition_id_no=requisition_id_no or None,
-            user_id=str(getattr(request.user, "username", "") or "").strip()[:50] or None,
-            opr_date=timezone.now(),
-        )
-    except Exception:
-        # Keep idempotency on retries: ignore duplicate insert issues.
-        pass
+    PaymentSendHOA.objects.update_or_create(
+        transaction_id_no=transaction_id,
+        head_of_account=LICENSE_FEE_HOA,
+        defaults={
+            "licensee_id": payer_id or None,
+            "amount": amount,
+            "payment_module_code": payment_module_code,
+            "requisition_no": (_active_na_license_id_for_applicant(request.user) or "NA")[:50],
+            "opr_date": timezone.now(),
+        },
+    )
 
     PaymentBilldeskTransaction.objects.update_or_create(
         utr=transaction_id,
@@ -452,7 +448,6 @@ def billdesk_initiate_security_deposit(request):
     district = str(data.get("district") or "").strip()
     # sems_payment_transaction_billdesk.payment_module_code must store a module_code from eabgari_master_module.
     payment_module_code = str(data.get("payment_module_code") or "").strip() or DEFAULT_LICENSE_RENEWAL_MODULE_CODE
-    requisition_id_no = str(data.get("application_id") or data.get("requisition_id_no") or "").strip()[:50]
     raw_amount = data.get("amount")
 
     if not payer_id:
@@ -529,19 +524,17 @@ def billdesk_initiate_security_deposit(request):
     checksum = _billdesk_hmac_sha256(msg_without_checksum, encryption_key)
     request_msg = f"{msg_without_checksum}|{checksum}"
 
-    try:
-        PaymentSendHOA.objects.create(
-            transaction_id_no=transaction_id,
-            head_of_account=SECURITY_DEPOSIT_HOA_SENTINEL,
-            licensee_id=payer_id or None,
-            amount=amount,
-            payment_module_code=payment_module_code,
-            requisition_id_no=requisition_id_no or None,
-            user_id=str(getattr(request.user, "username", "") or "").strip()[:50] or None,
-            opr_date=timezone.now(),
-        )
-    except Exception:
-        pass
+    PaymentSendHOA.objects.update_or_create(
+        transaction_id_no=transaction_id,
+        head_of_account=SECURITY_DEPOSIT_HOA_SENTINEL,
+        defaults={
+            "licensee_id": payer_id or None,
+            "amount": amount,
+            "payment_module_code": payment_module_code,
+            "requisition_no": (_active_na_license_id_for_applicant(request.user) or "NA")[:50],
+            "opr_date": timezone.now(),
+        },
+    )
 
     PaymentBilldeskTransaction.objects.update_or_create(
         utr=transaction_id,
