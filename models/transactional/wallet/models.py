@@ -217,19 +217,6 @@ def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = 
 
     return str(fallback or "").strip()
 
-
-class PaymentHeadOfAccount(models.Model):
-    head_of_account = models.CharField(max_length=50, primary_key=True)
-    visible_status = models.CharField(max_length=1, default="Y")
-
-    class Meta:
-        managed = False
-        db_table = "eabgari_master_head_of_accounts"
-
-    def __str__(self):
-        return str(self.head_of_account)
-
-
 class WalletBalance(models.Model):
     wallet_balance_id = models.BigAutoField(primary_key=True)
     licensee_id = models.CharField(max_length=50)
@@ -247,7 +234,6 @@ class WalletBalance(models.Model):
     created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        managed = False
         db_table = "wallet_balances"
 
     def save(self, *args, **kwargs):
@@ -271,7 +257,6 @@ class WalletTransaction(models.Model):
         WalletBalance,
         on_delete=models.RESTRICT,
         db_column="wallet_balance_id",
-        to_field="wallet_balance_id",
     )
     transaction_id = models.CharField(max_length=100)
     licensee_id = models.CharField(max_length=50)
@@ -292,7 +277,6 @@ class WalletTransaction(models.Model):
     created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        managed = False
         db_table = "wallet_transactions"
 
     def save(self, *args, **kwargs):
