@@ -18,10 +18,9 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import PaymentBilldeskTransaction, PaymentGatewayParameters
+from .models import PaymentBilldeskTransaction, PaymentGatewayParameters, PaymentSendHOA
 
 from models.transactional.payment.models import (
-    PaymentSendHOA,
     MasterPaymentModule,
     EabgariMasterModule,
 )
@@ -338,6 +337,7 @@ def billdesk_initiate_license_fee(request):
         PaymentSendHOA.objects.create(
             transaction_id_no=transaction_id,
             head_of_account=LICENSE_FEE_HOA,
+            licensee_id=payer_id or None,
             amount=amount,
             payment_module_code=payment_module_code,
             requisition_id_no=requisition_id_no or None,
@@ -491,6 +491,7 @@ def billdesk_initiate_security_deposit(request):
         PaymentSendHOA.objects.create(
             transaction_id_no=transaction_id,
             head_of_account=SECURITY_DEPOSIT_HOA_SENTINEL,
+            licensee_id=payer_id or None,
             amount=amount,
             payment_module_code=payment_module_code,
             requisition_id_no=requisition_id_no or None,

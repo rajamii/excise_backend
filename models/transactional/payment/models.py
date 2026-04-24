@@ -288,22 +288,6 @@ PaymentBilldeskTransaction moved to `models.transactional.payment_gateway.models
 so all BillDesk gateway-specific code lives under `payment_gateway/`.
 """
 
-# Formerly eAbgari_Payment_Send_HOA (pre-payment intent)
-class PaymentSendHOA(models.Model):
-    id = models.BigAutoField(primary_key=True)
-    transaction_id_no = models.CharField(max_length=50)
-    head_of_account = models.CharField(max_length=50)
-    # payer_id = models.CharField(max_length=50)
-    amount = models.DecimalField(max_digits=18, decimal_places=2)
-    payment_module_code = models.CharField(max_length=20, null=True, blank=True)
-    requisition_id_no = models.CharField(max_length=50, null=True, blank=True)
-    user_id = models.CharField(max_length=50, null=True, blank=True)
-    opr_date = models.DateTimeField(default=timezone.now)
-
-    class Meta:
-        managed = False
-        db_table = "sems_payment_send_hoa"
-
 
 # Master table: head of accounts (for validating/visibility)
 class PaymentHeadOfAccount(models.Model):
