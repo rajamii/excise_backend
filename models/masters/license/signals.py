@@ -13,7 +13,8 @@ def _stage_is_commissioner_approval(stage, *, application_model: str) -> bool:
     """
     New license applications: license + wallet_balances (0 balance) are issued only when
     the workflow stage is a commissioner approval (not OIC / other intermediate approvals).
-    Stage name must reference commissioner and an approval (not rejection).
+    Stage name may be stored as just `Commissioner` in the DB; treat that as approval for
+    new-license issuance and wallet initialization.
     """
     if not stage:
         return False
@@ -23,11 +24,21 @@ def _stage_is_commissioner_approval(stage, *, application_model: str) -> bool:
     app = (application_model or "").lower()
     if app != "newlicenseapplication":
         return False
-    if "commissioner" not in name_lower and "commisioner" not in name_lower:
+    # Exclude Joint Commissioner stage (it is an intermediate review stage in workflow_id=1).
+    if "joint" in name_lower:
         return False
-    if "approv" not in name_lower:
-        return False
-    return True
+
+    # Some datasets store commissioner stage as exactly "Commissioner"/"Commisioner" without "approve".
+    if name_lower in {"commissioner", "commisioner"}:
+        return True
+
+    # More explicit naming variants (Commissioner Approval / Approved by Commissioner / etc.)
+    if ("commissioner" in name_lower or "commisioner" in name_lower) and (
+        "approv" in name_lower or "approved" in name_lower
+    ):
+        return True
+
+    return False
 
 
 def _stage_is_awaiting_license_fee_payment(stage, *, application_model: str) -> bool:
@@ -69,9 +80,16 @@ def _stage_should_issue_license(stage, *, application_model: str) -> bool:
 
     app = (application_model or "").lower()
     if app == "newlicenseapplication":
-        return (
+        # Different deployments use slightly different stage naming:
+        # - "Commissioner" (or "Commissioner Approval")
+        # - "awaiting_payment" ("Awaiting License Fee Payment")
+        # - final "approved" stage
+        # To keep behavior stable, issue the NA/... license (and seed wallets) on any of these.
+        return bool(
             _stage_is_commissioner_approval(stage, application_model=application_model)
             or _stage_is_awaiting_license_fee_payment(stage, application_model=application_model)
+            or (getattr(stage, "is_final", False) and "reject" not in name_lower)
+            or name_lower == "approved"
         )
 
     return name_lower == "approved"
