@@ -9,7 +9,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def _stage_is_commissioner_approval(stage, *, application_model: str) -> bool:
+def _stage_is_commissioner_approval(stage) -> bool:
     """
     New license applications: license + wallet_balances (0 balance) are issued only when
     the workflow stage is a commissioner approval (not OIC / other intermediate approvals).
@@ -20,9 +20,6 @@ def _stage_is_commissioner_approval(stage, *, application_model: str) -> bool:
         return False
     name_lower = str(getattr(stage, "name", "") or "").strip().lower()
     if not name_lower or "reject" in name_lower:
-        return False
-    app = (application_model or "").lower()
-    if app != "newlicenseapplication":
         return False
     # Exclude Joint Commissioner stage (it is an intermediate review stage in workflow_id=1).
     if "joint" in name_lower:
@@ -86,13 +83,18 @@ def _stage_should_issue_license(stage, *, application_model: str) -> bool:
         # - final "approved" stage
         # To keep behavior stable, issue the NA/... license (and seed wallets) on any of these.
         return bool(
-            _stage_is_commissioner_approval(stage, application_model=application_model)
+            _stage_is_commissioner_approval(stage)
             or _stage_is_awaiting_license_fee_payment(stage, application_model=application_model)
             or (getattr(stage, "is_final", False) and "reject" not in name_lower)
             or name_lower == "approved"
         )
 
-    return name_lower == "approved"
+    # Other application types: deployments often use commissioner final stage naming instead of "approved".
+    return bool(
+        _stage_is_commissioner_approval(stage)
+        or (getattr(stage, "is_final", False) and "reject" not in name_lower)
+        or name_lower == "approved"
+    )
 
 
 def get_license_valid_up_to(issue_date: date) -> date:
@@ -144,22 +146,20 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
         .first()
     )
     if existing_license:
-        if application_model == "newlicenseapplication" and (
-            _stage_is_commissioner_approval(instance.stage, application_model=application_model)
-            or _stage_is_awaiting_license_fee_payment(instance.stage, application_model=application_model)
-        ):
-            try:
-                from models.transactional.wallet.wallet_initializer import (
-                    initialize_wallet_balances_for_license,
-                )
+        # Still ensure wallets exist (and get updated metadata) whenever an approval-stage
+        # transaction is logged for the application.
+        try:
+            from models.transactional.wallet.wallet_initializer import (
+                initialize_wallet_balances_for_license,
+            )
 
-                initialize_wallet_balances_for_license(existing_license)
-            except Exception as wallet_error:
-                logger.error(
-                    "Wallet initialization failed for existing license_id=%s (commissioner/awaiting_payment): %s",
-                    existing_license.license_id,
-                    wallet_error,
-                )
+            initialize_wallet_balances_for_license(existing_license)
+        except Exception as wallet_error:
+            logger.error(
+                "Wallet initialization failed for existing license_id=%s (approval stage): %s",
+                existing_license.license_id,
+                wallet_error,
+            )
         return
 
     # Map model name → source_type

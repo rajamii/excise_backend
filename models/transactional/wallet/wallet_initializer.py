@@ -1,10 +1,14 @@
+from functools import lru_cache
 from decimal import Decimal
 import logging
 
-from django.db import transaction
+from django.db import connection, transaction
+from django.db.models import Q
 from django.utils import timezone
 
-from .models import PaymentHeadOfAccount, WalletBalance
+from models.transactional.payment_gateway.models import MasterHeadOfAccount
+
+from .models import WalletBalance
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +52,14 @@ WALLET_LABELS = {
 }
 
 
+@lru_cache(maxsize=1)
+def _hoa_master_table_exists() -> bool:
+    try:
+        return MasterHeadOfAccount._meta.db_table in set(connection.introspection.table_names())
+    except Exception:
+        return False
+
+
 def _resolve_module_type(license_obj) -> str:
     sub_category_id = getattr(license_obj, "license_sub_category_id", None)
     sub_category = getattr(license_obj, "license_sub_category", None)
@@ -86,8 +98,13 @@ def _resolve_hoa_code(module_type: str, wallet_type: str) -> str:
     if not candidates:
         raise ValueError(f"No HOA candidates configured for module_type={module_type}, wallet_type={wallet_type}")
 
+    # Some environments don't ship the SEMS master table in the same DB; fall back to configured code
+    # instead of running a failing query (PostgreSQL would abort the surrounding transaction).
+    if not _hoa_master_table_exists():
+        return candidates[0]
+
     active_codes = set(
-        PaymentHeadOfAccount.objects.filter(head_of_account__in=candidates, visible_status="Y").values_list(
+        MasterHeadOfAccount.objects.filter(head_of_account__in=candidates, visible_status="Y").values_list(
             "head_of_account", flat=True
         )
     )
@@ -96,7 +113,7 @@ def _resolve_hoa_code(module_type: str, wallet_type: str) -> str:
             return code
 
     existing_codes = set(
-        PaymentHeadOfAccount.objects.filter(head_of_account__in=candidates).values_list("head_of_account", flat=True)
+        MasterHeadOfAccount.objects.filter(head_of_account__in=candidates).values_list("head_of_account", flat=True)
     )
     for code in candidates:
         if code in existing_codes:
@@ -202,6 +219,49 @@ def _build_user_id(license_obj) -> str:
     return str(getattr(applicant, "pk", "") or "").strip()
 
 
+def _resolve_primary_wallet_licensee_id(license_obj, *, fallback_licensee_id: str, user_id: str) -> str:
+    """
+    Wallets are shared per "primary holder" (applicant/user_id) across multiple license approvals.
+
+    We still need a licensee_id value for wallet rows; treat an active NA/... for the applicant
+    as the canonical one (supply-chain flows use NA/... heavily). If NA/... doesn't exist,
+    fall back to the current issued license_id.
+    """
+    fallback = str(fallback_licensee_id or "").strip()
+    user_key = str(user_id or "").strip()
+
+    applicant = getattr(license_obj, "applicant", None)
+    if applicant is not None:
+        try:
+            from models.masters.license.models import License
+
+            lic = (
+                License.objects.filter(applicant=applicant, is_active=True)
+                .filter(license_id__istartswith="NA/")
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if lic and lic.license_id:
+                return str(lic.license_id).strip()
+        except Exception:
+            pass
+
+    if user_key:
+        # If we already have any wallet rows for this user, keep their licensee_id as stable fallback.
+        template = (
+            WalletBalance.objects.filter(user_id__iexact=user_key)
+            .exclude(licensee_id__isnull=True)
+            .exclude(licensee_id__exact="")
+            .order_by("wallet_balance_id")
+            .first()
+        )
+        template_id = str(getattr(template, "licensee_id", "") or "").strip()
+        if template_id:
+            return template_id
+
+    return fallback
+
+
 def initialize_wallet_balances_for_license(license_obj) -> None:
     if license_obj is None:
         return
@@ -215,6 +275,9 @@ def initialize_wallet_balances_for_license(license_obj) -> None:
     person_name = _build_person_name(license_obj)
     manufacturing_unit = _build_manufacturing_unit_name(license_obj)
     user_id = _build_user_id(license_obj)
+    primary_licensee_id = _resolve_primary_wallet_licensee_id(
+        license_obj, fallback_licensee_id=licensee_id, user_id=user_id
+    )
     now = timezone.now()
 
     if module_type in {"distillery", "brewery"}:
@@ -226,24 +289,36 @@ def initialize_wallet_balances_for_license(license_obj) -> None:
         for wallet_type in wallet_types:
             hoa_code = _resolve_hoa_code(module_type, wallet_type)
 
-            existing_qs = WalletBalance.objects.filter(licensee_id=licensee_id, wallet_type=wallet_type)
-            if existing_qs.exists():
-                existing_qs.update(
-                    licensee_name=person_name,
-                    manufacturing_unit=manufacturing_unit,
-                    user_id=user_id,
-                    module_type=module_type,
-                    head_of_account=hoa_code,
-                    last_updated_at=now,
+            existing_qs = WalletBalance.objects.none()
+            if user_id:
+                existing_qs = WalletBalance.objects.filter(user_id__iexact=user_id, wallet_type__iexact=wallet_type)
+            if not existing_qs.exists():
+                existing_qs = WalletBalance.objects.filter(
+                    Q(licensee_id=licensee_id) | Q(licensee_id=primary_licensee_id),
+                    wallet_type__iexact=wallet_type,
                 )
+            if existing_qs.exists():
+                updates = {
+                    "licensee_id": primary_licensee_id or licensee_id,
+                    "module_type": module_type or "other",
+                    "head_of_account": hoa_code,
+                    "last_updated_at": now,
+                }
+                if person_name:
+                    updates["licensee_name"] = person_name
+                if manufacturing_unit:
+                    updates["manufacturing_unit"] = manufacturing_unit
+                if user_id:
+                    updates["user_id"] = user_id
+                existing_qs.update(**updates)
                 continue
 
             WalletBalance.objects.create(
-                licensee_id=licensee_id,
-                licensee_name=person_name,
-                manufacturing_unit=manufacturing_unit,
-                user_id=user_id,
-                module_type=module_type,
+                licensee_id=primary_licensee_id or licensee_id,
+                licensee_name=person_name or "",
+                manufacturing_unit=manufacturing_unit or "",
+                user_id=user_id or None,
+                module_type=module_type or "other",
                 wallet_type=wallet_type,
                 head_of_account=hoa_code,
                 opening_balance=Decimal("0.00"),
