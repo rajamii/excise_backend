@@ -68,6 +68,10 @@ class WalletInitializerPrimaryHolderTests(TestCase):
             set(WalletBalance.objects.filter(user_id__iexact="TH0001").values_list("wallet_type", flat=True)),
             {"security_deposit", "license_fee"},
         )
+        self.assertEqual(
+            set(WalletBalance.objects.filter(user_id__iexact="TH0001").values_list("module_type", flat=True)),
+            {"other"},
+        )
 
         distillery = self._create_license(
             license_id="NA/225/2025-26/0002",
@@ -106,4 +110,3 @@ class WalletInitializerPrimaryHolderTests(TestCase):
         self.assertEqual(rows.count(), 5)
         self.assertEqual(rows.filter(wallet_type="security_deposit").count(), 1)
         self.assertEqual(rows.filter(wallet_type="license_fee").count(), 1)
-

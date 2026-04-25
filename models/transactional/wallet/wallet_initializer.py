@@ -12,10 +12,14 @@ from .models import WalletBalance
 
 logger = logging.getLogger(__name__)
 
-SUBCATEGORY_TO_MODULE_TYPE = {
-    1: "brewery",
-    2: "distillery",
-}
+def _looks_like_distillery(text: str) -> bool:
+    t = str(text or "").strip().lower()
+    return "distill" in t
+
+
+def _looks_like_brewery(text: str) -> bool:
+    t = str(text or "").strip().lower()
+    return ("brew" in t) or ("beer" in t)
 
 COMMON_EDUCATION_CESS_HOA = "0045-00-112-45-03"
 COMMON_HOLOGRAM_HOA = "0039-00-800-45-01"
@@ -64,23 +68,22 @@ def _resolve_module_type(license_obj) -> str:
     sub_category_id = getattr(license_obj, "license_sub_category_id", None)
     sub_category = getattr(license_obj, "license_sub_category", None)
     sub_desc = str(getattr(sub_category, "description", "") or "").strip().lower()
-    if "distill" in sub_desc:
+    if _looks_like_distillery(sub_desc):
         return "distillery"
-    if "brew" in sub_desc or "beer" in sub_desc:
+    if _looks_like_brewery(sub_desc):
         return "brewery"
     if sub_desc:
         return "other"
 
-    module_type = SUBCATEGORY_TO_MODULE_TYPE.get(sub_category_id)
-    if module_type:
-        return module_type
+    # Do NOT map by numeric subcategory IDs here; IDs vary between environments and can cause
+    # non-manufacturing licenses (e.g. Departmental Store) to be misclassified as brewery/distillery.
 
     source = getattr(license_obj, "source_application", None)
     license_type = getattr(source, "license_type", None) if source is not None else None
     type_name = str(getattr(license_type, "license_type", "") or "").strip().lower()
-    if "distill" in type_name:
+    if _looks_like_distillery(type_name):
         return "distillery"
-    if "brew" in type_name or "beer" in type_name:
+    if _looks_like_brewery(type_name):
         return "brewery"
     if type_name:
         return "other"

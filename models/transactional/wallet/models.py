@@ -2,6 +2,16 @@ from django.db import models
 from django.utils import timezone
 
 
+def _looks_like_distillery(text: str) -> bool:
+    t = str(text or "").strip().lower()
+    return "distill" in t
+
+
+def _looks_like_brewery(text: str) -> bool:
+    t = str(text or "").strip().lower()
+    return ("brew" in t) or ("beer" in t)
+
+
 def _resolve_approved_license_id(raw_value: str) -> str:
     """
     Normalize any incoming licensee/profile id to the approved license_id format (typically NA/...).
@@ -196,23 +206,20 @@ def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = 
 
     sub_category = getattr(lic, "license_sub_category", None)
     sub_desc = str(getattr(sub_category, "description", "") or "").strip().lower()
-    if "distill" in sub_desc:
+    if _looks_like_distillery(sub_desc):
         return "distillery"
-    if "brew" in sub_desc or "beer" in sub_desc:
+    if _looks_like_brewery(sub_desc):
         return "brewery"
 
-    sub_category_id = getattr(lic, "license_sub_category_id", None)
-    if sub_category_id == 1:
-        return "brewery"
-    if sub_category_id == 2:
-        return "distillery"
+    # Do NOT map by numeric subcategory IDs; IDs vary between environments and can cause
+    # non-manufacturing licenses (e.g. Departmental Store) to be misclassified.
 
     source = getattr(lic, "source_application", None)
     license_type = getattr(source, "license_type", None) if source is not None else None
     type_name = str(getattr(license_type, "license_type", "") or "").strip().lower()
-    if "distill" in type_name:
+    if _looks_like_distillery(type_name):
         return "distillery"
-    if "brew" in type_name or "beer" in type_name:
+    if _looks_like_brewery(type_name):
         return "brewery"
 
     return str(fallback or "").strip()
