@@ -5,6 +5,7 @@ import logging
 from urllib.parse import urlencode
 from decimal import Decimal
 import secrets
+from datetime import timedelta
 
 from django.conf import settings
 from django.db.utils import OperationalError, ProgrammingError
@@ -29,6 +30,38 @@ LICENSE_FEE_HOA = "0039-00-800-45-02"
 SECURITY_DEPOSIT_HOA_SENTINEL = "non"
 DEFAULT_LICENSE_RENEWAL_MODULE_CODE = "002"
 DEFAULT_WALLET_ADVANCE_MODULE_CODE = "999"
+DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE = "001"
+PENDING_RETRY_LOCK_MINUTES = 15
+
+
+def _build_pending_retry_response(tx: PaymentBilldeskTransaction, remaining_seconds: int) -> Response:
+    lock_until = (tx.transaction_date or timezone.now()) + timedelta(minutes=PENDING_RETRY_LOCK_MINUTES)
+    return Response(
+        {
+            "detail": "A BillDesk payment is already pending. Please try again after 15 minutes.",
+            "status": "pending",
+            "pending_transaction_id": str(getattr(tx, "utr", "") or getattr(tx, "transaction_id_no_hoa", "") or "").strip(),
+            "retry_after_seconds": int(max(0, remaining_seconds)),
+            "retry_after": lock_until.isoformat(),
+        },
+        status=status.HTTP_409_CONFLICT,
+    )
+
+
+def _recent_pending_for_payer(payer_id: str) -> PaymentBilldeskTransaction | None:
+    pid = str(payer_id or "").strip()
+    if not pid:
+        return None
+    cutoff = timezone.now() - timedelta(minutes=PENDING_RETRY_LOCK_MINUTES)
+    return (
+        PaymentBilldeskTransaction.objects.filter(
+            payer_id__iexact=pid,
+            payment_status__iexact="P",
+            transaction_date__gte=cutoff,
+        )
+        .order_by("-transaction_date")
+        .first()
+    )
 
 
 def _normalize_wallet_type(wallet_type: str) -> str:
@@ -177,6 +210,28 @@ def billdesk_initiate_wallet_recharge(request):
     except Exception as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
+    pending_tx = _recent_pending_for_payer(payer_id)
+    if pending_tx:
+        existing_txn_id = str(getattr(pending_tx, "utr", "") or getattr(pending_tx, "transaction_id_no_hoa", "") or "").strip()
+        if existing_txn_id and existing_txn_id == transaction_id and str(getattr(pending_tx, "request_string", "") or "").strip():
+            if getattr(settings, "BILLDESK_USE_MOCK", False):
+                billdesk_url = request.build_absolute_uri(reverse("payment_gateway:billdesk-mock-process"))
+            else:
+                billdesk_url = getattr(settings, "BILLDESK_GATEWAY_URL", "") or ""
+            return Response(
+                {
+                    "billdesk_url": billdesk_url,
+                    "request_msg": str(pending_tx.request_string).strip(),
+                    "transaction_id": existing_txn_id,
+                    "already_pending": True,
+                }
+            )
+
+        lock_until = (pending_tx.transaction_date or timezone.now()) + timedelta(minutes=PENDING_RETRY_LOCK_MINUTES)
+        remaining = int(max(0, (lock_until - timezone.now()).total_seconds()))
+        if remaining > 0:
+            return _build_pending_retry_response(pending_tx, remaining)
+
     gateway = (
         PaymentGatewayParameters.objects.filter(is_active="Y", payment_gateway_name__iexact="Billdesk")
         .order_by("sl_no")
@@ -283,6 +338,23 @@ def billdesk_initiate_wallet_recharge(request):
         },
     )
 
+    try:
+        record_wallet_transaction(
+            transaction_id=transaction_id,
+            licensee_id=str(data.get("licensee_id") or data.get("licenseeId") or payer_id or "").strip()[:50] or payer_id,
+            wallet_type=wallet_type,
+            head_of_account=head_of_account,
+            amount=amount,
+            entry_type="CR",
+            transaction_type="recharge",
+            user_id=str(getattr(request.user, "username", "") or "").strip(),
+            source_module="wallet_recharge",
+            payment_status="pending",
+            remarks="BillDesk payment initiated",
+        )
+    except Exception as exc:
+        logger.warning("Failed to record pending wallet transaction for txn_id=%s: %s", transaction_id, exc)
+
     return Response(
         {
             "billdesk_url": billdesk_url,
@@ -330,6 +402,28 @@ def billdesk_initiate_license_fee(request):
         amount = _normalize_amount(raw_amount)
     except Exception as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    pending_tx = _recent_pending_for_payer(payer_id)
+    if pending_tx:
+        existing_txn_id = str(getattr(pending_tx, "utr", "") or getattr(pending_tx, "transaction_id_no_hoa", "") or "").strip()
+        if existing_txn_id and existing_txn_id == transaction_id and str(getattr(pending_tx, "request_string", "") or "").strip():
+            if getattr(settings, "BILLDESK_USE_MOCK", False):
+                billdesk_url = request.build_absolute_uri(reverse("payment_gateway:billdesk-mock-process"))
+            else:
+                billdesk_url = getattr(settings, "BILLDESK_GATEWAY_URL", "") or ""
+            return Response(
+                {
+                    "billdesk_url": billdesk_url,
+                    "request_msg": str(pending_tx.request_string).strip(),
+                    "transaction_id": existing_txn_id,
+                    "already_pending": True,
+                }
+            )
+
+        lock_until = (pending_tx.transaction_date or timezone.now()) + timedelta(minutes=PENDING_RETRY_LOCK_MINUTES)
+        remaining = int(max(0, (lock_until - timezone.now()).total_seconds()))
+        if remaining > 0:
+            return _build_pending_retry_response(pending_tx, remaining)
 
     gateway = (
         PaymentGatewayParameters.objects.filter(is_active="Y", payment_gateway_name__iexact="Billdesk")
@@ -418,6 +512,23 @@ def billdesk_initiate_license_fee(request):
         },
     )
 
+    try:
+        record_wallet_transaction(
+            transaction_id=transaction_id,
+            licensee_id=payer_id,
+            wallet_type="license_fee",
+            head_of_account=LICENSE_FEE_HOA,
+            amount=amount,
+            entry_type="CR",
+            transaction_type="recharge",
+            user_id=str(getattr(request.user, "username", "") or "").strip(),
+            source_module="wallet_recharge",
+            payment_status="pending",
+            remarks="BillDesk payment initiated",
+        )
+    except Exception as exc:
+        logger.warning("Failed to record pending license fee transaction for txn_id=%s: %s", transaction_id, exc)
+
     return Response({"billdesk_url": billdesk_url, "request_msg": request_msg, "transaction_id": transaction_id})
 
 
@@ -479,6 +590,28 @@ def billdesk_initiate_security_deposit(request):
         amount = _normalize_amount(raw_amount)
     except Exception as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    pending_tx = _recent_pending_for_payer(payer_id)
+    if pending_tx:
+        existing_txn_id = str(getattr(pending_tx, "utr", "") or getattr(pending_tx, "transaction_id_no_hoa", "") or "").strip()
+        if existing_txn_id and existing_txn_id == transaction_id and str(getattr(pending_tx, "request_string", "") or "").strip():
+            if getattr(settings, "BILLDESK_USE_MOCK", False):
+                billdesk_url = request.build_absolute_uri(reverse("payment_gateway:billdesk-mock-process"))
+            else:
+                billdesk_url = getattr(settings, "BILLDESK_GATEWAY_URL", "") or ""
+            return Response(
+                {
+                    "billdesk_url": billdesk_url,
+                    "request_msg": str(pending_tx.request_string).strip(),
+                    "transaction_id": existing_txn_id,
+                    "already_pending": True,
+                }
+            )
+
+        lock_until = (pending_tx.transaction_date or timezone.now()) + timedelta(minutes=PENDING_RETRY_LOCK_MINUTES)
+        remaining = int(max(0, (lock_until - timezone.now()).total_seconds()))
+        if remaining > 0:
+            return _build_pending_retry_response(pending_tx, remaining)
 
     gateway = (
         PaymentGatewayParameters.objects.filter(is_active="Y", payment_gateway_name__iexact="Billdesk")
@@ -573,13 +706,188 @@ def billdesk_initiate_security_deposit(request):
         },
     )
 
+    try:
+        record_wallet_transaction(
+            transaction_id=transaction_id,
+            licensee_id=payer_id,
+            licensee_name=licensee_name,
+            wallet_type="security_deposit",
+            head_of_account=SECURITY_DEPOSIT_HOA_SENTINEL,
+            amount=amount,
+            entry_type="CR",
+            transaction_type="recharge",
+            user_id=str(getattr(request.user, "username", "") or "").strip(),
+            source_module="wallet_recharge",
+            payment_status="pending",
+            remarks="BillDesk payment initiated",
+        )
+    except Exception as exc:
+        logger.warning("Failed to record pending security deposit transaction for txn_id=%s: %s", transaction_id, exc)
+
     return Response({"billdesk_url": billdesk_url, "request_msg": request_msg, "transaction_id": transaction_id})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def billdesk_initiate_new_license_application_fee(request):
+    """
+    New license application fee payment via BillDesk.
+
+    - payment_module_code: 001 (New Licensee Application) from master module table
+    - payer_id: application_id (NLI/...)
+    - AdditionalInfo2/3: SIKPAY (legacy mapping expected by BillDesk integrations)
+    """
+    data = request.data or {}
+
+    application_id = str(data.get("application_id") or data.get("payer_id") or "").strip()[:50]
+    if not application_id:
+        return Response({"detail": "application_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    transaction_id = str(data.get("transaction_id") or "").strip() or _generate_transaction_id("NLIAPP")
+    raw_amount = data.get("amount")
+    payment_module_code = str(data.get("payment_module_code") or "").strip() or DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE
+    head_of_account = str(data.get("head_of_account") or LICENSE_FEE_HOA).strip() or LICENSE_FEE_HOA
+
+    try:
+        payment_module_code = _validate_payment_module_code(payment_module_code)
+    except Exception as exc:
+        logger.warning(
+            "Invalid payment_module_code=%s for new license application fee; proceeding with raw value. err=%s",
+            payment_module_code,
+            exc,
+        )
+
+    try:
+        amount = _normalize_amount(raw_amount or Decimal("500.00"))
+    except Exception as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    pending_tx = _recent_pending_for_payer(application_id)
+    if pending_tx:
+        existing_txn_id = str(getattr(pending_tx, "utr", "") or getattr(pending_tx, "transaction_id_no_hoa", "") or "").strip()
+        if existing_txn_id and existing_txn_id == transaction_id and str(getattr(pending_tx, "request_string", "") or "").strip():
+            if getattr(settings, "BILLDESK_USE_MOCK", False):
+                billdesk_url = request.build_absolute_uri(reverse("payment_gateway:billdesk-mock-process"))
+            else:
+                billdesk_url = getattr(settings, "BILLDESK_GATEWAY_URL", "") or ""
+            return Response(
+                {
+                    "billdesk_url": billdesk_url,
+                    "request_msg": str(pending_tx.request_string).strip(),
+                    "transaction_id": existing_txn_id,
+                    "application_id": application_id,
+                    "already_pending": True,
+                }
+            )
+
+        lock_until = (pending_tx.transaction_date or timezone.now()) + timedelta(minutes=PENDING_RETRY_LOCK_MINUTES)
+        remaining = int(max(0, (lock_until - timezone.now()).total_seconds()))
+        if remaining > 0:
+            return _build_pending_retry_response(pending_tx, remaining)
+
+    gateway = (
+        PaymentGatewayParameters.objects.filter(is_active="Y", payment_gateway_name__iexact="Billdesk")
+        .order_by("sl_no")
+        .first()
+    )
+    if gateway is None:
+        return Response(
+            {"detail": "No active Billdesk configuration found in Payment_Gateway_Parameters."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if getattr(settings, "BILLDESK_USE_MOCK", False):
+        billdesk_url = request.build_absolute_uri(reverse("payment_gateway:billdesk-mock-process"))
+        return_url = request.build_absolute_uri(reverse("payment_gateway:billdesk-response"))
+    else:
+        billdesk_url = getattr(settings, "BILLDESK_GATEWAY_URL", "") or ""
+        return_url = str(gateway.return_url or "").strip()
+
+    if not billdesk_url:
+        return Response({"detail": "BILLDESK_GATEWAY_URL is not configured on server."}, status=500)
+    if not return_url:
+        return Response({"detail": "return_url is not configured for Billdesk in Payment_Gateway_Parameters."}, status=500)
+
+    merchant_id = str(gateway.merchantid or "").strip()
+    security_id = str(gateway.securityid or "").strip()
+    encryption_key = str(gateway.encryption_key or "").strip()
+    if not merchant_id or not security_id or not encryption_key:
+        return Response({"detail": "Billdesk gateway config is missing merchantid/securityid/encryption_key."}, status=500)
+
+    amount_str = f"{amount:.2f}"
+    add1 = head_of_account
+    add2 = "SIKPAY"
+    add3 = "SIKPAY"
+
+    msg_without_checksum = _build_billdesk_request_message(
+        merchant_id=merchant_id,
+        transaction_id=transaction_id,
+        amount_str=amount_str,
+        security_id=security_id,
+        return_url=return_url,
+        additional_infos=[add1, add2, add3, "NA", "NA", "NA", "NA"],
+    )
+    checksum = _billdesk_hmac_sha256(msg_without_checksum, encryption_key)
+    request_msg = f"{msg_without_checksum}|{checksum}"
+
+    PaymentSendHOA.objects.update_or_create(
+        transaction_id_no=transaction_id,
+        head_of_account=head_of_account,
+        defaults={
+            "licensee_id": application_id or None,
+            "amount": amount,
+            "payment_module_code": payment_module_code,
+            "requisition_no": (application_id or "NA")[:50],
+            "opr_date": timezone.now(),
+        },
+    )
+
+    PaymentBilldeskTransaction.objects.update_or_create(
+        utr=transaction_id,
+        defaults={
+            "transaction_date": timezone.now(),
+            "transaction_id_no_hoa": transaction_id,
+            "payer_id": application_id,
+            "payment_module_code": payment_module_code,
+            "transaction_amount": amount,
+            "request_merchantid": merchant_id,
+            "request_currencytype": "INR",
+            "request_typefield1": "R",
+            "request_securityid": security_id,
+            "request_typefield2": "F",
+            "request_additionalinfo1": add1,
+            "request_additionalinfo2": add2,
+            "request_additionalinfo3": add3,
+            "request_additionalinfo4": "NA",
+            "request_additionalinfo5": "NA",
+            "request_additionalinfo6": "NA",
+            "request_additionalinfo7": "NA",
+            "request_return_url": return_url,
+            "request_checksum": checksum,
+            "request_string": request_msg,
+            "payment_status": "P",
+            "opr_date": timezone.now(),
+            "user_id": str(getattr(request.user, "username", "") or "").strip()[:50],
+        },
+    )
+
+    return Response(
+        {
+            "billdesk_url": billdesk_url,
+            "request_msg": request_msg,
+            "transaction_id": transaction_id,
+            "application_id": application_id,
+        }
+    )
 
 
 @csrf_exempt
 def billdesk_response(request):
     if request.method != "POST":
         return HttpResponseBadRequest("Invalid method")
+
+    auto_submitted = False
+    auto_submit_error = ""
 
     response_msg = str(request.POST.get("msg") or "").strip()
     if not response_msg:
@@ -675,85 +983,143 @@ def billdesk_response(request):
         tx.opr_date = timezone.now()
         tx.save()
 
-        # Persist wallet_transactions entry for license fee / security deposit on successful payment.
-        if status_code == "S":
-            try:
-                req_type = str(tx.request_additionalinfo2 or "").strip().upper()
-                credit_licensee_id = ""
-                credit_name = ""
-                credit_wallet_type = ""
-                credit_hoa = ""
+        module_code = str(getattr(tx, "payment_module_code", "") or "").strip()
 
-                if req_type == "SIKPAY":
-                    credit_licensee_id = str(tx.payer_id or "").strip()
-                    credit_wallet_type = "license_fee"
-                    credit_hoa = str(tx.request_additionalinfo1 or "").strip() or LICENSE_FEE_HOA
-                elif req_type == "SIKFDR":
-                    # For SIKFDR, AdditionalInfo4 stores the account holder name, not the licensee id.
-                    credit_licensee_id = str(tx.payer_id or "").strip()
-                    credit_name = str(tx.request_additionalinfo1 or "").strip()
-                    credit_wallet_type = "security_deposit"
-                    credit_hoa = SECURITY_DEPOSIT_HOA_SENTINEL
-                else:
-                    credit_licensee_id = str(tx.payer_id or "").strip()
-                    credit_wallet_type = str(tx.request_additionalinfo3 or "").strip()
-                    credit_hoa = str(tx.request_additionalinfo1 or "").strip() or "non"
+        if module_code == DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE:
+            # New license application fee: do NOT credit any wallet; auto-submit application on success.
+            if status_code == "S":
+                try:
+                    from models.transactional.new_license_application.models import NewLicenseApplication
+                    from auth.user.models import CustomUser
+                    from auth.workflow.services import WorkflowService
+                    # WorkflowStage import is intentionally inside try-block for environments where workflow tables differ.
 
-                if credit_wallet_type and credit_licensee_id:
-                    credit_wallet_balance(
-                        transaction_id=str(txn_ref or tx.utr or "").strip(),
-                        licensee_id=credit_licensee_id,
-                        wallet_type=credit_wallet_type,
-                        head_of_account=credit_hoa,
-                        amount=parsed_amount or Decimal(str(tx.transaction_amount or 0)).quantize(Decimal("0.01")),
-                        user_id=str(tx.user_id or "").strip(),
-                        licensee_name=credit_name,
-                        source_module="wallet_recharge",
-                        transaction_type="recharge",
-                        remarks="BillDesk payment success",
+                    application_id = str(getattr(tx, "payer_id", "") or "").strip()
+                    app = (
+                        NewLicenseApplication.objects.select_related("current_stage", "applicant")
+                        .filter(application_id__iexact=application_id)
+                        .first()
                     )
-            except Exception as exc:
-                logger.exception("Failed to credit wallet for txn_ref=%s: %s", txn_ref, exc)
-        elif status_code == "F":
-            try:
-                req_type = str(tx.request_additionalinfo2 or "").strip().upper()
-                log_licensee_id = ""
-                log_name = ""
-                log_wallet_type = ""
-                log_hoa = ""
+                    if not app:
+                        raise ValueError(f"NewLicenseApplication not found for application_id={application_id}")
 
-                if req_type == "SIKPAY":
-                    log_licensee_id = str(tx.payer_id or "").strip()
-                    log_wallet_type = "license_fee"
-                    log_hoa = str(tx.request_additionalinfo1 or "").strip() or LICENSE_FEE_HOA
-                elif req_type == "SIKFDR":
-                    log_licensee_id = str(tx.payer_id or "").strip()
-                    log_name = str(tx.request_additionalinfo1 or "").strip()
-                    log_wallet_type = "security_deposit"
-                    log_hoa = SECURITY_DEPOSIT_HOA_SENTINEL
-                else:
-                    log_licensee_id = str(tx.payer_id or "").strip()
-                    log_wallet_type = str(tx.request_additionalinfo3 or "").strip()
-                    log_hoa = str(tx.request_additionalinfo1 or "").strip() or "non"
+                    username = str(getattr(tx, "user_id", "") or "").strip()
+                    user = None
+                    if username:
+                        user = CustomUser.objects.filter(username__iexact=username).first()
+                    if not user:
+                        user = getattr(app, "applicant", None)
 
-                fail_reason = str(error_desc or "").strip() or ("checksum_mismatch" if not checksum_ok else "failed")
+                    if getattr(getattr(app, "current_stage", None), "is_initial", False):
+                        WorkflowService.submit_application(
+                            application=app,
+                            user=user,
+                            remarks="Application fee paid via BillDesk (auto-submitted)",
+                        )
+                    auto_submitted = True
+                except Exception as exc:
+                    auto_submit_error = str(exc)
+                    logger.exception("Failed to auto-submit new license application for txn_ref=%s: %s", txn_ref, exc)
+            elif status_code == "F":
+                # Mark the draft application as closed (final) so it doesn't appear as pending workflow work.
+                try:
+                    from models.transactional.new_license_application.models import NewLicenseApplication
+                    from auth.workflow.models import WorkflowStage
 
-                if log_wallet_type and log_licensee_id:
-                    record_wallet_transaction(
-                        transaction_id=str(txn_ref or tx.utr or "").strip(),
-                        licensee_id=log_licensee_id,
-                        wallet_type=log_wallet_type,
-                        head_of_account=log_hoa,
-                        amount=parsed_amount or Decimal(str(tx.transaction_amount or 0)).quantize(Decimal("0.01")),
-                        user_id=str(tx.user_id or "").strip(),
-                        licensee_name=log_name,
-                        source_module="wallet_recharge",
-                        transaction_type="recharge",
-                        payment_status="failed",
-                        remarks=f"BillDesk payment failed: {fail_reason}",
-                    )
-            except Exception as exc:
-                logger.exception("Failed to log failed wallet transaction for txn_ref=%s: %s", txn_ref, exc)
+                    application_id = str(getattr(tx, "payer_id", "") or "").strip()
+                    app = NewLicenseApplication.objects.select_related("workflow", "current_stage").filter(application_id__iexact=application_id).first()
+                    if app and app.workflow_id and app.current_stage_id:
+                        rejected = (
+                            WorkflowStage.objects.filter(workflow_id=app.workflow_id, is_final=True, name__iregex=r"reject")
+                            .order_by("id")
+                            .first()
+                            or WorkflowStage.objects.filter(workflow_id=app.workflow_id, is_final=True).order_by("id").first()
+                        )
+                        if rejected and app.current_stage_id != rejected.id:
+                            app.current_stage = rejected
+                            app.save(update_fields=["current_stage"])
+                except Exception as exc:
+                    logger.exception("Failed to mark new license application rejected for txn_ref=%s: %s", txn_ref, exc)
+        else:
+            # Persist wallet_transactions entry for license fee / security deposit on successful payment.
+            if status_code == "S":
+                try:
+                    req_type = str(tx.request_additionalinfo2 or "").strip().upper()
+                    credit_licensee_id = ""
+                    credit_name = ""
+                    credit_wallet_type = ""
+                    credit_hoa = ""
+
+                    if req_type == "SIKPAY":
+                        credit_licensee_id = str(tx.payer_id or "").strip()
+                        credit_wallet_type = "license_fee"
+                        credit_hoa = str(tx.request_additionalinfo1 or "").strip() or LICENSE_FEE_HOA
+                    elif req_type == "SIKFDR":
+                        # For SIKFDR, AdditionalInfo4 stores the account holder name, not the licensee id.
+                        credit_licensee_id = str(tx.payer_id or "").strip()
+                        credit_name = str(tx.request_additionalinfo1 or "").strip()
+                        credit_wallet_type = "security_deposit"
+                        credit_hoa = SECURITY_DEPOSIT_HOA_SENTINEL
+                    else:
+                        credit_licensee_id = str(tx.payer_id or "").strip()
+                        credit_wallet_type = str(tx.request_additionalinfo3 or "").strip()
+                        credit_hoa = str(tx.request_additionalinfo1 or "").strip() or "non"
+
+                    if credit_wallet_type and credit_licensee_id:
+                        credit_wallet_balance(
+                            transaction_id=str(txn_ref or tx.utr or "").strip(),
+                            licensee_id=credit_licensee_id,
+                            wallet_type=credit_wallet_type,
+                            head_of_account=credit_hoa,
+                            amount=parsed_amount or Decimal(str(tx.transaction_amount or 0)).quantize(Decimal("0.01")),
+                            user_id=str(tx.user_id or "").strip(),
+                            licensee_name=credit_name,
+                            source_module="wallet_recharge",
+                            transaction_type="recharge",
+                            remarks="BillDesk payment success",
+                        )
+                except Exception as exc:
+                    logger.exception("Failed to credit wallet for txn_ref=%s: %s", txn_ref, exc)
+            elif status_code == "F":
+                try:
+                    req_type = str(tx.request_additionalinfo2 or "").strip().upper()
+                    log_licensee_id = ""
+                    log_name = ""
+                    log_wallet_type = ""
+                    log_hoa = ""
+
+                    if req_type == "SIKPAY":
+                        log_licensee_id = str(tx.payer_id or "").strip()
+                        log_wallet_type = "license_fee"
+                        log_hoa = str(tx.request_additionalinfo1 or "").strip() or LICENSE_FEE_HOA
+                    elif req_type == "SIKFDR":
+                        log_licensee_id = str(tx.payer_id or "").strip()
+                        log_name = str(tx.request_additionalinfo1 or "").strip()
+                        log_wallet_type = "security_deposit"
+                        log_hoa = SECURITY_DEPOSIT_HOA_SENTINEL
+                    else:
+                        log_licensee_id = str(tx.payer_id or "").strip()
+                        log_wallet_type = str(tx.request_additionalinfo3 or "").strip()
+                        log_hoa = str(tx.request_additionalinfo1 or "").strip() or "non"
+
+                    fail_reason = str(error_desc or "").strip() or ("checksum_mismatch" if not checksum_ok else "failed")
+
+                    if log_wallet_type and log_licensee_id:
+                        record_wallet_transaction(
+                            transaction_id=str(txn_ref or tx.utr or "").strip(),
+                            licensee_id=log_licensee_id,
+                            wallet_type=log_wallet_type,
+                            head_of_account=log_hoa,
+                            amount=parsed_amount or Decimal(str(tx.transaction_amount or 0)).quantize(Decimal("0.01")),
+                            user_id=str(tx.user_id or "").strip(),
+                            licensee_name=log_name,
+                            source_module="wallet_recharge",
+                            transaction_type="recharge",
+                            payment_status="failed",
+                            remarks=f"BillDesk payment failed: {fail_reason}",
+                        )
+                except Exception as exc:
+                    logger.exception("Failed to log failed wallet transaction for txn_ref=%s: %s", txn_ref, exc)
 
     gateway = (
         PaymentGatewayParameters.objects.filter(is_active="Y", payment_gateway_name__iexact="Billdesk")
@@ -763,22 +1129,32 @@ def billdesk_response(request):
     frontend_success = str(getattr(gateway, "frontend_success_url", "") or "").strip()
     if not frontend_success:
         frontend_success = str(getattr(settings, "PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL", "") or "").strip()
+
+    if tx and str(getattr(tx, "payment_module_code", "") or "").strip() == DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE:
+        configured = str(getattr(settings, "PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL", "") or "").strip()
+        if configured:
+            frontend_success = configured
     if not frontend_success:
         return HttpResponseBadRequest(
             "Frontend success URL not configured (set Payment_Gateway_Parameters.frontend_success_url or PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL)."
         )
 
     if tx:
-        req_type = str(tx.request_additionalinfo2 or "").strip().upper()
-        if req_type == "SIKPAY":
-            wallet_type = "license_fee"
+        module_code = str(getattr(tx, "payment_module_code", "") or "").strip()
+        if module_code == DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE:
+            wallet_type = "application_fee"
             hoa = str(tx.request_additionalinfo1 or "").strip()
-        elif req_type == "SIKFDR":
-            wallet_type = "security_deposit"
-            hoa = SECURITY_DEPOSIT_HOA_SENTINEL
         else:
-            wallet_type = str(tx.request_additionalinfo3 or "").strip()
-            hoa = str(tx.request_additionalinfo1 or "").strip()
+            req_type = str(tx.request_additionalinfo2 or "").strip().upper()
+            if req_type == "SIKPAY":
+                wallet_type = "license_fee"
+                hoa = str(tx.request_additionalinfo1 or "").strip()
+            elif req_type == "SIKFDR":
+                wallet_type = "security_deposit"
+                hoa = SECURITY_DEPOSIT_HOA_SENTINEL
+            else:
+                wallet_type = str(tx.request_additionalinfo3 or "").strip()
+                hoa = str(tx.request_additionalinfo1 or "").strip()
         amt = f"{Decimal(str(tx.transaction_amount or 0)).quantize(Decimal('0.01')):.2f}"
         created_at = tx.transaction_date.isoformat() if tx.transaction_date else ""
     else:
@@ -794,6 +1170,9 @@ def billdesk_response(request):
     query = urlencode(
         {
             "transactionId": txn_ref,
+            "paymentModuleCode": str(getattr(tx, "payment_module_code", "") or "").strip() if tx else "",
+            "payerId": str(getattr(tx, "payer_id", "") or "").strip() if tx else "",
+            "applicationId": str(getattr(tx, "payer_id", "") or "").strip() if tx else "",
             "walletType": wallet_type,
             "hoa": hoa,
             "amount": amt,
@@ -802,6 +1181,8 @@ def billdesk_response(request):
             "createdAt": created_at,
             "additionalInfo2": str(getattr(tx, "request_additionalinfo2", "") or "").strip() if tx else "",
             "additionalInfo3": str(getattr(tx, "request_additionalinfo3", "") or "").strip() if tx else "",
+            "autoSubmitted": "1" if auto_submitted else "0",
+            "autoSubmitError": auto_submit_error[:200] if auto_submit_error else "",
         }
     )
     return redirect(f"{frontend_success}?{query}")
@@ -824,6 +1205,20 @@ def billdesk_mock_process(request):
     incoming = str(request.POST.get("msg") or request.POST.get("MSG") or "").strip()
     if not incoming:
         return HttpResponseBadRequest("Missing msg")
+
+    if getattr(settings, "BILLDESK_MOCK_SIMULATE_PENDING", False):
+        return HttpResponse(
+            """
+            <html>
+              <head><title>BillDesk Mock - Pending</title></head>
+              <body style="font-family: Arial, sans-serif; padding: 24px;">
+                <h3>BillDesk Mock</h3>
+                <p><strong>Simulating a stuck/pending payment:</strong> no callback will be sent to the server.</p>
+                <p>You can close this page and check wallet history status as <code>Pending</code>.</p>
+              </body>
+            </html>
+            """
+        )
 
     req_parts = incoming.split("|")
     if len(req_parts) < 5:
