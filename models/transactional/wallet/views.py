@@ -162,6 +162,49 @@ def wallet_summary(request, licensee_id):
     if module_type:
         qs = qs.filter(module_type__iexact=module_type)
 
+    # Safety net: if balances were not initialized by the workflow signal, initialize them on-demand
+    # for the active license and re-query.
+    if qs.count() == 0:
+        try:
+            from models.masters.license.models import License
+            from models.transactional.wallet.wallet_initializer import initialize_wallet_balances_for_license
+
+            lic = None
+            try:
+                na_id = _active_na_license_id_for_applicant(request.user)
+                if na_id:
+                    lic = (
+                        License.objects.filter(applicant=request.user, is_active=True, license_id__iexact=na_id)
+                        .order_by("-issue_date", "-license_id")
+                        .first()
+                    )
+            except Exception:
+                lic = None
+
+            if lic is None:
+                lic = (
+                    License.objects.filter(applicant=request.user, is_active=True)
+                    .order_by("-issue_date", "-license_id")
+                    .first()
+                )
+
+            if lic is None and candidates:
+                lic = (
+                    License.objects.filter(is_active=True)
+                    .filter(Q(license_id__in=candidates) | Q(source_object_id__in=candidates))
+                    .order_by("-issue_date", "-license_id")
+                    .first()
+                )
+
+            if lic is not None:
+                initialize_wallet_balances_for_license(lic)
+
+                qs = WalletBalance.objects.filter(wallet_filter).order_by("wallet_type", "head_of_account")
+                if module_type:
+                    qs = qs.filter(module_type__iexact=module_type)
+        except Exception:
+            pass
+
     total = sum((row.current_balance for row in qs), Decimal("0.00"))
     return Response(
         {
@@ -350,4 +393,3 @@ def wallet_recharge_credit(request, licensee_id):
         )
 
     return Response({"status": "ok", "already_processed": False, "wallet_transaction": WalletTransactionSerializer(created).data})
-

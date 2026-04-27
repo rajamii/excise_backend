@@ -75,8 +75,16 @@ def _resolve_module_type(license_obj) -> str:
     if sub_desc:
         return "other"
 
-    # Do NOT map by numeric subcategory IDs here; IDs vary between environments and can cause
-    # non-manufacturing licenses (e.g. Departmental Store) to be misclassified as brewery/distillery.
+    # Fallback: Some deployments use stable numeric IDs (frontend also uses these).
+    # Only apply when description is missing.
+    try:
+        sid = int(sub_category_id or 0)
+    except Exception:
+        sid = 0
+    if sid == 2:
+        return "distillery"
+    if sid == 1:
+        return "brewery"
 
     source = getattr(license_obj, "source_application", None)
     license_type = getattr(source, "license_type", None) if source is not None else None
