@@ -1,6 +1,7 @@
 from django.shortcuts import get_object_or_404
 from datetime import date, timedelta
 from django.db import transaction
+from django.db.models import OuterRef, Subquery
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
@@ -44,6 +45,33 @@ def _normalize_role(role_name):
         'siteadmin': 'site_admin',
     }
     return aliases.get(normalized, normalized)
+
+
+def _with_application_fee_payment_annotations(qs):
+    """
+    Annotate NewLicenseApplication queryset with latest BillDesk application-fee payment info.
+
+    - application_fee_payment_status: 'P'/'S'/'F'
+    - application_fee_transaction_id: utr
+    - application_fee_payment_date: transaction_date
+    - application_fee_error: response_errordescription
+    """
+    try:
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+
+        base = PaymentBilldeskTransaction.objects.filter(
+            payer_id__iexact=OuterRef("application_id"),
+            payment_module_code="001",
+        ).order_by("-transaction_date", "-utr")
+
+        return qs.annotate(
+            application_fee_payment_status=Subquery(base.values("payment_status")[:1]),
+            application_fee_transaction_id=Subquery(base.values("utr")[:1]),
+            application_fee_payment_date=Subquery(base.values("transaction_date")[:1]),
+            application_fee_error=Subquery(base.values("response_errordescription")[:1]),
+        )
+    except Exception:
+        return qs
 
 
 def _ensure_license_validation_nonce(license_obj: License | None) -> str:
@@ -154,7 +182,7 @@ def _collect_reachable_stage_names(workflow_id: int, start_stage_names: set[str]
     return visited
 
 
-def _create_application(request, workflow_id: int, serializer_cls):
+def _create_application(request, workflow_id: int, serializer_cls, *, auto_submit: bool = True):
    
     serializer = serializer_cls(data=request.data)
     if not serializer.is_valid():
@@ -191,11 +219,12 @@ def _create_application(request, workflow_id: int, serializer_cls):
             )
             application_pk = application.pk
 
-            WorkflowService.submit_application(
-                application=application,
-                user=request.user,
-                remarks="Application submitted"
-            )
+            if auto_submit:
+                WorkflowService.submit_application(
+                    application=application,
+                    user=request.user,
+                    remarks="Application submitted"
+                )
         # Transaction committed — safe to query DB now
         fresh = NewLicenseApplication.objects.get(pk=application_pk)
         fresh_serializer = serializer_cls(fresh)
@@ -219,7 +248,21 @@ def _create_application(request, workflow_id: int, serializer_cls):
 @parser_classes([MultiPartParser, FormParser, JSONParser])
 @permission_classes([HasStagePermission])
 def create_new_license_application(request):
-    return _create_application(request, WORKFLOW_IDS['LICENSE_APPROVAL'], NewLicenseApplicationSerializer)
+    # Do not submit/forward the workflow on click; submission happens only after BillDesk success callback.
+    return _create_application(request, WORKFLOW_IDS['LICENSE_APPROVAL'], NewLicenseApplicationSerializer, auto_submit=False)
+
+
+@api_view(['POST'])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
+@permission_classes([HasStagePermission])
+def create_new_license_application_draft(request):
+    """
+    Create a new license application record without submitting the workflow.
+
+    Used for BillDesk application-fee (module_code=001) flows where the application
+    is auto-submitted only after a successful gateway callback.
+    """
+    return _create_application(request, WORKFLOW_IDS['LICENSE_APPROVAL'], NewLicenseApplicationSerializer, auto_submit=False)
 
 
 @api_view(['POST'])
@@ -336,6 +379,7 @@ def list_license_applications(request):
             current_stage__stagepermission__can_process=True
         ).distinct()
 
+    applications = _with_application_fee_payment_annotations(applications)
     serializer = NewLicenseApplicationSerializer(applications, many=True)
     return Response(serializer.data)
 
@@ -354,6 +398,8 @@ def license_application_detail(request, pk):
     if role == "licensee" and application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    # Attach latest application-fee payment info for details view too.
+    application = _with_application_fee_payment_annotations(NewLicenseApplication.objects.filter(pk=application.pk)).first() or application
     serializer = NewLicenseApplicationSerializer(application)
     return Response(serializer.data)
 
@@ -805,7 +851,7 @@ def application_group(request):
     all_qs = NewLicenseApplication.objects.all()
 
     if role == 'licensee':
-        base_qs = NewLicenseApplication.objects.filter(applicant=request.user)
+        base_qs = _with_application_fee_payment_annotations(NewLicenseApplication.objects.filter(applicant=request.user))
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
@@ -831,6 +877,7 @@ def application_group(request):
         })
 
     if role in ['site_admin', 'single_window']:
+        all_qs = _with_application_fee_payment_annotations(all_qs)
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
@@ -857,6 +904,7 @@ def application_group(request):
 
     role_stage_names = _get_role_stage_names(request.user, workflow_id)
     if role_stage_names:
+        all_qs = _with_application_fee_payment_annotations(all_qs)
         role_objection_stages = set(stage_sets['objection'])
         pending_stages = set(role_stage_names) | role_objection_stages
         reachable_from_role = _collect_reachable_stage_names(workflow_id, set(role_stage_names))

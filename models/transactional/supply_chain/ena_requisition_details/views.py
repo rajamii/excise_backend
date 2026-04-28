@@ -1195,7 +1195,7 @@ class PerformRequisitionActionAPIView(APIView):
         return Decimal('0')
 
     def _debit_wallet_for_requisition_payment(self, requisition, user, target_stage_name: str):
-        from models.transactional.payment.models import WalletBalance, WalletTransaction
+        from models.transactional.wallet.models import WalletBalance, WalletTransaction
 
         amount = self._resolve_requisition_payment_amount(requisition)
         if amount <= 0:

@@ -95,11 +95,15 @@ location_patterns = [
 
 # License Fee URLs
 license_fee_patterns = [
-    path('',                 views.license_fee_list,   name='license-fee-list'),
-    path('create/',          views.license_fee_create, name='license-fee-create'),
-    path('<int:pk>/',        views.license_fee_detail, name='license-fee-detail'),
-    path('<int:pk>/update/', views.license_fee_update, name='license-fee-update'),
-    path('<int:pk>/delete/', views.license_fee_delete, name='license-fee-delete'),
+    path('',                          views.license_fee_list,                  name='license-fee-list'),
+    path('lookup/',                   views.license_fee_lookup,                name='license-fee-lookup'),
+    path('available-categories/',     views.license_fee_available_categories,  name='license-fee-available-categories'),
+    path('available-subcategories/',  views.license_fee_available_subcategories, name='license-fee-available-subcategories'),
+    path('available-locations/',      views.license_fee_available_locations,   name='license-fee-available-locations'),
+    path('create/',                   views.license_fee_create,                name='license-fee-create'),
+    path('<int:pk>/',                 views.license_fee_detail,                name='license-fee-detail'),
+    path('<int:pk>/update/',          views.license_fee_update,                name='license-fee-update'),
+    path('<int:pk>/delete/',          views.license_fee_delete,                name='license-fee-delete'),
 ]
 
 # Location Category URLs

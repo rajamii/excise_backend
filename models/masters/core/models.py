@@ -489,6 +489,7 @@ class SupplyChainTimerConfig(models.Model):
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    validity_period_days = models.PositiveIntegerField(null=True, blank=True)
 
     class Meta:
         db_table = 'timer'

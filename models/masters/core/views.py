@@ -746,6 +746,131 @@ def license_fee_delete(request, pk):
     )
 
 
+@permission_classes([AllowAny])
+@authentication_classes([])
+@api_view(['GET'])
+def license_fee_lookup(request):
+    """
+    Look up a single active license fee by category, subcategory, and location.
+
+    Query params:
+      license_category_id    – ID of the LicenseCategory
+      license_subcategory_id – ID of the LicenseSubcategory
+      location_code          – location_code value from masters_location
+
+    Returns 200 with the fee record, or 404 if no match is found.
+    """
+    category_id    = request.query_params.get('license_category_id', '').strip()
+    subcategory_id = request.query_params.get('license_subcategory_id', '').strip()
+    location_code  = request.query_params.get('location_code', '').strip()
+
+    if not category_id or not subcategory_id or not location_code:
+        return Response(
+            {'detail': 'license_category_id, license_subcategory_id, and location_code are all required.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    fee = masters_model.LicenseFee.objects.filter(
+        license_category_id=category_id,
+        license_subcategory_id=subcategory_id,
+        location_code=location_code,
+        is_active=True
+    ).first()
+
+    if fee is None:
+        return Response(
+            {'detail': 'No fee record found for this combination.'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    serializer = LicenseFeeSerializer(fee, context={'request': request})
+    return Response(serializer.data)
+
+
+@permission_classes([AllowAny])
+@authentication_classes([])
+@api_view(['GET'])
+def license_fee_available_categories(request):
+    """
+    Return only the LicenseCategory records that have at least one active
+    license_fee row.  Used to populate the Category dropdown in the approval dialog.
+    """
+    category_ids = (
+        masters_model.LicenseFee.objects
+        .filter(is_active=True)
+        .values_list('license_category_id', flat=True)
+        .distinct()
+    )
+    categories = masters_model.LicenseCategory.objects.filter(id__in=category_ids).order_by('license_category')
+    serializer = LicenseCategorySerializer(categories, many=True)
+    return Response(serializer.data)
+
+
+@permission_classes([AllowAny])
+@authentication_classes([])
+@api_view(['GET'])
+def license_fee_available_subcategories(request):
+    """
+    Return only the LicenseSubcategory records that have at least one active
+    license_fee row for the given category.
+
+    Query param:
+      license_category_id  (required)
+    """
+    category_id = request.query_params.get('license_category_id', '').strip()
+    if not category_id:
+        return Response(
+            {'detail': 'license_category_id is required.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    subcategory_ids = (
+        masters_model.LicenseFee.objects
+        .filter(license_category_id=category_id, is_active=True)
+        .values_list('license_subcategory_id', flat=True)
+        .distinct()
+    )
+    subcategories = masters_model.LicenseSubcategory.objects.filter(id__in=subcategory_ids).order_by('description')
+    serializer = LicenseSubcategorySerializer(subcategories, many=True, context={'request': request})
+    return Response(serializer.data)
+
+
+@permission_classes([AllowAny])
+@authentication_classes([])
+@api_view(['GET'])
+def license_fee_available_locations(request):
+    """
+    Return only the Location records that have at least one active license_fee
+    row for the given category + subcategory combination.
+
+    Query params:
+      license_category_id    (required)
+      license_subcategory_id (required)
+    """
+    category_id    = request.query_params.get('license_category_id', '').strip()
+    subcategory_id = request.query_params.get('license_subcategory_id', '').strip()
+
+    if not category_id or not subcategory_id:
+        return Response(
+            {'detail': 'license_category_id and license_subcategory_id are both required.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    location_codes = (
+        masters_model.LicenseFee.objects
+        .filter(
+            license_category_id=category_id,
+            license_subcategory_id=subcategory_id,
+            is_active=True
+        )
+        .values_list('location_code_id', flat=True)
+        .distinct()
+    )
+    locations = masters_model.Location.objects.filter(location_code__in=location_codes, is_active=True).order_by('location_description')
+    serializer = LocationSerializer(locations, many=True, context={'request': request})
+    return Response(serializer.data)
+
+
 #################################################
 #           Location Category                   #
 #################################################

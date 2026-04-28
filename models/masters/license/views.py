@@ -347,6 +347,19 @@ class MyLicensesListView(generics.ListAPIView):
     serializer_class = MyLicenseDetailsSerializer
     permission_classes = [IsAuthenticated]
 
+    def list(self, request, *args, **kwargs):
+        # Ensure wallet rows exist for the licensee before returning /me/ payload.
+        # This is idempotent and helps recover from missed workflow signals.
+        try:
+            from models.transactional.wallet.wallet_initializer import initialize_wallet_balances_for_license
+
+            for lic in self.get_queryset():
+                initialize_wallet_balances_for_license(lic)
+        except Exception:
+            pass
+
+        return super().list(request, *args, **kwargs)
+
     def get_queryset(self):
         user = self.request.user
 

@@ -90,7 +90,8 @@ INSTALLED_APPS = [
     'models.transactional.label_registration',
     'models.transactional.salesman_barman',
     'models.transactional.logs',
-    'models.transactional.payment',
+    'models.transactional.wallet',
+    'models.transactional.payment_gateway',
     'models.transactional.supply_chain.ena_transit_permit_details',
     'models.transactional.supply_chain.ena_revalidation_details',
     'models.transactional.supply_chain.ena_requisition_details',  
@@ -158,9 +159,9 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'eAbkari_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'admin',  # Your PostgreSQL password
+        'PASSWORD': 'postgres',  # Your PostgreSQL password
         'HOST': 'localhost',        # Default host
-        'PORT': '5432',             # Default PostgreSQL port
+        'PORT': '5433',             # Default PostgreSQL port
         'CONN_MAX_AGE': 0,          # Don't reuse connections — avoids aborted transaction state
     }
 }
@@ -246,6 +247,33 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
 }
+
+# Payment gateway (BillDesk) defaults for local/UAT.
+BILLDESK_GATEWAY_URL = os.getenv(
+    "BILLDESK_GATEWAY_URL",
+    "https://uat1.billdesk.com/pgidsk/PGIMerchantPayment",
+).strip()
+
+# Local testing: simulate BillDesk ProcessPayment and callback without hitting BillDesk servers.
+# Default to mock in DEBUG to avoid hanging redirects to external UAT/Prod gateways during local dev.
+_billdesk_use_mock_raw = os.getenv("BILLDESK_USE_MOCK")
+if _billdesk_use_mock_raw is None:
+    BILLDESK_USE_MOCK = bool(DEBUG)
+else:
+    BILLDESK_USE_MOCK = _billdesk_use_mock_raw.strip() in ("1", "true", "True", "YES", "yes")
+BILLDESK_MOCK_AUTH_STATUS = os.getenv("BILLDESK_MOCK_AUTH_STATUS", "0300").strip()  # 0300=success
+_billdesk_mock_pending_raw = os.getenv("BILLDESK_MOCK_SIMULATE_PENDING", "0")
+BILLDESK_MOCK_SIMULATE_PENDING = str(_billdesk_mock_pending_raw or "").strip() in ("1", "true", "True", "YES", "yes")
+
+# Where Django redirects the user after BillDesk response is validated.
+PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL = os.getenv(
+    "PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL",
+    "http://localhost:4200/dashboard/wallet-recharge/success",
+).strip()
+PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL = os.getenv(
+    "PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL",
+    "http://localhost:4200/dashboard/new-license/application-fee/receipt",
+).strip()
 
 # Captcha tuning: keep it readable with only light line noise.
 CAPTCHA_LENGTH = 5

@@ -50,7 +50,7 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
 
     def get_payment_completed(self, obj):
         try:
-            from models.transactional.payment.models import WalletTransaction
+            from models.transactional.wallet.models import WalletTransaction
 
             return WalletTransaction.objects.filter(
                 source_module='ena_cancellation',
