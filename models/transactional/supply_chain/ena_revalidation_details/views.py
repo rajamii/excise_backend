@@ -373,7 +373,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         return ordered
 
     def _debit_wallet_for_revalidation_submission(self, revalidation, user):
-        from models.transactional.payment.models import WalletBalance, WalletTransaction
+        from models.transactional.wallet.models import WalletBalance, WalletTransaction
 
         try:
             amount = Decimal(

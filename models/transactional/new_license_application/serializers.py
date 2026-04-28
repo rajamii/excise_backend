@@ -76,6 +76,12 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)
     objections = WorkflowObjectionSerializer(many=True, read_only=True)
 
+    # Application fee payment status (BillDesk module_code=001) – annotated in views.
+    application_fee_payment_status = serializers.CharField(read_only=True, allow_blank=True, allow_null=True)
+    application_fee_transaction_id = serializers.CharField(read_only=True, allow_blank=True, allow_null=True)
+    application_fee_payment_date = serializers.DateTimeField(read_only=True, allow_null=True)
+    application_fee_error = serializers.CharField(read_only=True, allow_blank=True, allow_null=True)
+
     class Meta:
         model = NewLicenseApplication
         fields = '__all__'

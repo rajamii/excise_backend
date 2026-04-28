@@ -224,7 +224,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     def _debit_wallet_for_cancellation_submission(self, cancellation, user, amount):
         # Backward-compatible wrapper retained for older callers.
         # New logic uses _apply_wallet_refund_and_fee_for_cancellation_submission.
-        from models.transactional.payment.models import WalletBalance, WalletTransaction
+        from models.transactional.wallet.models import WalletBalance, WalletTransaction
 
         amount_decimal = Decimal(str(amount or 0))
         if amount_decimal <= 0:
@@ -364,7 +364,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         - Refund (credit) selected permit amount back to wallet
         - Deduct (debit) cancellation fee
         """
-        from models.transactional.payment.models import WalletBalance, WalletTransaction
+        from models.transactional.wallet.models import WalletBalance, WalletTransaction
 
         refund_amount = Decimal(str(refund_amount or 0)).quantize(Decimal('0.01'))
         fee_amount = Decimal(str(fee_amount or 0)).quantize(Decimal('0.01'))

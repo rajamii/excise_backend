@@ -90,7 +90,7 @@ INSTALLED_APPS = [
     'models.transactional.label_registration',
     'models.transactional.salesman_barman',
     'models.transactional.logs',
-    'models.transactional.payment',
+    'models.transactional.wallet',
     'models.transactional.payment_gateway',
     'models.transactional.supply_chain.ena_transit_permit_details',
     'models.transactional.supply_chain.ena_revalidation_details',
@@ -255,13 +255,24 @@ BILLDESK_GATEWAY_URL = os.getenv(
 ).strip()
 
 # Local testing: simulate BillDesk ProcessPayment and callback without hitting BillDesk servers.
-BILLDESK_USE_MOCK = os.getenv("BILLDESK_USE_MOCK", "0").strip() in ("1", "true", "True", "YES", "yes")
+# Default to mock in DEBUG to avoid hanging redirects to external UAT/Prod gateways during local dev.
+_billdesk_use_mock_raw = os.getenv("BILLDESK_USE_MOCK")
+if _billdesk_use_mock_raw is None:
+    BILLDESK_USE_MOCK = bool(DEBUG)
+else:
+    BILLDESK_USE_MOCK = _billdesk_use_mock_raw.strip() in ("1", "true", "True", "YES", "yes")
 BILLDESK_MOCK_AUTH_STATUS = os.getenv("BILLDESK_MOCK_AUTH_STATUS", "0300").strip()  # 0300=success
+_billdesk_mock_pending_raw = os.getenv("BILLDESK_MOCK_SIMULATE_PENDING", "0")
+BILLDESK_MOCK_SIMULATE_PENDING = str(_billdesk_mock_pending_raw or "").strip() in ("1", "true", "True", "YES", "yes")
 
 # Where Django redirects the user after BillDesk response is validated.
 PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL = os.getenv(
     "PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL",
     "http://localhost:4200/dashboard/wallet-recharge/success",
+).strip()
+PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL = os.getenv(
+    "PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL",
+    "http://localhost:4200/dashboard/new-license/application-fee/receipt",
 ).strip()
 
 # Captcha tuning: keep it readable with only light line noise.

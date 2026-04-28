@@ -283,7 +283,7 @@ class SubmitTransitPermitAPIView(views.APIView):
     def _generate_transit_ref(self) -> str:
         existing_refs = list(EnaTransitPermitDetail.objects.values_list('bill_no', flat=True))
         try:
-            from models.transactional.payment.models import WalletTransaction
+            from models.transactional.wallet.models import WalletTransaction
             existing_refs.extend(
                 WalletTransaction.objects.filter(source_module='transit_permit')
                 .exclude(reference_no__isnull=True)
@@ -349,7 +349,7 @@ class SubmitTransitPermitAPIView(views.APIView):
         Debit Excise and Education Cess wallets at submit time and persist wallet transactions.
         Additional excise is debited from excise wallet.
         """
-        from models.transactional.payment.models import WalletBalance, WalletTransaction
+        from models.transactional.wallet.models import WalletBalance, WalletTransaction
 
         license_id = str(license_id or '').strip()
         if not license_id:
@@ -908,7 +908,7 @@ class PerformTransitPermitActionAPIView(views.APIView):
         return [c for c in candidates if c]
 
     def _refund_wallet_balances_for_rejection(self, user, permit, cancellation_reason=''):
-        from models.transactional.payment.models import WalletBalance, WalletTransaction
+        from models.transactional.wallet.models import WalletBalance, WalletTransaction
 
         bill_no = str(getattr(permit, 'bill_no', '') or '').strip()
         if not bill_no:
