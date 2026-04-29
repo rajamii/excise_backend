@@ -1,6 +1,8 @@
 from datetime import date
 
 from django.test import TestCase
+from rest_framework.test import APIClient
+from django.urls import reverse
 
 from auth.user.models import CustomUser
 from models.masters.core.models import District, LicenseCategory, LicenseSubcategory, State, Subdivision
@@ -110,3 +112,68 @@ class WalletInitializerPrimaryHolderTests(TestCase):
         self.assertEqual(rows.count(), 5)
         self.assertEqual(rows.filter(wallet_type="security_deposit").count(), 1)
         self.assertEqual(rows.filter(wallet_type="license_fee").count(), 1)
+
+
+class WalletSummaryScopeFilteringTests(TestCase):
+    def setUp(self):
+        self.state = State.objects.create(state="Sikkim", state_code=11, is_active=True)
+        self.district = District.objects.create(
+            district="Gangtok",
+            district_code=225,
+            is_active=True,
+            state_code=self.state,
+        )
+        self.subdivision = Subdivision.objects.create(
+            subdivision="Gangtok Subdivision",
+            subdivision_code=1553,
+            is_active=True,
+            district_code=self.district,
+        )
+        self.user = CustomUser.objects.create_user(
+            email="u2@example.com",
+            first_name="Test",
+            last_name="User",
+            phone_number="9999999998",
+            district=self.district,
+            subdivision=self.subdivision,
+            address="Test address",
+            password="pass",
+        )
+        self.user.username = "TH0002"
+        self.user.save(update_fields=["username"])
+
+        self.cat = LicenseCategory.objects.create(license_category="Test Category")
+        self.sub_distillery = LicenseSubcategory.objects.create(description="Distillery Unit", category=self.cat)
+        self.license = License.objects.create(
+            license_id="NA/225/2025-26/0100",
+            source_type="new_license_application",
+            applicant=self.user,
+            license_category=self.cat,
+            license_sub_category=self.sub_distillery,
+            excise_district=self.district,
+            issue_date=date(2026, 4, 1),
+            valid_up_to=date(2027, 3, 31),
+            is_active=True,
+        )
+        initialize_wallet_balances_for_license(self.license)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _summary(self, **params):
+        url = reverse("payment:wallet-summary", kwargs={"licensee_id": self.license.license_id})
+        return self.client.get(url, params)
+
+    def test_scope_wallets_excludes_license_wallets(self):
+        resp = self._summary(scope="wallets")
+        self.assertEqual(resp.status_code, 200)
+        wallet_types = {row.get("wallet_type") for row in resp.data.get("results", [])}
+        self.assertTrue({"excise", "education_cess", "hologram"}.issubset(wallet_types))
+        self.assertFalse({"license_fee", "security_deposit"} & wallet_types)
+        self.assertEqual(resp.data.get("count"), 3)
+
+    def test_scope_license_includes_only_license_wallets(self):
+        resp = self._summary(scope="license")
+        self.assertEqual(resp.status_code, 200)
+        wallet_types = {row.get("wallet_type") for row in resp.data.get("results", [])}
+        self.assertEqual(wallet_types, {"license_fee", "security_deposit"})
+        self.assertEqual(resp.data.get("count"), 2)

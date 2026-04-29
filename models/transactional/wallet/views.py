@@ -162,6 +162,14 @@ def wallet_summary(request, licensee_id):
     if module_type:
         qs = qs.filter(module_type__iexact=module_type)
 
+    scope = str(request.query_params.get("scope") or "").strip().lower()
+    if scope == "license":
+        qs = qs.filter(wallet_type__in=["license_fee", "security_deposit"])
+    elif scope == "wallets":
+        qs = qs.exclude(wallet_type__in=["license_fee", "security_deposit"])
+    elif scope in {"excise", "education_cess", "hologram"}:
+        qs = qs.filter(wallet_type__iexact=scope)
+
     # Safety net: if balances were not initialized by the workflow signal, initialize them on-demand
     # for the active license and re-query.
     if qs.count() == 0:
@@ -202,6 +210,12 @@ def wallet_summary(request, licensee_id):
                 qs = WalletBalance.objects.filter(wallet_filter).order_by("wallet_type", "head_of_account")
                 if module_type:
                     qs = qs.filter(module_type__iexact=module_type)
+                if scope == "license":
+                    qs = qs.filter(wallet_type__in=["license_fee", "security_deposit"])
+                elif scope == "wallets":
+                    qs = qs.exclude(wallet_type__in=["license_fee", "security_deposit"])
+                elif scope in {"excise", "education_cess", "hologram"}:
+                    qs = qs.filter(wallet_type__iexact=scope)
         except Exception:
             pass
 
