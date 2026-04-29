@@ -225,6 +225,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         # Backward-compatible wrapper retained for older callers.
         # New logic uses _apply_wallet_refund_and_fee_for_cancellation_submission.
         from models.transactional.wallet.models import WalletBalance, WalletTransaction
+        from django.db.models import Q
 
         amount_decimal = Decimal(str(amount or 0))
         if amount_decimal <= 0:
@@ -268,33 +269,39 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
         wallet = None
         resolved_license_id = ''
+        username = str(getattr(user, 'username', '') or '').strip()
+
+        wallet_filter = Q(licensee_id__in=candidates)
+        if username:
+            wallet_filter |= Q(user_id__iexact=username)
 
         for cid in candidates:
             wallet = (
                 WalletBalance.objects.select_for_update()
-                .filter(licensee_id=cid, wallet_type__iexact='excise')
+                .filter(wallet_filter, wallet_type__iexact='excise')
                 .order_by('wallet_balance_id')
                 .first()
             )
             if wallet:
-                resolved_license_id = cid
+                resolved_license_id = str(getattr(wallet, 'licensee_id', '') or cid)
                 break
 
         if not wallet:
             for cid in candidates:
                 wallet = (
                     WalletBalance.objects.select_for_update()
-                    .filter(licensee_id=cid, wallet_type__iexact='brewery')
+                    .filter(wallet_filter, wallet_type__iexact='brewery')
                     .order_by('wallet_balance_id')
                     .first()
                 )
                 if wallet:
-                    resolved_license_id = cid
+                    resolved_license_id = str(getattr(wallet, 'licensee_id', '') or cid)
                     break
 
         if not wallet:
             raise ValueError(
-                f"Wallet not found for license id. Tried: {', '.join(candidates)}"
+                f"Wallet not found for license id/user_id. Tried licensee_id: {', '.join(candidates)}"
+                + (f", user_id={username}" if username else "")
             )
 
         current_balance = Decimal(str(wallet.current_balance or 0))
@@ -365,6 +372,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         - Deduct (debit) cancellation fee
         """
         from models.transactional.wallet.models import WalletBalance, WalletTransaction
+        from django.db.models import Q
 
         refund_amount = Decimal(str(refund_amount or 0)).quantize(Decimal('0.01'))
         fee_amount = Decimal(str(fee_amount or 0)).quantize(Decimal('0.01'))
@@ -380,33 +388,38 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
         wallet = None
         resolved_license_id = ''
+        username = str(getattr(user, 'username', '') or '').strip()
+        wallet_filter = Q(licensee_id__in=candidates)
+        if username:
+            wallet_filter |= Q(user_id__iexact=username)
 
         for cid in candidates:
             wallet = (
                 WalletBalance.objects.select_for_update()
-                .filter(licensee_id=cid, wallet_type__iexact='excise')
+                .filter(wallet_filter, wallet_type__iexact='excise')
                 .order_by('wallet_balance_id')
                 .first()
             )
             if wallet:
-                resolved_license_id = cid
+                resolved_license_id = str(getattr(wallet, 'licensee_id', '') or cid)
                 break
 
         if not wallet:
             for cid in candidates:
                 wallet = (
                     WalletBalance.objects.select_for_update()
-                    .filter(licensee_id=cid, wallet_type__iexact='brewery')
+                    .filter(wallet_filter, wallet_type__iexact='brewery')
                     .order_by('wallet_balance_id')
                     .first()
                 )
                 if wallet:
-                    resolved_license_id = cid
+                    resolved_license_id = str(getattr(wallet, 'licensee_id', '') or cid)
                     break
 
         if not wallet:
             raise ValueError(
-                f"Wallet not found for license id. Tried: {', '.join(candidates)}"
+                f"Wallet not found for license id/user_id. Tried licensee_id: {', '.join(candidates)}"
+                + (f", user_id={username}" if username else "")
             )
 
         existing_refund = (

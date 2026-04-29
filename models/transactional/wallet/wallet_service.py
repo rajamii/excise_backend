@@ -254,3 +254,105 @@ def record_wallet_transaction(
 
     return created, wallet, False
 
+
+def debit_wallet_balance(
+    *,
+    transaction_id: str,
+    licensee_id: str,
+    wallet_type: str,
+    head_of_account: str,
+    amount: Decimal,
+    user_id: str = "",
+    licensee_name: str = "",
+    source_module: str = "wallet_payment",
+    payment_status: str = "success",
+    remarks: str = "",
+    transaction_type: str = "payment",
+) -> tuple[WalletTransaction | None, WalletBalance | None, bool]:
+    """
+    Debit a wallet balance and create a DR WalletTransaction.
+
+    Returns: (wallet_txn, wallet_balance, already_processed)
+    """
+    txn = str(transaction_id or "").strip()
+    if not txn:
+        raise ValueError("transaction_id is required")
+
+    raw_licensee = str(licensee_id or "").strip()
+    if not raw_licensee:
+        raise ValueError("licensee_id is required")
+
+    wtype = str(wallet_type or "").strip()
+    if not wtype:
+        raise ValueError("wallet_type is required")
+
+    hoa = str(head_of_account or "").strip() or "non"
+
+    amt = Decimal(str(amount or "0")).quantize(Decimal("0.01"))
+    if amt <= 0:
+        raise ValueError("amount must be greater than zero")
+
+    resolved_licensee_id = _resolve_wallet_row_licensee_id(raw_licensee, str(user_id or "").strip()) or raw_licensee
+    resolved_module_type = _resolve_module_type_from_license_id(resolved_licensee_id, fallback="other") or "other"
+    now_ts = timezone.now()
+
+    wallet_filter = Q(licensee_id__iexact=resolved_licensee_id)
+    if str(user_id or "").strip():
+        wallet_filter |= Q(user_id__iexact=str(user_id).strip())
+
+    with transaction.atomic():
+        existing = (
+            WalletTransaction.objects.select_for_update()
+            .filter(
+                transaction_id=txn,
+                transaction_type__iexact=str(transaction_type or "payment").strip(),
+                entry_type__iexact="DR",
+            )
+            .order_by("-wallet_transaction_id")
+            .first()
+        )
+        if existing and not _is_pending_payment_status(getattr(existing, "payment_status", "")):
+            return existing, None, True
+
+        wallet = (
+            WalletBalance.objects.select_for_update()
+            .filter(wallet_filter, wallet_type__iexact=wtype, head_of_account=hoa)
+            .order_by("wallet_balance_id")
+            .first()
+        )
+        if not wallet:
+            raise ValueError(f"Wallet not found for wallet_type={wtype}, head_of_account={hoa}")
+
+        before = Decimal(str(wallet.current_balance or 0)).quantize(Decimal("0.01"))
+        if before < amt:
+            raise ValueError("Insufficient wallet balance")
+
+        after = (before - amt).quantize(Decimal("0.01"))
+        wallet.current_balance = after
+        wallet.total_debit = (Decimal(str(wallet.total_debit or 0)) + amt).quantize(Decimal("0.01"))
+        wallet.last_updated_at = now_ts
+        wallet.save(update_fields=["current_balance", "total_debit", "last_updated_at"])
+
+        created = WalletTransaction.objects.create(
+            wallet_balance=wallet,
+            transaction_id=txn,
+            licensee_id=str(wallet.licensee_id or resolved_licensee_id).strip(),
+            licensee_name=str(wallet.licensee_name or licensee_name or "").strip() or None,
+            user_id=str(user_id or getattr(wallet, "user_id", "") or "").strip() or None,
+            module_type=str(wallet.module_type or resolved_module_type).strip(),
+            wallet_type=str(wallet.wallet_type or wtype).strip(),
+            head_of_account=str(wallet.head_of_account or hoa).strip(),
+            entry_type="DR",
+            transaction_type=str(transaction_type or "payment").strip(),
+            amount=amt,
+            balance_before=before,
+            balance_after=after,
+            reference_no=txn,
+            source_module=str(source_module or "wallet_payment").strip(),
+            payment_status=str(payment_status or "success").strip(),
+            remarks=str(remarks or "").strip() or None,
+            created_at=now_ts,
+        )
+
+    return created, wallet, False
+

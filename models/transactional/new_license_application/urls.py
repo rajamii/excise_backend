@@ -38,4 +38,8 @@ urlpatterns = [
 
     # Print License
     path('<everything:application_id>/print/', views.print_license_view, name='print-license'),
+
+    # Wallet fee payments (post-commissioner approval)
+    path('<everything:application_id>/pay-license-fee/', views.pay_license_fee_wallet, name='pay-license-fee-wallet'),
+    path('<everything:application_id>/pay-security-fee/', views.pay_security_fee_wallet, name='pay-security-fee-wallet'),
 ]

@@ -374,6 +374,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
 
     def _debit_wallet_for_revalidation_submission(self, revalidation, user):
         from models.transactional.wallet.models import WalletBalance, WalletTransaction
+        from django.db.models import Q
 
         try:
             amount = Decimal(
@@ -410,33 +411,39 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
 
         wallet = None
         resolved_licensee_id = ''
+        username = str(getattr(user, 'username', '') or '').strip()
+
+        wallet_filter = Q(licensee_id__in=candidates)
+        if username:
+            wallet_filter |= Q(user_id__iexact=username)
 
         for cid in candidates:
             wallet = (
                 WalletBalance.objects.select_for_update()
-                .filter(licensee_id=cid, wallet_type__iexact='excise')
+                .filter(wallet_filter, wallet_type__iexact='excise')
                 .order_by('wallet_balance_id')
                 .first()
             )
             if wallet:
-                resolved_licensee_id = cid
+                resolved_licensee_id = str(getattr(wallet, 'licensee_id', '') or cid)
                 break
 
         if not wallet:
             for cid in candidates:
                 wallet = (
                     WalletBalance.objects.select_for_update()
-                    .filter(licensee_id=cid, wallet_type__iexact='brewery')
+                    .filter(wallet_filter, wallet_type__iexact='brewery')
                     .order_by('wallet_balance_id')
                     .first()
                 )
                 if wallet:
-                    resolved_licensee_id = cid
+                    resolved_licensee_id = str(getattr(wallet, 'licensee_id', '') or cid)
                     break
 
         if not wallet:
             raise ValueError(
-                f"Wallet not found for licensee_id. Tried: {', '.join(candidates)}"
+                f"Wallet not found for licensee_id/user_id. Tried licensee_id: {', '.join(candidates)}"
+                + (f", user_id={username}" if username else "")
             )
 
         current_balance = Decimal(str(wallet.current_balance or 0))

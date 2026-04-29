@@ -6,6 +6,7 @@ from rest_framework.decorators import api_view, parser_classes, permission_class
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 from auth.roles.permissions import HasAppPermission
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
@@ -32,6 +33,10 @@ from django.core import signing
 from urllib.parse import quote
 import secrets
 import hashlib
+
+from models.masters.core.models import LicenseFee
+from models.transactional.wallet.wallet_initializer import COMMON_LICENSE_FEE_HOA, COMMON_SECURITY_DEPOSIT_HOA
+from models.transactional.wallet.wallet_service import debit_wallet_balance
 
 
 def _normalize_role(role_name):
@@ -564,7 +569,7 @@ def final_license_detail(request, application_id):
         "passportPhotoUrl": photo_url,
         "passportPhotoExists": photo_exists,
         "passportPhotoDataUrl": passport_photo_data_url,
-        "licenseFee": application.yearly_license_fee or "",
+        "licenseFee": "",
         "transactionRef": "",
         "transactionDate": "",
         "validFrom": fmt_dt(license_obj.issue_date) if license_obj else fmt_dt(application.created_at.date()),
@@ -572,6 +577,15 @@ def final_license_detail(request, application_id):
         "generatedOn": fmt_dt(timezone.now().date()),
         "qrCodeDataUrl": make_qr_data_url(validation_url),
     }
+
+    try:
+        fee_id = getattr(application, "licensee_fee_id", None)
+        if fee_id:
+            fee = LicenseFee.objects.filter(id=int(fee_id), is_active=True).first()
+            if fee:
+                response["licenseFee"] = str(getattr(fee, "license_fee", "") or "")
+    except Exception:
+        pass
 
     cat_code = getattr(license_obj, "license_category_id", None) if license_obj else None
     scat_code = getattr(license_obj, "license_sub_category_id", None) if license_obj else None
@@ -724,10 +738,10 @@ def print_license_view(request, application_id):
 
     # Some datasets have License issued but `is_approved` not synced on the application row.
     # If a License exists, allow printing and token rotation.
-    if not license.is_approved and not license_obj:
-        return Response({"error": "License is not approved yet."}, status=403)
+    if not license_obj:
+        return Response({"error": "License is not issued yet."}, status=403)
 
-    can_print, fee = license.can_print_license()
+    can_print, fee = license_obj.can_print_license()
 
     if not can_print:
         return Response({
@@ -735,10 +749,10 @@ def print_license_view(request, application_id):
             "fee_required": fee
         }, status=403)
 
-    if fee > 0 and not license.is_print_fee_paid:
+    if fee > 0 and not license_obj.is_print_fee_paid:
         return Response({"error": "₹500 fee not paid yet."}, status=403)
 
-    license.record_license_print(fee_paid=(fee > 0))
+    license_obj.record_license_print(fee_paid=(fee > 0))
 
     if license_obj:
         nonce = secrets.token_hex(16)
@@ -778,10 +792,126 @@ def print_license_view(request, application_id):
 
     return Response({
         "success": "License printed.",
-        "print_count": license.print_count,
+        "print_count": license_obj.print_count,
         "validationCode": validation_code,
         "validationPdfUrl": validation_url,
     })
+
+
+def _require_licensee_user(request):
+    if not getattr(request.user, "is_authenticated", False):
+        raise PermissionDenied("Authentication required.")
+    role = _normalize_role(request.user.role.name if getattr(request.user, "role", None) else None)
+    if role != "licensee":
+        raise PermissionDenied("Only licensees can pay fees.")
+
+
+def _resolve_na_license_for_application(application: NewLicenseApplication) -> License | None:
+    new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
+    return (
+        License.objects.filter(
+            source_type="new_license_application",
+            source_content_type=new_app_ct,
+            source_object_id=application.application_id,
+            is_active=True,
+        )
+        .order_by("-issue_date", "-license_id")
+        .first()
+    )
+
+
+def _resolve_license_fee_row(application: NewLicenseApplication) -> LicenseFee | None:
+    fee_id = getattr(application, "licensee_fee_id", None)
+    if not fee_id:
+        return None
+    try:
+        return LicenseFee.objects.filter(id=int(fee_id), is_active=True).first()
+    except Exception:
+        return None
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, FormParser, MultiPartParser])
+def pay_license_fee_wallet(request, application_id):
+    application = get_object_or_404(NewLicenseApplication, application_id=application_id)
+    _require_licensee_user(request)
+    if application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    lic = _resolve_na_license_for_application(application)
+    if not lic:
+        return Response({"detail": "License not issued yet."}, status=status.HTTP_400_BAD_REQUEST)
+
+    fee = _resolve_license_fee_row(application)
+    if not fee:
+        return Response({"detail": "License fee structure not configured for this application."}, status=status.HTTP_400_BAD_REQUEST)
+
+    amount = getattr(fee, "license_fee", None)
+    if amount is None:
+        return Response({"detail": "License fee amount not configured."}, status=status.HTTP_400_BAD_REQUEST)
+
+    txn_id = secrets.token_hex(12).upper()
+    try:
+        debit_wallet_balance(
+            transaction_id=txn_id,
+            licensee_id=str(lic.license_id),
+            wallet_type="license_fee",
+            head_of_account=COMMON_LICENSE_FEE_HOA,
+            amount=amount,
+            user_id=str(getattr(request.user, "username", "") or "").strip(),
+            remarks=f"License fee paid for {application.application_id}",
+        )
+    except Exception as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not application.is_license_fee_paid:
+        application.is_license_fee_paid = True
+        application.save(update_fields=["is_license_fee_paid"])
+
+    return Response({"success": True, "transaction_id": txn_id, "is_license_fee_paid": True})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, FormParser, MultiPartParser])
+def pay_security_fee_wallet(request, application_id):
+    application = get_object_or_404(NewLicenseApplication, application_id=application_id)
+    _require_licensee_user(request)
+    if application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    lic = _resolve_na_license_for_application(application)
+    if not lic:
+        return Response({"detail": "License not issued yet."}, status=status.HTTP_400_BAD_REQUEST)
+
+    fee = _resolve_license_fee_row(application)
+    if not fee:
+        return Response({"detail": "License fee structure not configured for this application."}, status=status.HTTP_400_BAD_REQUEST)
+
+    amount = getattr(fee, "security_amount", None)
+    if amount is None:
+        return Response({"detail": "Security fee amount not configured."}, status=status.HTTP_400_BAD_REQUEST)
+
+    txn_id = secrets.token_hex(12).upper()
+    try:
+        debit_wallet_balance(
+            transaction_id=txn_id,
+            licensee_id=str(lic.license_id),
+            wallet_type="security_deposit",
+            head_of_account=COMMON_SECURITY_DEPOSIT_HOA,
+            amount=amount,
+            user_id=str(getattr(request.user, "username", "") or "").strip(),
+            remarks=f"Security fee paid for {application.application_id}",
+        )
+    except Exception as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not application.is_security_fee_paid:
+        application.is_security_fee_paid = True
+        application.save(update_fields=["is_security_fee_paid"])
+
+    return Response({"success": True, "transaction_id": txn_id, "is_security_fee_paid": True})
 
 # Dashboard Counts
 @permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])

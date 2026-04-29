@@ -3,7 +3,16 @@ from .models import NewLicenseApplication, Transaction, Objection
 from auth.user.models import CustomUser
 from auth.roles.models import Role
 from auth.workflow.serializers import WorkflowTransactionSerializer, WorkflowObjectionSerializer
-from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseSubcategory, LicenseType, Road
+from models.masters.core.models import (
+    District,
+    Subdivision,
+    PoliceStation,
+    LicenseCategory,
+    LicenseSubcategory,
+    LicenseType,
+    Road,
+    LicenseFee,
+)
 from utils.fields import CodeRelatedField
 from . import helpers
 
@@ -82,13 +91,50 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     application_fee_payment_date = serializers.DateTimeField(read_only=True, allow_null=True)
     application_fee_error = serializers.CharField(read_only=True, allow_blank=True, allow_null=True)
 
+    # Backward-compatible fee field used across multiple frontend screens.
+    yearly_license_fee = serializers.SerializerMethodField()
+    license_fee_amount = serializers.SerializerMethodField()
+    security_fee_amount = serializers.SerializerMethodField()
+
     class Meta:
         model = NewLicenseApplication
         fields = '__all__'
         read_only_fields = [
-            'application_id', 'current_stage', 'is_approved', 'print_count',
-            'is_print_fee_paid', 'created_at', 'updated_at', 'applicant', 'workflow'
+            'application_id',
+            'current_stage',
+            'is_approved',
+            'created_at',
+            'updated_at',
+            'applicant',
+            'workflow',
+            'is_application_fee_paid',
         ]
+
+    def _resolve_license_fee(self, obj) -> LicenseFee | None:
+        fee_id = getattr(obj, "licensee_fee_id", None)
+        if not fee_id:
+            return None
+        try:
+            return LicenseFee.objects.filter(id=int(fee_id), is_active=True).first()
+        except Exception:
+            return None
+
+    def get_yearly_license_fee(self, obj):
+        fee = self._resolve_license_fee(obj)
+        if not fee:
+            return ""
+        try:
+            return str(fee.license_fee)
+        except Exception:
+            return ""
+
+    def get_license_fee_amount(self, obj):
+        fee = self._resolve_license_fee(obj)
+        return getattr(fee, "license_fee", None) if fee else None
+
+    def get_security_fee_amount(self, obj):
+        fee = self._resolve_license_fee(obj)
+        return getattr(fee, "security_amount", None) if fee else None
 
     def validate(self, data):
         helpers.validate_mobile_number(data['mobile_number'])
