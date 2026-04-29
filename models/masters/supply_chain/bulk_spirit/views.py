@@ -14,9 +14,6 @@ class BulkSpiritTypeListAPIView(generics.ListAPIView):
     def get_queryset(self):
         queryset = super().get_queryset()
         sub_category_id = self.request.query_params.get('license_sub_category_id')
-
-        # Requisition import permit is only for distillery users.
-        # If a brewery user deep-links to the page, return empty options.
         if sub_category_id:
             try:
                 if int(sub_category_id) != 2:
