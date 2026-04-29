@@ -10,8 +10,7 @@ class BulkSpiritType(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = 'ena_bulk_sprit'
-        managed = False  # Since the table already exists
+        db_table = 'ena_bulk_spirit'
         ordering = ['sprit_id']
 
     def __str__(self):

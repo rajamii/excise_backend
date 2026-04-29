@@ -350,6 +350,7 @@ class SubmitTransitPermitAPIView(views.APIView):
         Additional excise is debited from excise wallet.
         """
         from models.transactional.wallet.models import WalletBalance, WalletTransaction
+        from django.db.models import Q
 
         license_id = str(license_id or '').strip()
         if not license_id:
@@ -364,26 +365,30 @@ class SubmitTransitPermitAPIView(views.APIView):
         if excise_total <= 0 and education_total <= 0:
             return
 
-        username = str(getattr(user, 'username', '') or '')
+        username = str(getattr(user, 'username', '') or '').strip()
 
         with transaction.atomic():
+            wallet_filter = Q(licensee_id__iexact=license_id)
+            if username:
+                wallet_filter |= Q(user_id__iexact=username)
+
             excise_wallet = (
                 WalletBalance.objects.select_for_update()
-                .filter(licensee_id=license_id, wallet_type__iexact='excise')
+                .filter(wallet_filter, wallet_type__iexact='excise')
                 .order_by('wallet_balance_id')
                 .first()
             )
             education_wallet = (
                 WalletBalance.objects.select_for_update()
-                .filter(licensee_id=license_id, wallet_type__iexact='education_cess')
+                .filter(wallet_filter, wallet_type__iexact='education_cess')
                 .order_by('wallet_balance_id')
                 .first()
             )
 
             if excise_total > 0 and not excise_wallet:
-                raise ValueError(f"Excise wallet not found for license_id={license_id}")
+                raise ValueError(f"Excise wallet not found for license_id/user_id={license_id or username}")
             if education_total > 0 and not education_wallet:
-                raise ValueError(f"Education cess wallet not found for license_id={license_id}")
+                raise ValueError(f"Education cess wallet not found for license_id/user_id={license_id or username}")
 
             if excise_wallet and Decimal(str(excise_wallet.current_balance or 0)) < excise_total:
                 raise ValueError(

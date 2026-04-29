@@ -1003,6 +1003,14 @@ def billdesk_response(request):
                     if not app:
                         raise ValueError(f"NewLicenseApplication not found for application_id={application_id}")
 
+                    # Persist application-fee payment status on the application row.
+                    try:
+                        if not getattr(app, "is_application_fee_paid", False):
+                            app.is_application_fee_paid = True
+                            app.save(update_fields=["is_application_fee_paid"])
+                    except Exception:
+                        pass
+
                     username = str(getattr(tx, "user_id", "") or "").strip()
                     user = None
                     if username:

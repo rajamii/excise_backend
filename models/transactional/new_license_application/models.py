@@ -3,7 +3,16 @@ from django.contrib.contenttypes.fields import GenericRelation
 from django.utils.timezone import now
 from . import helpers
 from models.masters.license.models import License
-from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseSubcategory, LicenseType
+from models.masters.core.models import (
+    District,
+    Subdivision,
+    PoliceStation,
+    LicenseCategory,
+    LicenseSubcategory,
+    LicenseType,
+    LicenseFee,
+    Location,
+)
 from auth.user.models import CustomUser
 
 from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
@@ -19,13 +28,14 @@ class NewLicenseApplication(models.Model):
 
     # System flags
     is_approved = models.BooleanField(default=False)
-    print_count = models.PositiveIntegerField(default=0)
-    is_print_fee_paid = models.BooleanField(default=False)
+    is_application_fee_paid = models.BooleanField(default=False)
     is_fee_calculated = models.BooleanField(default=False) #For Level 1
     is_license_fee_paid = models.BooleanField(default=False)
+    is_security_fee_paid = models.BooleanField(default=False)
     is_license_category_updated = models.BooleanField(default=False) # For Level 2
-    
-    yearly_license_fee = models.CharField(max_length=100, blank=True, null=True)
+
+    # Points to masters.core.LicenseFee.id (kept as an integer for API compatibility).
+    licensee_fee_id = models.PositiveBigIntegerField(blank=True, null=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -118,19 +128,20 @@ class NewLicenseApplication(models.Model):
         related_query_name='new_license_application'
     )
 
-    def record_license_print(self, fee_paid=False):
-        self.print_count += 1
-        if self.print_count > 5 and fee_paid:
-            self.is_print_fee_paid = True
-        self.save()
-    
-    def can_print_license(self):
-        if self.print_count < 5:
-            return True, 0  # Allowed to print, no fee required
-        elif self.is_print_fee_paid:
-            return True, 500  # Allowed to print, fee has been paid
-        else:
-            return False, 500  # Not allowed, fee required
+    @property
+    def yearly_license_fee(self) -> str | None:
+        """
+        Backward-compatible read-only attribute.
+        Historically stored as a string field; now resolved from `licensee_fee_id`.
+        """
+        fee_id = getattr(self, "licensee_fee_id", None)
+        if not fee_id:
+            return None
+        try:
+            fee = LicenseFee.objects.filter(id=int(fee_id), is_active=True).first()
+            return str(getattr(fee, "license_fee", "") or "") if fee else None
+        except Exception:
+            return None
         
     def clean(self):
         if self.license_type:
@@ -158,6 +169,32 @@ class NewLicenseApplication(models.Model):
     def save(self, *args, **kwargs):
         if not self.application_id:
             self.application_id = self.generate_application_id()
+
+        # Best-effort: auto-fill licensee_fee_id based on current fields.
+        # This is intentionally non-blocking: fee configuration differs across deployments.
+        if not self.licensee_fee_id and self.license_category_id and self.license_sub_category_id and self.site_district_id:
+            try:
+                district_code = getattr(self.site_district, "district_code", None) or self.site_district_id
+                location = (
+                    Location.objects.filter(district_code=district_code, is_active=True)
+                    .order_by("location_code")
+                    .first()
+                )
+                if location:
+                    fee = (
+                        LicenseFee.objects.filter(
+                            license_category_id=self.license_category_id,
+                            license_subcategory_id=self.license_sub_category_id,
+                            location_code_id=getattr(location, "location_code", None),
+                            is_active=True,
+                        )
+                        .order_by("id")
+                        .first()
+                    )
+                    if fee:
+                        self.licensee_fee_id = int(fee.id)
+            except Exception:
+                pass
         super().save(*args, **kwargs)
 
     def generate_application_id(self):

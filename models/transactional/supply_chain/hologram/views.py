@@ -760,6 +760,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         Persists wallet history in wallet_transactions table.
         """
         from models.transactional.wallet.models import WalletBalance, WalletTransaction
+        from django.db.models import Q
 
         licensee_id = (
             str(getattr(getattr(instance, 'license', None), 'license_id', '') or '').strip() or
@@ -795,15 +796,20 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             }
 
         with db_transaction.atomic():
+            username = str(getattr(user, 'username', '') or '').strip()
+            wallet_filter = Q(licensee_id__iexact=licensee_id)
+            if username:
+                wallet_filter |= Q(user_id__iexact=username)
+
             wallet = (
                 WalletBalance.objects.select_for_update()
-                .filter(licensee_id=licensee_id, wallet_type__iexact='hologram')
+                .filter(wallet_filter, wallet_type__iexact='hologram')
                 .order_by('wallet_balance_id')
                 .first()
             )
             if not wallet:
                 raise serializers.ValidationError({
-                    'error': f'Hologram wallet not found for licensee_id={licensee_id}.'
+                    'error': f'Hologram wallet not found for licensee_id/user_id={licensee_id or username}.'
                 })
 
             before = Decimal(str(wallet.current_balance or 0))
