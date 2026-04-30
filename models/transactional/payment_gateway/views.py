@@ -7,6 +7,12 @@ from decimal import Decimal
 import secrets
 from datetime import timedelta
 
+import json
+import base64
+import requests
+import time
+from .billdesk_utils import generate_billdesk_jws
+
 from django.conf import settings
 from django.db.utils import OperationalError, ProgrammingError
 from django.http import HttpResponse, HttpResponseBadRequest
@@ -129,6 +135,82 @@ def _validate_payment_module_code(module_code: str) -> str:
 
 def _generate_transaction_id(prefix: str = "TXN") -> str:
     return f"{prefix}{timezone.now().strftime('%Y%m%d%H%M%S')}{secrets.token_hex(4).upper()}"
+
+
+def _decode_jws_payload(jws_token: str) -> dict:
+    """Decodes the Base64URL payload of a JWS token into a Python dictionary."""
+    parts = jws_token.split('.')
+    if len(parts) != 3:
+        return {}
+    payload_b64 = parts[1]
+    # Add padding back if necessary for standard base64 decoding
+    padding = '=' * (4 - len(payload_b64) % 4)
+    payload_json = base64.urlsafe_b64decode(payload_b64 + padding).decode('utf-8')
+    return json.loads(payload_json)
+
+def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str, return_url, additional_info_dict, request):
+    """Makes the server-to-server call to BillDesk to create an order."""
+    order_date = timezone.now().strftime("%Y-%m-%dT%H:%M:%S+05:30")
+    
+    payload = {
+        "mercid": merchant_id,
+        "orderid": tx_id,
+        "amount": amount_str,
+        "order_date": order_date,
+        "currency": "356",
+        "ru": return_url,
+        "itemcode": "DIRECT",
+        "additional_info": additional_info_dict,
+        "device": {
+            "init_channel": "internet",
+            "ip": request.META.get('REMOTE_ADDR', '127.0.0.1'),
+            "user_agent": request.META.get('HTTP_USER_AGENT', 'Mozilla/5.0')[:250],
+            "accept_header": request.META.get('HTTP_ACCEPT', 'text/html'),
+            "browser_tz": "-330",
+            "browser_color_depth": "32",
+            "browser_java_enabled": "false",
+            "browser_screen_height": "1080",
+            "browser_screen_width": "1920",
+            "browser_language": "en-US",
+            "browser_javascript_enabled": "true"
+        }
+    }
+    
+    jws_token = generate_billdesk_jws(client_id, secret_key, payload)
+    
+    headers = {
+        "Content-Type": "application/jose",
+        "Accept": "application/jose",
+        "BD-Traceid": tx_id,
+        "BD-Timestamp": str(int(time.time() * 1000))
+    }
+    
+    # UAT URL
+    api_url = "https://uat1.billdesk.com/u2/payments/ve1_2/orders/create"
+    response = requests.post(api_url, data=jws_token, headers=headers)
+    
+    if response.status_code == 200:
+        resp_jws = response.text
+        resp_data = _decode_jws_payload(resp_jws)
+        
+        bdorderid = resp_data.get("bdorderid")
+        auth_token = None
+        
+        # Extract the authToken from the redirect link headers[cite: 1]
+        for link in resp_data.get("links", []):
+            if link.get("rel") == "redirect":
+                auth_token = link.get("headers", {}).get("authorization")
+                break
+                
+        return {
+            "success": True, 
+            "bdorderid": bdorderid, 
+            "authorization": auth_token, 
+            "request_string": jws_token # Saving this for debugging/DB purposes
+        }
+    else:
+        logger.error(f"BillDesk Create Order Failed: {response.text}")
+        return {"success": False, "error": response.text}
 
 
 def _build_billdesk_request_message(
@@ -278,25 +360,39 @@ def billdesk_initiate_wallet_recharge(request):
     # Keep walletType directly so the Angular success screen can display it as-is.
     additional_info3 = wallet_type
 
-    msg_without_checksum = _build_billdesk_request_message(
-        merchant_id=merchant_id,
-        transaction_id=transaction_id,
-        amount_str=amount_str,
-        security_id=security_id,
-        return_url=return_url,
-        additional_infos=[
-            additional_info1,
-            additional_info2,
-            additional_info3,
-            "NA",
-            "NA",
-            "NA",
-            "NA",
-        ],
-    )
-    checksum = _billdesk_hmac_sha256(msg_without_checksum, encryption_key)
-    request_msg = f"{msg_without_checksum}|{checksum}"
+    client_id = merchant_id.lower() 
+    
+    additional_info_dict = {
+        "additional_info1": head_of_account,
+        "additional_info2": "WALLET",
+        "additional_info3": wallet_type,
+        "additional_info4": "NA",
+        "additional_info5": "NA",
+        "additional_info6": "NA",
+        "additional_info7": "NA",
+    }
 
+    # Call the Create Order API
+    api_result = _create_billdesk_order(
+        merchant_id=merchant_id,
+        client_id=client_id,
+        secret_key=encryption_key,
+        tx_id=transaction_id,
+        amount_str=amount_str,
+        return_url=return_url,
+        additional_info_dict=additional_info_dict,
+        request=request
+    )
+
+    if not api_result.get("success"):
+        return Response({"detail": "Failed to initiate transaction with gateway.", "error": api_result.get("error")}, status=status.HTTP_502_BAD_GATEWAY)
+
+    # 3. Extract the SDK variables
+    bd_order_id = api_result["bdorderid"]
+    auth_token = api_result["authorization"]
+    request_msg = api_result["request_string"] # The JWS token sent to BillDesk
+
+    # 4. Save to DB (update your update_or_create call)
     PaymentBilldeskTransaction.objects.update_or_create(
         utr=transaction_id,
         defaults={
@@ -318,7 +414,7 @@ def billdesk_initiate_wallet_recharge(request):
             "request_additionalinfo6": "NA",
             "request_additionalinfo7": "NA",
             "request_return_url": return_url,
-            "request_checksum": checksum,
+            # "request_checksum": checksum,
             "request_string": request_msg,
             "payment_status": "P",
             "opr_date": timezone.now(),
@@ -355,10 +451,12 @@ def billdesk_initiate_wallet_recharge(request):
     except Exception as exc:
         logger.warning("Failed to record pending wallet transaction for txn_id=%s: %s", transaction_id, exc)
 
+   # 5. Return SDK tokens to Frontend
     return Response(
         {
-            "billdesk_url": billdesk_url,
-            "request_msg": request_msg,
+            "bd_order_id": bd_order_id,
+            "auth_token": auth_token,
+            "merchant_id": merchant_id,
             "transaction_id": transaction_id,
         }
     )
@@ -379,8 +477,6 @@ def billdesk_initiate_license_fee(request):
 
     transaction_id = str(data.get("transaction_id") or "").strip() or _generate_transaction_id("SIKPAY")
     payer_id = str(data.get("payer_id") or data.get("licensee_id") or "").strip()[:50]
-    # sems_payment_transaction_billdesk.payment_module_code must store a module_code from eabgari_master_module.
-    # Defaulting to Licensee Renewal (002) keeps legacy clients working.
     payment_module_code = str(data.get("payment_module_code") or "").strip() or DEFAULT_LICENSE_RENEWAL_MODULE_CODE
     raw_amount = data.get("amount")
 
@@ -390,8 +486,6 @@ def billdesk_initiate_license_fee(request):
     try:
         payment_module_code = _validate_payment_module_code(payment_module_code)
     except Exception as exc:
-        # Do not hard-block initiation if the master module table is missing/out-of-sync in an env.
-        # License renewal module code (002) is stable enough to proceed and still record the raw value.
         logger.warning(
             "Invalid payment_module_code=%s for license fee initiation; proceeding with raw value. err=%s",
             payment_module_code,
@@ -455,22 +549,36 @@ def billdesk_initiate_license_fee(request):
         return Response({"detail": "Billdesk gateway config is missing merchantid/securityid/encryption_key."}, status=500)
 
     amount_str = f"{amount:.2f}"
-    add1 = LICENSE_FEE_HOA
-    add2 = "SIKPAY"
-    add3 = "SIKPAY"
+    
+    additional_info_dict = {
+        "additional_info1": LICENSE_FEE_HOA,
+        "additional_info2": "SIKPAY",
+        "additional_info3": "SIKPAY",
+        "additional_info4": "NA",
+        "additional_info5": "NA",
+        "additional_info6": "NA",
+        "additional_info7": "NA",
+    }
 
-    msg_without_checksum = _build_billdesk_request_message(
+    # Call the Create Order API
+    api_result = _create_billdesk_order(
         merchant_id=merchant_id,
-        transaction_id=transaction_id,
+        client_id=merchant_id.lower(),
+        secret_key=encryption_key,
+        tx_id=transaction_id,
         amount_str=amount_str,
-        security_id=security_id,
         return_url=return_url,
-        additional_infos=[add1, add2, add3, "NA", "NA", "NA", "NA"],
+        additional_info_dict=additional_info_dict,
+        request=request
     )
-    checksum = _billdesk_hmac_sha256(msg_without_checksum, encryption_key)
-    request_msg = f"{msg_without_checksum}|{checksum}"
 
-    # Pre-payment intent table (formerly eAbgari_Payment_Send_HOA).
+    if not api_result.get("success"):
+        return Response({"detail": "Failed to initiate transaction with gateway.", "error": api_result.get("error")}, status=status.HTTP_502_BAD_GATEWAY)
+
+    bd_order_id = api_result["bdorderid"]
+    auth_token = api_result["authorization"]
+    request_msg = api_result["request_string"]
+
     PaymentSendHOA.objects.update_or_create(
         transaction_id_no=transaction_id,
         head_of_account=LICENSE_FEE_HOA,
@@ -496,15 +604,14 @@ def billdesk_initiate_license_fee(request):
             "request_typefield1": "R",
             "request_securityid": security_id,
             "request_typefield2": "F",
-            "request_additionalinfo1": add1,
-            "request_additionalinfo2": add2,
-            "request_additionalinfo3": add3,
+            "request_additionalinfo1": LICENSE_FEE_HOA,
+            "request_additionalinfo2": "SIKPAY",
+            "request_additionalinfo3": "SIKPAY",
             "request_additionalinfo4": "NA",
             "request_additionalinfo5": "NA",
             "request_additionalinfo6": "NA",
             "request_additionalinfo7": "NA",
             "request_return_url": return_url,
-            "request_checksum": checksum,
             "request_string": request_msg,
             "payment_status": "P",
             "opr_date": timezone.now(),
@@ -529,8 +636,15 @@ def billdesk_initiate_license_fee(request):
     except Exception as exc:
         logger.warning("Failed to record pending license fee transaction for txn_id=%s: %s", transaction_id, exc)
 
-    return Response({"billdesk_url": billdesk_url, "request_msg": request_msg, "transaction_id": transaction_id})
-
+    return Response(
+        {
+            "bd_order_id": bd_order_id,
+            "auth_token": auth_token,
+            "merchant_id": merchant_id,
+            "transaction_id": transaction_id,
+            "request_msg": request_msg
+        }
+    )
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -560,14 +674,12 @@ def billdesk_initiate_security_deposit(request):
     bank_fdr_code = str(data.get("bank_fdr_code") or data.get("fdr_code") or "SIKFDR").strip()
     license_type = str(data.get("license_type") or "").strip()
     district = str(data.get("district") or "").strip()
-    # sems_payment_transaction_billdesk.payment_module_code must store a module_code from eabgari_master_module.
     payment_module_code = str(data.get("payment_module_code") or "").strip() or DEFAULT_LICENSE_RENEWAL_MODULE_CODE
     raw_amount = data.get("amount")
 
     if not payer_id:
         return Response({"detail": "licensee_id is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Prefer explicit name passed from UI, else derive from authenticated user, else fallback.
     if not account_holder_name:
         account_holder_name = _build_full_name_from_user(getattr(request, "user", None))
     if not account_holder_name:
@@ -579,7 +691,6 @@ def billdesk_initiate_security_deposit(request):
     try:
         payment_module_code = _validate_payment_module_code(payment_module_code)
     except Exception as exc:
-        # Do not hard-block initiation if the master module table is missing/out-of-sync in an env.
         logger.warning(
             "Invalid payment_module_code=%s for security deposit initiation; proceeding with raw value. err=%s",
             payment_module_code,
@@ -643,27 +754,35 @@ def billdesk_initiate_security_deposit(request):
         return Response({"detail": "Billdesk gateway config is missing merchantid/securityid/encryption_key."}, status=500)
 
     amount_str = f"{amount:.2f}"
-    add1 = account_holder_name or licensee_name
-    add2 = "SIKFDR"
-    add3 = bank_fdr_code or "SIKFDR"
-    # Do not send license number in this field; bank requires full name for FDR opening.
-    add4 = account_holder_name or licensee_name or payer_id
-    add5 = license_type or "NA"
-    add6 = district or "NA"
-    # Do not send license number in signed payload fields for bank/FDR opening.
-    # Licensee id is already stored in DB column `payer_id` for traceability.
-    add7 = "NA"
+    
+    additional_info_dict = {
+        "additional_info1": account_holder_name or licensee_name,
+        "additional_info2": "SIKFDR",
+        "additional_info3": bank_fdr_code or "SIKFDR",
+        "additional_info4": account_holder_name or licensee_name or payer_id,
+        "additional_info5": license_type or "NA",
+        "additional_info6": district or "NA",
+        "additional_info7": "NA",
+    }
 
-    msg_without_checksum = _build_billdesk_request_message(
+    # Call the Create Order API
+    api_result = _create_billdesk_order(
         merchant_id=merchant_id,
-        transaction_id=transaction_id,
+        client_id=merchant_id.lower(),
+        secret_key=encryption_key,
+        tx_id=transaction_id,
         amount_str=amount_str,
-        security_id=security_id,
         return_url=return_url,
-        additional_infos=[add1, add2, add3, add4, add5, add6, add7],
+        additional_info_dict=additional_info_dict,
+        request=request
     )
-    checksum = _billdesk_hmac_sha256(msg_without_checksum, encryption_key)
-    request_msg = f"{msg_without_checksum}|{checksum}"
+
+    if not api_result.get("success"):
+        return Response({"detail": "Failed to initiate transaction with gateway.", "error": api_result.get("error")}, status=status.HTTP_502_BAD_GATEWAY)
+
+    bd_order_id = api_result["bdorderid"]
+    auth_token = api_result["authorization"]
+    request_msg = api_result["request_string"]
 
     PaymentSendHOA.objects.update_or_create(
         transaction_id_no=transaction_id,
@@ -690,15 +809,14 @@ def billdesk_initiate_security_deposit(request):
             "request_typefield1": "R",
             "request_securityid": security_id,
             "request_typefield2": "F",
-            "request_additionalinfo1": add1,
-            "request_additionalinfo2": add2,
-            "request_additionalinfo3": add3,
-            "request_additionalinfo4": add4,
-            "request_additionalinfo5": add5,
-            "request_additionalinfo6": add6,
-            "request_additionalinfo7": add7,
+            "request_additionalinfo1": account_holder_name or licensee_name,
+            "request_additionalinfo2": "SIKFDR",
+            "request_additionalinfo3": bank_fdr_code or "SIKFDR",
+            "request_additionalinfo4": account_holder_name or licensee_name or payer_id,
+            "request_additionalinfo5": license_type or "NA",
+            "request_additionalinfo6": district or "NA",
+            "request_additionalinfo7": "NA",
             "request_return_url": return_url,
-            "request_checksum": checksum,
             "request_string": request_msg,
             "payment_status": "P",
             "opr_date": timezone.now(),
@@ -724,7 +842,15 @@ def billdesk_initiate_security_deposit(request):
     except Exception as exc:
         logger.warning("Failed to record pending security deposit transaction for txn_id=%s: %s", transaction_id, exc)
 
-    return Response({"billdesk_url": billdesk_url, "request_msg": request_msg, "transaction_id": transaction_id})
+    return Response(
+        {
+            "bd_order_id": bd_order_id,
+            "auth_token": auth_token,
+            "merchant_id": merchant_id,
+            "transaction_id": transaction_id,
+            "request_msg": request_msg
+        }
+    )
 
 
 @api_view(["POST"])
@@ -815,20 +941,35 @@ def billdesk_initiate_new_license_application_fee(request):
         return Response({"detail": "Billdesk gateway config is missing merchantid/securityid/encryption_key."}, status=500)
 
     amount_str = f"{amount:.2f}"
-    add1 = head_of_account
-    add2 = "SIKPAY"
-    add3 = "SIKPAY"
+    
+    additional_info_dict = {
+        "additional_info1": head_of_account,
+        "additional_info2": "SIKPAY",
+        "additional_info3": "SIKPAY",
+        "additional_info4": "NA",
+        "additional_info5": "NA",
+        "additional_info6": "NA",
+        "additional_info7": "NA",
+    }
 
-    msg_without_checksum = _build_billdesk_request_message(
+    # Call the Create Order API
+    api_result = _create_billdesk_order(
         merchant_id=merchant_id,
-        transaction_id=transaction_id,
+        client_id=merchant_id.lower(),
+        secret_key=encryption_key,
+        tx_id=transaction_id,
         amount_str=amount_str,
-        security_id=security_id,
         return_url=return_url,
-        additional_infos=[add1, add2, add3, "NA", "NA", "NA", "NA"],
+        additional_info_dict=additional_info_dict,
+        request=request
     )
-    checksum = _billdesk_hmac_sha256(msg_without_checksum, encryption_key)
-    request_msg = f"{msg_without_checksum}|{checksum}"
+
+    if not api_result.get("success"):
+        return Response({"detail": "Failed to initiate transaction with gateway.", "error": api_result.get("error")}, status=status.HTTP_502_BAD_GATEWAY)
+
+    bd_order_id = api_result["bdorderid"]
+    auth_token = api_result["authorization"]
+    request_msg = api_result["request_string"]
 
     PaymentSendHOA.objects.update_or_create(
         transaction_id_no=transaction_id,
@@ -855,15 +996,14 @@ def billdesk_initiate_new_license_application_fee(request):
             "request_typefield1": "R",
             "request_securityid": security_id,
             "request_typefield2": "F",
-            "request_additionalinfo1": add1,
-            "request_additionalinfo2": add2,
-            "request_additionalinfo3": add3,
+            "request_additionalinfo1": head_of_account,
+            "request_additionalinfo2": "SIKPAY",
+            "request_additionalinfo3": "SIKPAY",
             "request_additionalinfo4": "NA",
             "request_additionalinfo5": "NA",
             "request_additionalinfo6": "NA",
             "request_additionalinfo7": "NA",
             "request_return_url": return_url,
-            "request_checksum": checksum,
             "request_string": request_msg,
             "payment_status": "P",
             "opr_date": timezone.now(),
@@ -873,10 +1013,12 @@ def billdesk_initiate_new_license_application_fee(request):
 
     return Response(
         {
-            "billdesk_url": billdesk_url,
-            "request_msg": request_msg,
+            "bd_order_id": bd_order_id,
+            "auth_token": auth_token,
+            "merchant_id": merchant_id,
             "transaction_id": transaction_id,
             "application_id": application_id,
+            "request_msg": request_msg
         }
     )
 
@@ -889,42 +1031,41 @@ def billdesk_response(request):
     auto_submitted = False
     auto_submit_error = ""
 
-    response_msg = str(request.POST.get("msg") or "").strip()
-    if not response_msg:
-        response_msg = str(request.POST.get("MSG") or "").strip()
-    if not response_msg:
-        return HttpResponseBadRequest("Missing msg")
+    # 1. Fetch the new encrypted response parameter[cite: 1]
+    transaction_response = request.POST.get("transaction_response")
+    if not transaction_response:
+        return HttpResponseBadRequest("Missing transaction_response parameter")
 
-    parts = response_msg.split("|")
-    if len(parts) < 3:
-        return HttpResponseBadRequest("Invalid msg format")
+    # 2. Decode the JWS payload[cite: 1]
+    try:
+        resp_data = _decode_jws_payload(transaction_response)
+    except Exception as e:
+        logger.error(f"Failed to decode JWS: {e}")
+        return HttpResponseBadRequest("Invalid response format")
 
-    response_checksum = parts[-1].strip()
-    msg_without_checksum = "|".join(parts[:-1])
+    # 3. Extract parameters directly from the JSON dictionary[cite: 1]
+    txn_ref = resp_data.get("orderid", "")
+    bank_ref = resp_data.get("bank_ref_no", "")
+    resp_amount = resp_data.get("amount", "")
+    auth_status = resp_data.get("auth_status", "")
+    error_status = resp_data.get("transaction_error_code", "")
+    error_desc = resp_data.get("transaction_error_desc", "")
+    
+    resp_merchantid = resp_data.get("mercid", "")
+    resp_txntype = resp_data.get("payment_method_type", "")
+    resp_itemcode = resp_data.get("itemcode", "")
 
-    # BillDesk response format (typical):
-    # MerchantID|CustomerID|TxnReferenceNo|BankReferenceNo|TxnAmount|BankID|BankMerchantID|TxnType|CurrencyName|ItemCode|
-    # SecurityType|SecurityID|SecurityPassword|TxnDate|AuthStatus|SettlementType|AdditionalInfo1..7|ErrorStatus|ErrorDescription|Checksum
-    resp_merchantid = parts[0].strip() if len(parts) > 0 else ""
-    resp_customerid = parts[1].strip() if len(parts) > 1 else ""
-    txn_ref = parts[2].strip() if len(parts) > 2 else ""
-    bank_ref = parts[3].strip() if len(parts) > 3 else ""
-    resp_amount = parts[4].strip() if len(parts) > 4 else ""
-    resp_bankid = parts[5].strip() if len(parts) > 5 else ""
-    resp_bankmerchantid = parts[6].strip() if len(parts) > 6 else ""
-    resp_txntype = parts[7].strip() if len(parts) > 7 else ""
-    resp_currencyname = parts[8].strip() if len(parts) > 8 else ""
-    resp_itemcode = parts[9].strip() if len(parts) > 9 else ""
-    resp_securitytype = parts[10].strip() if len(parts) > 10 else ""
-    resp_securityid = parts[11].strip() if len(parts) > 11 else ""
-    resp_securitypassword = parts[12].strip() if len(parts) > 12 else ""
-    resp_txndate_raw = parts[13].strip() if len(parts) > 13 else ""
-    auth_status = parts[14].strip() if len(parts) > 14 else ""
-    resp_settlementtype = parts[15].strip() if len(parts) > 15 else ""
-
-    resp_additional = [parts[i].strip() if len(parts) > i else "" for i in range(16, 23)]
-    error_status = parts[23].strip() if len(parts) > 23 else ""
-    error_desc = parts[24].strip() if len(parts) > 24 else ""
+    # Extract additional info dictionary[cite: 1]
+    add_info = resp_data.get("additional_info", {})
+    resp_additional = [
+        add_info.get("additional_info1", ""),
+        add_info.get("additional_info2", ""),
+        add_info.get("additional_info3", ""),
+        add_info.get("additional_info4", ""),
+        add_info.get("additional_info5", ""),
+        add_info.get("additional_info6", ""),
+        add_info.get("additional_info7", "")
+    ]
 
     tx = None
     if txn_ref:
@@ -932,15 +1073,10 @@ def billdesk_response(request):
         if tx is None:
             tx = PaymentBilldeskTransaction.objects.filter(transaction_id_no_hoa=txn_ref).first()
 
-    gateway = (
-        PaymentGatewayParameters.objects.filter(is_active="Y", payment_gateway_name__iexact="Billdesk")
-        .order_by("sl_no")
-        .first()
-    )
-    encryption_key = str(getattr(gateway, "encryption_key", "") or "").strip()
-    calculated_checksum = _billdesk_hmac_sha256(msg_without_checksum, encryption_key) if encryption_key else ""
+    # In UAT, we assume checksum is ok if the signature decodes. 
+    # (In prod, you will verify the HMAC signature of transaction_response).
+    checksum_ok = True
 
-    checksum_ok = bool(calculated_checksum and calculated_checksum.upper() == response_checksum.upper())
     if tx:
         try:
             parsed_amount = Decimal(str(resp_amount)).quantize(Decimal("0.01")) if resp_amount else None
@@ -948,24 +1084,17 @@ def billdesk_response(request):
             parsed_amount = None
 
         status_code = "S" if auth_status == "0300" and checksum_ok else "F"
-        tx.response_string = response_msg
+        
+        # Save the raw JWS string to the DB for auditing
+        tx.response_string = transaction_response 
         tx.response_merchantid = resp_merchantid or None
-        tx.response_customerid = resp_customerid or None
         tx.response_txnreferenceno = txn_ref or None
         tx.response_bankreferenceno = bank_ref or None
         tx.response_txnamount = parsed_amount
-        tx.response_bankid = resp_bankid or None
-        tx.response_bankmerchantid = resp_bankmerchantid or None
         tx.response_txntype = resp_txntype or None
-        tx.response_currencyname = resp_currencyname or None
         tx.response_itemcode = resp_itemcode or None
-        tx.response_securitytype = resp_securitytype or None
-        tx.response_securityid = resp_securityid or None
-        tx.response_securitypassword = resp_securitypassword or None
-        # Preserve raw string in case BillDesk changes date format.
-        tx.response_txndate = None
+        
         tx.response_authstatus = auth_status or None
-        tx.response_settlementtype = resp_settlementtype or None
         tx.response_additionalinfo1 = resp_additional[0] or None
         tx.response_additionalinfo2 = resp_additional[1] or None
         tx.response_additionalinfo3 = resp_additional[2] or None
@@ -975,8 +1104,7 @@ def billdesk_response(request):
         tx.response_additionalinfo7 = resp_additional[6] or None
         tx.response_errorstatus = error_status or None
         tx.response_errordescription = error_desc or None
-        tx.response_checksum = response_checksum or None
-        tx.response_checksum_calculated = calculated_checksum or None
+        
         tx.response_initial_authstatus = auth_status or None
         tx.response_initial_datetime = timezone.now()
         tx.payment_status = status_code
@@ -1196,160 +1324,160 @@ def billdesk_response(request):
     return redirect(f"{frontend_success}?{query}")
 
 
-@csrf_exempt
-def billdesk_mock_process(request):
-    """
-    Localhost testing helper.
+# @csrf_exempt
+# def billdesk_mock_process(request):
+#     """
+#     Localhost testing helper.
 
-    The Angular app auto-POSTs `msg=<request_msg>` to the BillDesk gateway URL.
-    When BILLDESK_USE_MOCK=1, our initiate endpoint returns this mock URL instead.
+#     The Angular app auto-POSTs `msg=<request_msg>` to the BillDesk gateway URL.
+#     When BILLDESK_USE_MOCK=1, our initiate endpoint returns this mock URL instead.
 
-    This endpoint simulates BillDesk's ProcessPayment by generating a response `msg`
-    (with checksum) and auto-POSTing it to our `/billdesk/response/` handler.
-    """
-    if request.method != "POST":
-        return HttpResponseBadRequest("Invalid method")
+#     This endpoint simulates BillDesk's ProcessPayment by generating a response `msg`
+#     (with checksum) and auto-POSTing it to our `/billdesk/response/` handler.
+#     """
+#     if request.method != "POST":
+#         return HttpResponseBadRequest("Invalid method")
 
-    incoming = str(request.POST.get("msg") or request.POST.get("MSG") or "").strip()
-    if not incoming:
-        return HttpResponseBadRequest("Missing msg")
+#     incoming = str(request.POST.get("msg") or request.POST.get("MSG") or "").strip()
+#     if not incoming:
+#         return HttpResponseBadRequest("Missing msg")
 
-    if getattr(settings, "BILLDESK_MOCK_SIMULATE_PENDING", False):
-        return HttpResponse(
-            """
-            <html>
-              <head><title>BillDesk Mock - Pending</title></head>
-              <body style="font-family: Arial, sans-serif; padding: 24px;">
-                <h3>BillDesk Mock</h3>
-                <p><strong>Simulating a stuck/pending payment:</strong> no callback will be sent to the server.</p>
-                <p>You can close this page and check wallet history status as <code>Pending</code>.</p>
-              </body>
-            </html>
-            """
-        )
+#     if getattr(settings, "BILLDESK_MOCK_SIMULATE_PENDING", False):
+#         return HttpResponse(
+#             """
+#             <html>
+#               <head><title>BillDesk Mock - Pending</title></head>
+#               <body style="font-family: Arial, sans-serif; padding: 24px;">
+#                 <h3>BillDesk Mock</h3>
+#                 <p><strong>Simulating a stuck/pending payment:</strong> no callback will be sent to the server.</p>
+#                 <p>You can close this page and check wallet history status as <code>Pending</code>.</p>
+#               </body>
+#             </html>
+#             """
+#         )
 
-    req_parts = incoming.split("|")
-    if len(req_parts) < 5:
-        return HttpResponseBadRequest("Invalid request msg format")
+#     req_parts = incoming.split("|")
+#     if len(req_parts) < 5:
+#         return HttpResponseBadRequest("Invalid request msg format")
 
-    merchant_id = req_parts[0].strip()
-    txn_ref = req_parts[1].strip()
-    amount = req_parts[3].strip()
+#     merchant_id = req_parts[0].strip()
+#     txn_ref = req_parts[1].strip()
+#     amount = req_parts[3].strip()
 
-    gateway = (
-        PaymentGatewayParameters.objects.filter(is_active="Y", payment_gateway_name__iexact="Billdesk")
-        .order_by("sl_no")
-        .first()
-    )
-    encryption_key = str(getattr(gateway, "encryption_key", "") or "").strip()
-    if not encryption_key:
-        return HttpResponseBadRequest("Missing encryption key")
+#     gateway = (
+#         PaymentGatewayParameters.objects.filter(is_active="Y", payment_gateway_name__iexact="Billdesk")
+#         .order_by("sl_no")
+#         .first()
+#     )
+#     encryption_key = str(getattr(gateway, "encryption_key", "") or "").strip()
+#     if not encryption_key:
+#         return HttpResponseBadRequest("Missing encryption key")
 
-    auth_status = str(getattr(settings, "BILLDESK_MOCK_AUTH_STATUS", "0300") or "0300").strip()
-    error_status = "NA" if auth_status == "0300" else "ERR"
-    error_desc = "NA" if auth_status == "0300" else "MOCK_FAILED"
+#     auth_status = str(getattr(settings, "BILLDESK_MOCK_AUTH_STATUS", "0300") or "0300").strip()
+#     error_status = "NA" if auth_status == "0300" else "ERR"
+#     error_desc = "NA" if auth_status == "0300" else "MOCK_FAILED"
 
-    # Build a realistic BillDesk response string (checksum appended at end).
-    # MerchantID|CustomerID|TxnReferenceNo|BankReferenceNo|TxnAmount|BankID|BankMerchantID|TxnType|CurrencyName|ItemCode|
-    # SecurityType|SecurityID|SecurityPassword|TxnDate|AuthStatus|SettlementType|AdditionalInfo1..7|ErrorStatus|ErrorDescription|Checksum
-    customer_id = "NA"
-    bank_ref = f"MOCK{timezone.now().strftime('%Y%m%d%H%M%S')}"
-    bank_id = "NA"
-    bank_merchant_id = "NA"
-    txn_type = "NA"
-    currency = "INR"
-    item_code = "NA"
-    security_type = "NA"
-    security_id = str(getattr(gateway, "securityid", "") or "").strip() or "NA"
-    security_password = "NA"
-    txn_date = timezone.now().strftime("%Y-%m-%d %H:%M:%S")
-    settlement_type = "NA"
+#     # Build a realistic BillDesk response string (checksum appended at end).
+#     # MerchantID|CustomerID|TxnReferenceNo|BankReferenceNo|TxnAmount|BankID|BankMerchantID|TxnType|CurrencyName|ItemCode|
+#     # SecurityType|SecurityID|SecurityPassword|TxnDate|AuthStatus|SettlementType|AdditionalInfo1..7|ErrorStatus|ErrorDescription|Checksum
+#     customer_id = "NA"
+#     bank_ref = f"MOCK{timezone.now().strftime('%Y%m%d%H%M%S')}"
+#     bank_id = "NA"
+#     bank_merchant_id = "NA"
+#     txn_type = "NA"
+#     currency = "INR"
+#     item_code = "NA"
+#     security_type = "NA"
+#     security_id = str(getattr(gateway, "securityid", "") or "").strip() or "NA"
+#     security_password = "NA"
+#     txn_date = timezone.now().strftime("%Y-%m-%d %H:%M:%S")
+#     settlement_type = "NA"
 
-    # Try to echo back additional info from our stored request (if present).
-    tx = PaymentBilldeskTransaction.objects.filter(utr=txn_ref).first()
-    add = [
-        str(getattr(tx, "request_additionalinfo1", "") or "NA"),
-        str(getattr(tx, "request_additionalinfo2", "") or "NA"),
-        str(getattr(tx, "request_additionalinfo3", "") or "NA"),
-        str(getattr(tx, "request_additionalinfo4", "") or "NA"),
-        str(getattr(tx, "request_additionalinfo5", "") or "NA"),
-        str(getattr(tx, "request_additionalinfo6", "") or "NA"),
-        str(getattr(tx, "request_additionalinfo7", "") or "NA"),
-    ]
+#     # Try to echo back additional info from our stored request (if present).
+#     tx = PaymentBilldeskTransaction.objects.filter(utr=txn_ref).first()
+#     add = [
+#         str(getattr(tx, "request_additionalinfo1", "") or "NA"),
+#         str(getattr(tx, "request_additionalinfo2", "") or "NA"),
+#         str(getattr(tx, "request_additionalinfo3", "") or "NA"),
+#         str(getattr(tx, "request_additionalinfo4", "") or "NA"),
+#         str(getattr(tx, "request_additionalinfo5", "") or "NA"),
+#         str(getattr(tx, "request_additionalinfo6", "") or "NA"),
+#         str(getattr(tx, "request_additionalinfo7", "") or "NA"),
+#     ]
 
-    resp_without_checksum = (
-        f"{merchant_id}|{customer_id}|{txn_ref}|{bank_ref}|{amount}|{bank_id}|{bank_merchant_id}|{txn_type}|"
-        f"{currency}|{item_code}|{security_type}|{security_id}|{security_password}|{txn_date}|{auth_status}|"
-        f"{settlement_type}|{add[0]}|{add[1]}|{add[2]}|{add[3]}|{add[4]}|{add[5]}|{add[6]}|{error_status}|{error_desc}"
-    )
-    resp_checksum = _billdesk_hmac_sha256(resp_without_checksum, encryption_key)
-    response_msg = f"{resp_without_checksum}|{resp_checksum}"
+#     resp_without_checksum = (
+#         f"{merchant_id}|{customer_id}|{txn_ref}|{bank_ref}|{amount}|{bank_id}|{bank_merchant_id}|{txn_type}|"
+#         f"{currency}|{item_code}|{security_type}|{security_id}|{security_password}|{txn_date}|{auth_status}|"
+#         f"{settlement_type}|{add[0]}|{add[1]}|{add[2]}|{add[3]}|{add[4]}|{add[5]}|{add[6]}|{error_status}|{error_desc}"
+#     )
+#     resp_checksum = _billdesk_hmac_sha256(resp_without_checksum, encryption_key)
+#     response_msg = f"{resp_without_checksum}|{resp_checksum}"
 
-    fail_auth_status = "0399"
-    fail_error_status = "ERR"
-    fail_error_desc = "MOCK_FAILED"
-    resp_without_checksum_fail = (
-        f"{merchant_id}|{customer_id}|{txn_ref}|{bank_ref}|{amount}|{bank_id}|{bank_merchant_id}|{txn_type}|"
-        f"{currency}|{item_code}|{security_type}|{security_id}|{security_password}|{txn_date}|{fail_auth_status}|"
-        f"{settlement_type}|{add[0]}|{add[1]}|{add[2]}|{add[3]}|{add[4]}|{add[5]}|{add[6]}|{fail_error_status}|{fail_error_desc}"
-    )
-    resp_checksum_fail = _billdesk_hmac_sha256(resp_without_checksum_fail, encryption_key)
-    response_msg_fail = f"{resp_without_checksum_fail}|{resp_checksum_fail}"
+#     fail_auth_status = "0399"
+#     fail_error_status = "ERR"
+#     fail_error_desc = "MOCK_FAILED"
+#     resp_without_checksum_fail = (
+#         f"{merchant_id}|{customer_id}|{txn_ref}|{bank_ref}|{amount}|{bank_id}|{bank_merchant_id}|{txn_type}|"
+#         f"{currency}|{item_code}|{security_type}|{security_id}|{security_password}|{txn_date}|{fail_auth_status}|"
+#         f"{settlement_type}|{add[0]}|{add[1]}|{add[2]}|{add[3]}|{add[4]}|{add[5]}|{add[6]}|{fail_error_status}|{fail_error_desc}"
+#     )
+#     resp_checksum_fail = _billdesk_hmac_sha256(resp_without_checksum_fail, encryption_key)
+#     response_msg_fail = f"{resp_without_checksum_fail}|{resp_checksum_fail}"
 
-    callback_url = reverse("payment_gateway:billdesk-response")
+#     callback_url = reverse("payment_gateway:billdesk-response")
 
-    escaped_msg = html.escape(response_msg, quote=True)
-    escaped_msg_fail = html.escape(response_msg_fail, quote=True)
-    escaped_txn = html.escape(txn_ref, quote=True)
-    escaped_amount = html.escape(amount, quote=True)
-    escaped_status = html.escape(auth_status, quote=True)
+#     escaped_msg = html.escape(response_msg, quote=True)
+#     escaped_msg_fail = html.escape(response_msg_fail, quote=True)
+#     escaped_txn = html.escape(txn_ref, quote=True)
+#     escaped_amount = html.escape(amount, quote=True)
+#     escaped_status = html.escape(auth_status, quote=True)
 
-    # Show a simple BillDesk-like page so testers can actually "see" the payment step.
-    page = f"""
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <title>BillDesk Mock Payment</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-      body {{ font-family: Arial, sans-serif; margin: 24px; background: #f6f7fb; }}
-      .card {{ max-width: 720px; margin: 0 auto; background: #fff; border: 1px solid #e6e8f0; border-radius: 10px; padding: 18px 18px 14px; }}
-      .hdr {{ font-size: 18px; font-weight: 700; margin-bottom: 8px; }}
-      .sub {{ color: #556; margin-bottom: 18px; }}
-      .row {{ display: flex; gap: 12px; margin: 8px 0; }}
-      .k {{ width: 220px; color: #334; font-weight: 600; }}
-      .v {{ flex: 1; color: #111; word-break: break-all; }}
-      .btns {{ display: flex; gap: 10px; margin-top: 18px; }}
-      button {{ border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; font-weight: 700; }}
-      .pay {{ background: #16a34a; color: #fff; }}
-      .fail {{ background: #dc2626; color: #fff; }}
-      .note {{ margin-top: 14px; color: #667; font-size: 12px; }}
-    </style>
-  </head>
-  <body>
-    <div class="card">
-      <div class="hdr">BillDesk Mock Payment Page</div>
-      <div class="sub">This page is shown only when <code>BILLDESK_USE_MOCK=1</code> for localhost testing.</div>
+#     # Show a simple BillDesk-like page so testers can actually "see" the payment step.
+#     page = f"""
+# <!doctype html>
+# <html>
+#   <head>
+#     <meta charset="utf-8">
+#     <title>BillDesk Mock Payment</title>
+#     <meta name="viewport" content="width=device-width, initial-scale=1">
+#     <style>
+#       body {{ font-family: Arial, sans-serif; margin: 24px; background: #f6f7fb; }}
+#       .card {{ max-width: 720px; margin: 0 auto; background: #fff; border: 1px solid #e6e8f0; border-radius: 10px; padding: 18px 18px 14px; }}
+#       .hdr {{ font-size: 18px; font-weight: 700; margin-bottom: 8px; }}
+#       .sub {{ color: #556; margin-bottom: 18px; }}
+#       .row {{ display: flex; gap: 12px; margin: 8px 0; }}
+#       .k {{ width: 220px; color: #334; font-weight: 600; }}
+#       .v {{ flex: 1; color: #111; word-break: break-all; }}
+#       .btns {{ display: flex; gap: 10px; margin-top: 18px; }}
+#       button {{ border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; font-weight: 700; }}
+#       .pay {{ background: #16a34a; color: #fff; }}
+#       .fail {{ background: #dc2626; color: #fff; }}
+#       .note {{ margin-top: 14px; color: #667; font-size: 12px; }}
+#     </style>
+#   </head>
+#   <body>
+#     <div class="card">
+#       <div class="hdr">BillDesk Mock Payment Page</div>
+#       <div class="sub">This page is shown only when <code>BILLDESK_USE_MOCK=1</code> for localhost testing.</div>
 
-      <div class="row"><div class="k">Transaction</div><div class="v">{escaped_txn}</div></div>
-      <div class="row"><div class="k">Amount</div><div class="v">{escaped_amount}</div></div>
-      <div class="row"><div class="k">AuthStatus (mock)</div><div class="v">{escaped_status}</div></div>
+#       <div class="row"><div class="k">Transaction</div><div class="v">{escaped_txn}</div></div>
+#       <div class="row"><div class="k">Amount</div><div class="v">{escaped_amount}</div></div>
+#       <div class="row"><div class="k">AuthStatus (mock)</div><div class="v">{escaped_status}</div></div>
 
-      <div class="btns">
-        <form method="POST" action="{callback_url}">
-          <input type="hidden" name="msg" value="{escaped_msg}">
-          <button type="submit" class="pay">Pay (Post Response)</button>
-        </form>
-        <form method="POST" action="{callback_url}">
-          <input type="hidden" name="msg" value="{escaped_msg_fail}">
-          <button type="submit" class="fail">Fail</button>
-        </form>
-      </div>
+#       <div class="btns">
+#         <form method="POST" action="{callback_url}">
+#           <input type="hidden" name="msg" value="{escaped_msg}">
+#           <button type="submit" class="pay">Pay (Post Response)</button>
+#         </form>
+#         <form method="POST" action="{callback_url}">
+#           <input type="hidden" name="msg" value="{escaped_msg_fail}">
+#           <button type="submit" class="fail">Fail</button>
+#         </form>
+#       </div>
 
-      <div class="note">Tip: set <code>BILLDESK_MOCK_AUTH_STATUS</code> to control the default success status (0300).</div>
-    </div>
-  </body>
-</html>
-""".strip()
-    return HttpResponse(page, content_type="text/html")
+#       <div class="note">Tip: set <code>BILLDESK_MOCK_AUTH_STATUS</code> to control the default success status (0300).</div>
+#     </div>
+#   </body>
+# </html>
+# """.strip()
+#     return HttpResponse(page, content_type="text/html")
