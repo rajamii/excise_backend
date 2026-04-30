@@ -445,6 +445,17 @@ class WorkflowService:
         # ---------- Transition ----------
         WorkflowService.validate_transition(application, target_stage, context, user=user)
 
+        # New license applications need one extra stop after commissioner approval:
+        # collect license fee + security deposit before the license becomes active.
+        try:
+            from models.transactional.new_license_application.payment_status import (
+                route_approval_to_payment_stage,
+            )
+
+            target_stage = route_approval_to_payment_stage(application, target_stage)
+        except Exception:
+            pass
+
         # ---------- App-specific hooks (via context) ----------
         # if getattr(application, 'is_fee_calculated', None) is not None and target_stage.name == "level_1":
         #     if context.get("action") == "set_fee":

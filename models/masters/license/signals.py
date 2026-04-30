@@ -97,6 +97,13 @@ def _stage_should_issue_license(stage, *, application_model: str) -> bool:
     )
 
 
+def _new_license_payments_complete(application) -> bool:
+    return bool(
+        getattr(application, "is_license_fee_paid", False)
+        and getattr(application, "is_security_fee_paid", False)
+    )
+
+
 def get_license_valid_up_to(issue_date: date) -> date:
     year = issue_date.year
     if issue_date.month >= 3:  
@@ -146,6 +153,13 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
         .first()
     )
     if existing_license:
+        if source_type := getattr(existing_license, "source_type", None):
+            if source_type == "new_license_application":
+                should_be_active = _new_license_payments_complete(application)
+                if existing_license.is_active != should_be_active:
+                    existing_license.is_active = should_be_active
+                    existing_license.save(update_fields=["is_active"])
+
         # Still ensure wallets exist (and get updated metadata) whenever an approval-stage
         # transaction is logged for the application.
         try:
@@ -236,6 +250,11 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
     new_license_id = f"{base_prefix}/{str(seq).zfill(4)}"
 
     try:
+        license_is_active = (
+            source_type != "new_license_application"
+            or _new_license_payments_complete(application)
+        )
+
         created_license = License.objects.create(
             license_id=new_license_id,
             source_content_type=ct,
@@ -247,7 +266,7 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
             excise_district=excise_district,
             issue_date=issue_date,
             valid_up_to=valid_up_to,
-            is_active=True
+            is_active=license_is_active
         )
         logger.info(f"License created for application {application.pk}")
 
@@ -276,6 +295,8 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
         # === NEW: Create/Update Supply Chain User Profile ===
         try:
             establishment_name = str(getattr(application, 'establishment_name', '') or '').strip()
+            if source_type == "new_license_application" and not created_license.is_active:
+                establishment_name = ""
             if establishment_name and applicant:
                 from models.masters.supply_chain.profile.models import (
                     SupplyChainUserProfile,
