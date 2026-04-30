@@ -284,6 +284,20 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
                 wallet_error,
             )
 
+        if created_license.is_active and source_type == "new_license_application":
+            try:
+                from models.transactional.new_license_application.payment_status import (
+                    sync_master_factory_for_license,
+                )
+
+                sync_master_factory_for_license(created_license)
+            except Exception as factory_error:
+                logger.error(
+                    "License created but master factory sync failed for license_id=%s: %s",
+                    created_license.license_id,
+                    factory_error,
+                )
+
         # === NEW: If this is a renewal, deactivate the old license ===
         if hasattr(application, 'renewal_of') and application.renewal_of:
             old_license = application.renewal_of
