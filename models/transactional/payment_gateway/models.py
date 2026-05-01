@@ -118,7 +118,7 @@ class MasterHeadOfAccount(models.Model):
     modified_date = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        managed = False
+        # managed = False
         db_table = "sems_master_head_of_account"
 
     def __str__(self):
@@ -138,7 +138,7 @@ class MasterPaymentModule(models.Model):
     modified_date = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        managed = False
+        # managed = False
         db_table = "sems_master_payment_module"
 
     def __str__(self):
@@ -164,6 +164,6 @@ class PaymentModuleHoa(models.Model):
     created_date = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        managed = False
+        # managed = False
         db_table = "sems_module_hoa"
 

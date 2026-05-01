@@ -184,6 +184,12 @@ def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str
         "BD-Traceid": tx_id,
         "BD-Timestamp": str(int(time.time() * 1000))
     }
+
+    try:
+        current_outbound_ip = requests.get('https://api.ipify.org', timeout=5).text
+        logger.info(f"DEBUG: Outbound Public IP being used: {current_outbound_ip}")
+    except Exception as e:
+        logger.error(f"DEBUG: Could not determine Public IP: {e}")
     
     # UAT URL
     api_url = "https://uat1.billdesk.com/u2/payments/ve1_2/orders/create"
