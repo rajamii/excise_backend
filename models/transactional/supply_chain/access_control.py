@@ -2,6 +2,7 @@ from auth.workflow.models import StagePermission, WorkflowTransition
 from models.masters.license.models import License
 from django.contrib.contenttypes.models import ContentType
 from models.transactional.new_license_application.models import NewLicenseApplication
+from django.db.models import Q
 
 
 def _normalize_token(value):
@@ -47,6 +48,108 @@ def _expand_license_aliases(value):
     elif normalized.startswith('NA/'):
         aliases.append(f"NLI/{normalized[3:]}")
     return aliases
+
+
+def _license_matches_tokens(license_obj, category_tokens=None, subcategory_tokens=None) -> bool:
+    if not license_obj:
+        return False
+    category_text = str(getattr(getattr(license_obj, 'license_category', None), 'license_category', '') or '').lower()
+    subcategory_text = str(getattr(getattr(license_obj, 'license_sub_category', None), 'description', '') or '').lower()
+
+    category_tokens = [str(t or '').strip().lower() for t in (category_tokens or []) if str(t or '').strip()]
+    subcategory_tokens = [str(t or '').strip().lower() for t in (subcategory_tokens or []) if str(t or '').strip()]
+
+    if category_tokens and any(token in category_text for token in category_tokens):
+        return True
+    if subcategory_tokens and any(token in subcategory_text for token in subcategory_tokens):
+        return True
+    return False
+
+
+def resolve_user_license_id_by_category_subcategory(
+    user,
+    *,
+    license_category_id=None,
+    license_sub_category_id=None,
+    category_tokens=None,
+    subcategory_tokens=None,
+    requested_license_id: str = '',
+) -> str:
+    """
+    Resolve an active License.license_id for a user, preferring a requested id when it matches.
+
+    Used by supply-chain flows to pick the correct manufacturing license when a user has
+    multiple licenses across categories/subcategories.
+    """
+    if not user:
+        return ''
+
+    base_qs = License.objects.filter(applicant=user, is_active=True)
+    if license_category_id:
+        base_qs = base_qs.filter(license_category_id=license_category_id)
+    if license_sub_category_id:
+        base_qs = base_qs.filter(license_sub_category_id=license_sub_category_id)
+
+    requested_license_id = str(requested_license_id or '').strip()
+    if requested_license_id:
+        requested_aliases = _expand_license_aliases(requested_license_id)
+        match = base_qs.filter(license_id__in=requested_aliases).order_by('-issue_date', '-license_id').first()
+        if match and match.license_id:
+            return str(match.license_id).strip()
+
+    if category_tokens or subcategory_tokens:
+        token_q = Q()
+        for token in (category_tokens or []):
+            token = str(token or '').strip()
+            if token:
+                token_q |= Q(license_category__license_category__icontains=token)
+        for token in (subcategory_tokens or []):
+            token = str(token or '').strip()
+            if token:
+                token_q |= Q(license_sub_category__description__icontains=token)
+        if token_q:
+            token_match = base_qs.filter(token_q).order_by('-issue_date', '-license_id').first()
+            if token_match and token_match.license_id:
+                return str(token_match.license_id).strip()
+
+    latest = base_qs.order_by('-issue_date', '-license_id').first()
+    return str(getattr(latest, 'license_id', '') or '').strip()
+
+
+def resolve_manufacturing_license_id_from_license_id(raw_license_id: str) -> str:
+    """
+    Given any known license id for an applicant, return the applicant's manufacturing license id
+    (by category/subcategory heuristics). Falls back to the provided id.
+    """
+    raw_license_id = str(raw_license_id or '').strip()
+    if not raw_license_id:
+        return ''
+
+    aliases = _expand_license_aliases(raw_license_id)
+    current = (
+        License.objects.select_related('license_category', 'license_sub_category', 'applicant')
+        .filter(license_id__in=aliases, is_active=True)
+        .order_by('-issue_date', '-license_id')
+        .first()
+    )
+    if not current:
+        return raw_license_id
+
+    manufacturing_tokens = ['manufactur']
+    manufacturing_sub_tokens = ['distiller', 'brew', 'winery', 'beer']
+    if _license_matches_tokens(current, category_tokens=manufacturing_tokens, subcategory_tokens=manufacturing_sub_tokens):
+        return str(current.license_id).strip()
+
+    applicant = getattr(current, 'applicant', None)
+    if not applicant:
+        return str(current.license_id).strip()
+
+    resolved = resolve_user_license_id_by_category_subcategory(
+        applicant,
+        category_tokens=manufacturing_tokens,
+        subcategory_tokens=manufacturing_sub_tokens,
+    )
+    return resolved or str(current.license_id).strip()
 
 
 def _is_oic_scoped_user(user):
@@ -123,12 +226,6 @@ def scope_by_profile_or_workflow(user, queryset, workflow_id, licensee_field='li
         for raw_value in mapped_values:
             for alias in _expand_license_aliases(raw_value):
                 scoped_values.add(alias)
-    else:
-        if hasattr(user, 'supply_chain_profile'):
-            licensee_id = user.supply_chain_profile.licensee_id
-            if licensee_id:
-                for alias in _expand_license_aliases(licensee_id):
-                    scoped_values.add(alias)
 
     # Fallback: users with mapped manufacturing units but no active supply-chain profile
     # should still see their own records.

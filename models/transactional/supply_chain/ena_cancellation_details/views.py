@@ -13,6 +13,7 @@ from models.transactional.supply_chain.access_control import (
     has_workflow_access,
     scope_by_profile_or_workflow,
     transition_matches,
+    resolve_user_license_id_by_category_subcategory,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,10 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     serializer_class = EnaCancellationDetailSerializer
     permission_classes = [permissions.IsAuthenticated]
     CANCELLATION_FEE_AMOUNT = Decimal('1000.00')
+
+    def _is_licensee_user(self, user) -> bool:
+        token = ''.join(ch for ch in str(getattr(getattr(user, 'role', None), 'name', '') or '').lower() if ch.isalnum())
+        return token in {'licensee', 'licencee'}
 
     def _resolve_cancellation_amount(self, cancellation) -> Decimal:
         # cancellation_br_amount stores the fee debit; total_cancellation_amount stores the refund credit.
@@ -181,10 +186,12 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     def _resolve_wallet_license_candidates(self, cancellation, user):
         candidates = []
 
-        profile_license = ''
-        if hasattr(user, 'supply_chain_profile'):
-            profile_license = str(getattr(user.supply_chain_profile, 'licensee_id', '') or '').strip()
-        candidates.extend(self._expand_license_aliases(profile_license))
+        try:
+            if hasattr(user, 'manufacturing_units'):
+                for raw_id in user.manufacturing_units.exclude(licensee_id__isnull=True).exclude(licensee_id='').values_list('licensee_id', flat=True):
+                    candidates.extend(self._expand_license_aliases(raw_id))
+        except Exception:
+            pass
 
         cancellation_license_id = str(getattr(cancellation, 'license_id', '') or '').strip()
         candidates.extend(self._expand_license_aliases(cancellation_license_id))
@@ -602,7 +609,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
         # Server-side self-heal for licensee view:
         # when a cancellation exists but wallet debit row is missing, create it idempotently.
-        if hasattr(request.user, 'supply_chain_profile'):
+        if self._is_licensee_user(request.user):
             for cancellation in queryset:
                 self._try_auto_sync_wallet_debit(cancellation, request.user)
 
@@ -637,15 +644,14 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             )
         
         # Never trust client-provided licensee_id for authenticated licensee users.
-        if hasattr(request.user, 'supply_chain_profile'):
-            licensee_id = request.user.supply_chain_profile.licensee_id
-        else:
-            licensee_id = serializer.validated_data.get('licensee_id')
-            if not licensee_id:
-                return Response(
-                    {'error': 'licensee_id is required when no supply-chain profile is active'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+        licensee_id = resolve_user_license_id_by_category_subcategory(
+            request.user,
+            category_tokens=['manufactur'],
+            subcategory_tokens=['distiller', 'brew', 'winery', 'beer'],
+            requested_license_id=str(serializer.validated_data.get('licensee_id') or ''),
+        ) or serializer.validated_data.get('licensee_id')
+        if not licensee_id:
+            return Response({'error': 'licensee_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             # Fetch Requisition Data
@@ -884,7 +890,12 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             if not action_type:
                 return Response({'error': 'Action is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-            if not has_workflow_access(user, WORKFLOW_IDS['ENA_CANCELLATION']) and not hasattr(user, 'supply_chain_profile'):
+            if not has_workflow_access(user, WORKFLOW_IDS['ENA_CANCELLATION']) and not scope_by_profile_or_workflow(
+                user,
+                EnaCancellationDetail.objects.filter(pk=cancellation.pk),
+                WORKFLOW_IDS['ENA_CANCELLATION'],
+                licensee_field='licensee_id',
+            ).exists():
                 return Response({'error': 'Unauthorized role for this workflow'}, status=status.HTTP_403_FORBIDDEN)
             
             from auth.workflow.services import WorkflowService
@@ -988,7 +999,12 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             cancellation = self.get_object()
             user = request.user
 
-            if not has_workflow_access(user, WORKFLOW_IDS['ENA_CANCELLATION']) and not hasattr(user, 'supply_chain_profile'):
+            if not has_workflow_access(user, WORKFLOW_IDS['ENA_CANCELLATION']) and not scope_by_profile_or_workflow(
+                user,
+                EnaCancellationDetail.objects.filter(pk=cancellation.pk),
+                WORKFLOW_IDS['ENA_CANCELLATION'],
+                licensee_field='licensee_id',
+            ).exists():
                 return Response({'error': 'Unauthorized role for this workflow'}, status=status.HTTP_403_FORBIDDEN)
 
             fee_amount = self._resolve_cancellation_amount(cancellation)

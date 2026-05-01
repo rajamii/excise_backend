@@ -35,7 +35,7 @@ from auth.user.otp import (
 from models.transactional.logs.models import UserActivity
 from models.transactional.logs.signals import get_client_ip
 from models.transactional.new_license_application.models import NewLicenseApplication
-from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
+from models.masters.supply_chain.profile.models import UserManufacturingUnit
 from models.masters.license.models import License
 from typing import cast
 import secrets
@@ -401,16 +401,6 @@ def oic_officer_create(request):
             created_by=request.user,
         )
 
-        SupplyChainUserProfile.objects.update_or_create(
-            user=officer,
-            defaults={
-                'manufacturing_unit_name': application.establishment_name,
-                'licensee_id': licensee_id,
-                'license_type': license_type_name,
-                'address': address,
-            }
-        )
-
         UserManufacturingUnit.objects.update_or_create(
             user=officer,
             licensee_id=licensee_id,
@@ -516,16 +506,6 @@ def oic_officer_update(request, assignment_id):
             'establishment_name',
         ])
 
-        SupplyChainUserProfile.objects.update_or_create(
-            user=officer,
-            defaults={
-                'manufacturing_unit_name': application.establishment_name,
-                'licensee_id': licensee_id,
-                'license_type': license_type_name,
-                'address': address,
-            }
-        )
-
         UserManufacturingUnit.objects.update_or_create(
             user=officer,
             licensee_id=licensee_id,
@@ -600,7 +580,6 @@ def oic_officer_delete(request, assignment_id):
         with transaction.atomic():
             _soft_delete_oic_officer(officer)
             UserManufacturingUnit.objects.filter(user=officer).delete()
-            SupplyChainUserProfile.objects.filter(user=officer).delete()
             assignment.delete()
         return Response(
             {
