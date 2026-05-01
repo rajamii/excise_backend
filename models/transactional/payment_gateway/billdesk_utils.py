@@ -49,3 +49,29 @@ def generate_billdesk_jws(client_id: str, secret_key: str, payload_dict: dict) -
     
     final_jws = f"{signature_string}.{encoded_signature}"
     return final_jws
+
+def verify_billdesk_jws(jws_token: str, secret_key: str) -> bool:
+    """
+    Verifies the JWS-HMAC signature of an incoming Billdesk response.
+    """
+    parts = jws_token.split('.')
+    if len(parts) != 3:
+        return False
+
+    encoded_header, encoded_payload, provided_signature = parts
+    
+    # The signature string is the encoded header and payload joined by a period
+    signature_string = f"{encoded_header}.{encoded_payload}"
+
+    # Generate the expected HMAC-SHA256 Signature using the secret_key
+    expected_signature_bytes = hmac.new(
+        secret_key.encode('utf-8'),
+        signature_string.encode('utf-8'),
+        hashlib.sha256
+    ).digest()
+
+    # Base64URL encode without padding
+    expected_signature = base64.urlsafe_b64encode(expected_signature_bytes).decode('utf-8').rstrip('=')
+
+    # Use hmac.compare_digest to prevent timing attacks
+    return hmac.compare_digest(expected_signature, provided_signature)

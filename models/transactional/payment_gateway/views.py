@@ -6,17 +6,14 @@ from urllib.parse import urlencode
 from decimal import Decimal
 import secrets
 from datetime import timedelta
-
 import json
 import base64
 import requests
 import time
-from .billdesk_utils import generate_billdesk_jws
-
+from .billdesk_utils import generate_billdesk_jws, verify_billdesk_jws
 from django.conf import settings
 from django.db.utils import OperationalError, ProgrammingError
 from django.http import HttpResponse, HttpResponseBadRequest
-from django.shortcuts import redirect
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.urls import reverse
@@ -24,10 +21,11 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-
+from auth.workflow.models import WorkflowStage
+from models.transactional.new_license_application.models import NewLicenseApplication
+from auth.user.models import CustomUser
+from auth.workflow.services import WorkflowService
 from .models import PaymentBilldeskTransaction, PaymentGatewayParameters, PaymentSendHOA, MasterPaymentModule
-
-
 from models.transactional.wallet.wallet_service import credit_wallet_balance, record_wallet_transaction
 
 logger = logging.getLogger(__name__)
@@ -116,18 +114,11 @@ def _validate_payment_module_code(module_code: str) -> str:
     if not code:
         raise ValueError("payment_module_code is required.")
 
-    # Prefer legacy eabgari_master_module if it exists in the DB.
+    # check sems_master_module if it exists in the DB.
     try:
         if MasterPaymentModule.objects.filter(module_code=code).exists():
             return code
     except (OperationalError, ProgrammingError):
-        pass
-
-    # Fallback to SEMS master table (common in this codebase).
-    try:
-        if MasterPaymentModule.objects.filter(module_code=code).exists():
-            return code
-    except Exception:
         pass
 
     raise ValueError(f"Invalid payment_module_code={code}. Not found in master module table.")
@@ -136,7 +127,7 @@ def _validate_payment_module_code(module_code: str) -> str:
 def _generate_transaction_id(prefix: str = "TXN") -> str:
     return f"{prefix}{timezone.now().strftime('%Y%m%d%H%M%S')}{secrets.token_hex(4).upper()}"
 
-
+# Helper function to decode the JWS token payload without verifying the signature.
 def _decode_jws_payload(jws_token: str) -> dict:
     """Decodes the Base64URL payload of a JWS token into a Python dictionary."""
     parts = jws_token.split('.')
@@ -148,9 +139,21 @@ def _decode_jws_payload(jws_token: str) -> dict:
     payload_json = base64.urlsafe_b64decode(payload_b64 + padding).decode('utf-8')
     return json.loads(payload_json)
 
-def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str, return_url, additional_info_dict, request):
+def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str, return_url, additional_info_dict, request, device_data=None):
     """Makes the server-to-server call to BillDesk to create an order."""
-    order_date = timezone.now().strftime("%Y-%m-%dT%H:%M:%S+05:30")
+    if device_data is None:
+        device_data = {}
+
+    # Safely determine the actual client IP (handling proxies/load balancers)
+    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    if x_forwarded_for:
+        client_ip = x_forwarded_for.split(',')[0].strip()
+    else:
+        client_ip = request.META.get('REMOTE_ADDR', '127.0.0.1')
+
+    print(f"Client IP determined for BillDesk order creation: {client_ip}") # Debug log to verify IP extraction
+
+    order_date = timezone.localtime(timezone.now()).strftime("%Y-%m-%dT%H:%M:%S+05:30")
     
     payload = {
         "mercid": merchant_id,
@@ -163,16 +166,16 @@ def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str
         "additional_info": additional_info_dict,
         "device": {
             "init_channel": "internet",
-            "ip": request.META.get('REMOTE_ADDR', '127.0.0.1'),
-            "user_agent": request.META.get('HTTP_USER_AGENT', 'Mozilla/5.0')[:250],
-            "accept_header": request.META.get('HTTP_ACCEPT', 'text/html'),
-            "browser_tz": "-330",
-            "browser_color_depth": "32",
-            "browser_java_enabled": "false",
-            "browser_screen_height": "1080",
-            "browser_screen_width": "1920",
-            "browser_language": "en-US",
-            "browser_javascript_enabled": "true"
+            "ip": client_ip, 
+            "user_agent": device_data.get("user_agent") or request.META.get('HTTP_USER_AGENT', 'Mozilla/5.0')[:250],
+            "accept_header": device_data.get("accept_header", "text/html"),
+            "browser_tz": str(device_data.get("browser_tz", "-330")),
+            "browser_color_depth": str(device_data.get("browser_color_depth", "32")),
+            "browser_java_enabled": str(device_data.get("browser_java_enabled", "false")).lower(),
+            "browser_screen_height": str(device_data.get("browser_screen_height", "1080")),
+            "browser_screen_width": str(device_data.get("browser_screen_width", "1920")),
+            "browser_language": device_data.get("browser_language", "en-US"),
+            "browser_javascript_enabled": str(device_data.get("browser_javascript_enabled", "true")).lower()
         }
     }
     
@@ -184,15 +187,10 @@ def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str
         "BD-Traceid": tx_id,
         "BD-Timestamp": str(int(time.time() * 1000))
     }
-
-    try:
-        current_outbound_ip = requests.get('https://api.ipify.org', timeout=5).text
-        logger.info(f"DEBUG: Outbound Public IP being used: {current_outbound_ip}")
-    except Exception as e:
-        logger.error(f"DEBUG: Could not determine Public IP: {e}")
     
     # UAT URL
     api_url = "https://uat1.billdesk.com/u2/payments/ve1_2/orders/create"
+    
     response = requests.post(api_url, data=jws_token, headers=headers)
     
     if response.status_code == 200:
@@ -261,7 +259,7 @@ def _build_full_name_from_user(user) -> str:
 @permission_classes([IsAuthenticated])
 def billdesk_initiate_wallet_recharge(request):
     data = request.data or {}
-
+    device_data = data.get("device_data", {})
     transaction_id = str(data.get("transaction_id") or "").strip()
     wallet_type = _normalize_wallet_type(data.get("wallet_type"))
     head_of_account = str(data.get("head_of_account") or "").strip()
@@ -276,7 +274,7 @@ def billdesk_initiate_wallet_recharge(request):
     if not head_of_account:
         return Response({"detail": "head_of_account is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Keep this endpoint backward-compatible with existing UI: module code is optional here.
+
     # When provided, it should map to the master module table; otherwise store a stable default.
     if payment_module_code:
         try:
@@ -387,7 +385,8 @@ def billdesk_initiate_wallet_recharge(request):
         amount_str=amount_str,
         return_url=return_url,
         additional_info_dict=additional_info_dict,
-        request=request
+        request=request,
+        device_data=device_data
     )
 
     if not api_result.get("success"):
@@ -480,6 +479,7 @@ def billdesk_initiate_license_fee(request):
     - AdditionalInfo3: SIKPAY
     """
     data = request.data or {}
+    device_data = data.get("device_data", {})
 
     transaction_id = str(data.get("transaction_id") or "").strip() or _generate_transaction_id("SIKPAY")
     payer_id = str(data.get("payer_id") or data.get("licensee_id") or "").strip()[:50]
@@ -575,7 +575,8 @@ def billdesk_initiate_license_fee(request):
         amount_str=amount_str,
         return_url=return_url,
         additional_info_dict=additional_info_dict,
-        request=request
+        request=request,
+        device_data=device_data
     )
 
     if not api_result.get("success"):
@@ -667,7 +668,7 @@ def billdesk_initiate_security_deposit(request):
     - AdditionalInfo6: District
     """
     data = request.data or {}
-
+    device_data = data.get("device_data", {})
     transaction_id = str(data.get("transaction_id") or "").strip() or _generate_transaction_id("SIKFDR")
     payer_id = str(data.get("payer_id") or data.get("licensee_id") or "").strip()[:50]
     licensee_name = str(data.get("licensee_name") or "").strip()
@@ -780,7 +781,8 @@ def billdesk_initiate_security_deposit(request):
         amount_str=amount_str,
         return_url=return_url,
         additional_info_dict=additional_info_dict,
-        request=request
+        request=request,
+        device_data=device_data
     )
 
     if not api_result.get("success"):
@@ -870,7 +872,7 @@ def billdesk_initiate_new_license_application_fee(request):
     - AdditionalInfo2/3: SIKPAY (legacy mapping expected by BillDesk integrations)
     """
     data = request.data or {}
-
+    device_data = data.get("device_data", {})
     application_id = str(data.get("application_id") or data.get("payer_id") or "").strip()[:50]
     if not application_id:
         return Response({"detail": "application_id is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -967,7 +969,8 @@ def billdesk_initiate_new_license_application_fee(request):
         amount_str=amount_str,
         return_url=return_url,
         additional_info_dict=additional_info_dict,
-        request=request
+        request=request,
+        device_data=device_data
     )
 
     if not api_result.get("success"):
@@ -1073,15 +1076,34 @@ def billdesk_response(request):
         add_info.get("additional_info7", "")
     ]
 
+    # Fetch the Gateway config to get the encryption (secret) key
+    gateway = PaymentGatewayParameters.objects.filter(
+        is_active="Y", 
+        payment_gateway_name__iexact="Billdesk"
+    ).order_by("sl_no").first()
+    
+    encryption_key = str(getattr(gateway, "encryption_key", "") or "").strip()
+
     tx = None
     if txn_ref:
         tx = PaymentBilldeskTransaction.objects.filter(utr=txn_ref).first()
         if tx is None:
             tx = PaymentBilldeskTransaction.objects.filter(transaction_id_no_hoa=txn_ref).first()
 
-    # In UAT, we assume checksum is ok if the signature decodes. 
-    # (In prod, you will verify the HMAC signature of transaction_response).
-    checksum_ok = True
+    # VERIFY THE SIGNATURE
+    checksum_ok = False
+    if encryption_key:
+        checksum_ok = verify_billdesk_jws(transaction_response, encryption_key)
+    else:
+        logger.error("Encryption key missing from Gateway Parameters.")
+
+    if not checksum_ok:
+        logger.critical(f"SECURITY ALERT: Invalid JWS Signature detected for order {txn_ref}!")
+        # Force a failure status if the signature is spoofed
+        status_code = "F" 
+    else:
+        # Proceed with normal status checking
+        status_code = "S" if auth_status == "0300" else "F"
 
     if tx:
         try:
@@ -1120,14 +1142,10 @@ def billdesk_response(request):
         module_code = str(getattr(tx, "payment_module_code", "") or "").strip()
 
         if module_code == DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE:
-            # New license application fee: do NOT credit any wallet; auto-submit application on success.
+            # New license application fee: auto-submit application on success.
             if status_code == "S":
-                try:
-                    from models.transactional.new_license_application.models import NewLicenseApplication
-                    from auth.user.models import CustomUser
-                    from auth.workflow.services import WorkflowService
+                try:                 
                     # WorkflowStage import is intentionally inside try-block for environments where workflow tables differ.
-
                     application_id = str(getattr(tx, "payer_id", "") or "").strip()
                     app = (
                         NewLicenseApplication.objects.select_related("current_stage", "applicant")
@@ -1165,9 +1183,6 @@ def billdesk_response(request):
             elif status_code == "F":
                 # Mark the draft application as closed (final) so it doesn't appear as pending workflow work.
                 try:
-                    from models.transactional.new_license_application.models import NewLicenseApplication
-                    from auth.workflow.models import WorkflowStage
-
                     application_id = str(getattr(tx, "payer_id", "") or "").strip()
                     app = NewLicenseApplication.objects.select_related("workflow", "current_stage").filter(application_id__iexact=application_id).first()
                     if app and app.workflow_id and app.current_stage_id:
@@ -1309,25 +1324,34 @@ def billdesk_response(request):
     ui_reason = ""
     if ui_status != "success":
         ui_reason = str(error_desc or "").strip() or ("checksum_mismatch" if not checksum_ok else "failed")
-    query = urlencode(
-        {
-            "transactionId": txn_ref,
-            "paymentModuleCode": str(getattr(tx, "payment_module_code", "") or "").strip() if tx else "",
-            "payerId": str(getattr(tx, "payer_id", "") or "").strip() if tx else "",
-            "applicationId": str(getattr(tx, "payer_id", "") or "").strip() if tx else "",
-            "walletType": wallet_type,
-            "hoa": hoa,
-            "amount": amt,
-            "status": ui_status,
-            "reason": ui_reason,
-            "createdAt": created_at,
-            "additionalInfo2": str(getattr(tx, "request_additionalinfo2", "") or "").strip() if tx else "",
-            "additionalInfo3": str(getattr(tx, "request_additionalinfo3", "") or "").strip() if tx else "",
-            "autoSubmitted": "1" if auto_submitted else "0",
-            "autoSubmitError": auto_submit_error[:200] if auto_submit_error else "",
-        }
-    )
-    return redirect(f"{frontend_success}?{query}")
+    # query = urlencode(
+    #     {
+    #         "transactionId": txn_ref,
+    #         "paymentModuleCode": str(getattr(tx, "payment_module_code", "") or "").strip() if tx else "",
+    #         "payerId": str(getattr(tx, "payer_id", "") or "").strip() if tx else "",
+    #         "applicationId": str(getattr(tx, "payer_id", "") or "").strip() if tx else "",
+    #         "walletType": wallet_type,
+    #         "hoa": hoa,
+    #         "amount": amt,
+    #         "status": ui_status,
+    #         "reason": ui_reason,
+    #         "createdAt": created_at,
+    #         "additionalInfo2": str(getattr(tx, "request_additionalinfo2", "") or "").strip() if tx else "",
+    #         "additionalInfo3": str(getattr(tx, "request_additionalinfo3", "") or "").strip() if tx else "",
+    #         "autoSubmitted": "1" if auto_submitted else "0",
+    #         "autoSubmitError": auto_submit_error[:200] if auto_submit_error else "",
+    #     }
+    # )
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+        <head><title>Processing Payment...</title></head>
+        <body onload="window.close();">
+            <p>Payment processed successfully. You may safely close this window.</p>
+        </body>
+    </html>
+    """
+    return HttpResponse(html_content, content_type="text/html")
 
 
 # @csrf_exempt
