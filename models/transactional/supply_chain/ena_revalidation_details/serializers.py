@@ -6,7 +6,10 @@ from django.db import connection
 from rest_framework import serializers
 
 from auth.workflow.constants import WORKFLOW_IDS
-from models.transactional.supply_chain.access_control import condition_role_matches
+from models.transactional.supply_chain.access_control import (
+    condition_role_matches,
+    resolve_user_license_id_by_category_subcategory,
+)
 
 from .models import EnaRevalidationDetail
 
@@ -303,16 +306,24 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
             if requested_licensee_id:
                 validated_data['licensee_id'] = requested_licensee_id
 
-        if not validated_data.get('licensee_id') and request and hasattr(request.user, 'supply_chain_profile'):
-            validated_data['licensee_id'] = request.user.supply_chain_profile.licensee_id
-        elif not validated_data.get('licensee_id') and request and hasattr(request.user, 'manufacturing_units'):
-            unit = request.user.manufacturing_units.exclude(licensee_id__isnull=True).exclude(licensee_id='').first()
+        if request and getattr(request, 'user', None):
+            resolved = resolve_user_license_id_by_category_subcategory(
+                request.user,
+                category_tokens=['manufactur'],
+                subcategory_tokens=['distiller', 'brew', 'winery', 'beer'],
+                requested_license_id=str(validated_data.get('licensee_id') or ''),
+            )
+            if resolved:
+                validated_data['licensee_id'] = resolved
+
+        if not validated_data.get('licensee_id') and request and hasattr(request.user, 'manufacturing_units'):
+            unit = request.user.manufacturing_units.exclude(licensee_id__isnull=True).exclude(licensee_id='').order_by('-updated_at').first()
             if unit:
                 validated_data['licensee_id'] = unit.licensee_id
 
         if not validated_data.get('licensee_id'):
             raise serializers.ValidationError({
-                'licensee_id': 'Unable to determine licensee mapping. Please set your active supply-chain profile and try again.'
+                'licensee_id': 'Unable to determine licensee mapping. Please add a manufacturing unit / approved license and try again.'
             })
 
         if validated_data.get('licensee_id'):

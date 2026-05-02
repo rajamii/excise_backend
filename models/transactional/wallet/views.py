@@ -110,10 +110,14 @@ def _wallet_candidates_for_request(request, path_licensee_id: str):
         candidates.append(na)
     candidates.extend(_wallet_license_candidates(path_licensee_id))
     try:
-        profile = getattr(request.user, "supply_chain_profile", None)
-        profile_licensee_id = str(getattr(profile, "licensee_id", "") or "").strip()
-        if profile_licensee_id:
-            candidates.extend(_wallet_license_candidates(profile_licensee_id))
+        if hasattr(request.user, "manufacturing_units"):
+            unit_ids = list(
+                request.user.manufacturing_units.exclude(licensee_id__isnull=True)
+                .exclude(licensee_id="")
+                .values_list("licensee_id", flat=True)
+            )
+            for unit_id in unit_ids:
+                candidates.extend(_wallet_license_candidates(unit_id))
     except Exception:
         pass
     if not candidates:

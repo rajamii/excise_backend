@@ -37,6 +37,7 @@ import hashlib
 from models.masters.core.models import LicenseFee
 from models.transactional.wallet.wallet_initializer import COMMON_LICENSE_FEE_HOA, COMMON_SECURITY_DEPOSIT_HOA
 from models.transactional.wallet.wallet_service import debit_wallet_balance
+from .payment_status import sync_new_license_payment_status
 
 
 def _normalize_role(role_name):
@@ -740,6 +741,8 @@ def print_license_view(request, application_id):
     # If a License exists, allow printing and token rotation.
     if not license_obj:
         return Response({"error": "License is not issued yet."}, status=403)
+    if not license_obj.is_active:
+        return Response({"error": "License fee and security fee must be paid before printing."}, status=403)
 
     can_print, fee = license_obj.can_print_license()
 
@@ -813,7 +816,6 @@ def _resolve_na_license_for_application(application: NewLicenseApplication) -> L
             source_type="new_license_application",
             source_content_type=new_app_ct,
             source_object_id=application.application_id,
-            is_active=True,
         )
         .order_by("-issue_date", "-license_id")
         .first()
@@ -868,6 +870,7 @@ def pay_license_fee_wallet(request, application_id):
     if not application.is_license_fee_paid:
         application.is_license_fee_paid = True
         application.save(update_fields=["is_license_fee_paid"])
+    sync_new_license_payment_status(application)
 
     return Response({"success": True, "transaction_id": txn_id, "is_license_fee_paid": True})
 
@@ -910,6 +913,7 @@ def pay_security_fee_wallet(request, application_id):
     if not application.is_security_fee_paid:
         application.is_security_fee_paid = True
         application.save(update_fields=["is_security_fee_paid"])
+    sync_new_license_payment_status(application)
 
     return Response({"success": True, "transaction_id": txn_id, "is_security_fee_paid": True})
 

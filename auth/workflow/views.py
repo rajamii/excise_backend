@@ -201,12 +201,31 @@ def get_next_stages(request, application_id):
             return Response({"detail": "You cannot process this stage."}, status=status.HTTP_403_FORBIDDEN)
 
     current_stage = application.current_stage
-    transitions = WorkflowTransition.objects.filter(workflow=application.workflow, from_stage=current_stage)
+    transitions = WorkflowTransition.objects.filter(
+        workflow=application.workflow,
+        from_stage=current_stage
+    ).order_by('id')
+
+    # Hide actions that don't match the current user's transition role condition.
+    if not request.user.is_superuser:
+        transitions = [
+            transition for transition in transitions
+            if WorkflowService._condition_role_matches(transition.condition or {}, request.user)
+        ]
+
     data = [{
             'id': t.to_stage.id,
             'name': t.to_stage.name,
             'description': t.to_stage.description or "",
             'condition': t.condition or {},
+            # Frontend expects `action` at top-level; we keep condition too.
+            # Most deployments store action as condition["action"] for validation.
+            'action': (
+                str((t.condition or {}).get("action") or (t.condition or {}).get("Action") or "")
+                .strip()
+                .upper()
+                or None
+            ),
             'transition_id': t.id,
         } for t in transitions]
     return Response(data)
@@ -234,7 +253,8 @@ def advance_application(request, application_id, stage_id):  # request is here
             target_stage=target_stage,
             context=request.data.get("context_data", {}),
             remarks=remarks
-        ) 
+        )
+        application.refresh_from_db()
         # Pass the request.user down
         return _serialize_application(application, requesting_user=request.user)
     except Exception as e:
