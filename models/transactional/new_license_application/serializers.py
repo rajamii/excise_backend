@@ -63,6 +63,17 @@ class ObjectionSerializer(serializers.ModelSerializer):
 
 
 class NewLicenseApplicationSerializer(serializers.ModelSerializer):
+    # Salesman/Barman details captured during new license flow (stored in salesman_barman_application)
+    member_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    member_mobile_number = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    member_email = serializers.EmailField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    aadhaar = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    sikkim_subject = serializers.BooleanField(required=False, allow_null=True, write_only=True)
+
+    member_pass_photo = serializers.FileField(required=False, allow_null=True, write_only=True)
+    member_aadhaar_card = serializers.FileField(required=False, allow_null=True, write_only=True)
+    member_residential_certificate = serializers.FileField(required=False, allow_null=True, write_only=True)
+    member_dob_proof = serializers.FileField(required=False, allow_null=True, write_only=True)
     
     # Code-based lookups
     site_district = CodeRelatedField(queryset=District.objects.all(), lookup_field='district_code')
@@ -150,3 +161,94 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
             helpers.validate_cin_number(data['company_cin'])
         helpers.validate_pin_code(data['pin_code'])
         return data
+
+    def create(self, validated_data):
+        # Extract salesman/barman details before creating the new license application
+        member_payload = {
+            "member_name": validated_data.pop("member_name", None),
+            "member_mobile_number": validated_data.pop("member_mobile_number", None),
+            "member_email": validated_data.pop("member_email", None),
+            "aadhaar": validated_data.pop("aadhaar", None),
+            "sikkim_subject": validated_data.pop("sikkim_subject", None),
+            "member_pass_photo": validated_data.pop("member_pass_photo", None),
+            "member_aadhaar_card": validated_data.pop("member_aadhaar_card", None),
+            "member_residential_certificate": validated_data.pop("member_residential_certificate", None),
+            "member_dob_proof": validated_data.pop("member_dob_proof", None),
+        }
+
+        application = super().create(validated_data)
+
+        # If mode_of_operation is Salesman/Barman, store details in salesman_barman_application table.
+        try:
+            mode = getattr(application, "mode_of_operation", None)
+            if mode in {"Salesman", "Barman"}:
+                from models.transactional.salesman_barman.models import SalesmanBarmanModel
+                from auth.workflow.models import Workflow, WorkflowStage
+                from auth.workflow.constants import WORKFLOW_IDS
+
+                name = (member_payload.get("member_name") or "").strip()
+                parts = [p for p in name.split(" ") if p]
+                first_name = parts[0] if parts else None
+                last_name = parts[-1] if len(parts) > 1 else (parts[0] if parts else None)
+                middle_name = " ".join(parts[1:-1]) if len(parts) > 2 else None
+
+                # Best-effort: attach workflow + initial stage for salesman/barman module
+                workflow = Workflow.objects.filter(id=WORKFLOW_IDS.get("SALESMAN_BARMAN")).first()
+                initial_stage = None
+                if workflow:
+                    initial_stage = WorkflowStage.objects.filter(workflow=workflow, is_initial=True).first()
+
+                sb, _ = SalesmanBarmanModel.objects.get_or_create(
+                    new_license_application=application,
+                    defaults={
+                        "workflow": workflow,
+                        "current_stage": initial_stage,
+                        "excise_district": application.site_district,
+                        "license_category": application.license_category,
+                        "license": None,
+                        "role": mode,
+                        "firstName": first_name,
+                        "middleName": middle_name,
+                        "lastName": last_name,
+                        "mobileNumber": member_payload.get("member_mobile_number"),
+                        "emailId": member_payload.get("member_email"),
+                        "aadhaar": member_payload.get("aadhaar"),
+                        "sikkimSubject": member_payload.get("sikkim_subject") if member_payload.get("sikkim_subject") is not None else False,
+                        "passPhoto": member_payload.get("member_pass_photo"),
+                        "aadhaarCard": member_payload.get("member_aadhaar_card"),
+                        "residentialCertificate": member_payload.get("member_residential_certificate"),
+                        "dateofBirthProof": member_payload.get("member_dob_proof"),
+                    },
+                )
+                if not _:
+                    # Update existing record (draft retries)
+                    if mode:
+                        sb.role = mode
+                    if first_name:
+                        sb.firstName = first_name
+                    if middle_name is not None:
+                        sb.middleName = middle_name
+                    if last_name:
+                        sb.lastName = last_name
+                    if member_payload.get("member_mobile_number"):
+                        sb.mobileNumber = member_payload.get("member_mobile_number")
+                    if member_payload.get("member_email"):
+                        sb.emailId = member_payload.get("member_email")
+                    if member_payload.get("aadhaar"):
+                        sb.aadhaar = member_payload.get("aadhaar")
+                    if member_payload.get("sikkim_subject") is not None:
+                        sb.sikkimSubject = member_payload.get("sikkim_subject")
+                    if member_payload.get("member_pass_photo"):
+                        sb.passPhoto = member_payload.get("member_pass_photo")
+                    if member_payload.get("member_aadhaar_card"):
+                        sb.aadhaarCard = member_payload.get("member_aadhaar_card")
+                    if member_payload.get("member_residential_certificate"):
+                        sb.residentialCertificate = member_payload.get("member_residential_certificate")
+                    if member_payload.get("member_dob_proof"):
+                        sb.dateofBirthProof = member_payload.get("member_dob_proof")
+                    sb.save()
+        except Exception:
+            # Don't block new license creation if salesman/barman details can't be saved.
+            pass
+
+        return application

@@ -59,6 +59,38 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
         tx = obj.transactions.order_by('-timestamp').first()
         return TransactionSerializer(tx).data if tx else None
 
+    def validate(self, attrs):
+        """
+        When this model is created via the standalone Salesman/Barman module,
+        `new_license_application` is not set and we must enforce required fields.
+
+        When created as part of New License flow, we allow partial data and store it
+        linked to `new_license_application`.
+        """
+        attrs = super().validate(attrs)
+        if not attrs.get("new_license_application"):
+            required = [
+                "role",
+                "firstName",
+                "lastName",
+                "fatherHusbandName",
+                "gender",
+                "dob",
+                "address",
+                "pan",
+                "aadhaar",
+                "mobileNumber",
+                "passPhoto",
+                "aadhaarCard",
+                "residentialCertificate",
+                "dateofBirthProof",
+                "license",
+            ]
+            missing = [k for k in required if not attrs.get(k)]
+            if missing:
+                raise serializers.ValidationError({k: "This field is required." for k in missing})
+        return attrs
+
     # Validation
     def validate_emailId(self, value):
         if value:

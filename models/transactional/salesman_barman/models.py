@@ -6,6 +6,7 @@ from auth.roles.models import Role
 from auth.user.models import CustomUser
 from models.masters.license.models import License
 from models.masters.core.models import District, LicenseCategory
+from models.transactional.new_license_application.models import NewLicenseApplication
 from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
 from .helpers import (
     validate_pan_number, validate_aadhaar_number, validate_phone_number,
@@ -19,6 +20,15 @@ class SalesmanBarmanModel(models.Model):
     application_id = models.CharField(max_length=30, primary_key=True, db_index=True)
     workflow = models.ForeignKey(Workflow, on_delete=models.PROTECT, related_name='salesman_barman_applications')
     current_stage = models.ForeignKey(WorkflowStage, on_delete=models.PROTECT, related_name='salesman_barman_applications')
+
+    # Link to New License Application (used when salesman/barman details are captured during new license flow)
+    new_license_application = models.OneToOneField(
+        NewLicenseApplication,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name='salesman_barman_details',
+    )
     
     is_approved = models.BooleanField(default=False)
     print_count = models.PositiveIntegerField(default=0)
@@ -27,31 +37,31 @@ class SalesmanBarmanModel(models.Model):
     # --- License Details ---
     excise_district = models.ForeignKey(District, on_delete=models.PROTECT)
     license_category = models.ForeignKey(LicenseCategory, on_delete=models.PROTECT)
-    license = models.ForeignKey(License, on_delete=models.PROTECT)
+    license = models.ForeignKey(License, on_delete=models.PROTECT, null=True, blank=True)
 
     # --- Personal ---
-    role = models.CharField(max_length=10, choices=ROLE_CHOICES)
-    firstName = models.CharField(max_length=100, db_column='first_name')
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES, blank=True, null=True)
+    firstName = models.CharField(max_length=100, blank=True, null=True, db_column='first_name')
     middleName = models.CharField(max_length=100, blank=True, null=True, db_column='middle_name')
-    lastName = models.CharField(max_length=100, db_column='last_name')
-    fatherHusbandName = models.CharField(max_length=100, db_column='father_husband_name')
-    gender = models.CharField(max_length=6, choices=GENDER_CHOICES)
-    dob = models.DateField()
-    nationality = models.CharField(max_length=50, default='Indian')
-    address = models.TextField(validators=[validate_address])
+    lastName = models.CharField(max_length=100, blank=True, null=True, db_column='last_name')
+    fatherHusbandName = models.CharField(max_length=100, blank=True, null=True, db_column='father_husband_name')
+    gender = models.CharField(max_length=6, choices=GENDER_CHOICES, blank=True, null=True)
+    dob = models.DateField(blank=True, null=True)
+    nationality = models.CharField(max_length=50, default='Indian', blank=True, null=True)
+    address = models.TextField(blank=True, null=True, validators=[validate_address])
 
     # --- Identity ---
-    pan = models.CharField(max_length=10, validators=[validate_pan_number])
-    aadhaar = models.CharField(max_length=12, validators=[validate_aadhaar_number])
-    mobileNumber = models.CharField(max_length=10, validators=[validate_phone_number], db_column='mobile_number')
-    emailId = models.EmailField(blank=True, validators=[validate_email], db_column='email_id')
-    sikkimSubject = models.BooleanField(default=False, db_column='sikkim_subject')
+    pan = models.CharField(max_length=10, blank=True, null=True, validators=[validate_pan_number])
+    aadhaar = models.CharField(max_length=12, blank=True, null=True, validators=[validate_aadhaar_number])
+    mobileNumber = models.CharField(max_length=10, blank=True, null=True, validators=[validate_phone_number], db_column='mobile_number')
+    emailId = models.EmailField(blank=True, null=True, validators=[validate_email], db_column='email_id')
+    sikkimSubject = models.BooleanField(default=False, db_column='sikkim_subject', blank=True, null=True)
 
     # --- Documents ---
-    passPhoto = models.ImageField(upload_to=upload_document_path, db_column='pass_photo')
-    aadhaarCard = models.FileField(upload_to=upload_document_path, db_column='aadhaar_card')
-    residentialCertificate = models.FileField(upload_to=upload_document_path, db_column='residential_certificate')
-    dateofBirthProof = models.FileField(upload_to=upload_document_path, db_column='dateof_birth_proof')
+    passPhoto = models.ImageField(upload_to=upload_document_path, db_column='pass_photo', blank=True, null=True)
+    aadhaarCard = models.FileField(upload_to=upload_document_path, db_column='aadhaar_card', blank=True, null=True)
+    residentialCertificate = models.FileField(upload_to=upload_document_path, db_column='residential_certificate', blank=True, null=True)
+    dateofBirthProof = models.FileField(upload_to=upload_document_path, db_column='dateof_birth_proof', blank=True, null=True)
 
     # --- Soft Delete ---
     # IsActive = models.BooleanField(default=True, db_column='is_active')
