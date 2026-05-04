@@ -13,45 +13,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.CreateModel(
-            name='MasterHeadOfAccount',
-            fields=[
-                ('head_of_account', models.CharField(max_length=50, primary_key=True, serialize=False)),
-                ('sl_no', models.BigIntegerField(blank=True, null=True, unique=True)),
-                ('major_head', models.CharField(max_length=10)),
-                ('sub_major_head', models.CharField(blank=True, max_length=10, null=True)),
-                ('minor_head', models.CharField(max_length=10)),
-                ('sub_head', models.CharField(blank=True, max_length=10, null=True)),
-                ('detailed_head', models.CharField(max_length=20)),
-                ('object_head', models.CharField(blank=True, max_length=10, null=True)),
-                ('detailed_head_driscription', models.CharField(max_length=500)),
-                ('pay_type', models.CharField(blank=True, max_length=20, null=True)),
-                ('visible_status', models.CharField(default='Y', max_length=1)),
-                ('created_date', models.DateTimeField(default=django.utils.timezone.now)),
-                ('modified_date', models.DateTimeField(blank=True, null=True)),
-            ],
-            options={
-                'db_table': 'sems_master_head_of_account',
-            },
-        ),
-        migrations.CreateModel(
-            name='MasterPaymentModule',
-            fields=[
-                ('module_code', models.CharField(max_length=20, primary_key=True, serialize=False)),
-                ('module_desc', models.CharField(max_length=200)),
-                ('visibility_status', models.CharField(default='Y', max_length=1)),
-                ('active_payment_mode', models.CharField(default='O', max_length=1)),
-                ('payment_invoking_page', models.CharField(blank=True, max_length=500, null=True)),
-                ('payment_response_page', models.CharField(blank=True, max_length=500, null=True)),
-                ('user_id', models.CharField(blank=True, max_length=50, null=True)),
-                ('opr_date', models.DateTimeField(blank=True, null=True)),
-                ('created_date', models.DateTimeField(default=django.utils.timezone.now)),
-                ('modified_date', models.DateTimeField(blank=True, null=True)),
-            ],
-            options={
-                'db_table': 'sems_master_payment_module',
-            },
-        ),
+        
         migrations.CreateModel(
             name='PaymentBilldeskTransaction',
             fields=[
@@ -148,18 +110,5 @@ class Migration(migrations.Migration):
                 'db_table': 'sems_payment_send_hoa',
             },
         ),
-        migrations.CreateModel(
-            name='PaymentModuleHoa',
-            fields=[
-                ('id', models.BigAutoField(primary_key=True, serialize=False)),
-                ('opr_date', models.DateTimeField(default=django.utils.timezone.now)),
-                ('is_active', models.CharField(default='Y', max_length=1)),
-                ('created_date', models.DateTimeField(default=django.utils.timezone.now)),
-                ('head_of_account', models.ForeignKey(db_column='head_of_account', on_delete=django.db.models.deletion.RESTRICT, to='payment_gateway.masterheadofaccount')),
-                ('module_code', models.ForeignKey(db_column='module_code', on_delete=django.db.models.deletion.RESTRICT, to='payment_gateway.masterpaymentmodule')),
-            ],
-            options={
-                'db_table': 'sems_module_hoa',
-            },
-        ),
+        
     ]

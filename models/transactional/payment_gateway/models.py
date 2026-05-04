@@ -103,8 +103,8 @@ class PaymentSendHOA(models.Model):
 
 #Master Tables
 class MasterHeadOfAccount(models.Model):
-    head_of_account = models.CharField(max_length=50, primary_key=True)
-    sl_no = models.BigIntegerField(unique=True, null=True, blank=True)
+    head_of_account = models.CharField(max_length=50, unique=True)
+    sl_no = models.BigIntegerField(unique=True, blank=True, primary_key=True)
     major_head = models.CharField(max_length=10)
     sub_major_head = models.CharField(max_length=10, null=True, blank=True)
     minor_head = models.CharField(max_length=10)
