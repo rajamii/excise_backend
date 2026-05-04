@@ -1,8 +1,6 @@
 import hashlib
 import hmac
-import html
 import logging
-from urllib.parse import urlencode
 from decimal import Decimal
 import secrets
 from datetime import timedelta
@@ -21,7 +19,6 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from auth.workflow.models import WorkflowStage
 from models.transactional.new_license_application.models import NewLicenseApplication
 from auth.user.models import CustomUser
 from auth.workflow.services import WorkflowService
@@ -200,7 +197,7 @@ def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str
         bdorderid = resp_data.get("bdorderid")
         auth_token = None
         
-        # Extract the authToken from the redirect link headers[cite: 1]
+        # Extract the authToken from the redirect link headers
         for link in resp_data.get("links", []):
             if link.get("rel") == "redirect":
                 auth_token = link.get("headers", {}).get("authorization")
@@ -359,10 +356,6 @@ def billdesk_initiate_wallet_recharge(request):
         )
 
     amount_str = f"{amount:.2f}"
-    additional_info1 = head_of_account
-    additional_info2 = "WALLET"
-    # Keep walletType directly so the Angular success screen can display it as-is.
-    additional_info3 = wallet_type
 
     client_id = merchant_id.lower() 
     
@@ -395,7 +388,7 @@ def billdesk_initiate_wallet_recharge(request):
     # 3. Extract the SDK variables
     bd_order_id = api_result["bdorderid"]
     auth_token = api_result["authorization"]
-    request_msg = api_result["request_string"] # The JWS token sent to BillDesk
+    request_msg = api_result["request_string"]
 
     # 4. Save to DB (update your update_or_create call)
     PaymentBilldeskTransaction.objects.update_or_create(
@@ -411,15 +404,14 @@ def billdesk_initiate_wallet_recharge(request):
             "request_typefield1": "R",
             "request_securityid": security_id,
             "request_typefield2": "F",
-            "request_additionalinfo1": additional_info1,
-            "request_additionalinfo2": additional_info2,
-            "request_additionalinfo3": additional_info3,
+            "request_additionalinfo1": head_of_account,
+            "request_additionalinfo2": "WALLET",
+            "request_additionalinfo3": wallet_type,
             "request_additionalinfo4": "NA",
             "request_additionalinfo5": "NA",
             "request_additionalinfo6": "NA",
             "request_additionalinfo7": "NA",
             "request_return_url": return_url,
-            # "request_checksum": checksum,
             "request_string": request_msg,
             "payment_status": "P",
             "opr_date": timezone.now(),
@@ -463,6 +455,7 @@ def billdesk_initiate_wallet_recharge(request):
             "auth_token": auth_token,
             "merchant_id": merchant_id,
             "transaction_id": transaction_id,
+            "request_msg": request_msg,
         }
     )
 
@@ -946,8 +939,10 @@ def billdesk_initiate_new_license_application_fee(request):
     security_id = str(gateway.securityid or "").strip()
     encryption_key = str(gateway.encryption_key or "").strip()
     if not merchant_id or not security_id or not encryption_key:
-        return Response({"detail": "Billdesk gateway config is missing merchantid/securityid/encryption_key."}, status=500)
-
+        return Response(
+            {"detail": "Billdesk gateway config is missing merchantid/securityid/encryption_key."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
     amount_str = f"{amount:.2f}"
     
     additional_info_dict = {
@@ -1037,22 +1032,19 @@ def billdesk_response(request):
     if request.method != "POST":
         return HttpResponseBadRequest("Invalid method")
 
-    auto_submitted = False
-    auto_submit_error = ""
-
-    # 1. Fetch the new encrypted response parameter[cite: 1]
+    # 1. Fetch the new encrypted response parameter
     transaction_response = request.POST.get("transaction_response")
     if not transaction_response:
         return HttpResponseBadRequest("Missing transaction_response parameter")
 
-    # 2. Decode the JWS payload[cite: 1]
+    # 2. Decode the JWS payload
     try:
         resp_data = _decode_jws_payload(transaction_response)
     except Exception as e:
         logger.error(f"Failed to decode JWS: {e}")
         return HttpResponseBadRequest("Invalid response format")
 
-    # 3. Extract parameters directly from the JSON dictionary[cite: 1]
+    # 3. Extract parameters directly from the JSON dictionary
     txn_ref = resp_data.get("orderid", "")
     bank_ref = resp_data.get("bank_ref_no", "")
     resp_amount = resp_data.get("amount", "")
@@ -1064,7 +1056,7 @@ def billdesk_response(request):
     resp_txntype = resp_data.get("payment_method_type", "")
     resp_itemcode = resp_data.get("itemcode", "")
 
-    # Extract additional info dictionary[cite: 1]
+    # Extract additional info dictionary
     add_info = resp_data.get("additional_info", {})
     resp_additional = [
         add_info.get("additional_info1", ""),
@@ -1201,8 +1193,6 @@ def billdesk_response(request):
                 # Do not mark the application as rejected on application-fee payment failure.
                 # The licensee should be able to retry "Pay Now" later while the application remains unsubmitted.
                 try:
-                    from models.transactional.new_license_application.models import NewLicenseApplication
-
                     application_id = str(getattr(tx, "payer_id", "") or "").strip()
                     app = (
                         NewLicenseApplication.objects.only("application_id", "is_application_fee_paid")
