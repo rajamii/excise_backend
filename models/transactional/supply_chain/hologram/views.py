@@ -2926,7 +2926,7 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 action_name = str((transition.condition or {}).get('action') or '').strip().lower()
                 if action_name in {'issue', 'approve'}:
                     approval_to_stage_ids.add(transition.to_stage_id)
-                elif action_name == 'reject':
+                elif action_name == 'reject' or 'reject' in action_name:
                     reject_to_stage_ids.add(transition.to_stage_id)
 
             # Get all hologram requests
@@ -3008,6 +3008,7 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 
                 # Determine status using stage metadata + transition-derived action mapping.
                 status = 'UNDER_PROCESS'
+                status_message = None
                 completed_on_time = None
                 is_overdue = False
                 time_remaining = None
@@ -3017,16 +3018,62 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 officer_name = None
                 brands_entered = []
                 
+                stage_name = ''
+                try:
+                    stage_name = (req.current_stage.name if req.current_stage else '') or ''
+                except Exception:
+                    stage_name = ''
+                stage_name_lc = str(stage_name).strip().lower()
+
                 if req.current_stage and req.current_stage.is_initial:
                     status = 'APPLIED'
                 elif req.current_stage_id and req.current_stage_id in reject_to_stage_ids:
                     status = 'REJECTED'
                 elif req.current_stage and req.current_stage.is_final:
                     status = 'COMPLETED'
-                
+
+                # Some auto-rejection stages are not labeled with action="reject" in WorkflowTransition.
+                # Fall back to stage name heuristics so the commissioner dashboard doesn't show them as "Awaiting Approval".
+                if status != 'REJECTED' and stage_name_lc:
+                    rejection_hints = (
+                        'reject' in stage_name_lc or
+                        'rejected' in stage_name_lc or
+                        'not approved' in stage_name_lc or
+                        'not_approved' in stage_name_lc or
+                        'notapproved' in stage_name_lc or
+                        'no action' in stage_name_lc or
+                        'no_action' in stage_name_lc or
+                        'noaction' in stage_name_lc or
+                        'no action taken' in stage_name_lc or
+                        'no_action_taken' in stage_name_lc or
+                        'auto reject' in stage_name_lc or
+                        'auto_reject' in stage_name_lc
+                    )
+                    if rejection_hints:
+                        status = 'REJECTED'
+
                 # Override status if we have daily register entries (means it's completed)
                 if daily_entries.exists():
                     status = 'COMPLETED'
+
+                # Business rule: if request is still in initial stage past its usage date, treat as rejected (no OIC action taken).
+                # This covers "Not approved on usage date / no action taken" cases where workflow transitions aren't recorded as action="reject".
+                try:
+                    if status == 'APPLIED' and getattr(req, 'usage_date', None):
+                        today = django_timezone.localdate()
+                        if req.usage_date < today:
+                            status = 'REJECTED'
+                            status_message = 'No action was taken'
+                except Exception:
+                    pass
+
+                if status == 'REJECTED':
+                    if ('no action' in stage_name_lc) or ('no_action' in stage_name_lc) or ('noaction' in stage_name_lc):
+                        status_message = 'No action was taken'
+                    elif 'not approved' in stage_name_lc or 'not_approved' in stage_name_lc or 'notapproved' in stage_name_lc:
+                        status_message = 'Not approved on usage date'
+                    else:
+                        status_message = 'Rejected'
                 
                 # Calculate deadline and SLA if approved
                 if approval_txn:
@@ -3133,6 +3180,7 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                     'hologramType': req.hologram_type,
                     'quantity': req.quantity,
                     'status': status,
+                    'statusMessage': status_message,
                     'completedOnTime': completed_on_time,
                     'isOverdue': is_overdue,
                     'timeRemaining': time_remaining,
