@@ -189,8 +189,8 @@ def _collect_reachable_stage_names(workflow_id: int, start_stage_names: set[str]
 
 
 def _create_application(request, workflow_id: int, serializer_cls, *, auto_submit: bool = True):
-   
-    serializer = serializer_cls(data=request.data)
+    
+    serializer = serializer_cls(data=request.data, context={"request": request})
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 

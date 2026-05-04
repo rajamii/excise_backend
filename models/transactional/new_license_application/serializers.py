@@ -163,7 +163,7 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         return data
 
     def create(self, validated_data):
-        # Extract salesman/barman details before creating the new license application
+        # Extract salesman/barman draft details before creating the new license application
         member_payload = {
             "member_name": validated_data.pop("member_name", None),
             "member_mobile_number": validated_data.pop("member_mobile_number", None),
@@ -178,13 +178,18 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
 
         application = super().create(validated_data)
 
-        # If mode_of_operation is Salesman/Barman, store details in salesman_barman_application table.
+        # If mode_of_operation is Salesman/Barman, store draft details and also create a linked
+        # Salesman/Barman application in initial stage so it appears in the Salesman/Barman module
+        # even before BillDesk payment succeeds. On BillDesk success, the payment callback will
+        # auto-submit both applications.
         try:
+            request = self.context.get("request") if hasattr(self, "context") else None
+            user = getattr(request, "user", None) if request else None
             mode = getattr(application, "mode_of_operation", None)
             if mode in {"Salesman", "Barman"}:
-                from models.transactional.salesman_barman.models import SalesmanBarmanModel
-                from auth.workflow.models import Workflow, WorkflowStage
+                from models.transactional.salesman_barman.models import SalesmanBarmanDraft, SalesmanBarmanModel
                 from auth.workflow.constants import WORKFLOW_IDS
+                from auth.workflow.models import WorkflowStage, Workflow
 
                 name = (member_payload.get("member_name") or "").strip()
                 parts = [p for p in name.split(" ") if p]
@@ -192,20 +197,10 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
                 last_name = parts[-1] if len(parts) > 1 else (parts[0] if parts else None)
                 middle_name = " ".join(parts[1:-1]) if len(parts) > 2 else None
 
-                # Best-effort: attach workflow + initial stage for salesman/barman module
-                workflow = Workflow.objects.filter(id=WORKFLOW_IDS.get("SALESMAN_BARMAN")).first()
-                initial_stage = None
-                if workflow:
-                    initial_stage = WorkflowStage.objects.filter(workflow=workflow, is_initial=True).first()
-
-                sb, _ = SalesmanBarmanModel.objects.get_or_create(
+                draft, _ = SalesmanBarmanDraft.objects.get_or_create(
                     new_license_application=application,
                     defaults={
-                        "workflow": workflow,
-                        "current_stage": initial_stage,
-                        "excise_district": application.site_district,
-                        "license_category": application.license_category,
-                        "license": None,
+                        "applicant": user,
                         "role": mode,
                         "firstName": first_name,
                         "middleName": middle_name,
@@ -218,34 +213,99 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
                         "aadhaarCard": member_payload.get("member_aadhaar_card"),
                         "residentialCertificate": member_payload.get("member_residential_certificate"),
                         "dateofBirthProof": member_payload.get("member_dob_proof"),
-                    },
-                )
+                     },
+                 )
                 if not _:
-                    # Update existing record (draft retries)
+                    if user and not getattr(draft, "applicant_id", None):
+                        draft.applicant = user
                     if mode:
-                        sb.role = mode
+                        draft.role = mode
                     if first_name:
-                        sb.firstName = first_name
+                        draft.firstName = first_name
                     if middle_name is not None:
-                        sb.middleName = middle_name
+                        draft.middleName = middle_name
                     if last_name:
-                        sb.lastName = last_name
+                        draft.lastName = last_name
                     if member_payload.get("member_mobile_number"):
-                        sb.mobileNumber = member_payload.get("member_mobile_number")
+                        draft.mobileNumber = member_payload.get("member_mobile_number")
                     if member_payload.get("member_email"):
-                        sb.emailId = member_payload.get("member_email")
+                        draft.emailId = member_payload.get("member_email")
                     if member_payload.get("aadhaar"):
-                        sb.aadhaar = member_payload.get("aadhaar")
+                        draft.aadhaar = member_payload.get("aadhaar")
                     if member_payload.get("sikkim_subject") is not None:
-                        sb.sikkimSubject = member_payload.get("sikkim_subject")
+                        draft.sikkimSubject = member_payload.get("sikkim_subject")
                     if member_payload.get("member_pass_photo"):
-                        sb.passPhoto = member_payload.get("member_pass_photo")
+                        draft.passPhoto = member_payload.get("member_pass_photo")
                     if member_payload.get("member_aadhaar_card"):
-                        sb.aadhaarCard = member_payload.get("member_aadhaar_card")
+                        draft.aadhaarCard = member_payload.get("member_aadhaar_card")
                     if member_payload.get("member_residential_certificate"):
-                        sb.residentialCertificate = member_payload.get("member_residential_certificate")
+                        draft.residentialCertificate = member_payload.get("member_residential_certificate")
                     if member_payload.get("member_dob_proof"):
-                        sb.dateofBirthProof = member_payload.get("member_dob_proof")
+                        draft.dateofBirthProof = member_payload.get("member_dob_proof")
+                    draft.save()
+
+                # Ensure a linked Salesman/Barman application exists so the licensee can see it in
+                # Salesman/Barman Registration even while New License payment is pending.
+                wf = Workflow.objects.filter(id=WORKFLOW_IDS.get("SALESMAN_BARMAN")).first()
+                init = None
+                if wf:
+                    init = (
+                        WorkflowStage.objects.filter(workflow=wf, is_initial=True)
+                        .order_by("id")
+                        .first()
+                    )
+                if wf and init:
+                    sb = (
+                        SalesmanBarmanModel.objects.select_related("workflow", "current_stage", "applicant")
+                        .filter(new_license_application=application)
+                        .first()
+                    )
+                    if not sb:
+                        sb = SalesmanBarmanModel(
+                            workflow=wf,
+                            current_stage=init,
+                            new_license_application=application,
+                            excise_district=getattr(application, "site_district", None),
+                            license_category=getattr(application, "license_category", None),
+                            license=None,
+                            applicant=user,
+                            role=mode,
+                        )
+
+                    # Populate from the draft (best-effort; keep partials allowed for linked apps)
+                    for attr in [
+                        "role",
+                        "firstName",
+                        "middleName",
+                        "lastName",
+                        "fatherHusbandName",
+                        "gender",
+                        "dob",
+                        "nationality",
+                        "address",
+                        "pan",
+                        "aadhaar",
+                        "mobileNumber",
+                        "emailId",
+                        "sikkimSubject",
+                        "passPhoto",
+                        "aadhaarCard",
+                        "residentialCertificate",
+                        "dateofBirthProof",
+                    ]:
+                        val = getattr(draft, attr, None)
+                        if val not in (None, "", False):
+                            setattr(sb, attr, val)
+
+                    if user and not getattr(sb, "applicant_id", None):
+                        sb.applicant = user
+                    if getattr(application, "site_district_id", None):
+                        sb.excise_district = application.site_district
+                    if getattr(application, "license_category_id", None):
+                        sb.license_category = application.license_category
+                    if mode in {"Salesman", "Barman"}:
+                        sb.role = mode
+
                     sb.save()
         except Exception:
             # Don't block new license creation if salesman/barman details can't be saved.

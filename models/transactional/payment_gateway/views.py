@@ -31,7 +31,7 @@ SECURITY_DEPOSIT_HOA_SENTINEL = "non"
 DEFAULT_LICENSE_RENEWAL_MODULE_CODE = "002"
 DEFAULT_WALLET_ADVANCE_MODULE_CODE = "999"
 DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE = "001"
-PENDING_RETRY_LOCK_MINUTES = 15
+PENDING_RETRY_LOCK_MINUTES = 1
 
 
 def _build_pending_retry_response(tx: PaymentBilldeskTransaction, remaining_seconds: int) -> Response:
@@ -1041,6 +1041,105 @@ def billdesk_response(request):
                             user=user,
                             remarks="Application fee paid via BillDesk (auto-submitted)",
                         )
+
+                    # If the new license application captured salesman/barman details,
+                    # create + auto-submit the linked salesman_barman_application as well.
+                    try:
+                        sbm_submitted = False
+                        sbm_application_id = ""
+                        sbm_submit_error = ""
+                        if getattr(app, "mode_of_operation", None) in {"Salesman", "Barman"}:
+                            from models.transactional.salesman_barman.models import SalesmanBarmanModel, SalesmanBarmanDraft
+                            from auth.workflow.constants import WORKFLOW_IDS
+                            from auth.workflow.models import WorkflowStage, Workflow
+
+                            wf = Workflow.objects.filter(id=WORKFLOW_IDS.get("SALESMAN_BARMAN")).first()
+                            init = None
+                            if wf:
+                                init = WorkflowStage.objects.filter(workflow=wf, is_initial=True).order_by("id").first()
+
+                            if wf and init:
+                                draft = SalesmanBarmanDraft.objects.filter(new_license_application=app).first()
+
+                                sb = (
+                                    SalesmanBarmanModel.objects.select_related("workflow", "current_stage", "applicant")
+                                    .filter(new_license_application=app)
+                                    .first()
+                                )
+
+                                # Build from draft if present
+                                if not sb:
+                                    sb = SalesmanBarmanModel(
+                                        workflow=wf,
+                                        current_stage=init,
+                                        new_license_application=app,
+                                        excise_district=getattr(app, "site_district", None),
+                                        license_category=getattr(app, "license_category", None),
+                                        license=None,
+                                        applicant=user,
+                                        role=getattr(app, "mode_of_operation", None),
+                                    )
+
+                                if draft:
+                                    for attr in [
+                                        "role",
+                                        "firstName",
+                                        "middleName",
+                                        "lastName",
+                                        "fatherHusbandName",
+                                        "gender",
+                                        "dob",
+                                        "nationality",
+                                        "address",
+                                        "pan",
+                                        "aadhaar",
+                                        "mobileNumber",
+                                        "emailId",
+                                        "sikkimSubject",
+                                        "passPhoto",
+                                        "aadhaarCard",
+                                        "residentialCertificate",
+                                        "dateofBirthProof",
+                                    ]:
+                                        val = getattr(draft, attr, None)
+                                        if val not in (None, "", False):
+                                            setattr(sb, attr, val)
+
+                                if not getattr(sb, "workflow_id", None):
+                                    sb.workflow = wf
+                                if not getattr(sb, "current_stage_id", None):
+                                    sb.current_stage = init
+                                if user and not getattr(sb, "applicant_id", None):
+                                    sb.applicant = user
+                                if getattr(app, "site_district_id", None):
+                                    sb.excise_district = app.site_district
+                                if getattr(app, "license_category_id", None):
+                                    sb.license_category = app.license_category
+                                if getattr(app, "mode_of_operation", None) in {"Salesman", "Barman"}:
+                                    sb.role = app.mode_of_operation
+
+                                sb.save()
+                                sbm_application_id = str(getattr(sb, "application_id", "") or "").strip()
+
+                                if getattr(getattr(sb, "current_stage", None), "is_initial", False):
+                                    WorkflowService.submit_application(
+                                        application=sb,
+                                        user=user,
+                                        remarks="Auto-submitted with New License Application",
+                                    )
+                                    sbm_submitted = True
+                        # bubble up to redirect query params (defined later)
+                        request._sbm_submitted = sbm_submitted
+                        request._sbm_application_id = sbm_application_id
+                        request._sbm_submit_error = sbm_submit_error
+                    except Exception:
+                        try:
+                            request._sbm_submitted = False
+                            request._sbm_application_id = ""
+                            request._sbm_submit_error = "sbm_auto_submit_failed"
+                        except Exception:
+                            pass
+                        pass
                     auto_submitted = True
                 except Exception as exc:
                     auto_submit_error = str(exc)
@@ -1209,6 +1308,9 @@ def billdesk_response(request):
             "additionalInfo3": str(getattr(tx, "request_additionalinfo3", "") or "").strip() if tx else "",
             "autoSubmitted": "1" if auto_submitted else "0",
             "autoSubmitError": auto_submit_error[:200] if auto_submit_error else "",
+            "sbmSubmitted": "1" if bool(getattr(request, "_sbm_submitted", False)) else "0",
+            "sbmApplicationId": str(getattr(request, "_sbm_application_id", "") or "").strip(),
+            "sbmSubmitError": str(getattr(request, "_sbm_submit_error", "") or "").strip()[:200],
         }
     )
     return redirect(f"{frontend_success}?{query}")

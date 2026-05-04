@@ -6,6 +6,9 @@ from models.masters.core.models import District
 from auth.user.models import CustomUser
 from utils.fields import CodeRelatedField
 from .helpers import validate_email, validate_pan_number, validate_aadhaar_number, validate_phone_number
+from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+
+DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE = "001"
 
 class UserShortSerializer(serializers.ModelSerializer):
     role_id = serializers.IntegerField(source='role.id', read_only=True)
@@ -32,13 +35,15 @@ class ObjectionSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class SalesmanBarmanSerializer(serializers.ModelSerializer):
-    
+     
     excise_district = CodeRelatedField(queryset=District.objects.all(), lookup_field='district_code')
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
     license_category_name = serializers.CharField(source='license_category.license_category', read_only=True)
     renewal_of_license_id = serializers.CharField(source='renewal_of.license_id', read_only=True)
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)
     objections = WorkflowObjectionSerializer(many=True, read_only=True)
+    application_fee_payment_status = serializers.SerializerMethodField()
+    application_fee_payment_status_display = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesmanBarmanModel
@@ -58,6 +63,49 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
     def get_latest_transaction(self, obj):
         tx = obj.transactions.order_by('-timestamp').first()
         return TransactionSerializer(tx).data if tx else None
+
+    def _resolve_new_license_payment_status(self, obj) -> str | None:
+        """
+        Payment status for the linked New License application-fee payment:
+        - "S" success
+        - "F" failed
+        - "P" pending / not yet completed
+        """
+        app = getattr(obj, "new_license_application", None)
+        if not app:
+            return None
+
+        try:
+            tx = (
+                PaymentBilldeskTransaction.objects
+                .only("payment_status", "transaction_date")
+                .filter(
+                    payer_id=str(getattr(app, "application_id", "") or "").strip(),
+                    payment_module_code=DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE,
+                )
+                .order_by("-transaction_date")
+                .first()
+            )
+            status = str(getattr(tx, "payment_status", "") or "").strip().upper() if tx else ""
+            if status in {"S", "F", "P"}:
+                return status
+        except Exception:
+            pass
+
+        return "S" if getattr(app, "is_application_fee_paid", False) else "P"
+
+    def get_application_fee_payment_status(self, obj):
+        return self._resolve_new_license_payment_status(obj)
+
+    def get_application_fee_payment_status_display(self, obj):
+        status = self._resolve_new_license_payment_status(obj)
+        if status == "S":
+            return "Success"
+        if status == "F":
+            return "Failed"
+        if status == "P":
+            return "Pending"
+        return ""
 
     def validate(self, attrs):
         """
