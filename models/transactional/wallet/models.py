@@ -70,28 +70,9 @@ def _resolve_approved_license_id(raw_value: str) -> str:
                 return str(hit.license_id).strip()
 
     try:
-        from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
+        from models.masters.supply_chain.profile.models import UserManufacturingUnit
     except Exception:
-        SupplyChainUserProfile = None
         UserManufacturingUnit = None
-
-    if SupplyChainUserProfile:
-        prof = SupplyChainUserProfile.objects.filter(licensee_id=value).select_related("user").first()
-        if prof and getattr(prof, "user_id", None):
-            hit = (
-                active_qs.filter(applicant_id=prof.user_id, license_id__istartswith="NA/")
-                .order_by("-issue_date", "-license_id")
-                .first()
-            )
-            if hit and hit.license_id:
-                return str(hit.license_id).strip()
-            hit = (
-                active_qs.filter(applicant_id=prof.user_id, source_type="new_license_application")
-                .order_by("-issue_date", "-license_id")
-                .first()
-            )
-            if hit and hit.license_id:
-                return str(hit.license_id).strip()
 
     if UserManufacturingUnit:
         unit = UserManufacturingUnit.objects.filter(licensee_id=value).select_related("user").first()

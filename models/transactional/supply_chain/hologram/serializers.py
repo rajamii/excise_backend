@@ -3,7 +3,6 @@ from datetime import timedelta
 from django.utils import timezone
 from .models import HologramProcurement, HologramRequest
 from auth.workflow.models import Transaction, Objection
-from models.masters.supply_chain.profile.models import SupplyChainUserProfile
 import logging
 
 logger = logging.getLogger(__name__)

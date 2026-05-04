@@ -338,10 +338,12 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         req_license = str(getattr(revalidation, 'licensee_id', '') or '').strip()
         candidates.extend(self._expand_license_aliases(req_license))
 
-        profile_license = ''
-        if hasattr(user, 'supply_chain_profile'):
-            profile_license = str(getattr(user.supply_chain_profile, 'licensee_id', '') or '').strip()
-        candidates.extend(self._expand_license_aliases(profile_license))
+        try:
+            if hasattr(user, 'manufacturing_units'):
+                for raw_id in user.manufacturing_units.exclude(licensee_id__isnull=True).exclude(licensee_id='').values_list('licensee_id', flat=True):
+                    candidates.extend(self._expand_license_aliases(raw_id))
+        except Exception:
+            pass
 
         try:
             from models.masters.license.models import License
@@ -707,7 +709,12 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
 
             # Determine Role
             user = request.user
-            if not has_workflow_access(user, WORKFLOW_IDS['ENA_REVALIDATION']) and not hasattr(user, 'supply_chain_profile'):
+            if not has_workflow_access(user, WORKFLOW_IDS['ENA_REVALIDATION']) and not scope_by_profile_or_workflow(
+                user,
+                EnaRevalidationDetail.objects.filter(pk=revalidation.pk),
+                WORKFLOW_IDS['ENA_REVALIDATION'],
+                licensee_field='licensee_id',
+            ).exists():
                 return Response({'error': 'Unauthorized role for this workflow'}, status=status.HTTP_403_FORBIDDEN)
 
             # Use Workflow Service

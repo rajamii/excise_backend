@@ -12,7 +12,7 @@ from .models import HologramProcurement, HologramRequest, HologramRollsDetails
 from .serializers import HologramProcurementSerializer, HologramRequestSerializer
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition, Transaction, StagePermission
 from auth.workflow.constants import WORKFLOW_IDS
-from models.masters.supply_chain.profile.models import SupplyChainUserProfile, UserManufacturingUnit
+from models.masters.supply_chain.profile.models import UserManufacturingUnit
 from models.transactional.supply_chain.access_control import scope_by_profile_or_workflow
 
 HOLOGRAM_REF_PREFIX = 'HQR'
@@ -151,53 +151,20 @@ def _apply_transition_by_action(instance, acting_user, action_name, remarks=''):
 
     return selected.to_stage
 
-def _get_or_create_active_supply_chain_profile(user):
-    profile = SupplyChainUserProfile.objects.filter(user=user).first()
-    active_license, establishment_name, site_address, license_type = _resolve_license_context(user)
-    if profile:
-        update_fields = []
-        if establishment_name and profile.manufacturing_unit_name != establishment_name:
-            profile.manufacturing_unit_name = establishment_name
-            update_fields.append('manufacturing_unit_name')
-        if active_license and profile.licensee_id != active_license.license_id:
-            profile.licensee_id = active_license.license_id
-            update_fields.append('licensee_id')
-        if site_address and profile.address != site_address:
-            profile.address = site_address
-            update_fields.append('address')
-        if license_type and profile.license_type != license_type:
-            profile.license_type = license_type
-            update_fields.append('license_type')
-        if update_fields:
-            profile.save(update_fields=update_fields)
-        return profile
-
+def _get_or_create_active_manufacturing_unit(user):
+    """
+    Supply-chain module no longer uses an "active profile" table.
+    Use the latest saved manufacturing unit, and bootstrap from the latest approved license when missing.
+    """
     latest_unit = UserManufacturingUnit.objects.filter(user=user).order_by('-updated_at', '-id').first()
     if latest_unit:
-        profile, _ = SupplyChainUserProfile.objects.update_or_create(
-            user=user,
-            defaults={
-                'manufacturing_unit_name': latest_unit.manufacturing_unit_name,
-                'licensee_id': latest_unit.licensee_id,
-                'license_type': latest_unit.license_type,
-                'address': latest_unit.address,
-            }
-        )
-        return profile
+        return latest_unit
 
+    active_license, establishment_name, site_address, license_type = _resolve_license_context(user)
     if not (active_license and establishment_name):
         return None
 
-    profile, _ = SupplyChainUserProfile.objects.update_or_create(
-        user=user,
-        defaults={
-            'manufacturing_unit_name': establishment_name,
-            'licensee_id': active_license.license_id,
-            'license_type': license_type,
-            'address': site_address,
-        }
-    )
-    UserManufacturingUnit.objects.update_or_create(
+    unit, _ = UserManufacturingUnit.objects.update_or_create(
         user=user,
         licensee_id=active_license.license_id,
         defaults={
@@ -206,7 +173,7 @@ def _get_or_create_active_supply_chain_profile(user):
             'address': site_address,
         }
     )
-    return profile
+    return unit
 
 
 def _resolve_roll_license_id(procurement, acting_user=None):
@@ -223,7 +190,13 @@ def _resolve_roll_license_id(procurement, acting_user=None):
                 getattr(assignment, 'licensee_id', ''),
                 getattr(getattr(assignment, 'license', None), 'license_id', ''),
             ])
-        candidates.append(getattr(getattr(acting_user, 'supply_chain_profile', None), 'licensee_id', ''))
+        try:
+            latest_unit = getattr(acting_user, 'manufacturing_units', None)
+            if latest_unit is not None:
+                unit = latest_unit.exclude(licensee_id__isnull=True).exclude(licensee_id='').order_by('-updated_at', '-id').first()
+                candidates.append(getattr(unit, 'licensee_id', ''))
+        except Exception:
+            pass
 
     candidates.extend([
         getattr(getattr(procurement, 'license', None), 'license_id', ''),
@@ -251,7 +224,13 @@ def _resolve_request_license_id(profile=None, acting_user=None):
                 getattr(assignment, 'licensee_id', ''),
                 getattr(getattr(assignment, 'license', None), 'license_id', ''),
             ])
-        candidates.append(getattr(getattr(acting_user, 'supply_chain_profile', None), 'licensee_id', ''))
+        try:
+            units = getattr(acting_user, 'manufacturing_units', None)
+            if units is not None:
+                unit = units.exclude(licensee_id__isnull=True).exclude(licensee_id='').order_by('-updated_at', '-id').first()
+                candidates.append(getattr(unit, 'licensee_id', ''))
+        except Exception:
+            pass
 
     if profile is not None:
         candidates.append(getattr(profile, 'licensee_id', ''))
@@ -374,34 +353,31 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         return queryset.order_by('-date')
 
     def perform_create(self, serializer):
-        profile = _get_or_create_active_supply_chain_profile(self.request.user)
+        unit = _get_or_create_active_manufacturing_unit(self.request.user)
         license, manufacturing_unit_name, _, _ = _resolve_license_context(self.request.user)
         
         # If no license found or no establishment name, try profile
-        if not manufacturing_unit_name and profile:
-            manufacturing_unit_name = profile.manufacturing_unit_name
+        if not manufacturing_unit_name and unit:
+            manufacturing_unit_name = unit.manufacturing_unit_name
 
-        if not license and profile and profile.licensee_id:
+        if not license and unit and unit.licensee_id:
             try:
                 from models.masters.license.models import License
                 license = License.objects.filter(
-                    license_id=profile.licensee_id,
+                    license_id=unit.licensee_id,
                     is_active=True
                 ).first()
             except Exception:
                 license = None
 
-        if not profile and license and manufacturing_unit_name:
-            profile = _get_or_create_active_supply_chain_profile(self.request.user)
-        
         # If still no manufacturing unit name, raise error
         if not manufacturing_unit_name:
             raise serializers.ValidationError({
                 'detail': 'No manufacturing unit found. Please ensure you have an active license.'
             })
-        if not profile:
+        if not unit:
             raise serializers.ValidationError({
-                'detail': 'No active supply chain profile found. Select your manufacturing unit first.'
+                'detail': 'No manufacturing unit found. Please add your manufacturing unit/license mapping first.'
             })
         
         with db_transaction.atomic():
@@ -417,7 +393,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
 
             instance = serializer.save(
                 ref_no=ref_no,
-                licensee=profile,
+                licensee=unit,
                 license=license,
                 workflow=workflow,
                 current_stage=initial_stage,
@@ -493,7 +469,8 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                         instance.carton_details = carton_details
                         instance.arrival_date = arrival_ts
                         # Sync to new table
-                        self._sync_rolls_details(instance, carton_details, acting_user=request.user, mark_received_by=False)
+                        # OIC UX: the officer who assigns/saves cartons is effectively the receiver of the rolls.
+                        self._sync_rolls_details(instance, carton_details, acting_user=request.user, mark_received_by=True)
 
                 instance.save()
                 
@@ -581,7 +558,8 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     self._validate_assign_cartons(instance, carton_details)
                     instance.carton_details = carton_details
                     instance.arrival_date = arrival_ts
-                    self._sync_rolls_details(instance, carton_details, acting_user=request.user, mark_received_by=False)
+                    # OIC UX: the officer who assigns/saves cartons is effectively the receiver of the rolls.
+                    self._sync_rolls_details(instance, carton_details, acting_user=request.user, mark_received_by=True)
             elif normalized_action in ['confirm_arrival', 'arrival_confirmed', 'confirm arrival', 'confirm']:
                 if not instance.arrival_date:
                     instance.arrival_date = timezone.now()
@@ -1362,10 +1340,10 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         return queryset.none()
 
     def perform_create(self, serializer):
-        profile = _get_or_create_active_supply_chain_profile(self.request.user)
-        if not profile:
+        unit = _get_or_create_active_manufacturing_unit(self.request.user)
+        if not unit:
             raise serializers.ValidationError({
-                'detail': 'No active supply chain profile found. Select your manufacturing unit first.'
+                'detail': 'No manufacturing unit found. Please add your manufacturing unit/license mapping first.'
             })
         
         with db_transaction.atomic():
@@ -1379,8 +1357,8 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
 
             instance = serializer.save(
                 ref_no=ref_no,
-                licensee=profile,
-                license_id=_resolve_request_license_id(profile=profile, acting_user=self.request.user) or None,
+                licensee=unit,
+                license_id=_resolve_request_license_id(profile=unit, acting_user=self.request.user) or None,
                 workflow=workflow,
                 current_stage=initial_stage
             )
@@ -1766,30 +1744,14 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 })
 
             # Ensure licensee is set from the logged-in user
-            if hasattr(self.request.user, 'supply_chain_profile'):
-                try:
-                    profile = self.request.user.supply_chain_profile
-                    instance = serializer.save(
-                        licensee=profile,
-                        license_id=_resolve_request_license_id(profile=profile, acting_user=self.request.user) or None,
-                        **save_kwargs
-                    )
-                except Exception as e:
-                    raise serializers.ValidationError(f"User profile error: {str(e)}")
-            else:
-                # DEBUG fallback
-                # if self.request.user.is_superuser: # Unblock for now
-                if True:
-                    from models.masters.supply_chain.profile.models import SupplyChainUserProfile
-                    first_profile = SupplyChainUserProfile.objects.first()
-                    if first_profile:
-                        instance = serializer.save(
-                            licensee=first_profile,
-                            license_id=_resolve_request_license_id(profile=first_profile, acting_user=self.request.user) or None,
-                            **save_kwargs
-                        )
-                    else:
-                        raise serializers.ValidationError("No profile found.")
+            unit = _get_or_create_active_manufacturing_unit(self.request.user)
+            if not unit:
+                raise serializers.ValidationError("No manufacturing unit found for user.")
+            instance = serializer.save(
+                licensee=unit,
+                license_id=_resolve_request_license_id(profile=unit, acting_user=self.request.user) or None,
+                **save_kwargs
+            )
                 
             # CRITICAL: Update Procurement Inventory
             self._update_procurement_usage(instance)
@@ -2964,7 +2926,7 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 action_name = str((transition.condition or {}).get('action') or '').strip().lower()
                 if action_name in {'issue', 'approve'}:
                     approval_to_stage_ids.add(transition.to_stage_id)
-                elif action_name == 'reject':
+                elif action_name == 'reject' or 'reject' in action_name:
                     reject_to_stage_ids.add(transition.to_stage_id)
 
             # Get all hologram requests
@@ -3046,6 +3008,7 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 
                 # Determine status using stage metadata + transition-derived action mapping.
                 status = 'UNDER_PROCESS'
+                status_message = None
                 completed_on_time = None
                 is_overdue = False
                 time_remaining = None
@@ -3055,16 +3018,62 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 officer_name = None
                 brands_entered = []
                 
+                stage_name = ''
+                try:
+                    stage_name = (req.current_stage.name if req.current_stage else '') or ''
+                except Exception:
+                    stage_name = ''
+                stage_name_lc = str(stage_name).strip().lower()
+
                 if req.current_stage and req.current_stage.is_initial:
                     status = 'APPLIED'
                 elif req.current_stage_id and req.current_stage_id in reject_to_stage_ids:
                     status = 'REJECTED'
                 elif req.current_stage and req.current_stage.is_final:
                     status = 'COMPLETED'
-                
+
+                # Some auto-rejection stages are not labeled with action="reject" in WorkflowTransition.
+                # Fall back to stage name heuristics so the commissioner dashboard doesn't show them as "Awaiting Approval".
+                if status != 'REJECTED' and stage_name_lc:
+                    rejection_hints = (
+                        'reject' in stage_name_lc or
+                        'rejected' in stage_name_lc or
+                        'not approved' in stage_name_lc or
+                        'not_approved' in stage_name_lc or
+                        'notapproved' in stage_name_lc or
+                        'no action' in stage_name_lc or
+                        'no_action' in stage_name_lc or
+                        'noaction' in stage_name_lc or
+                        'no action taken' in stage_name_lc or
+                        'no_action_taken' in stage_name_lc or
+                        'auto reject' in stage_name_lc or
+                        'auto_reject' in stage_name_lc
+                    )
+                    if rejection_hints:
+                        status = 'REJECTED'
+
                 # Override status if we have daily register entries (means it's completed)
                 if daily_entries.exists():
                     status = 'COMPLETED'
+
+                # Business rule: if request is still in initial stage past its usage date, treat as rejected (no OIC action taken).
+                # This covers "Not approved on usage date / no action taken" cases where workflow transitions aren't recorded as action="reject".
+                try:
+                    if status == 'APPLIED' and getattr(req, 'usage_date', None):
+                        today = django_timezone.localdate()
+                        if req.usage_date < today:
+                            status = 'REJECTED'
+                            status_message = 'No action was taken'
+                except Exception:
+                    pass
+
+                if status == 'REJECTED':
+                    if ('no action' in stage_name_lc) or ('no_action' in stage_name_lc) or ('noaction' in stage_name_lc):
+                        status_message = 'No action was taken'
+                    elif 'not approved' in stage_name_lc or 'not_approved' in stage_name_lc or 'notapproved' in stage_name_lc:
+                        status_message = 'Not approved on usage date'
+                    else:
+                        status_message = 'Rejected'
                 
                 # Calculate deadline and SLA if approved
                 if approval_txn:
@@ -3171,6 +3180,7 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                     'hologramType': req.hologram_type,
                     'quantity': req.quantity,
                     'status': status,
+                    'statusMessage': status_message,
                     'completedOnTime': completed_on_time,
                     'isOverdue': is_overdue,
                     'timeRemaining': time_remaining,
@@ -3272,14 +3282,10 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
         # Get scoped license from user if not provided.
         # Prefer denormalized license_id (NA/NLI format), keep legacy profile-id fallback.
         legacy_profile_id = None
-        if hasattr(request.user, 'supply_chain_profile'):
-            legacy_profile_id = getattr(request.user.supply_chain_profile, 'id', None)
-        scoped_license_id = _resolve_request_license_id(
-            profile=getattr(request.user, 'supply_chain_profile', None),
-            acting_user=request.user
-        )
+        unit = _get_or_create_active_manufacturing_unit(request.user)
+        scoped_license_id = _resolve_request_license_id(profile=unit, acting_user=request.user)
         if not licensee_id:
-            licensee_id = scoped_license_id or (str(legacy_profile_id) if legacy_profile_id else '')
+            licensee_id = scoped_license_id or ''
         
         # Build query filters
         filters = Q(

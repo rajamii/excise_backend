@@ -20,6 +20,7 @@ from models.transactional.supply_chain.access_control import (
     has_workflow_access,
     scope_by_profile_or_workflow,
     transition_matches,
+    resolve_user_license_id_by_category_subcategory,
 )
 
 logger = logging.getLogger(__name__)
@@ -310,9 +311,18 @@ class SubmitTransitPermitAPIView(views.APIView):
         """
         Resolve currently active/approved license id (NA/... preferred) for transit records.
         """
-        raw_profile_id = ''
-        if hasattr(user, 'supply_chain_profile'):
-            raw_profile_id = str(getattr(user.supply_chain_profile, 'licensee_id', '') or '').strip()
+        requested = ''
+        try:
+            if hasattr(user, 'manufacturing_units'):
+                unit = (
+                    user.manufacturing_units.exclude(licensee_id__isnull=True)
+                    .exclude(licensee_id='')
+                    .order_by('-updated_at', '-id')
+                    .first()
+                )
+                requested = str(getattr(unit, 'licensee_id', '') or '').strip()
+        except Exception:
+            requested = ''
 
         from models.masters.license.models import License
 
@@ -322,27 +332,25 @@ class SubmitTransitPermitAPIView(views.APIView):
             is_active=True
         ).order_by('-issue_date')
 
-        if raw_profile_id:
-            hit = active_licenses.filter(
-                Q(license_id=raw_profile_id) | Q(source_object_id=raw_profile_id)
-            ).first()
+        resolved = resolve_user_license_id_by_category_subcategory(
+            user,
+            category_tokens=['manufactur'],
+            subcategory_tokens=['distiller', 'brew', 'winery', 'beer'],
+            requested_license_id=requested,
+        )
+        if resolved and resolved.startswith('NA/'):
+            return resolved
+
+        if requested:
+            hit = active_licenses.filter(Q(license_id=requested) | Q(source_object_id=requested)).first()
             if hit and hit.license_id:
                 return str(hit.license_id).strip()
-
-            if raw_profile_id.startswith('NLI/'):
-                na_alias = f"NA/{raw_profile_id[4:]}"
-                hit_alias = active_licenses.filter(license_id=na_alias).first()
-                if hit_alias and hit_alias.license_id:
-                    return str(hit_alias.license_id).strip()
-
-            if raw_profile_id.startswith('NA/'):
-                return raw_profile_id
 
         latest = active_licenses.first()
         if latest and latest.license_id:
             return str(latest.license_id).strip()
 
-        return raw_profile_id
+        return requested
 
     def _debit_wallet_balances_for_submit(self, user, license_id: str, bill_no: str, permit_rows):
         """
@@ -873,11 +881,6 @@ class PerformTransitPermitActionAPIView(views.APIView):
                 for alias in self._expand_license_aliases(raw):
                     scoped.add(alias)
 
-        profile = getattr(user, 'supply_chain_profile', None)
-        if profile:
-            for alias in self._expand_license_aliases(getattr(profile, 'licensee_id', '')):
-                scoped.add(alias)
-
         units = getattr(user, 'manufacturing_units', None)
         if units is not None:
             for raw in (
@@ -1032,9 +1035,8 @@ class PerformTransitPermitActionAPIView(views.APIView):
 
             if has_workflow_access(request.user, WORKFLOW_IDS['TRANSIT_PERMIT']) and mapped_to_permit:
                 pass
-            elif hasattr(request.user, 'supply_chain_profile'):
-                if not mapped_to_permit:
-                    raise PermissionDenied("You are not allowed to modify this transit permit.")
+            elif mapped_to_permit:
+                pass
             else:
                 raise PermissionDenied("You are not allowed to modify this transit permit.")
             

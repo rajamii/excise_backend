@@ -10,7 +10,11 @@ from auth.workflow.models import Rejection
 from models.masters.license.models import License
 import logging
 import re
-from models.transactional.supply_chain.access_control import condition_role_matches
+from models.transactional.supply_chain.access_control import (
+    condition_role_matches,
+    resolve_manufacturing_license_id_from_license_id,
+    resolve_user_license_id_by_category_subcategory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +69,14 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         data['bulk_spirit_type'] = instance.bulk_spirit_type or ''
         data['strength'] = instance.strength or ''
         data['status'] = instance.status or 'PENDING'
+        # Prefer the applicant's manufacturing license id when the stored licensee_id
+        # points to a non-manufacturing license (common when a user has multiple licenses).
+        try:
+            raw_licensee_id = str(getattr(instance, 'licensee_id', '') or '').strip()
+            if raw_licensee_id:
+                data['licensee_id'] = resolve_manufacturing_license_id_from_license_id(raw_licensee_id)
+        except Exception:
+            data['licensee_id'] = str(getattr(instance, 'licensee_id', '') or '')
         # Arrival details summary (permit-wise partial approvals supported)
         try:
             details_qs = RequisitionBulkLiterDetail.objects.filter(requisition=instance).order_by('-updated_at')
@@ -873,18 +885,40 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             if requested_licensee_id:
                 validated_data['licensee_id'] = requested_licensee_id
 
-        # Fallback: Auto-populate Licensee ID from Profile
-        if not validated_data.get('licensee_id') and request and request.user and hasattr(request.user, 'supply_chain_profile'):
-            validated_data['licensee_id'] = request.user.supply_chain_profile.licensee_id
-        elif request and request.user and hasattr(request.user, 'manufacturing_units'):
-            # Fallback to first mapped unit if active profile is not set.
-            unit = request.user.manufacturing_units.exclude(licensee_id__isnull=True).exclude(licensee_id='').first()
+        # Resolve licensee_id using License category/subcategory to avoid picking a non-manufacturing id.
+        if request and getattr(request, 'user', None):
+            license_category_id = request.data.get('license_category_id') or request.data.get('licenseCategoryId')
+            license_sub_category_id = request.data.get('license_sub_category_id') or request.data.get('licenseSubCategoryId')
+
+            try:
+                license_category_id = int(license_category_id) if str(license_category_id or '').strip() else None
+            except (TypeError, ValueError):
+                license_category_id = None
+            try:
+                license_sub_category_id = int(license_sub_category_id) if str(license_sub_category_id or '').strip() else None
+            except (TypeError, ValueError):
+                license_sub_category_id = None
+
+            resolved = resolve_user_license_id_by_category_subcategory(
+                request.user,
+                license_category_id=license_category_id,
+                license_sub_category_id=license_sub_category_id,
+                category_tokens=['manufactur'],
+                subcategory_tokens=['distiller', 'brew', 'winery', 'beer'],
+                requested_license_id=str(validated_data.get('licensee_id') or ''),
+            )
+            if resolved:
+                validated_data['licensee_id'] = resolved
+
+        # Fallback: Auto-populate Licensee ID from mapped units (no active profile concept).
+        if not validated_data.get('licensee_id') and request and request.user and hasattr(request.user, 'manufacturing_units'):
+            unit = request.user.manufacturing_units.exclude(licensee_id__isnull=True).exclude(licensee_id='').order_by('-updated_at').first()
             if unit:
                 validated_data['licensee_id'] = unit.licensee_id
 
         if not validated_data.get('licensee_id'):
             raise serializers.ValidationError({
-                'licensee_id': 'Unable to determine licensee mapping. Please set your active supply-chain profile and try again.'
+                'licensee_id': 'Unable to determine licensee mapping. Please add a manufacturing unit / approved license and try again.'
             })
         
         # Initialize Workflow and Status

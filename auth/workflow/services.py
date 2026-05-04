@@ -432,6 +432,10 @@ class WorkflowService:
     @transaction.atomic
     def advance_stage(application, user, target_stage, context=None, remarks=None):
         context = context or {}
+        is_new_license_application = (
+            application._meta.app_label == "new_license_application"
+            and application._meta.model_name.lower() == "newlicenseapplication"
+        )
 
         # ---------- Permission ----------
         if not WorkflowService._has_stage_process_permission(
@@ -444,6 +448,37 @@ class WorkflowService:
 
         # ---------- Transition ----------
         WorkflowService.validate_transition(application, target_stage, context, user=user)
+
+        requested_target_stage = target_stage
+        sync_new_license_payment_status = None
+        if is_new_license_application:
+            from models.transactional.new_license_application.payment_status import (
+                route_approval_to_payment_stage,
+                enforce_new_license_payment_gate,
+                sync_new_license_payment_status as _sync_new_license_payment_status,
+            )
+            sync_new_license_payment_status = _sync_new_license_payment_status
+            action_name = str((context or {}).get("action") or "").strip().upper()
+
+            # Temporary fallback: treat officer approval as dummy-paid so approval
+            # can proceed while payment integration is pending.
+            if action_name == "APPROVE":
+                paid_update_fields = []
+                if hasattr(application, "is_license_fee_paid") and not getattr(application, "is_license_fee_paid", False):
+                    application.is_license_fee_paid = True
+                    paid_update_fields.append("is_license_fee_paid")
+                if hasattr(application, "is_security_fee_paid") and not getattr(application, "is_security_fee_paid", False):
+                    application.is_security_fee_paid = True
+                    paid_update_fields.append("is_security_fee_paid")
+                if paid_update_fields:
+                    application.save(update_fields=paid_update_fields)
+
+            enforce_new_license_payment_gate(
+                application,
+                from_stage=application.current_stage,
+                target_stage=requested_target_stage,
+            )
+            target_stage = route_approval_to_payment_stage(application, target_stage)
 
         # ---------- App-specific hooks (via context) ----------
         # if getattr(application, 'is_fee_calculated', None) is not None and target_stage.name == "level_1":
@@ -459,6 +494,13 @@ class WorkflowService:
         # ---------- Update stage ----------
         application.current_stage = target_stage
         application.save(update_fields=['current_stage'])
+
+        if is_new_license_application and sync_new_license_payment_status:
+            sync_new_license_payment_status(application)
+            refresh_fields = ['current_stage']
+            if hasattr(application, 'is_approved'):
+                refresh_fields.append('is_approved')
+            application.refresh_from_db(fields=refresh_fields)
 
         # ---------- Forwarded role ----------
         forwarded_to = None
