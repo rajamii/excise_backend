@@ -1148,7 +1148,7 @@ def billdesk_response(request):
                     # WorkflowStage import is intentionally inside try-block for environments where workflow tables differ.
                     application_id = str(getattr(tx, "payer_id", "") or "").strip()
                     app = (
-                        NewLicenseApplication.objects.select_related("current_stage", "applicant")
+                        NewLicenseApplication.objects.select_related("workflow", "current_stage", "applicant")
                         .filter(application_id__iexact=application_id)
                         .first()
                     )
@@ -1160,6 +1160,23 @@ def billdesk_response(request):
                         if not getattr(app, "is_application_fee_paid", False):
                             app.is_application_fee_paid = True
                             app.save(update_fields=["is_application_fee_paid"])
+                    except Exception:
+                        pass
+
+                    # If a previous attempt incorrectly pushed the application into a rejected/final stage,
+                    # restore it back to the workflow initial stage so it can be submitted.
+                    try:
+                        stage = getattr(app, "current_stage", None)
+                        stage_name = str(getattr(stage, "name", "") or "").strip().lower()
+                        is_rejected_or_final = bool(
+                            (stage_name and "reject" in stage_name)
+                            or bool(getattr(stage, "is_final", False))
+                        )
+                        if is_rejected_or_final and getattr(app, "workflow", None):
+                            initial = app.workflow.stages.filter(is_initial=True).order_by("id").first()
+                            if initial and getattr(app, "current_stage_id", None) != getattr(initial, "id", None):
+                                app.current_stage = initial
+                                app.save(update_fields=["current_stage"])
                     except Exception:
                         pass
 
@@ -1181,22 +1198,26 @@ def billdesk_response(request):
                     auto_submit_error = str(exc)
                     logger.exception("Failed to auto-submit new license application for txn_ref=%s: %s", txn_ref, exc)
             elif status_code == "F":
-                # Mark the draft application as closed (final) so it doesn't appear as pending workflow work.
+                # Do not mark the application as rejected on application-fee payment failure.
+                # The licensee should be able to retry "Pay Now" later while the application remains unsubmitted.
                 try:
+                    from models.transactional.new_license_application.models import NewLicenseApplication
+
                     application_id = str(getattr(tx, "payer_id", "") or "").strip()
-                    app = NewLicenseApplication.objects.select_related("workflow", "current_stage").filter(application_id__iexact=application_id).first()
-                    if app and app.workflow_id and app.current_stage_id:
-                        rejected = (
-                            WorkflowStage.objects.filter(workflow_id=app.workflow_id, is_final=True, name__iregex=r"reject")
-                            .order_by("id")
-                            .first()
-                            or WorkflowStage.objects.filter(workflow_id=app.workflow_id, is_final=True).order_by("id").first()
-                        )
-                        if rejected and app.current_stage_id != rejected.id:
-                            app.current_stage = rejected
-                            app.save(update_fields=["current_stage"])
+                    app = (
+                        NewLicenseApplication.objects.only("application_id", "is_application_fee_paid")
+                        .filter(application_id__iexact=application_id)
+                        .first()
+                    )
+                    if app and getattr(app, "is_application_fee_paid", False):
+                        app.is_application_fee_paid = False
+                        app.save(update_fields=["is_application_fee_paid"])
                 except Exception as exc:
-                    logger.exception("Failed to mark new license application rejected for txn_ref=%s: %s", txn_ref, exc)
+                    logger.exception(
+                        "Failed to preserve unpaid new license application state for txn_ref=%s: %s",
+                        txn_ref,
+                        exc,
+                    )
         else:
             # Persist wallet_transactions entry for license fee / security deposit on successful payment.
             if status_code == "S":

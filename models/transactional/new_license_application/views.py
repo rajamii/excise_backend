@@ -928,6 +928,8 @@ def dashboard_counts(request):
 
     if role == 'licensee':
         base_qs = NewLicenseApplication.objects.filter(applicant=request.user)
+        unpaid_qs = base_qs.filter(is_application_fee_paid=False)
+        paid_qs = base_qs.filter(is_application_fee_paid=True)
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
@@ -935,11 +937,12 @@ def dashboard_counts(request):
         pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
 
         return Response({
-            "applied": base_qs.filter(current_stage__name__in=applied_stages).count(),
-            "pending": base_qs.filter(current_stage__name__in=pending_stages).count(),
-            "objection": base_qs.filter(current_stage__name__in=objection_stages).count(),
-            "approved": base_qs.filter(current_stage__name__in=approved_stages).count(),
-            "rejected": base_qs.filter(current_stage__name__in=rejected_stages).count(),
+            # Licensee UX: application is considered "Pending" until application-fee payment succeeds.
+            "applied": paid_qs.filter(current_stage__name__in=applied_stages).count(),
+            "pending": unpaid_qs.count() + paid_qs.filter(current_stage__name__in=pending_stages).count(),
+            "objection": paid_qs.filter(current_stage__name__in=objection_stages).count(),
+            "approved": paid_qs.filter(current_stage__name__in=approved_stages).count(),
+            "rejected": paid_qs.filter(current_stage__name__in=rejected_stages).count(),
         })
 
     if role in ['site_admin', 'single_window']:
@@ -986,27 +989,35 @@ def application_group(request):
 
     if role == 'licensee':
         base_qs = _with_application_fee_payment_annotations(NewLicenseApplication.objects.filter(applicant=request.user))
+        unpaid_qs = base_qs.filter(is_application_fee_paid=False)
+        paid_qs = base_qs.filter(is_application_fee_paid=True)
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
         rejected_stages = set(stage_sets['rejected'])
         pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
 
+        from django.db.models import Q
+        pending_qs = base_qs.filter(
+            Q(is_application_fee_paid=False)
+            | (Q(is_application_fee_paid=True) & Q(current_stage__name__in=pending_stages))
+        )
+
         return Response({
             "applied": NewLicenseApplicationSerializer(
-                base_qs.filter(current_stage__name__in=applied_stages), many=True
+                paid_qs.filter(current_stage__name__in=applied_stages), many=True
             ).data,
             "pending": NewLicenseApplicationSerializer(
-                base_qs.filter(current_stage__name__in=pending_stages), many=True
+                pending_qs, many=True
             ).data,
             "objection": NewLicenseApplicationSerializer(
-                base_qs.filter(current_stage__name__in=objection_stages), many=True
+                paid_qs.filter(current_stage__name__in=objection_stages), many=True
             ).data,
             "approved": NewLicenseApplicationSerializer(
-                base_qs.filter(current_stage__name__in=approved_stages), many=True
+                paid_qs.filter(current_stage__name__in=approved_stages), many=True
             ).data,
             "rejected": NewLicenseApplicationSerializer(
-                base_qs.filter(current_stage__name__in=rejected_stages), many=True
+                paid_qs.filter(current_stage__name__in=rejected_stages), many=True
             ).data
         })
 

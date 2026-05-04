@@ -469,7 +469,8 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                         instance.carton_details = carton_details
                         instance.arrival_date = arrival_ts
                         # Sync to new table
-                        self._sync_rolls_details(instance, carton_details, acting_user=request.user, mark_received_by=False)
+                        # OIC UX: the officer who assigns/saves cartons is effectively the receiver of the rolls.
+                        self._sync_rolls_details(instance, carton_details, acting_user=request.user, mark_received_by=True)
 
                 instance.save()
                 
@@ -557,7 +558,8 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                     self._validate_assign_cartons(instance, carton_details)
                     instance.carton_details = carton_details
                     instance.arrival_date = arrival_ts
-                    self._sync_rolls_details(instance, carton_details, acting_user=request.user, mark_received_by=False)
+                    # OIC UX: the officer who assigns/saves cartons is effectively the receiver of the rolls.
+                    self._sync_rolls_details(instance, carton_details, acting_user=request.user, mark_received_by=True)
             elif normalized_action in ['confirm_arrival', 'arrival_confirmed', 'confirm arrival', 'confirm']:
                 if not instance.arrival_date:
                     instance.arrival_date = timezone.now()
