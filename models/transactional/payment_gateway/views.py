@@ -127,6 +127,53 @@ def _validate_payment_module_code(module_code: str) -> str:
     raise ValueError(f"Invalid payment_module_code={code}. Not found in master module table.")
 
 
+def _get_module_license_fee(module_code: str) -> Decimal | None:
+    code = str(module_code or "").strip()
+    if not code:
+        return None
+    try:
+        module = (
+            MasterPaymentModule.objects
+            .only("module_code", "license_fee")
+            .filter(module_code=code)
+            .first()
+        )
+        fee = getattr(module, "license_fee", None) if module else None
+        if fee in (None, ""):
+            return None
+        return _normalize_amount(fee)
+    except Exception:
+        return None
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_payment_module(request, module_code: str):
+    code = str(module_code or "").strip()
+    if not code:
+        return Response({"detail": "module_code is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    module = MasterPaymentModule.objects.filter(module_code=code).first()
+    if not module:
+        return Response({"detail": f"Module not found for module_code={code}."}, status=status.HTTP_404_NOT_FOUND)
+
+    fee = None
+    try:
+        raw_fee = getattr(module, "license_fee", None)
+        if raw_fee not in (None, ""):
+            fee = _normalize_amount(raw_fee)
+    except Exception:
+        fee = None
+
+    return Response(
+        {
+            "module_code": str(getattr(module, "module_code", "") or "").strip(),
+            "module_desc": str(getattr(module, "module_desc", "") or "").strip(),
+            "license_fee": float(fee) if fee is not None else None,
+        }
+    )
+
+
 def _generate_transaction_id(prefix: str = "TXN") -> str:
     return f"{prefix}{timezone.now().strftime('%Y%m%d%H%M%S')}{secrets.token_hex(4).upper()}"
 
@@ -758,7 +805,30 @@ def billdesk_initiate_new_license_application_fee(request):
         )
 
     try:
-        amount = _normalize_amount(raw_amount or Decimal("500.00"))
+        module_fee = _get_module_license_fee(payment_module_code)
+        if module_fee is None:
+            return Response(
+                {
+                    "detail": f"license_fee is not configured for payment_module_code={payment_module_code}.",
+                    "payment_module_code": payment_module_code,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # If frontend sent an amount, ensure it matches DB (prevents tampering).
+        if raw_amount not in (None, ""):
+            client_amount = _normalize_amount(raw_amount)
+            if client_amount != module_fee:
+                return Response(
+                    {
+                        "detail": "Invalid amount. Please refresh and try again.",
+                        "expected_amount": float(module_fee),
+                        "received_amount": float(client_amount),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        amount = module_fee
     except Exception as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 

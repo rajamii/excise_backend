@@ -5,6 +5,7 @@ from . import views
 app_name = "payment_gateway"
 
 urlpatterns = [
+    path("modules/<str:module_code>/", views.get_payment_module, name="payment-module-detail"),
     path("billdesk/initiate/", views.billdesk_initiate_wallet_recharge, name="billdesk-initiate"),
     path("billdesk/initiate/license-fee/", views.billdesk_initiate_license_fee, name="billdesk-initiate-license-fee"),
     path("billdesk/initiate/security-deposit/", views.billdesk_initiate_security_deposit, name="billdesk-initiate-security-deposit"),
