@@ -824,10 +824,79 @@ def _resolve_na_license_for_application(application: NewLicenseApplication) -> L
 
 def _resolve_license_fee_row(application: NewLicenseApplication) -> LicenseFee | None:
     fee_id = getattr(application, "licensee_fee_id", None)
-    if not fee_id:
-        return None
     try:
-        return LicenseFee.objects.filter(id=int(fee_id), is_active=True).first()
+        if fee_id:
+            fee = LicenseFee.objects.filter(id=int(fee_id), is_active=True).first()
+            if fee:
+                return fee
+    except Exception:
+        pass
+
+    # Fallback: resolve fee row from category/subcategory (+ location when available).
+    # This matches serializer behavior and prevents "fee structure not configured"
+    # when `licensee_fee_id` hasn't been persisted yet.
+    try:
+        cat_id = getattr(application, "license_category_id", None)
+        scat_id = getattr(application, "license_sub_category_id", None)
+        if not cat_id or not scat_id:
+            return None
+
+        district_code = None
+        try:
+            district_code = getattr(getattr(application, "site_district", None), "district_code", None)
+        except Exception:
+            district_code = None
+
+        location_code = None
+        if district_code is not None:
+            location = (
+                Location.objects.filter(district_code=district_code, is_active=True)
+                .order_by("location_code")
+                .first()
+            )
+            location_code = getattr(location, "location_code", None) if location else None
+
+        qs = LicenseFee.objects.filter(is_active=True)
+
+        direct = qs.filter(
+            license_category_id=int(cat_id),
+            license_subcategory_id=int(scat_id),
+        )
+        if location_code is not None:
+            direct = direct.filter(location_code_id=int(location_code))
+        fee = direct.order_by("id").first()
+        if fee:
+            return fee
+
+        # Try again without location constraint (fee rows may have null location_code).
+        fee = qs.filter(
+            license_category_id=int(cat_id),
+            license_subcategory_id=int(scat_id),
+        ).order_by("id").first()
+        if fee:
+            return fee
+
+        category = getattr(application, "license_category", None)
+        subcategory = getattr(application, "license_sub_category", None)
+        cat_code = getattr(category, "old_license_cat_code", None)
+        scat_code = getattr(subcategory, "old_license_scat_code", None)
+        if cat_code is None or scat_code is None:
+            return None
+
+        legacy = qs.filter(
+            license_category__old_license_cat_code=int(cat_code),
+            license_subcategory__old_license_scat_code=int(scat_code),
+        )
+        if location_code is not None:
+            legacy = legacy.filter(location_code_id=int(location_code))
+        fee = legacy.order_by("id").first()
+        if fee:
+            return fee
+
+        return qs.filter(
+            license_category__old_license_cat_code=int(cat_code),
+            license_subcategory__old_license_scat_code=int(scat_code),
+        ).order_by("id").first()
     except Exception:
         return None
 

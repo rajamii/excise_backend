@@ -501,11 +501,30 @@ class WorkflowService:
             except Exception:
                 pass
 
+            # Business rule: when Joint Commissioner approves, mark fee/category steps done.
+            try:
+                action = str((context or {}).get("action") or "").strip().upper()
+                from_name = str(getattr(application.current_stage, "name", "") or "").strip().lower()
+                to_name = str(getattr(target_stage, "name", "") or "").strip().lower()
+                is_jc_approve = (
+                    action == "APPROVE"
+                    and "joint commissioner" in from_name
+                    and to_name in {"commissioner", "commisioner"}
+                )
+                if is_jc_approve:
+                    if hasattr(application, "is_fee_calculated"):
+                        application.is_fee_calculated = True
+                    if hasattr(application, "is_license_category_updated"):
+                        application.is_license_category_updated = True
+            except Exception:
+                pass
+
         application.current_stage = target_stage
         update_fields = ['current_stage']
-        if is_new_license_application and 'licensee_fee_id' in getattr(application, '__dict__', {}):
-            # Only include when it actually exists/changed.
-            update_fields.append('licensee_fee_id')
+        if is_new_license_application:
+            for f in ("licensee_fee_id", "is_fee_calculated", "is_license_category_updated"):
+                if hasattr(application, f):
+                    update_fields.append(f)
         application.save(update_fields=list(dict.fromkeys(update_fields)))
 
         if is_new_license_application and sync_new_license_payment_status:
