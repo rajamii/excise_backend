@@ -8,6 +8,8 @@ import json
 import base64
 import requests
 import time
+
+from excise_backend.settings import BILLDESK_GATEWAY_URL
 from .billdesk_utils import generate_billdesk_jws, verify_billdesk_jws
 from django.conf import settings
 from django.db.utils import OperationalError, ProgrammingError
@@ -186,7 +188,7 @@ def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str
     }
     
     # UAT URL
-    api_url = "https://uat1.billdesk.com/u2/payments/ve1_2/orders/create"
+    api_url = BILLDESK_GATEWAY_URL
     
     response = requests.post(api_url, data=jws_token, headers=headers)
     
@@ -1104,6 +1106,11 @@ def billdesk_response(request):
             parsed_amount = None
 
         status_code = "S" if auth_status == "0300" and checksum_ok else "F"
+
+        # Check if transaction is already marked as success BEFORE processing
+        if tx and getattr(tx, "payment_status", "") == "S":
+            # It's a duplicate successful callback, acknowledge but do not re-process
+            return HttpResponse(html_content, content_type="text/html")
         
         # Save the raw JWS string to the DB for auditing
         tx.response_string = transaction_response 

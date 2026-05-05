@@ -251,7 +251,7 @@ SIMPLE_JWT = {
 # Payment gateway (BillDesk) defaults for local/UAT.
 BILLDESK_GATEWAY_URL = os.getenv(
     "BILLDESK_GATEWAY_URL",
-    "https://uat1.billdesk.com/pgidsk/PGIMerchantPayment",
+    "https://uat1.billdesk.com/u2/payments/ve1_2/orders/create",
 ).strip()
 
 # # Local testing: simulate BillDesk ProcessPayment and callback without hitting BillDesk servers.
