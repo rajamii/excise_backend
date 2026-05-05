@@ -1193,7 +1193,7 @@ def billdesk_response(request):
                         sbm_application_id = ""
                         sbm_submit_error = ""
                         if getattr(app, "mode_of_operation", None) in {"Salesman", "Barman"}:
-                            from models.transactional.salesman_barman.models import SalesmanBarmanModel, SalesmanBarmanRequest
+                            from models.transactional.salesman_barman.models import SalesmanBarmanModel
                             from auth.workflow.constants import WORKFLOW_IDS
                             from auth.workflow.models import WorkflowStage, Workflow
 
@@ -1203,15 +1203,14 @@ def billdesk_response(request):
                                 init = WorkflowStage.objects.filter(workflow=wf, is_initial=True).order_by("id").first()
 
                             if wf and init:
-                                draft = SalesmanBarmanRequest.objects.filter(new_license_application=app).first()
-
                                 sb = (
                                     SalesmanBarmanModel.objects.select_related("workflow", "current_stage", "applicant")
                                     .filter(new_license_application=app)
                                     .first()
                                 )
 
-                                # Build from draft if present
+                                # Build if missing (details are captured directly into SalesmanBarmanModel
+                                # during the New License flow)
                                 if not sb:
                                     sb = SalesmanBarmanModel(
                                         workflow=wf,
@@ -1223,31 +1222,6 @@ def billdesk_response(request):
                                         applicant=user,
                                         role=getattr(app, "mode_of_operation", None),
                                     )
-
-                                if draft:
-                                    for attr in [
-                                        "role",
-                                        "firstName",
-                                        "middleName",
-                                        "lastName",
-                                        "fatherHusbandName",
-                                        "gender",
-                                        "dob",
-                                        "nationality",
-                                        "address",
-                                        "pan",
-                                        "aadhaar",
-                                        "mobileNumber",
-                                        "emailId",
-                                        "sikkimSubject",
-                                        "passPhoto",
-                                        "aadhaarCard",
-                                        "residentialCertificate",
-                                        "dateofBirthProof",
-                                    ]:
-                                        val = getattr(draft, attr, None)
-                                        if val not in (None, "", False):
-                                            setattr(sb, attr, val)
 
                                 if not getattr(sb, "workflow_id", None):
                                     sb.workflow = wf
