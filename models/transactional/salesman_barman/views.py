@@ -13,6 +13,14 @@ from models.masters.license.models import License
 from .models import SalesmanBarmanModel
 from .serializers import SalesmanBarmanSerializer
 import re
+import secrets
+
+from rest_framework.permissions import IsAuthenticated
+from django.core.exceptions import PermissionDenied
+from django.contrib.contenttypes.models import ContentType
+from models.transactional.payment_gateway.models import MasterPaymentModule
+from models.transactional.wallet.wallet_initializer import COMMON_LICENSE_FEE_HOA
+from models.transactional.wallet.wallet_service import debit_wallet_balance
 
 
 def _normalize_role(role_name):
@@ -182,8 +190,101 @@ def _create_application(request, workflow_id: int, serializer_cls):
 
         # 4. Return the *fresh* object (includes generic relations)
         fresh = SalesmanBarmanModel.objects.get(pk=application.pk)
-    fresh_serializer = serializer_cls(fresh)
-    return Response(fresh_serializer.data, status=status.HTTP_201_CREATED)
+        fresh_serializer = serializer_cls(fresh)
+        return Response(fresh_serializer.data, status=status.HTTP_201_CREATED)
+
+
+def _require_licensee_user(request):
+    role = _normalize_role(getattr(getattr(request.user, "role", None), "name", None))
+    if role != "licensee":
+        raise PermissionDenied("Only licensee can pay from wallet.")
+
+
+def _resolve_sb_license_for_application(application: SalesmanBarmanModel) -> License | None:
+    try:
+        ct = ContentType.objects.get_for_model(SalesmanBarmanModel)
+        return (
+            License.objects.filter(
+                source_type="salesman_barman",
+                source_content_type=ct,
+                source_object_id=str(application.pk),
+            )
+            .order_by("-issue_date", "-license_id")
+            .first()
+        )
+    except Exception:
+        return None
+
+
+def _get_salesman_barman_registration_fee() -> float | None:
+    module = MasterPaymentModule.objects.filter(module_code="012").only("license_fee").first()
+    if not module:
+        return None
+    try:
+        return float(getattr(module, "license_fee", None))
+    except Exception:
+        return None
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, FormParser, MultiPartParser])
+def pay_registration_fee_wallet(request, application_id):
+    """
+    Wallet debit for Salesman/Barman Registration fee (module_code=012).
+    On success, advance workflow from awaiting_payment -> approved.
+    """
+    application = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
+    _require_licensee_user(request)
+    if application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    lic = _resolve_sb_license_for_application(application)
+    if not lic:
+        return Response({"detail": "License not issued yet."}, status=status.HTTP_400_BAD_REQUEST)
+
+    amount = _get_salesman_barman_registration_fee()
+    if amount is None or amount <= 0:
+        return Response(
+            {"detail": "Registration fee is not configured for Salesman/Barman (module_code=012)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    txn_id = secrets.token_hex(12).upper()
+    try:
+        debit_wallet_balance(
+            transaction_id=txn_id,
+            licensee_id=str(lic.license_id),
+            wallet_type="license_fee",
+            head_of_account=COMMON_LICENSE_FEE_HOA,
+            amount=amount,
+            user_id=str(getattr(request.user, "username", "") or "").strip(),
+            remarks=f"Salesman/Barman registration fee paid for {application.application_id}",
+        )
+    except Exception as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Advance to final approved stage if configured.
+    try:
+        approved_stage = (
+            application.workflow.stages.filter(name__iexact="approved").order_by("id").first()
+            if getattr(application, "workflow_id", None)
+            else None
+        )
+        if approved_stage:
+            WorkflowService.advance_stage(
+                application=application,
+                user=request.user,
+                target_stage=approved_stage,
+                context={"action": "PAY"},
+                remarks="Salesman/Barman registration fee paid via wallet",
+            )
+            application.refresh_from_db()
+    except Exception:
+        # Payment succeeded; keep stage as-is if workflow advance fails.
+        pass
+
+    return Response({"success": True, "transaction_id": txn_id})
 
 
 @api_view(['POST'])
