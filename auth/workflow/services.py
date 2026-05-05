@@ -487,8 +487,26 @@ class WorkflowService:
         #         application.is_fee_calculated = True
 
         # ---------- Update stage ----------
+        # Persist selected license fee row (from JC "Confirm New License Approval")
+        # so licensee payment screens can show correct amounts.
+        if is_new_license_application:
+            try:
+                selected_fee_id = (
+                    (context or {}).get("selected_license_fee_id")
+                    or ((context or {}).get("license_fee_selection") or {}).get("id")
+                    or (context or {}).get("licensee_fee_id")
+                )
+                if selected_fee_id is not None:
+                    application.licensee_fee_id = int(selected_fee_id)
+            except Exception:
+                pass
+
         application.current_stage = target_stage
-        application.save(update_fields=['current_stage'])
+        update_fields = ['current_stage']
+        if is_new_license_application and 'licensee_fee_id' in getattr(application, '__dict__', {}):
+            # Only include when it actually exists/changed.
+            update_fields.append('licensee_fee_id')
+        application.save(update_fields=list(dict.fromkeys(update_fields)))
 
         if is_new_license_application and sync_new_license_payment_status:
             sync_new_license_payment_status(application)

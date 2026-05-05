@@ -175,6 +175,15 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
             if fee:
                 return fee
 
+            # Fallback: some deployments keep fee rows without location_code.
+            # Try again without location constraint.
+            fee = qs.filter(
+                license_category_id=int(cat_id),
+                license_subcategory_id=int(scat_id),
+            ).order_by("id").first()
+            if fee:
+                return fee
+
             # Fallback: match by legacy codes stored on masters.
             category = getattr(obj, "license_category", None)
             subcategory = getattr(obj, "license_sub_category", None)
@@ -189,7 +198,15 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
             )
             if location_code is not None:
                 legacy = legacy.filter(location_code_id=int(location_code))
-            return legacy.order_by("id").first()
+            fee = legacy.order_by("id").first()
+            if fee:
+                return fee
+
+            # Fallback: try legacy match without location constraint.
+            return qs.filter(
+                license_category__old_license_cat_code=int(cat_code),
+                license_subcategory__old_license_scat_code=int(scat_code),
+            ).order_by("id").first()
         except Exception:
             return None
 

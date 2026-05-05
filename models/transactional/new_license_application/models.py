@@ -216,6 +216,14 @@ class NewLicenseApplication(models.Model):
                     if fee:
                         return fee
 
+                    # Fallback: fee rows may not be location-specific.
+                    fee = qs.filter(
+                        license_category_id=self.license_category_id,
+                        license_subcategory_id=self.license_sub_category_id,
+                    ).order_by("id").first()
+                    if fee:
+                        return fee
+
                     cat_code = getattr(self.license_category, "old_license_cat_code", None)
                     scat_code = getattr(self.license_sub_category, "old_license_scat_code", None)
                     if cat_code is None or scat_code is None:
@@ -226,7 +234,14 @@ class NewLicenseApplication(models.Model):
                     )
                     if location_code is not None:
                         legacy = legacy.filter(location_code_id=location_code)
-                    return legacy.order_by("id").first()
+                    fee = legacy.order_by("id").first()
+                    if fee:
+                        return fee
+
+                    return qs.filter(
+                        license_category__old_license_cat_code=int(cat_code),
+                        license_subcategory__old_license_scat_code=int(scat_code),
+                    ).order_by("id").first()
 
                 fee = _pick_fee()
                 if fee:
