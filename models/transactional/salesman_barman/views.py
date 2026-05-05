@@ -280,6 +280,9 @@ def pay_registration_fee_wallet(request, application_id):
                 remarks="Salesman/Barman registration fee paid via wallet",
             )
             application.refresh_from_db()
+            if application.current_stage_id == approved_stage.id and not application.is_approved:
+                application.is_approved = True
+                application.save(update_fields=["is_approved"])
     except Exception:
         # Payment succeeded; keep stage as-is if workflow advance fails.
         pass
