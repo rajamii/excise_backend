@@ -187,7 +187,7 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
             user = getattr(request, "user", None) if request else None
             mode = getattr(application, "mode_of_operation", None)
             if mode in {"Salesman", "Barman"}:
-                from models.transactional.salesman_barman.models import SalesmanBarmanDraft, SalesmanBarmanModel
+                from models.transactional.salesman_barman.models import SalesmanBarmanRequest, SalesmanBarmanModel
                 from auth.workflow.constants import WORKFLOW_IDS
                 from auth.workflow.models import WorkflowStage, Workflow
 
@@ -197,7 +197,7 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
                 last_name = parts[-1] if len(parts) > 1 else (parts[0] if parts else None)
                 middle_name = " ".join(parts[1:-1]) if len(parts) > 2 else None
 
-                draft, _ = SalesmanBarmanDraft.objects.get_or_create(
+                draft, _ = SalesmanBarmanRequest.objects.get_or_create(
                     new_license_application=application,
                     defaults={
                         "applicant": user,

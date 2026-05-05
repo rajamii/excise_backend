@@ -19,10 +19,10 @@ def upload_document_path(instance, filename):
 
 def upload_draft_document_path(instance, filename):
     # Store draft uploads under the new license application id to survive BillDesk redirect flows.
-    return f'salesman_barman_draft/{instance.new_license_application_id}/{filename}'
+    return f'salesman_barman_request/{instance.new_license_application_id}/{filename}'
 
 
-class SalesmanBarmanDraft(models.Model):
+class SalesmanBarmanRequest(models.Model):
     """
     Draft capture of Salesman/Barman details entered during the New License flow.
 
@@ -33,14 +33,14 @@ class SalesmanBarmanDraft(models.Model):
     new_license_application = models.OneToOneField(
         NewLicenseApplication,
         on_delete=models.CASCADE,
-        related_name="salesman_barman_draft",
+        related_name="salesman_barman_request",
     )
     applicant = models.ForeignKey(
         CustomUser,
         on_delete=models.PROTECT,
         null=True,
         blank=True,
-        related_name="salesman_barman_drafts",
+        related_name="salesman_barman_requests",
     )
 
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, blank=True, null=True)
@@ -68,7 +68,7 @@ class SalesmanBarmanDraft(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = 'salesman_barman_draft'
+        db_table = 'salesman_barman_request'
         indexes = [
             models.Index(fields=['new_license_application']),
             models.Index(fields=['applicant']),

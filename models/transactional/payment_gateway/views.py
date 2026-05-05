@@ -1049,7 +1049,7 @@ def billdesk_response(request):
                         sbm_application_id = ""
                         sbm_submit_error = ""
                         if getattr(app, "mode_of_operation", None) in {"Salesman", "Barman"}:
-                            from models.transactional.salesman_barman.models import SalesmanBarmanModel, SalesmanBarmanDraft
+                            from models.transactional.salesman_barman.models import SalesmanBarmanModel, SalesmanBarmanRequest
                             from auth.workflow.constants import WORKFLOW_IDS
                             from auth.workflow.models import WorkflowStage, Workflow
 
@@ -1059,7 +1059,7 @@ def billdesk_response(request):
                                 init = WorkflowStage.objects.filter(workflow=wf, is_initial=True).order_by("id").first()
 
                             if wf and init:
-                                draft = SalesmanBarmanDraft.objects.filter(new_license_application=app).first()
+                                draft = SalesmanBarmanRequest.objects.filter(new_license_application=app).first()
 
                                 sb = (
                                     SalesmanBarmanModel.objects.select_related("workflow", "current_stage", "applicant")
