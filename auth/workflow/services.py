@@ -453,7 +453,15 @@ class WorkflowService:
                 from_stage=application.current_stage,
                 target_stage=requested_target_stage,
             )
-            target_stage = route_approval_to_payment_stage(application, requested_target_stage)
+            # Route to payment-gate only when the application is being approved
+            # from the Commissioner stage. Otherwise earlier steps (e.g. Joint
+            # Commissioner forwarding to Commissioner) would incorrectly attempt
+            # Joint Commissioner -> awaiting_payment, which is not a valid transition.
+            from_name = str(getattr(application.current_stage, "name", "") or "").strip().lower()
+            if from_name in {"commissioner", "commisioner"}:
+                target_stage = route_approval_to_payment_stage(application, requested_target_stage)
+            else:
+                target_stage = requested_target_stage
 
         # ---------- Permission ----------
         if not WorkflowService._has_stage_process_permission(

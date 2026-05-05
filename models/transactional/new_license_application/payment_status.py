@@ -25,6 +25,12 @@ def _is_approval_stage(stage) -> bool:
     name = _stage_name(stage)
     if not name or "reject" in name or "objection" in name:
         return False
+    # New-license flow should progress officer-wise; only Commissioner/Approved
+    # are treated as "approval-ish" for payment-gate routing/normalization.
+    #
+    # NOTE: Secretary is part of the officer flow (stage 6) and has its own
+    # explicit transition to `awaiting_payment` (stage 23). We do not include
+    # it here to avoid accidentally skipping Secretary when Commissioner approves.
     if name in {"approved", "commissioner", "commisioner"}:
         return True
     if ("commissioner" in name or "commisioner" in name) and "approv" in name:
@@ -198,10 +204,26 @@ def sync_new_license_payment_status(application):
             application.is_approved = True
             update_fields.append("is_approved")
     else:
+        # IMPORTANT:
+        # Do not force every unpaid new-license application into the payment-gate
+        # stage. It must progress officer-wise (District -> Site Enquiry -> JC -> Commissioner).
+        #
+        # Only enforce/normalize the payment-gate stage when the application is already
+        # in the payment-gate itself (awaiting/payment stage). Moving to payment-gate
+        # is handled by explicit workflow transitions (e.g. Commissioner approve).
+        current_stage = getattr(application, "current_stage", None)
+        current_name = _stage_name(current_stage)
         awaiting_stage = get_awaiting_payment_stage(application)
-        if awaiting_stage and application.current_stage_id != awaiting_stage.id:
-            application.current_stage = awaiting_stage
-            update_fields.append("current_stage")
+        is_current_payment_gate = bool(
+            (awaiting_stage and application.current_stage_id == awaiting_stage.id)
+            or ("payment" in current_name)
+            or ("awaiting" in current_name and "payment" in current_name)
+        )
+
+        if awaiting_stage and is_current_payment_gate:
+            if application.current_stage_id != awaiting_stage.id:
+                application.current_stage = awaiting_stage
+                update_fields.append("current_stage")
         if getattr(application, "is_approved", False):
             application.is_approved = False
             update_fields.append("is_approved")

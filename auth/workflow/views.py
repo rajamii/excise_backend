@@ -206,6 +206,20 @@ def get_next_stages(request, application_id):
         from_stage=current_stage
     ).order_by('id')
 
+    # New-license: Commissioner approval should move to awaiting_payment (stage 23).
+    # If both Commissioner -> Secretary and Commissioner -> awaiting_payment transitions exist,
+    # hide the Secretary option to avoid mis-routing.
+    try:
+        is_new_license_application = application.__class__.__name__.lower() == "newlicenseapplication"
+        current_stage_name = str(getattr(current_stage, "name", "") or "").strip().lower()
+        if is_new_license_application and current_stage_name in {"commissioner", "commisioner"}:
+            has_awaiting_payment = transitions.filter(to_stage__name__iexact="awaiting_payment").exists()
+            if has_awaiting_payment:
+                transitions = transitions.exclude(to_stage__name__iexact="Secretary")
+    except Exception:
+        # Keep action discovery resilient; fallback to showing configured transitions.
+        pass
+
     # Hide actions that don't match the current user's transition role condition.
     if not request.user.is_superuser:
         transitions = [
