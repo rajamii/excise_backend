@@ -434,9 +434,11 @@ class WorkflowService:
         context = context or {}
         # Some deployments register the model under different app_labels; rely on model name.
         is_new_license_application = application.__class__.__name__.lower() == "newlicenseapplication"
+        is_salesman_barman_application = application.__class__.__name__.lower() == "salesmanbarmanmodel"
 
         requested_target_stage = target_stage
         sync_new_license_payment_status = None
+        sync_salesman_barman_payment_status = None
         if is_new_license_application:
             from models.transactional.new_license_application.payment_status import (
                 route_approval_to_payment_stage,
@@ -462,6 +464,27 @@ class WorkflowService:
                 target_stage = route_approval_to_payment_stage(application, requested_target_stage)
             else:
                 target_stage = requested_target_stage
+
+        if is_salesman_barman_application:
+            from models.transactional.salesman_barman.payment_status import (
+                route_approval_to_payment_stage as route_sb_approval_to_payment_stage,
+                enforce_salesman_barman_payment_gate,
+                sync_salesman_barman_payment_status as _sync_salesman_barman_payment_status,
+            )
+            sync_salesman_barman_payment_status = _sync_salesman_barman_payment_status
+
+            enforce_salesman_barman_payment_gate(
+                application,
+                from_stage=application.current_stage,
+                target_stage=requested_target_stage,
+                context=context,
+            )
+            target_stage = route_sb_approval_to_payment_stage(
+                application,
+                from_stage=application.current_stage,
+                target_stage=requested_target_stage,
+                context=context,
+            )
 
         # ---------- Permission ----------
         if not WorkflowService._has_stage_process_permission(
@@ -529,6 +552,13 @@ class WorkflowService:
 
         if is_new_license_application and sync_new_license_payment_status:
             sync_new_license_payment_status(application)
+            refresh_fields = ['current_stage']
+            if hasattr(application, 'is_approved'):
+                refresh_fields.append('is_approved')
+            application.refresh_from_db(fields=refresh_fields)
+
+        if is_salesman_barman_application and sync_salesman_barman_payment_status:
+            sync_salesman_barman_payment_status(application)
             refresh_fields = ['current_stage']
             if hasattr(application, 'is_approved'):
                 refresh_fields.append('is_approved')

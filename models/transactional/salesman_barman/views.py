@@ -239,6 +239,19 @@ def pay_registration_fee_wallet(request, application_id):
     if application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    # Only allow payment once the application is routed to awaiting_payment.
+    try:
+        from models.transactional.salesman_barman.payment_status import get_awaiting_payment_stage
+
+        awaiting_stage = get_awaiting_payment_stage(application)
+        if awaiting_stage and application.current_stage_id != awaiting_stage.id:
+            return Response(
+                {"detail": "Application is not in payment stage."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    except Exception:
+        pass
+
     lic = _resolve_sb_license_for_application(application)
     if not lic:
         return Response({"detail": "License not issued yet."}, status=status.HTTP_400_BAD_REQUEST)
@@ -266,6 +279,12 @@ def pay_registration_fee_wallet(request, application_id):
 
     # Advance to final approved stage if configured.
     try:
+        if not application.is_approved:
+            application.is_approved = True
+        if hasattr(application, "is_print_fee_paid") and not application.is_print_fee_paid:
+            application.is_print_fee_paid = True
+        application.save(update_fields=["is_approved", "is_print_fee_paid"])
+
         approved_stage = (
             application.workflow.stages.filter(name__iexact="approved").order_by("id").first()
             if getattr(application, "workflow_id", None)
@@ -280,9 +299,6 @@ def pay_registration_fee_wallet(request, application_id):
                 remarks="Salesman/Barman registration fee paid via wallet",
             )
             application.refresh_from_db()
-            if application.current_stage_id == approved_stage.id and not application.is_approved:
-                application.is_approved = True
-                application.save(update_fields=["is_approved"])
     except Exception:
         # Payment succeeded; keep stage as-is if workflow advance fails.
         pass
