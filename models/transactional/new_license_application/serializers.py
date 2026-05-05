@@ -12,6 +12,7 @@ from models.masters.core.models import (
     LicenseType,
     Road,
     LicenseFee,
+    Location,
 )
 from utils.fields import CodeRelatedField
 from . import helpers
@@ -129,10 +130,66 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
 
     def _resolve_license_fee(self, obj) -> LicenseFee | None:
         fee_id = getattr(obj, "licensee_fee_id", None)
-        if not fee_id:
-            return None
+        if fee_id:
+            try:
+                fee = LicenseFee.objects.filter(id=int(fee_id), is_active=True).first()
+                if fee:
+                    return fee
+            except Exception:
+                pass
+
+        # Fallback: resolve fee row from category/subcategory (+ location when available).
+        # Some deployments store `licensee_fee_id` only after commissioner approval; for
+        # awaiting-payment screens we still need to show the configured amounts.
         try:
-            return LicenseFee.objects.filter(id=int(fee_id), is_active=True).first()
+            cat_id = getattr(obj, "license_category_id", None)
+            scat_id = getattr(obj, "license_sub_category_id", None)
+            if not cat_id or not scat_id:
+                return None
+
+            district_code = None
+            try:
+                district_code = getattr(getattr(obj, "site_district", None), "district_code", None)
+            except Exception:
+                district_code = None
+
+            location_code = None
+            if district_code is not None:
+                location = (
+                    Location.objects.filter(district_code=district_code, is_active=True)
+                    .order_by("location_code")
+                    .first()
+                )
+                location_code = getattr(location, "location_code", None) if location else None
+
+            qs = LicenseFee.objects.filter(is_active=True)
+
+            # Prefer direct FK-id match.
+            direct = qs.filter(
+                license_category_id=int(cat_id),
+                license_subcategory_id=int(scat_id),
+            )
+            if location_code is not None:
+                direct = direct.filter(location_code_id=int(location_code))
+            fee = direct.order_by("id").first()
+            if fee:
+                return fee
+
+            # Fallback: match by legacy codes stored on masters.
+            category = getattr(obj, "license_category", None)
+            subcategory = getattr(obj, "license_sub_category", None)
+            cat_code = getattr(category, "old_license_cat_code", None)
+            scat_code = getattr(subcategory, "old_license_scat_code", None)
+            if cat_code is None or scat_code is None:
+                return None
+
+            legacy = qs.filter(
+                license_category__old_license_cat_code=int(cat_code),
+                license_subcategory__old_license_scat_code=int(scat_code),
+            )
+            if location_code is not None:
+                legacy = legacy.filter(location_code_id=int(location_code))
+            return legacy.order_by("id").first()
         except Exception:
             return None
 
