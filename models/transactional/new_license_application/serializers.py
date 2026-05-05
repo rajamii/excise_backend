@@ -65,6 +65,12 @@ class ObjectionSerializer(serializers.ModelSerializer):
 class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     # Salesman/Barman details captured during new license flow (stored in salesman_barman_application)
     member_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    member_father_husband_name = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    member_gender = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    member_dob = serializers.DateField(required=False, allow_null=True, write_only=True)
+    member_nationality = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    member_address = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
+    member_pan = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
     member_mobile_number = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
     member_email = serializers.EmailField(required=False, allow_blank=True, allow_null=True, write_only=True)
     aadhaar = serializers.CharField(required=False, allow_blank=True, allow_null=True, write_only=True)
@@ -166,6 +172,12 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         # Extract salesman/barman draft details before creating the new license application
         member_payload = {
             "member_name": validated_data.pop("member_name", None),
+            "member_father_husband_name": validated_data.pop("member_father_husband_name", None),
+            "member_gender": validated_data.pop("member_gender", None),
+            "member_dob": validated_data.pop("member_dob", None),
+            "member_nationality": validated_data.pop("member_nationality", None),
+            "member_address": validated_data.pop("member_address", None),
+            "member_pan": validated_data.pop("member_pan", None),
             "member_mobile_number": validated_data.pop("member_mobile_number", None),
             "member_email": validated_data.pop("member_email", None),
             "aadhaar": validated_data.pop("aadhaar", None),
@@ -187,7 +199,7 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
             user = getattr(request, "user", None) if request else None
             mode = getattr(application, "mode_of_operation", None)
             if mode in {"Salesman", "Barman"}:
-                from models.transactional.salesman_barman.models import SalesmanBarmanRequest, SalesmanBarmanModel
+                from models.transactional.salesman_barman.models import SalesmanBarmanModel
                 from auth.workflow.constants import WORKFLOW_IDS
                 from auth.workflow.models import WorkflowStage, Workflow
 
@@ -196,53 +208,6 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
                 first_name = parts[0] if parts else None
                 last_name = parts[-1] if len(parts) > 1 else (parts[0] if parts else None)
                 middle_name = " ".join(parts[1:-1]) if len(parts) > 2 else None
-
-                draft, _ = SalesmanBarmanRequest.objects.get_or_create(
-                    new_license_application=application,
-                    defaults={
-                        "applicant": user,
-                        "role": mode,
-                        "firstName": first_name,
-                        "middleName": middle_name,
-                        "lastName": last_name,
-                        "mobileNumber": member_payload.get("member_mobile_number"),
-                        "emailId": member_payload.get("member_email"),
-                        "aadhaar": member_payload.get("aadhaar"),
-                        "sikkimSubject": member_payload.get("sikkim_subject") if member_payload.get("sikkim_subject") is not None else False,
-                        "passPhoto": member_payload.get("member_pass_photo"),
-                        "aadhaarCard": member_payload.get("member_aadhaar_card"),
-                        "residentialCertificate": member_payload.get("member_residential_certificate"),
-                        "dateofBirthProof": member_payload.get("member_dob_proof"),
-                     },
-                 )
-                if not _:
-                    if user and not getattr(draft, "applicant_id", None):
-                        draft.applicant = user
-                    if mode:
-                        draft.role = mode
-                    if first_name:
-                        draft.firstName = first_name
-                    if middle_name is not None:
-                        draft.middleName = middle_name
-                    if last_name:
-                        draft.lastName = last_name
-                    if member_payload.get("member_mobile_number"):
-                        draft.mobileNumber = member_payload.get("member_mobile_number")
-                    if member_payload.get("member_email"):
-                        draft.emailId = member_payload.get("member_email")
-                    if member_payload.get("aadhaar"):
-                        draft.aadhaar = member_payload.get("aadhaar")
-                    if member_payload.get("sikkim_subject") is not None:
-                        draft.sikkimSubject = member_payload.get("sikkim_subject")
-                    if member_payload.get("member_pass_photo"):
-                        draft.passPhoto = member_payload.get("member_pass_photo")
-                    if member_payload.get("member_aadhaar_card"):
-                        draft.aadhaarCard = member_payload.get("member_aadhaar_card")
-                    if member_payload.get("member_residential_certificate"):
-                        draft.residentialCertificate = member_payload.get("member_residential_certificate")
-                    if member_payload.get("member_dob_proof"):
-                        draft.dateofBirthProof = member_payload.get("member_dob_proof")
-                    draft.save()
 
                 # Ensure a linked Salesman/Barman application exists so the licensee can see it in
                 # Salesman/Barman Registration even while New License payment is pending.
@@ -272,30 +237,69 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
                             role=mode,
                         )
 
-                    # Populate from the draft (best-effort; keep partials allowed for linked apps)
-                    for attr in [
-                        "role",
-                        "firstName",
-                        "middleName",
-                        "lastName",
-                        "fatherHusbandName",
-                        "gender",
-                        "dob",
-                        "nationality",
-                        "address",
-                        "pan",
-                        "aadhaar",
-                        "mobileNumber",
-                        "emailId",
-                        "sikkimSubject",
-                        "passPhoto",
-                        "aadhaarCard",
-                        "residentialCertificate",
-                        "dateofBirthProof",
-                    ]:
-                        val = getattr(draft, attr, None)
-                        if val not in (None, "", False):
-                            setattr(sb, attr, val)
+                    # Populate from the member payload (best-effort; keep partials allowed for linked apps)
+                    if mode:
+                        sb.role = mode
+                    if first_name:
+                        sb.firstName = first_name
+                    if middle_name is not None:
+                        sb.middleName = middle_name
+                    if last_name:
+                        sb.lastName = last_name
+
+                    father_husband_name = member_payload.get("member_father_husband_name")
+                    if father_husband_name in (None, ""):
+                        father_husband_name = getattr(application, "father_husband_name", None)
+                    if father_husband_name not in (None, ""):
+                        sb.fatherHusbandName = father_husband_name
+
+                    gender = member_payload.get("member_gender")
+                    if gender in (None, ""):
+                        gender = getattr(application, "gender", None)
+                    if gender not in (None, ""):
+                        sb.gender = gender
+
+                    dob = member_payload.get("member_dob")
+                    if dob is None:
+                        dob = getattr(application, "dob", None)
+                    if dob is not None:
+                        sb.dob = dob
+
+                    nationality = member_payload.get("member_nationality")
+                    if nationality in (None, ""):
+                        nationality = getattr(application, "nationality", None)
+                    if nationality not in (None, ""):
+                        sb.nationality = nationality
+
+                    address = member_payload.get("member_address")
+                    if address in (None, ""):
+                        address = getattr(application, "present_address", None) or getattr(application, "permanent_address", None)
+                    if address not in (None, ""):
+                        sb.address = address
+
+                    pan = member_payload.get("member_pan")
+                    if pan in (None, ""):
+                        pan = getattr(application, "pan", None)
+                    if pan not in (None, ""):
+                        sb.pan = pan
+
+                    if member_payload.get("aadhaar") not in (None, ""):
+                        sb.aadhaar = member_payload.get("aadhaar")
+                    if member_payload.get("member_mobile_number") not in (None, ""):
+                        sb.mobileNumber = member_payload.get("member_mobile_number")
+                    if member_payload.get("member_email") not in (None, ""):
+                        sb.emailId = member_payload.get("member_email")
+                    if member_payload.get("sikkim_subject") is not None:
+                        sb.sikkimSubject = member_payload.get("sikkim_subject")
+
+                    if member_payload.get("member_pass_photo") is not None:
+                        sb.passPhoto = member_payload.get("member_pass_photo")
+                    if member_payload.get("member_aadhaar_card") is not None:
+                        sb.aadhaarCard = member_payload.get("member_aadhaar_card")
+                    if member_payload.get("member_residential_certificate") is not None:
+                        sb.residentialCertificate = member_payload.get("member_residential_certificate")
+                    if member_payload.get("member_dob_proof") is not None:
+                        sb.dateofBirthProof = member_payload.get("member_dob_proof")
 
                     if user and not getattr(sb, "applicant_id", None):
                         sb.applicant = user
