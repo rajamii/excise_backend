@@ -40,6 +40,8 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
     license_category_name = serializers.CharField(source='license_category.license_category', read_only=True)
     renewal_of_license_id = serializers.CharField(source='renewal_of.license_id', read_only=True)
+    applicant_username = serializers.CharField(source='applicant.username', read_only=True)
+    applicant_full_name = serializers.SerializerMethodField()
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)
     objections = WorkflowObjectionSerializer(many=True, read_only=True)
     application_fee_payment_status = serializers.SerializerMethodField()
@@ -59,6 +61,17 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
             'applicant',
             'workflow'
             ]
+
+    def get_applicant_full_name(self, obj):
+        applicant = obj.applicant
+        if not applicant:
+            return None
+        parts = [
+            str(applicant.first_name or '').strip(),
+            str(applicant.middle_name or '').strip(),
+            str(applicant.last_name or '').strip(),
+        ]
+        return ' '.join(p for p in parts if p) or applicant.username or None
 
     def get_latest_transaction(self, obj):
         tx = obj.transactions.order_by('-timestamp').first()
