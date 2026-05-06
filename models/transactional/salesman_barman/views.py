@@ -263,11 +263,39 @@ def pay_registration_fee_wallet(request, application_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    # The wallet is keyed by the licensee's NLI license ID (the one recharged via BillDesk),
+    # not the SB license ID. Resolve the NLI license ID from the linked NLI application,
+    # falling back to the applicant's username so _resolve_wallet_row_licensee_id can find
+    # the correct wallet row.
+    nli_app = getattr(application, "new_license_application", None)
+    nli_license_id = None
+    if nli_app:
+        try:
+            from django.contrib.contenttypes.models import ContentType as CT
+            from models.masters.license.models import License as Lic
+            from models.transactional.new_license_application.models import NewLicenseApplication as NLI
+            nli_ct = CT.objects.get_for_model(NLI)
+            nli_lic = (
+                Lic.objects.filter(
+                    source_type="new_license_application",
+                    source_content_type=nli_ct,
+                    source_object_id=str(nli_app.pk),
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if nli_lic:
+                nli_license_id = str(nli_lic.license_id).strip()
+        except Exception:
+            pass
+
+    wallet_licensee_id = nli_license_id or str(getattr(request.user, "username", "") or "").strip()
+
     txn_id = secrets.token_hex(12).upper()
     try:
         debit_wallet_balance(
             transaction_id=txn_id,
-            licensee_id=str(lic.license_id),
+            licensee_id=wallet_licensee_id,
             wallet_type="license_fee",
             head_of_account=COMMON_LICENSE_FEE_HOA,
             amount=amount,
