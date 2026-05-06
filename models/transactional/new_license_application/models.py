@@ -188,6 +188,8 @@ class NewLicenseApplication(models.Model):
     def save(self, *args, **kwargs):
         if not self.application_id:
             self.application_id = self.generate_application_id()
+            # Force INSERT for new records so auto_now_add fields are populated correctly.
+            kwargs.setdefault('force_insert', True)
 
         # Best-effort: auto-fill (or refresh) `licensee_fee_id` based on current fields.
         # This is intentionally non-blocking: fee configuration differs across deployments.
