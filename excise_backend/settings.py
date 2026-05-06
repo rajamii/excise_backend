@@ -67,6 +67,7 @@ INSTALLED_APPS = [
     'models.masters.core',
     'models.masters.license',
     'models.masters.contact_us',
+    'models.masters.about_us',
     'models.masters.company_collaboration',
 
     'models.masters.supply_chain.bulk_spirit',
@@ -159,9 +160,9 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'eAbkari_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'postgres',  # Your PostgreSQL password
+        'PASSWORD': 'postgres',  # Your PostgreSQL password     
         'HOST': 'localhost',        # Default host
-        'PORT': '5433',             # Default PostgreSQL port
+        'PORT': '5432',             # Default PostgreSQL port
         'CONN_MAX_AGE': 0,          # Don't reuse connections — avoids aborted transaction state
     }
 }
@@ -289,3 +290,4 @@ CAPTCHA_FILTER_FUNCTIONS = ()
 CAPTCHA_LETTER_COLOR_FUNCT = "auth.user.captcha_helpers.random_letter_color_dark"
 CAPTCHA_FOREGROUND_COLOR = "#2b2b2b"
 CAPTCHA_BACKGROUND_COLOR = "#ffffff"
+
