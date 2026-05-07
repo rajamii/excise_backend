@@ -15,6 +15,7 @@ register_converter(EverythingConverter, 'everything')
 urlpatterns = [
     # Create a new license application (POST)
     path('apply/', views.create_new_license_application, name='new-license-apply'),
+    path('apply/draft/', views.create_new_license_application_draft, name='new-license-apply-draft'),
 
     # List all license applications (GET)
     path('list/', views.list_license_applications, name='new-license-list-all'),
@@ -37,4 +38,8 @@ urlpatterns = [
 
     # Print License
     path('<everything:application_id>/print/', views.print_license_view, name='print-license'),
+
+    # Wallet fee payments (post-commissioner approval)
+    path('<everything:application_id>/pay-license-fee/', views.pay_license_fee_wallet, name='pay-license-fee-wallet'),
+    path('<everything:application_id>/pay-security-fee/', views.pay_security_fee_wallet, name='pay-security-fee-wallet'),
 ]

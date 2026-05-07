@@ -3,7 +3,16 @@ from django.contrib.contenttypes.fields import GenericRelation
 from django.utils.timezone import now
 from . import helpers
 from models.masters.license.models import License
-from models.masters.core.models import District, Subdivision, PoliceStation, LicenseCategory, LicenseSubcategory, LicenseType
+from models.masters.core.models import (
+    District,
+    Subdivision,
+    PoliceStation,
+    LicenseCategory,
+    LicenseSubcategory,
+    LicenseType,
+    LicenseFee,
+    Location,
+)
 from auth.user.models import CustomUser
 
 from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
@@ -19,13 +28,14 @@ class NewLicenseApplication(models.Model):
 
     # System flags
     is_approved = models.BooleanField(default=False)
-    print_count = models.PositiveIntegerField(default=0)
-    is_print_fee_paid = models.BooleanField(default=False)
+    is_application_fee_paid = models.BooleanField(default=False)
     is_fee_calculated = models.BooleanField(default=False) #For Level 1
     is_license_fee_paid = models.BooleanField(default=False)
+    is_security_fee_paid = models.BooleanField(default=False)
     is_license_category_updated = models.BooleanField(default=False) # For Level 2
-    
-    yearly_license_fee = models.CharField(max_length=100, blank=True, null=True)
+
+    # Points to masters.core.LicenseFee.id (kept as an integer for API compatibility).
+    licensee_fee_id = models.PositiveBigIntegerField(blank=True, null=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -38,6 +48,7 @@ class NewLicenseApplication(models.Model):
     license_sub_category = models.ForeignKey(LicenseSubcategory, on_delete=models.PROTECT)
     establishment_name = models.CharField(max_length=150)
     site_type = models.CharField(max_length=10, choices=[('New', 'New'), ('Existing', 'Existing')])
+    existing_site_license = models.CharField(max_length=100, blank=True, null=True)
 
     # === Applicant Details ===
     applicant_name = models.CharField(max_length=150)
@@ -46,15 +57,21 @@ class NewLicenseApplication(models.Model):
     gender = models.CharField(max_length=10, choices=[('Male', 'Male'), ('Female', 'Female')])
     nationality = models.CharField(max_length=50)
     residential_status = models.CharField(max_length=20, choices=[('Resident', 'Resident'), ('Non-Resident', 'Non-Resident')])
+    marital_status = models.CharField(max_length=20, blank=True, null=True)
     present_address = models.TextField()
     permanent_address = models.TextField()
     pan = models.CharField(max_length=10)
     email = models.EmailField()
     mobile_number = models.CharField(max_length=10)
     mode_of_operation = models.CharField(max_length=20, choices=[('Self', 'Self'), ('Salesman', 'Salesman'), ('Barman', 'Barman')])
+    coi_rc_ss = models.CharField(max_length=50, blank=True, null=True)
     has_sikkim_certificate = models.CharField(max_length=3, choices=[('Yes', 'Yes'), ('No', 'No')])
     has_excise_license = models.CharField(max_length=3, choices=[('Yes', 'Yes'), ('No', 'No')])
+    existing_license_category_id = models.PositiveBigIntegerField(blank=True, null=True)
+    existing_license_no = models.CharField(max_length=100, blank=True, null=True)
     family_excise_license = models.CharField(max_length=3, choices=[('Yes', 'Yes'), ('No', 'No')])
+    family_license_category_id = models.PositiveBigIntegerField(blank=True, null=True)
+    family_license_no = models.CharField(max_length=100, blank=True, null=True)
     criminal_conviction = models.CharField(max_length=3, choices=[('Yes', 'Yes'), ('No', 'No')])
 
     # === Site Details ===
@@ -62,6 +79,7 @@ class NewLicenseApplication(models.Model):
     site_subdivision = models.ForeignKey(Subdivision, on_delete=models.PROTECT, related_name='new_license_site_subdivisions')
     police_station = models.ForeignKey(PoliceStation, on_delete=models.PROTECT)
     location_category = models.CharField(max_length=100)
+    location_subcategory = models.CharField(max_length=100, blank=True, null=True)
     location_name = models.CharField(max_length=100)
     ward_name = models.CharField(max_length=100)
     business_address = models.TextField()
@@ -72,6 +90,12 @@ class NewLicenseApplication(models.Model):
     breadth = models.DecimalField(max_digits=6, decimal_places=2, blank=True, null=True)
     site_owned = models.CharField(max_length=3, choices=[('Yes', 'Yes'), ('No', 'No')])
     noc_obtained = models.CharField(max_length=3, choices=[('Yes', 'Yes'), ('No', 'No')])
+    trade_license_covered = models.CharField(
+        max_length=3,
+        choices=[('Yes', 'Yes'), ('No', 'No')],
+        blank=True,
+        null=True,
+    )
 
     # === Company Details (Conditional) ===
     company_name = models.CharField(max_length=255, blank=True, null=True)
@@ -88,6 +112,11 @@ class NewLicenseApplication(models.Model):
     sikkim_certificate = models.FileField(upload_to=upload_document_path)
     dob_proof = models.FileField(upload_to=upload_document_path)
     noc_landlord = models.FileField(upload_to=upload_document_path, blank=True, null=True)
+
+    # Additional uploads used by Apply New License (frontend FormData)
+    parcha = models.FileField(upload_to=upload_document_path, blank=True, null=True)
+    noc = models.FileField(upload_to=upload_document_path, blank=True, null=True)
+    trade_license = models.FileField(upload_to=upload_document_path, blank=True, null=True)
 
     applicant = models.ForeignKey(
         CustomUser,
@@ -118,19 +147,20 @@ class NewLicenseApplication(models.Model):
         related_query_name='new_license_application'
     )
 
-    def record_license_print(self, fee_paid=False):
-        self.print_count += 1
-        if self.print_count > 5 and fee_paid:
-            self.is_print_fee_paid = True
-        self.save()
-    
-    def can_print_license(self):
-        if self.print_count < 5:
-            return True, 0  # Allowed to print, no fee required
-        elif self.is_print_fee_paid:
-            return True, 500  # Allowed to print, fee has been paid
-        else:
-            return False, 500  # Not allowed, fee required
+    @property
+    def yearly_license_fee(self) -> str | None:
+        """
+        Backward-compatible read-only attribute.
+        Historically stored as a string field; now resolved from `licensee_fee_id`.
+        """
+        fee_id = getattr(self, "licensee_fee_id", None)
+        if not fee_id:
+            return None
+        try:
+            fee = LicenseFee.objects.filter(id=int(fee_id), is_active=True).first()
+            return str(getattr(fee, "license_fee", "") or "") if fee else None
+        except Exception:
+            return None
         
     def clean(self):
         if self.license_type:
@@ -158,6 +188,70 @@ class NewLicenseApplication(models.Model):
     def save(self, *args, **kwargs):
         if not self.application_id:
             self.application_id = self.generate_application_id()
+            # Force INSERT for new records so auto_now_add fields are populated correctly.
+            kwargs.setdefault('force_insert', True)
+
+        # Best-effort: auto-fill (or refresh) `licensee_fee_id` based on current fields.
+        # This is intentionally non-blocking: fee configuration differs across deployments.
+        if self.license_category_id and self.license_sub_category_id and self.site_district_id:
+            try:
+                district_code = getattr(self.site_district, "district_code", None)
+                if district_code is None:
+                    district_code = self.site_district_id
+
+                location = (
+                    Location.objects.filter(district_code=district_code, is_active=True)
+                    .order_by("location_code")
+                    .first()
+                )
+                location_code = getattr(location, "location_code", None) if location else None
+
+                def _pick_fee():
+                    qs = LicenseFee.objects.filter(is_active=True)
+                    direct = qs.filter(
+                        license_category_id=self.license_category_id,
+                        license_subcategory_id=self.license_sub_category_id,
+                    )
+                    if location_code is not None:
+                        direct = direct.filter(location_code_id=location_code)
+                    fee = direct.order_by("id").first()
+                    if fee:
+                        return fee
+
+                    # Fallback: fee rows may not be location-specific.
+                    fee = qs.filter(
+                        license_category_id=self.license_category_id,
+                        license_subcategory_id=self.license_sub_category_id,
+                    ).order_by("id").first()
+                    if fee:
+                        return fee
+
+                    cat_code = getattr(self.license_category, "old_license_cat_code", None)
+                    scat_code = getattr(self.license_sub_category, "old_license_scat_code", None)
+                    if cat_code is None or scat_code is None:
+                        return None
+                    legacy = qs.filter(
+                        license_category__old_license_cat_code=int(cat_code),
+                        license_subcategory__old_license_scat_code=int(scat_code),
+                    )
+                    if location_code is not None:
+                        legacy = legacy.filter(location_code_id=location_code)
+                    fee = legacy.order_by("id").first()
+                    if fee:
+                        return fee
+
+                    return qs.filter(
+                        license_category__old_license_cat_code=int(cat_code),
+                        license_subcategory__old_license_scat_code=int(scat_code),
+                    ).order_by("id").first()
+
+                fee = _pick_fee()
+                if fee:
+                    # Refresh if missing or stale.
+                    if not self.licensee_fee_id or int(self.licensee_fee_id) != int(fee.id):
+                        self.licensee_fee_id = int(fee.id)
+            except Exception:
+                pass
         super().save(*args, **kwargs)
 
     def generate_application_id(self):

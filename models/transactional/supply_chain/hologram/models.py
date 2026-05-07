@@ -3,7 +3,7 @@ from django.utils import timezone
 from django.contrib.contenttypes.fields import GenericRelation
 from django.conf import settings
 from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
-from models.masters.supply_chain.profile.models import SupplyChainUserProfile
+from models.masters.supply_chain.profile.models import UserManufacturingUnit
 import logging
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ class HologramProcurement(models.Model):
     STATUS_CARTOON_ASSIGNED = 'Cartoon Assigned'
 
     ref_no = models.CharField(max_length=50, unique=True)
-    licensee = models.ForeignKey(SupplyChainUserProfile, on_delete=models.CASCADE, related_name='hologram_procurements')
+    licensee = models.ForeignKey(UserManufacturingUnit, on_delete=models.PROTECT, related_name='hologram_procurements')
     license = models.ForeignKey('license.License', on_delete=models.PROTECT, related_name='hologram_procurements_by_license', null=True, blank=True, help_text='License associated with this hologram procurement')
     manufacturing_unit = models.CharField(max_length=255) # Storing name for display
     date = models.DateTimeField(default=timezone.now)
@@ -73,7 +73,7 @@ class HologramRequest(models.Model):
     STATUS_APPROVED = 'Approved by OIC'
     
     ref_no = models.CharField(max_length=50, unique=True)
-    licensee = models.ForeignKey(SupplyChainUserProfile, on_delete=models.CASCADE, related_name='hologram_requests')
+    licensee = models.ForeignKey(UserManufacturingUnit, on_delete=models.PROTECT, related_name='hologram_requests')
     # Denormalized license for strict OIC/licensee ownership scoping.
     license_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     submission_date = models.DateTimeField(default=timezone.now)
@@ -311,7 +311,7 @@ class DailyHologramRegister(models.Model):
     ]
     
     # Link to Licensee
-    licensee = models.ForeignKey(SupplyChainUserProfile, on_delete=models.CASCADE, related_name='daily_register_entries')
+    licensee = models.ForeignKey(UserManufacturingUnit, on_delete=models.PROTECT, related_name='daily_register_entries')
     # Denormalized license for strict user/OIC ownership scoping.
     license_id = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     

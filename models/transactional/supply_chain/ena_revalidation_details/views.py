@@ -338,10 +338,12 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         req_license = str(getattr(revalidation, 'licensee_id', '') or '').strip()
         candidates.extend(self._expand_license_aliases(req_license))
 
-        profile_license = ''
-        if hasattr(user, 'supply_chain_profile'):
-            profile_license = str(getattr(user.supply_chain_profile, 'licensee_id', '') or '').strip()
-        candidates.extend(self._expand_license_aliases(profile_license))
+        try:
+            if hasattr(user, 'manufacturing_units'):
+                for raw_id in user.manufacturing_units.exclude(licensee_id__isnull=True).exclude(licensee_id='').values_list('licensee_id', flat=True):
+                    candidates.extend(self._expand_license_aliases(raw_id))
+        except Exception:
+            pass
 
         try:
             from models.masters.license.models import License
@@ -373,7 +375,8 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         return ordered
 
     def _debit_wallet_for_revalidation_submission(self, revalidation, user):
-        from models.transactional.payment.models import WalletBalance, WalletTransaction
+        from models.transactional.wallet.models import WalletBalance, WalletTransaction
+        from django.db.models import Q
 
         try:
             amount = Decimal(
@@ -410,33 +413,39 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
 
         wallet = None
         resolved_licensee_id = ''
+        username = str(getattr(user, 'username', '') or '').strip()
+
+        wallet_filter = Q(licensee_id__in=candidates)
+        if username:
+            wallet_filter |= Q(user_id__iexact=username)
 
         for cid in candidates:
             wallet = (
                 WalletBalance.objects.select_for_update()
-                .filter(licensee_id=cid, wallet_type__iexact='excise')
+                .filter(wallet_filter, wallet_type__iexact='excise')
                 .order_by('wallet_balance_id')
                 .first()
             )
             if wallet:
-                resolved_licensee_id = cid
+                resolved_licensee_id = str(getattr(wallet, 'licensee_id', '') or cid)
                 break
 
         if not wallet:
             for cid in candidates:
                 wallet = (
                     WalletBalance.objects.select_for_update()
-                    .filter(licensee_id=cid, wallet_type__iexact='brewery')
+                    .filter(wallet_filter, wallet_type__iexact='brewery')
                     .order_by('wallet_balance_id')
                     .first()
                 )
                 if wallet:
-                    resolved_licensee_id = cid
+                    resolved_licensee_id = str(getattr(wallet, 'licensee_id', '') or cid)
                     break
 
         if not wallet:
             raise ValueError(
-                f"Wallet not found for licensee_id. Tried: {', '.join(candidates)}"
+                f"Wallet not found for licensee_id/user_id. Tried licensee_id: {', '.join(candidates)}"
+                + (f", user_id={username}" if username else "")
             )
 
         current_balance = Decimal(str(wallet.current_balance or 0))
@@ -700,7 +709,12 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
 
             # Determine Role
             user = request.user
-            if not has_workflow_access(user, WORKFLOW_IDS['ENA_REVALIDATION']) and not hasattr(user, 'supply_chain_profile'):
+            if not has_workflow_access(user, WORKFLOW_IDS['ENA_REVALIDATION']) and not scope_by_profile_or_workflow(
+                user,
+                EnaRevalidationDetail.objects.filter(pk=revalidation.pk),
+                WORKFLOW_IDS['ENA_REVALIDATION'],
+                licensee_field='licensee_id',
+            ).exists():
                 return Response({'error': 'Unauthorized role for this workflow'}, status=status.HTTP_403_FORBIDDEN)
 
             # Use Workflow Service

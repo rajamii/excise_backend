@@ -9,25 +9,33 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def _stage_is_commissioner_approval(stage, *, application_model: str) -> bool:
+def _stage_is_commissioner_approval(stage) -> bool:
     """
     New license applications: license + wallet_balances (0 balance) are issued only when
     the workflow stage is a commissioner approval (not OIC / other intermediate approvals).
-    Stage name must reference commissioner and an approval (not rejection).
+    Stage name may be stored as just `Commissioner` in the DB; treat that as approval for
+    new-license issuance and wallet initialization.
     """
     if not stage:
         return False
     name_lower = str(getattr(stage, "name", "") or "").strip().lower()
     if not name_lower or "reject" in name_lower:
         return False
-    app = (application_model or "").lower()
-    if app != "newlicenseapplication":
+    # Exclude Joint Commissioner stage (it is an intermediate review stage in workflow_id=1).
+    if "joint" in name_lower:
         return False
-    if "commissioner" not in name_lower and "commisioner" not in name_lower:
-        return False
-    if "approv" not in name_lower:
-        return False
-    return True
+
+    # Some datasets store commissioner stage as exactly "Commissioner"/"Commisioner" without "approve".
+    if name_lower in {"commissioner", "commisioner"}:
+        return True
+
+    # More explicit naming variants (Commissioner Approval / Approved by Commissioner / etc.)
+    if ("commissioner" in name_lower or "commisioner" in name_lower) and (
+        "approv" in name_lower or "approved" in name_lower
+    ):
+        return True
+
+    return False
 
 
 def _stage_is_awaiting_license_fee_payment(stage, *, application_model: str) -> bool:
@@ -69,12 +77,31 @@ def _stage_should_issue_license(stage, *, application_model: str) -> bool:
 
     app = (application_model or "").lower()
     if app == "newlicenseapplication":
-        return (
-            _stage_is_commissioner_approval(stage, application_model=application_model)
+        # Different deployments use slightly different stage naming:
+        # - "Commissioner" (or "Commissioner Approval")
+        # - "awaiting_payment" ("Awaiting License Fee Payment")
+        # - final "approved" stage
+        # To keep behavior stable, issue the NA/... license (and seed wallets) on any of these.
+        return bool(
+            _stage_is_commissioner_approval(stage)
             or _stage_is_awaiting_license_fee_payment(stage, application_model=application_model)
+            or (getattr(stage, "is_final", False) and "reject" not in name_lower)
+            or name_lower == "approved"
         )
 
-    return name_lower == "approved"
+    # Other application types: deployments often use commissioner final stage naming instead of "approved".
+    return bool(
+        _stage_is_commissioner_approval(stage)
+        or (getattr(stage, "is_final", False) and "reject" not in name_lower)
+        or name_lower == "approved"
+    )
+
+
+def _new_license_payments_complete(application) -> bool:
+    return bool(
+        getattr(application, "is_license_fee_paid", False)
+        and getattr(application, "is_security_fee_paid", False)
+    )
 
 
 def get_license_valid_up_to(issue_date: date) -> date:
@@ -126,22 +153,27 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
         .first()
     )
     if existing_license:
-        if application_model == "newlicenseapplication" and (
-            _stage_is_commissioner_approval(instance.stage, application_model=application_model)
-            or _stage_is_awaiting_license_fee_payment(instance.stage, application_model=application_model)
-        ):
-            try:
-                from models.transactional.payment.wallet_initializer import (
-                    initialize_wallet_balances_for_license,
-                )
+        if source_type := getattr(existing_license, "source_type", None):
+            if source_type == "new_license_application":
+                should_be_active = _new_license_payments_complete(application)
+                if existing_license.is_active != should_be_active:
+                    existing_license.is_active = should_be_active
+                    existing_license.save(update_fields=["is_active"])
 
-                initialize_wallet_balances_for_license(existing_license)
-            except Exception as wallet_error:
-                logger.error(
-                    "Wallet initialization failed for existing license_id=%s (commissioner/awaiting_payment): %s",
-                    existing_license.license_id,
-                    wallet_error,
-                )
+        # Still ensure wallets exist (and get updated metadata) whenever an approval-stage
+        # transaction is logged for the application.
+        try:
+            from models.transactional.wallet.wallet_initializer import (
+                initialize_wallet_balances_for_license,
+            )
+
+            initialize_wallet_balances_for_license(existing_license)
+        except Exception as wallet_error:
+            logger.error(
+                "Wallet initialization failed for existing license_id=%s (approval stage): %s",
+                existing_license.license_id,
+                wallet_error,
+            )
         return
 
     # Map model name → source_type
@@ -218,6 +250,11 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
     new_license_id = f"{base_prefix}/{str(seq).zfill(4)}"
 
     try:
+        license_is_active = (
+            source_type != "new_license_application"
+            or _new_license_payments_complete(application)
+        )
+
         created_license = License.objects.create(
             license_id=new_license_id,
             source_content_type=ct,
@@ -229,13 +266,13 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
             excise_district=excise_district,
             issue_date=issue_date,
             valid_up_to=valid_up_to,
-            is_active=True
+            is_active=license_is_active
         )
         logger.info(f"License created for application {application.pk}")
 
         # Initialize module wallets for newly issued license.
         try:
-            from models.transactional.payment.wallet_initializer import (
+            from models.transactional.wallet.wallet_initializer import (
                 initialize_wallet_balances_for_license,
             )
 
@@ -247,6 +284,20 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
                 wallet_error,
             )
 
+        if created_license.is_active and source_type == "new_license_application":
+            try:
+                from models.transactional.new_license_application.payment_status import (
+                    sync_master_factory_for_license,
+                )
+
+                sync_master_factory_for_license(created_license)
+            except Exception as factory_error:
+                logger.error(
+                    "License created but master factory sync failed for license_id=%s: %s",
+                    created_license.license_id,
+                    factory_error,
+                )
+
         # === NEW: If this is a renewal, deactivate the old license ===
         if hasattr(application, 'renewal_of') and application.renewal_of:
             old_license = application.renewal_of
@@ -255,12 +306,13 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
                 old_license.save(update_fields=['is_active'])
                 logger.info(f"Deactivated previous license {old_license.license_id} due to renewal")
 
-        # === NEW: Create/Update Supply Chain User Profile ===
+        # === Supply-chain manufacturing unit mapping (no active profile table) ===
         try:
             establishment_name = str(getattr(application, 'establishment_name', '') or '').strip()
+            if source_type == "new_license_application" and not created_license.is_active:
+                establishment_name = ""
             if establishment_name and applicant:
                 from models.masters.supply_chain.profile.models import (
-                    SupplyChainUserProfile,
                     UserManufacturingUnit
                 )
                 
@@ -285,23 +337,10 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
                         'address': getattr(application, 'site_address', '') or ''
                     }
                 )
-                
-                # Create/Update active profile (only if user doesn't have one yet)
-                if not SupplyChainUserProfile.objects.filter(user=applicant).exists():
-                    SupplyChainUserProfile.objects.create(
-                        user=applicant,
-                        manufacturing_unit_name=establishment_name,
-                        licensee_id=created_license.license_id,
-                        license_type=license_type,
-                        address=getattr(application, 'site_address', '') or ''
-                    )
-                    logger.info(f"Created supply chain profile for user {applicant.id} with license {created_license.license_id}")
-                else:
-                    logger.info(f"User {applicant.id} already has supply chain profile, skipping creation")
                     
         except Exception as profile_error:
             logger.error(
-                "License created but supply chain profile creation failed for license_id=%s: %s",
+                "License created but supply-chain manufacturing unit mapping failed for license_id=%s: %s",
                 created_license.license_id,
                 profile_error,
             )

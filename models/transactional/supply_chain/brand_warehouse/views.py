@@ -87,9 +87,6 @@ def _collect_user_license_ids(user):
     _append(getattr(getattr(assignment, 'license', None), 'license_id', ''))
     _append(getattr(assignment, 'licensee_id', '') or getattr(assignment, 'license_id', ''))
 
-    profile = getattr(user, 'supply_chain_profile', None)
-    _append(getattr(profile, 'licensee_id', ''))
-
     units = getattr(user, 'manufacturing_units', None)
     if units is not None:
         for unit_licensee_id in (
@@ -207,11 +204,6 @@ def _get_active_establishment_name(user, active_license_id: str = '') -> str:
                     return str(app.establishment_name).strip()
         except Exception:
             pass
-
-    profile = getattr(user, 'supply_chain_profile', None)
-    profile_name = str(getattr(profile, 'manufacturing_unit_name', '') or '').strip()
-    if profile_name:
-        return profile_name
 
     units = getattr(user, 'manufacturing_units', None)
     if units is not None:

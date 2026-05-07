@@ -10,7 +10,7 @@ Step 2: ORM save() per row for any remaining cases.
 from django.core.management.base import BaseCommand
 from django.db import connection
 
-from models.transactional.payment.models import WalletBalance
+from models.transactional.wallet.models import WalletBalance
 
 
 class Command(BaseCommand):

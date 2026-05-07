@@ -47,6 +47,11 @@ def _is_oic_user(user):
     )
 
 
+def _is_licensee_user(user) -> bool:
+    role_token = _normalize_role_token(getattr(getattr(user, 'role', None), 'name', ''))
+    return role_token in {'licensee', 'licencee'}
+
+
 def _resolve_user_display_name(user, max_len=150):
     first = str(getattr(user, 'first_name', '') or '').strip()
     middle = str(getattr(user, 'middle_name', '') or '').strip()
@@ -405,10 +410,7 @@ class RequisitionArrivalBulkLiterDetailAPIView(APIView):
 
     def post(self, request, pk):
         try:
-            is_licensee_user = (
-                hasattr(request.user, 'supply_chain_profile')
-                or hasattr(request.user, 'manufacturing_units')
-            )
+            is_licensee_user = _is_licensee_user(request.user)
             is_oic_user = _is_oic_user(request.user)
             # Prefer OIC capabilities when the user matches both shapes.
             if is_oic_user:
@@ -640,9 +642,6 @@ class RequisitionArrivalBulkLiterDetailsListAPIView(APIView):
                 }, status=status.HTTP_200_OK)
 
             licensee_candidates = set()
-            if hasattr(request.user, 'supply_chain_profile'):
-                for alias in self._expand_license_aliases(getattr(request.user.supply_chain_profile, 'licensee_id', '')):
-                    licensee_candidates.add(alias)
             if hasattr(request.user, 'manufacturing_units'):
                 for raw_id in request.user.manufacturing_units.exclude(licensee_id__isnull=True).exclude(licensee_id='').values_list('licensee_id', flat=True):
                     for alias in self._expand_license_aliases(raw_id):
@@ -1005,10 +1004,12 @@ class PerformRequisitionActionAPIView(APIView):
         req_license = str(getattr(requisition, 'licensee_id', '') or '').strip()
         candidates.extend(self._expand_license_aliases(req_license))
 
-        profile_license = ''
-        if hasattr(user, 'supply_chain_profile'):
-            profile_license = str(getattr(user.supply_chain_profile, 'licensee_id', '') or '').strip()
-        candidates.extend(self._expand_license_aliases(profile_license))
+        try:
+            if hasattr(user, 'manufacturing_units'):
+                for raw_id in user.manufacturing_units.exclude(licensee_id__isnull=True).exclude(licensee_id='').values_list('licensee_id', flat=True):
+                    candidates.extend(self._expand_license_aliases(raw_id))
+        except Exception:
+            pass
 
         try:
             from models.masters.license.models import License
@@ -1195,7 +1196,8 @@ class PerformRequisitionActionAPIView(APIView):
         return Decimal('0')
 
     def _debit_wallet_for_requisition_payment(self, requisition, user, target_stage_name: str):
-        from models.transactional.payment.models import WalletBalance, WalletTransaction
+        from models.transactional.wallet.models import WalletBalance, WalletTransaction
+        from django.db.models import Q
 
         amount = self._resolve_requisition_payment_amount(requisition)
         if amount <= 0:
@@ -1229,33 +1231,39 @@ class PerformRequisitionActionAPIView(APIView):
 
         wallet = None
         resolved_licensee_id = ''
+        username = str(getattr(user, 'username', '') or '').strip()
+
+        wallet_filter = Q(licensee_id__in=candidates)
+        if username:
+            wallet_filter |= Q(user_id__iexact=username)
 
         for cid in candidates:
             wallet = (
                 WalletBalance.objects.select_for_update()
-                .filter(licensee_id=cid, wallet_type__iexact='excise')
+                .filter(wallet_filter, wallet_type__iexact='excise')
                 .order_by('wallet_balance_id')
                 .first()
             )
             if wallet:
-                resolved_licensee_id = cid
+                resolved_licensee_id = str(getattr(wallet, 'licensee_id', '') or cid)
                 break
 
         if not wallet:
             for cid in candidates:
                 wallet = (
                     WalletBalance.objects.select_for_update()
-                    .filter(licensee_id=cid, wallet_type__iexact='brewery')
+                    .filter(wallet_filter, wallet_type__iexact='brewery')
                     .order_by('wallet_balance_id')
                     .first()
                 )
                 if wallet:
-                    resolved_licensee_id = cid
+                    resolved_licensee_id = str(getattr(wallet, 'licensee_id', '') or cid)
                     break
 
         if not wallet:
             raise ValueError(
-                f"Wallet not found for licensee_id. Tried: {', '.join(candidates)}"
+                f"Wallet not found for licensee_id/user_id. Tried licensee_id: {', '.join(candidates)}"
+                + (f", user_id={username}" if username else "")
             )
 
         current_balance = Decimal(str(wallet.current_balance or 0))
@@ -1328,11 +1336,22 @@ class PerformRequisitionActionAPIView(APIView):
             requisition = EnaRequisitionDetail.objects.get(pk=pk)
 
             # Licensee users can only act on their own requisitions.
-            if hasattr(request.user, 'supply_chain_profile'):
-                user_licensee_id = request.user.supply_chain_profile.licensee_id
-                if str(requisition.licensee_id) != str(user_licensee_id):
+            if _is_licensee_user(request.user):
+                in_scope = scope_by_profile_or_workflow(
+                    request.user,
+                    EnaRequisitionDetail.objects.filter(pk=requisition.pk),
+                    WORKFLOW_IDS['ENA_REQUISITION'],
+                    licensee_field='licensee_id',
+                ).exists()
+                if not in_scope:
                     raise PermissionDenied("You are not allowed to modify this requisition.")
-            if not has_workflow_access(request.user, WORKFLOW_IDS['ENA_REQUISITION']) and not hasattr(request.user, 'supply_chain_profile'):
+
+            if not has_workflow_access(request.user, WORKFLOW_IDS['ENA_REQUISITION']) and not scope_by_profile_or_workflow(
+                request.user,
+                EnaRequisitionDetail.objects.filter(pk=requisition.pk),
+                WORKFLOW_IDS['ENA_REQUISITION'],
+                licensee_field='licensee_id',
+            ).exists():
                 return Response({
                     'status': 'error',
                     'message': 'Unauthorized role for this workflow'

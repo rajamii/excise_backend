@@ -1,10 +1,12 @@
 from django.shortcuts import get_object_or_404
 from datetime import date, timedelta
 from django.db import transaction
+from django.db.models import OuterRef, Subquery
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
 from auth.roles.permissions import HasAppPermission
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
@@ -32,6 +34,11 @@ from urllib.parse import quote
 import secrets
 import hashlib
 
+from models.masters.core.models import LicenseFee
+from models.transactional.wallet.wallet_initializer import COMMON_LICENSE_FEE_HOA, COMMON_SECURITY_DEPOSIT_HOA
+from models.transactional.wallet.wallet_service import debit_wallet_balance
+from .payment_status import sync_new_license_payment_status
+
 
 def _normalize_role(role_name):
     if not role_name:
@@ -44,6 +51,33 @@ def _normalize_role(role_name):
         'siteadmin': 'site_admin',
     }
     return aliases.get(normalized, normalized)
+
+
+def _with_application_fee_payment_annotations(qs):
+    """
+    Annotate NewLicenseApplication queryset with latest BillDesk application-fee payment info.
+
+    - application_fee_payment_status: 'P'/'S'/'F'
+    - application_fee_transaction_id: utr
+    - application_fee_payment_date: transaction_date
+    - application_fee_error: response_errordescription
+    """
+    try:
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+
+        base = PaymentBilldeskTransaction.objects.filter(
+            payer_id__iexact=OuterRef("application_id"),
+            payment_module_code="001",
+        ).order_by("-transaction_date", "-utr")
+
+        return qs.annotate(
+            application_fee_payment_status=Subquery(base.values("payment_status")[:1]),
+            application_fee_transaction_id=Subquery(base.values("utr")[:1]),
+            application_fee_payment_date=Subquery(base.values("transaction_date")[:1]),
+            application_fee_error=Subquery(base.values("response_errordescription")[:1]),
+        )
+    except Exception:
+        return qs
 
 
 def _ensure_license_validation_nonce(license_obj: License | None) -> str:
@@ -154,25 +188,143 @@ def _collect_reachable_stage_names(workflow_id: int, start_stage_names: set[str]
     return visited
 
 
-def _create_application(request, workflow_id: int, serializer_cls):
-   
-    serializer = serializer_cls(data=request.data)
+def _create_salesman_barman_record(application, user):
+    """
+    Create (or update) the linked SalesmanBarmanModel record after the NLI transaction
+    has committed. Must be called OUTSIDE the NLI atomic block to avoid nested
+    transaction.atomic() calls in generate_application_id() aborting the outer transaction.
+    """
+    mode = getattr(application, "mode_of_operation", None)
+    if mode not in {"Salesman", "Barman"}:
+        return
+
+    member_payload = getattr(application, "_member_payload", {}) or {}
+
+    try:
+        from models.transactional.salesman_barman.models import SalesmanBarmanModel
+        from auth.workflow.constants import WORKFLOW_IDS as _WF_IDS
+        from auth.workflow.models import WorkflowStage, Workflow
+
+        wf = Workflow.objects.filter(id=_WF_IDS.get("SALESMAN_BARMAN")).first()
+        if not wf:
+            import logging
+            logging.getLogger(__name__).warning("SALESMAN_BARMAN workflow (id=%s) not found.", _WF_IDS.get("SALESMAN_BARMAN"))
+            return
+
+        init = WorkflowStage.objects.filter(workflow=wf, is_initial=True).order_by("id").first()
+        if not init:
+            import logging
+            logging.getLogger(__name__).warning("No initial stage for SALESMAN_BARMAN workflow.")
+            return
+
+        sb = (
+            SalesmanBarmanModel.objects
+            .filter(new_license_application=application)
+            .first()
+        )
+        if not sb:
+            sb = SalesmanBarmanModel(
+                workflow=wf,
+                current_stage=init,
+                new_license_application=application,
+                excise_district=getattr(application, "site_district", None),
+                license_category=getattr(application, "license_category", None),
+                license=None,
+                applicant=user,
+                role=mode,
+            )
+
+        # Parse member name into parts
+        name = (member_payload.get("member_name") or "").strip()
+        parts = [p for p in name.split(" ") if p]
+        first_name = parts[0] if parts else None
+        last_name = parts[-1] if len(parts) > 1 else (parts[0] if parts else None)
+        middle_name = " ".join(parts[1:-1]) if len(parts) > 2 else None
+
+        sb.role = mode
+        if first_name:
+            sb.firstName = first_name
+        if middle_name is not None:
+            sb.middleName = middle_name
+        if last_name:
+            sb.lastName = last_name
+
+        father_husband_name = member_payload.get("member_father_husband_name") or getattr(application, "father_husband_name", None)
+        if father_husband_name:
+            sb.fatherHusbandName = father_husband_name
+
+        gender = member_payload.get("member_gender") or getattr(application, "gender", None)
+        if gender:
+            sb.gender = gender
+
+        dob = member_payload.get("member_dob") or getattr(application, "dob", None)
+        if dob is not None:
+            sb.dob = dob
+
+        nationality = member_payload.get("member_nationality") or getattr(application, "nationality", None)
+        if nationality:
+            sb.nationality = nationality
+
+        address = (member_payload.get("member_address") or
+                   getattr(application, "present_address", None) or
+                   getattr(application, "permanent_address", None))
+        if address:
+            sb.address = address
+
+        pan = member_payload.get("member_pan") or getattr(application, "pan", None)
+        if pan:
+            sb.pan = pan
+
+        if member_payload.get("aadhaar"):
+            sb.aadhaar = member_payload["aadhaar"]
+        if member_payload.get("member_mobile_number"):
+            sb.mobileNumber = member_payload["member_mobile_number"]
+        if member_payload.get("member_email"):
+            sb.emailId = member_payload["member_email"]
+        if member_payload.get("sikkim_subject") is not None:
+            sb.sikkimSubject = member_payload["sikkim_subject"]
+        if member_payload.get("member_pass_photo") is not None:
+            sb.passPhoto = member_payload["member_pass_photo"]
+        if member_payload.get("member_aadhaar_card") is not None:
+            sb.aadhaarCard = member_payload["member_aadhaar_card"]
+        if member_payload.get("member_residential_certificate") is not None:
+            sb.residentialCertificate = member_payload["member_residential_certificate"]
+        if member_payload.get("member_dob_proof") is not None:
+            sb.dateofBirthProof = member_payload["member_dob_proof"]
+
+        if user and not getattr(sb, "applicant_id", None):
+            sb.applicant = user
+        if getattr(application, "site_district_id", None):
+            sb.excise_district = application.site_district
+        if getattr(application, "license_category_id", None):
+            sb.license_category = application.license_category
+
+        sb.save()
+
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        # Do not re-raise — SB failure must never block the NLI response.
+
+
+def _create_application(request, workflow_id: int, serializer_cls, *, auto_submit: bool = True):
+
+    serializer = serializer_cls(data=request.data, context={"request": request})
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    application_pk = None
     try:
+        workflow = get_object_or_404(Workflow, id=workflow_id)
+
+        try:
+            initial_stage = workflow.stages.get(is_initial=True)
+        except WorkflowStage.DoesNotExist:
+            return Response(
+                {"detail": "Workflow has no initial stage (is_initial=True)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         with transaction.atomic():
-            workflow = get_object_or_404(Workflow, id=workflow_id)
-
-            try:
-                initial_stage = workflow.stages.get(is_initial=True)
-            except WorkflowStage.DoesNotExist:
-                return Response(
-                    {"detail": "Workflow has no initial stage (is_initial=True)."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
             district_code = serializer.validated_data['site_district'].district_code
             prefix = f"NLI/{district_code}/{NewLicenseApplication.generate_fin_year()}"
             last_app = NewLicenseApplication.objects.filter(
@@ -189,16 +341,24 @@ def _create_application(request, workflow_id: int, serializer_cls):
                 application_id=new_application_id,
                 applicant=request.user
             )
-            application_pk = application.pk
 
-            WorkflowService.submit_application(
-                application=application,
-                user=request.user,
-                remarks="Application submitted"
-            )
-        # Transaction committed — safe to query DB now
-        fresh = NewLicenseApplication.objects.get(pk=application_pk)
-        fresh_serializer = serializer_cls(fresh)
+            if auto_submit:
+                WorkflowService.submit_application(
+                    application=application,
+                    user=request.user,
+                    remarks="Application submitted"
+                )
+
+        # Transaction committed — refresh from DB to pick up auto_now fields and any
+        # changes made by the model's save() (e.g. licensee_fee_id).
+        application.refresh_from_db()
+
+        # Create the linked SalesmanBarmanModel record AFTER the NLI transaction has
+        # committed and in its own separate transaction. This avoids nested atomic()
+        # calls inside generate_application_id() aborting the outer NLI transaction.
+        _create_salesman_barman_record(application, request.user)
+
+        fresh_serializer = serializer_cls(application)
         return Response(fresh_serializer.data, status=status.HTTP_201_CREATED)
 
     except ValidationError as e:
@@ -219,7 +379,21 @@ def _create_application(request, workflow_id: int, serializer_cls):
 @parser_classes([MultiPartParser, FormParser, JSONParser])
 @permission_classes([HasStagePermission])
 def create_new_license_application(request):
-    return _create_application(request, WORKFLOW_IDS['LICENSE_APPROVAL'], NewLicenseApplicationSerializer)
+    # Do not submit/forward the workflow on click; submission happens only after BillDesk success callback.
+    return _create_application(request, WORKFLOW_IDS['LICENSE_APPROVAL'], NewLicenseApplicationSerializer, auto_submit=False)
+
+
+@api_view(['POST'])
+@parser_classes([MultiPartParser, FormParser, JSONParser])
+@permission_classes([HasStagePermission])
+def create_new_license_application_draft(request):
+    """
+    Create a new license application record without submitting the workflow.
+
+    Used for BillDesk application-fee (module_code=001) flows where the application
+    is auto-submitted only after a successful gateway callback.
+    """
+    return _create_application(request, WORKFLOW_IDS['LICENSE_APPROVAL'], NewLicenseApplicationSerializer, auto_submit=False)
 
 
 @api_view(['POST'])
@@ -336,6 +510,7 @@ def list_license_applications(request):
             current_stage__stagepermission__can_process=True
         ).distinct()
 
+    applications = _with_application_fee_payment_annotations(applications)
     serializer = NewLicenseApplicationSerializer(applications, many=True)
     return Response(serializer.data)
 
@@ -354,6 +529,8 @@ def license_application_detail(request, pk):
     if role == "licensee" and application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    # Attach latest application-fee payment info for details view too.
+    application = _with_application_fee_payment_annotations(NewLicenseApplication.objects.filter(pk=application.pk)).first() or application
     serializer = NewLicenseApplicationSerializer(application)
     return Response(serializer.data)
 
@@ -518,7 +695,7 @@ def final_license_detail(request, application_id):
         "passportPhotoUrl": photo_url,
         "passportPhotoExists": photo_exists,
         "passportPhotoDataUrl": passport_photo_data_url,
-        "licenseFee": application.yearly_license_fee or "",
+        "licenseFee": "",
         "transactionRef": "",
         "transactionDate": "",
         "validFrom": fmt_dt(license_obj.issue_date) if license_obj else fmt_dt(application.created_at.date()),
@@ -526,6 +703,15 @@ def final_license_detail(request, application_id):
         "generatedOn": fmt_dt(timezone.now().date()),
         "qrCodeDataUrl": make_qr_data_url(validation_url),
     }
+
+    try:
+        fee_id = getattr(application, "licensee_fee_id", None)
+        if fee_id:
+            fee = LicenseFee.objects.filter(id=int(fee_id), is_active=True).first()
+            if fee:
+                response["licenseFee"] = str(getattr(fee, "license_fee", "") or "")
+    except Exception:
+        pass
 
     cat_code = getattr(license_obj, "license_category_id", None) if license_obj else None
     scat_code = getattr(license_obj, "license_sub_category_id", None) if license_obj else None
@@ -678,10 +864,12 @@ def print_license_view(request, application_id):
 
     # Some datasets have License issued but `is_approved` not synced on the application row.
     # If a License exists, allow printing and token rotation.
-    if not license.is_approved and not license_obj:
-        return Response({"error": "License is not approved yet."}, status=403)
+    if not license_obj:
+        return Response({"error": "License is not issued yet."}, status=403)
+    if not license_obj.is_active:
+        return Response({"error": "License fee and security fee must be paid before printing."}, status=403)
 
-    can_print, fee = license.can_print_license()
+    can_print, fee = license_obj.can_print_license()
 
     if not can_print:
         return Response({
@@ -689,10 +877,10 @@ def print_license_view(request, application_id):
             "fee_required": fee
         }, status=403)
 
-    if fee > 0 and not license.is_print_fee_paid:
+    if fee > 0 and not license_obj.is_print_fee_paid:
         return Response({"error": "₹500 fee not paid yet."}, status=403)
 
-    license.record_license_print(fee_paid=(fee > 0))
+    license_obj.record_license_print(fee_paid=(fee > 0))
 
     if license_obj:
         nonce = secrets.token_hex(16)
@@ -732,10 +920,196 @@ def print_license_view(request, application_id):
 
     return Response({
         "success": "License printed.",
-        "print_count": license.print_count,
+        "print_count": license_obj.print_count,
         "validationCode": validation_code,
         "validationPdfUrl": validation_url,
     })
+
+
+def _require_licensee_user(request):
+    if not getattr(request.user, "is_authenticated", False):
+        raise PermissionDenied("Authentication required.")
+    role = _normalize_role(request.user.role.name if getattr(request.user, "role", None) else None)
+    if role != "licensee":
+        raise PermissionDenied("Only licensees can pay fees.")
+
+
+def _resolve_na_license_for_application(application: NewLicenseApplication) -> License | None:
+    new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
+    return (
+        License.objects.filter(
+            source_type="new_license_application",
+            source_content_type=new_app_ct,
+            source_object_id=application.application_id,
+        )
+        .order_by("-issue_date", "-license_id")
+        .first()
+    )
+
+
+def _resolve_license_fee_row(application: NewLicenseApplication) -> LicenseFee | None:
+    fee_id = getattr(application, "licensee_fee_id", None)
+    try:
+        if fee_id:
+            fee = LicenseFee.objects.filter(id=int(fee_id), is_active=True).first()
+            if fee:
+                return fee
+    except Exception:
+        pass
+
+    # Fallback: resolve fee row from category/subcategory (+ location when available).
+    # This matches serializer behavior and prevents "fee structure not configured"
+    # when `licensee_fee_id` hasn't been persisted yet.
+    try:
+        cat_id = getattr(application, "license_category_id", None)
+        scat_id = getattr(application, "license_sub_category_id", None)
+        if not cat_id or not scat_id:
+            return None
+
+        district_code = None
+        try:
+            district_code = getattr(getattr(application, "site_district", None), "district_code", None)
+        except Exception:
+            district_code = None
+
+        location_code = None
+        if district_code is not None:
+            location = (
+                Location.objects.filter(district_code=district_code, is_active=True)
+                .order_by("location_code")
+                .first()
+            )
+            location_code = getattr(location, "location_code", None) if location else None
+
+        qs = LicenseFee.objects.filter(is_active=True)
+
+        direct = qs.filter(
+            license_category_id=int(cat_id),
+            license_subcategory_id=int(scat_id),
+        )
+        if location_code is not None:
+            direct = direct.filter(location_code_id=int(location_code))
+        fee = direct.order_by("id").first()
+        if fee:
+            return fee
+
+        # Try again without location constraint (fee rows may have null location_code).
+        fee = qs.filter(
+            license_category_id=int(cat_id),
+            license_subcategory_id=int(scat_id),
+        ).order_by("id").first()
+        if fee:
+            return fee
+
+        category = getattr(application, "license_category", None)
+        subcategory = getattr(application, "license_sub_category", None)
+        cat_code = getattr(category, "old_license_cat_code", None)
+        scat_code = getattr(subcategory, "old_license_scat_code", None)
+        if cat_code is None or scat_code is None:
+            return None
+
+        legacy = qs.filter(
+            license_category__old_license_cat_code=int(cat_code),
+            license_subcategory__old_license_scat_code=int(scat_code),
+        )
+        if location_code is not None:
+            legacy = legacy.filter(location_code_id=int(location_code))
+        fee = legacy.order_by("id").first()
+        if fee:
+            return fee
+
+        return qs.filter(
+            license_category__old_license_cat_code=int(cat_code),
+            license_subcategory__old_license_scat_code=int(scat_code),
+        ).order_by("id").first()
+    except Exception:
+        return None
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, FormParser, MultiPartParser])
+def pay_license_fee_wallet(request, application_id):
+    application = get_object_or_404(NewLicenseApplication, application_id=application_id)
+    _require_licensee_user(request)
+    if application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    lic = _resolve_na_license_for_application(application)
+    if not lic:
+        return Response({"detail": "License not issued yet."}, status=status.HTTP_400_BAD_REQUEST)
+
+    fee = _resolve_license_fee_row(application)
+    if not fee:
+        return Response({"detail": "License fee structure not configured for this application."}, status=status.HTTP_400_BAD_REQUEST)
+
+    amount = getattr(fee, "license_fee", None)
+    if amount is None:
+        return Response({"detail": "License fee amount not configured."}, status=status.HTTP_400_BAD_REQUEST)
+
+    txn_id = secrets.token_hex(12).upper()
+    try:
+        debit_wallet_balance(
+            transaction_id=txn_id,
+            licensee_id=str(lic.license_id),
+            wallet_type="license_fee",
+            head_of_account=COMMON_LICENSE_FEE_HOA,
+            amount=amount,
+            user_id=str(getattr(request.user, "username", "") or "").strip(),
+            remarks=f"License fee paid for {application.application_id}",
+        )
+    except Exception as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not application.is_license_fee_paid:
+        application.is_license_fee_paid = True
+        application.save(update_fields=["is_license_fee_paid"])
+    sync_new_license_payment_status(application)
+
+    return Response({"success": True, "transaction_id": txn_id, "is_license_fee_paid": True})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, FormParser, MultiPartParser])
+def pay_security_fee_wallet(request, application_id):
+    application = get_object_or_404(NewLicenseApplication, application_id=application_id)
+    _require_licensee_user(request)
+    if application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    lic = _resolve_na_license_for_application(application)
+    if not lic:
+        return Response({"detail": "License not issued yet."}, status=status.HTTP_400_BAD_REQUEST)
+
+    fee = _resolve_license_fee_row(application)
+    if not fee:
+        return Response({"detail": "License fee structure not configured for this application."}, status=status.HTTP_400_BAD_REQUEST)
+
+    amount = getattr(fee, "security_amount", None)
+    if amount is None:
+        return Response({"detail": "Security fee amount not configured."}, status=status.HTTP_400_BAD_REQUEST)
+
+    txn_id = secrets.token_hex(12).upper()
+    try:
+        debit_wallet_balance(
+            transaction_id=txn_id,
+            licensee_id=str(lic.license_id),
+            wallet_type="security_deposit",
+            head_of_account=COMMON_SECURITY_DEPOSIT_HOA,
+            amount=amount,
+            user_id=str(getattr(request.user, "username", "") or "").strip(),
+            remarks=f"Security fee paid for {application.application_id}",
+        )
+    except Exception as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not application.is_security_fee_paid:
+        application.is_security_fee_paid = True
+        application.save(update_fields=["is_security_fee_paid"])
+    sync_new_license_payment_status(application)
+
+    return Response({"success": True, "transaction_id": txn_id, "is_security_fee_paid": True})
 
 # Dashboard Counts
 @permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])
@@ -748,6 +1122,8 @@ def dashboard_counts(request):
 
     if role == 'licensee':
         base_qs = NewLicenseApplication.objects.filter(applicant=request.user)
+        unpaid_qs = base_qs.filter(is_application_fee_paid=False)
+        paid_qs = base_qs.filter(is_application_fee_paid=True)
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
@@ -755,11 +1131,12 @@ def dashboard_counts(request):
         pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
 
         return Response({
-            "applied": base_qs.filter(current_stage__name__in=applied_stages).count(),
-            "pending": base_qs.filter(current_stage__name__in=pending_stages).count(),
-            "objection": base_qs.filter(current_stage__name__in=objection_stages).count(),
-            "approved": base_qs.filter(current_stage__name__in=approved_stages).count(),
-            "rejected": base_qs.filter(current_stage__name__in=rejected_stages).count(),
+            # Licensee UX: application is considered "Pending" until application-fee payment succeeds.
+            "applied": paid_qs.filter(current_stage__name__in=applied_stages).count(),
+            "pending": unpaid_qs.count() + paid_qs.filter(current_stage__name__in=pending_stages).count(),
+            "objection": paid_qs.filter(current_stage__name__in=objection_stages).count(),
+            "approved": paid_qs.filter(current_stage__name__in=approved_stages).count(),
+            "rejected": paid_qs.filter(current_stage__name__in=rejected_stages).count(),
         })
 
     if role in ['site_admin', 'single_window']:
@@ -805,32 +1182,41 @@ def application_group(request):
     all_qs = NewLicenseApplication.objects.all()
 
     if role == 'licensee':
-        base_qs = NewLicenseApplication.objects.filter(applicant=request.user)
+        base_qs = _with_application_fee_payment_annotations(NewLicenseApplication.objects.filter(applicant=request.user))
+        unpaid_qs = base_qs.filter(is_application_fee_paid=False)
+        paid_qs = base_qs.filter(is_application_fee_paid=True)
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
         rejected_stages = set(stage_sets['rejected'])
         pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
 
+        from django.db.models import Q
+        pending_qs = base_qs.filter(
+            Q(is_application_fee_paid=False)
+            | (Q(is_application_fee_paid=True) & Q(current_stage__name__in=pending_stages))
+        )
+
         return Response({
             "applied": NewLicenseApplicationSerializer(
-                base_qs.filter(current_stage__name__in=applied_stages), many=True
+                paid_qs.filter(current_stage__name__in=applied_stages), many=True
             ).data,
             "pending": NewLicenseApplicationSerializer(
-                base_qs.filter(current_stage__name__in=pending_stages), many=True
+                pending_qs, many=True
             ).data,
             "objection": NewLicenseApplicationSerializer(
-                base_qs.filter(current_stage__name__in=objection_stages), many=True
+                paid_qs.filter(current_stage__name__in=objection_stages), many=True
             ).data,
             "approved": NewLicenseApplicationSerializer(
-                base_qs.filter(current_stage__name__in=approved_stages), many=True
+                paid_qs.filter(current_stage__name__in=approved_stages), many=True
             ).data,
             "rejected": NewLicenseApplicationSerializer(
-                base_qs.filter(current_stage__name__in=rejected_stages), many=True
+                paid_qs.filter(current_stage__name__in=rejected_stages), many=True
             ).data
         })
 
     if role in ['site_admin', 'single_window']:
+        all_qs = _with_application_fee_payment_annotations(all_qs)
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
@@ -857,6 +1243,7 @@ def application_group(request):
 
     role_stage_names = _get_role_stage_names(request.user, workflow_id)
     if role_stage_names:
+        all_qs = _with_application_fee_payment_annotations(all_qs)
         role_objection_stages = set(stage_sets['objection'])
         pending_stages = set(role_stage_names) | role_objection_stages
         reachable_from_role = _collect_reachable_stage_names(workflow_id, set(role_stage_names))

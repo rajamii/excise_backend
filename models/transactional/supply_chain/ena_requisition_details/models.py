@@ -88,7 +88,7 @@ class RequisitionBulkLiterDetail(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = 'reqution_bulk_liter_details'
+        db_table = 'requition_bl_details'
         ordering = ['-updated_at']
 
     def __str__(self) -> str:
@@ -121,7 +121,7 @@ class RequisitionBulkLiterReviewAudit(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = 'reqution_bulk_liter_review_audit'
+        db_table = 'requition_bl_request'
         ordering = ['-updated_at']
 
     def __str__(self) -> str:

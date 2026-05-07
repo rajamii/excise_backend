@@ -4,6 +4,9 @@ from models.masters.core.models import LicenseCategory, LicenseSubcategory
 from models.masters.license.legacy_codes import resolve_codes_for_license_form
 from models.masters.license.master_license_form import MasterLicenseForm
 from models.masters.license.master_license_form_terms import MasterLicenseFormTerms
+from models.masters.license.signals import _stage_should_issue_license
+
+from auth.workflow.models import Workflow, WorkflowStage
 
 
 class LegacyLicenseCodeResolverTests(TestCase):
@@ -40,3 +43,15 @@ class LegacyLicenseCodeResolverTests(TestCase):
         # If codes don't exist as master PKs, treat as already-legacy.
         resolved_cat2, resolved_scat2 = resolve_codes_for_license_form(999, 888)
         self.assertEqual((resolved_cat2, resolved_scat2), (999, 888))
+
+
+class LicenseIssuanceStageRulesTests(TestCase):
+    def test_commissioner_final_stage_issues_license_for_license_application(self):
+        wf = Workflow.objects.create(name="WF1")
+        stage = WorkflowStage.objects.create(workflow=wf, name="Commissioner", is_final=True)
+        self.assertTrue(_stage_should_issue_license(stage, application_model="licenseapplication"))
+
+    def test_nonfinal_commissioner_approval_stage_issues_license(self):
+        wf = Workflow.objects.create(name="WF2")
+        stage = WorkflowStage.objects.create(workflow=wf, name="Commissioner Approval", is_final=False)
+        self.assertTrue(_stage_should_issue_license(stage, application_model="licenseapplication"))

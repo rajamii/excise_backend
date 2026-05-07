@@ -33,12 +33,6 @@ def _resolve_license_id_for_report(request, application):
 
     user = request.user
 
-    supply_chain_profile = getattr(user, 'supply_chain_profile', None)
-    if supply_chain_profile:
-        profile_license = _first_non_empty(getattr(supply_chain_profile, 'licensee_id', ''))
-        if profile_license:
-            return profile_license
-
     manufacturing_units = getattr(user, 'manufacturing_units', None)
     if manufacturing_units is not None:
         latest_unit = manufacturing_units.order_by('-updated_at', '-created_at').first()

@@ -23,6 +23,7 @@ urlpatterns = [
     path('renew/<everything:license_id>/', views.initiate_renewal, name='renew'),
     path('dashboard-counts/', views.dashboard_counts, name='sb-dashboard-counts'),
     path('list-by-status/', views.application_group, name='applications-by-status'),
+    path('<everything:application_id>/pay-license-fee/', views.pay_registration_fee_wallet, name='pay-registration-fee-wallet'),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
