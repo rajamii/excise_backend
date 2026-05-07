@@ -726,7 +726,7 @@ class WorkflowService:
         qs = application.objections.filter(is_resolved=False)
         if objection_ids:
             qs = qs.filter(id__in=objection_ids)
-        qs.update(is_resolved=True, resolved_on=timezone.now())
+        qs.update(is_resolved=True, resolved_on=timezone.now(), resolved_by=user)
 
         # --- 5. Find the transaction that moved INTO the current objection stage ---
         entry_to_objection_txn = application.transactions.filter(

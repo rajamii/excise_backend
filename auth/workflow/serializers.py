@@ -40,9 +40,44 @@ class WorkflowTransactionSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class WorkflowObjectionSerializer(serializers.ModelSerializer):
+    raisedByName = serializers.SerializerMethodField()
+    resolvedByName = serializers.SerializerMethodField()
+    raisedAt = serializers.DateTimeField(source='raised_on', read_only=True)
+    resolvedAt = serializers.DateTimeField(source='resolved_on', read_only=True)
+    fieldName = serializers.CharField(source='field_name', read_only=True)
+    isResolved = serializers.BooleanField(source='is_resolved', read_only=True)
+
+    def get_raisedByName(self, obj):
+        user = getattr(obj, 'raised_by', None)
+        if not user:
+            return None
+        name = f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip()
+        return name or getattr(user, 'username', None)
+
+    def get_resolvedByName(self, obj):
+        user = getattr(obj, 'resolved_by', None)
+        if not user:
+            return None
+        name = f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip()
+        return name or getattr(user, 'username', None)
+
     class Meta:
         model = Objection
-        fields = '__all__'
+        fields = [
+            'id',
+            'content_type',
+            'object_id',
+            'fieldName',
+            'remarks',
+            'raised_by',
+            'raisedByName',
+            'raisedAt',
+            'stage',
+            'isResolved',
+            'resolvedAt',
+            'resolved_by',
+            'resolvedByName',
+        ]
 
 class WorkflowRejectionSerializer(serializers.ModelSerializer):
     rejected_by = UserSerializer(read_only=True)
