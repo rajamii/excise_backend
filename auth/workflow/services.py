@@ -743,20 +743,48 @@ class WorkflowService:
             else None
         )
 
-        # --- 6. Determine the original non-objection stage to return to ---
-        recent_txns = application.transactions.order_by('-timestamp')[:2]
-        if len(recent_txns) < 2:
-            raise ValidationError("Insufficient transaction history")
-        original_txn = recent_txns[1]
-        if not original_txn:
-            original_txn = application.transactions.exclude(
-                stage__name__contains='_objection'
-            ).order_by('-id').first()
+        # --- 6. Determine the stage to return to ---
+        # Goal: after licensee corrects objected fields, route back to the officer/admin stage
+        # for verification, not to licensee-facing payment gates.
+        def _is_payment_stage(stage):
+            name = str(getattr(stage, "name", "") or "").strip().lower()
+            return name == "awaiting_payment" or ("payment" in name and "reject" not in name)
 
-        if not original_txn:
-            raise ValidationError("Cannot determine original stage")
+        def _is_objection_stage(stage):
+            return "objection" in str(getattr(stage, "name", "") or "").strip().lower()
 
-        application.current_stage = original_txn.stage
+        base_qs = (
+            application.transactions
+            .filter(timestamp__lt=entry_to_objection_txn.timestamp)
+            .order_by("-timestamp")
+        )
+
+        return_txn = None
+
+        # Prefer returning to the last stage acted on by the officer who raised the objection.
+        if forward_to:
+            return_txn = base_qs.filter(performed_by__role=forward_to).first()
+
+        # If that stage is an objection/payment stage, keep searching further back.
+        if return_txn and (_is_objection_stage(return_txn.stage) or _is_payment_stage(return_txn.stage)):
+            return_txn = base_qs.filter(performed_by__role=forward_to).exclude(stage=return_txn.stage).first()
+
+        # Fallback: last non-objection, non-payment stage before objection.
+        if not return_txn:
+            return_txn = base_qs.first()
+            if return_txn and (_is_objection_stage(return_txn.stage) or _is_payment_stage(return_txn.stage)):
+                return_txn = base_qs.exclude(stage__name__icontains="objection").first()
+                if return_txn and _is_payment_stage(return_txn.stage):
+                    # Walk back until we find a non-payment stage.
+                    for candidate in base_qs.exclude(stage__name__icontains="objection"):
+                        if not _is_payment_stage(candidate.stage):
+                            return_txn = candidate
+                            break
+
+        if not return_txn:
+            raise ValidationError("Cannot determine a valid verification stage prior to objection")
+
+        application.current_stage = return_txn.stage
         application.save(update_fields=['current_stage'])
 
         # --- 7. Log the return: forward back to the officer ---
@@ -766,7 +794,7 @@ class WorkflowService:
             performed_by=user,
             forwarded_by=getattr(user, "role", None),
             forwarded_to=forward_to,
-            stage=original_txn.stage,
+            stage=return_txn.stage,
             remarks=remarks
         )
 
