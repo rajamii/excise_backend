@@ -12,6 +12,7 @@ from models.masters.core.models import (
     LicenseType,
     Road,
     LicenseFee,
+    Location,
 )
 from utils.fields import CodeRelatedField
 from . import helpers
@@ -129,10 +130,83 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
 
     def _resolve_license_fee(self, obj) -> LicenseFee | None:
         fee_id = getattr(obj, "licensee_fee_id", None)
-        if not fee_id:
-            return None
+        if fee_id:
+            try:
+                fee = LicenseFee.objects.filter(id=int(fee_id), is_active=True).first()
+                if fee:
+                    return fee
+            except Exception:
+                pass
+
+        # Fallback: resolve fee row from category/subcategory (+ location when available).
+        # Some deployments store `licensee_fee_id` only after commissioner approval; for
+        # awaiting-payment screens we still need to show the configured amounts.
         try:
-            return LicenseFee.objects.filter(id=int(fee_id), is_active=True).first()
+            cat_id = getattr(obj, "license_category_id", None)
+            scat_id = getattr(obj, "license_sub_category_id", None)
+            if not cat_id or not scat_id:
+                return None
+
+            district_code = None
+            try:
+                district_code = getattr(getattr(obj, "site_district", None), "district_code", None)
+            except Exception:
+                district_code = None
+
+            location_code = None
+            if district_code is not None:
+                location = (
+                    Location.objects.filter(district_code=district_code, is_active=True)
+                    .order_by("location_code")
+                    .first()
+                )
+                location_code = getattr(location, "location_code", None) if location else None
+
+            qs = LicenseFee.objects.filter(is_active=True)
+
+            # Prefer direct FK-id match.
+            direct = qs.filter(
+                license_category_id=int(cat_id),
+                license_subcategory_id=int(scat_id),
+            )
+            if location_code is not None:
+                direct = direct.filter(location_code_id=int(location_code))
+            fee = direct.order_by("id").first()
+            if fee:
+                return fee
+
+            # Fallback: some deployments keep fee rows without location_code.
+            # Try again without location constraint.
+            fee = qs.filter(
+                license_category_id=int(cat_id),
+                license_subcategory_id=int(scat_id),
+            ).order_by("id").first()
+            if fee:
+                return fee
+
+            # Fallback: match by legacy codes stored on masters.
+            category = getattr(obj, "license_category", None)
+            subcategory = getattr(obj, "license_sub_category", None)
+            cat_code = getattr(category, "old_license_cat_code", None)
+            scat_code = getattr(subcategory, "old_license_scat_code", None)
+            if cat_code is None or scat_code is None:
+                return None
+
+            legacy = qs.filter(
+                license_category__old_license_cat_code=int(cat_code),
+                license_subcategory__old_license_scat_code=int(scat_code),
+            )
+            if location_code is not None:
+                legacy = legacy.filter(location_code_id=int(location_code))
+            fee = legacy.order_by("id").first()
+            if fee:
+                return fee
+
+            # Fallback: try legacy match without location constraint.
+            return qs.filter(
+                license_category__old_license_cat_code=int(cat_code),
+                license_subcategory__old_license_scat_code=int(scat_code),
+            ).order_by("id").first()
         except Exception:
             return None
 
@@ -190,129 +264,11 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
 
         application = super().create(validated_data)
 
-        # If mode_of_operation is Salesman/Barman, store draft details and also create a linked
-        # Salesman/Barman application in initial stage so it appears in the Salesman/Barman module
-        # even before BillDesk payment succeeds. On BillDesk success, the payment callback will
-        # auto-submit both applications.
-        try:
-            request = self.context.get("request") if hasattr(self, "context") else None
-            user = getattr(request, "user", None) if request else None
-            mode = getattr(application, "mode_of_operation", None)
-            if mode in {"Salesman", "Barman"}:
-                from models.transactional.salesman_barman.models import SalesmanBarmanModel
-                from auth.workflow.constants import WORKFLOW_IDS
-                from auth.workflow.models import WorkflowStage, Workflow
-
-                name = (member_payload.get("member_name") or "").strip()
-                parts = [p for p in name.split(" ") if p]
-                first_name = parts[0] if parts else None
-                last_name = parts[-1] if len(parts) > 1 else (parts[0] if parts else None)
-                middle_name = " ".join(parts[1:-1]) if len(parts) > 2 else None
-
-                # Ensure a linked Salesman/Barman application exists so the licensee can see it in
-                # Salesman/Barman Registration even while New License payment is pending.
-                wf = Workflow.objects.filter(id=WORKFLOW_IDS.get("SALESMAN_BARMAN")).first()
-                init = None
-                if wf:
-                    init = (
-                        WorkflowStage.objects.filter(workflow=wf, is_initial=True)
-                        .order_by("id")
-                        .first()
-                    )
-                if wf and init:
-                    sb = (
-                        SalesmanBarmanModel.objects.select_related("workflow", "current_stage", "applicant")
-                        .filter(new_license_application=application)
-                        .first()
-                    )
-                    if not sb:
-                        sb = SalesmanBarmanModel(
-                            workflow=wf,
-                            current_stage=init,
-                            new_license_application=application,
-                            excise_district=getattr(application, "site_district", None),
-                            license_category=getattr(application, "license_category", None),
-                            license=None,
-                            applicant=user,
-                            role=mode,
-                        )
-
-                    # Populate from the member payload (best-effort; keep partials allowed for linked apps)
-                    if mode:
-                        sb.role = mode
-                    if first_name:
-                        sb.firstName = first_name
-                    if middle_name is not None:
-                        sb.middleName = middle_name
-                    if last_name:
-                        sb.lastName = last_name
-
-                    father_husband_name = member_payload.get("member_father_husband_name")
-                    if father_husband_name in (None, ""):
-                        father_husband_name = getattr(application, "father_husband_name", None)
-                    if father_husband_name not in (None, ""):
-                        sb.fatherHusbandName = father_husband_name
-
-                    gender = member_payload.get("member_gender")
-                    if gender in (None, ""):
-                        gender = getattr(application, "gender", None)
-                    if gender not in (None, ""):
-                        sb.gender = gender
-
-                    dob = member_payload.get("member_dob")
-                    if dob is None:
-                        dob = getattr(application, "dob", None)
-                    if dob is not None:
-                        sb.dob = dob
-
-                    nationality = member_payload.get("member_nationality")
-                    if nationality in (None, ""):
-                        nationality = getattr(application, "nationality", None)
-                    if nationality not in (None, ""):
-                        sb.nationality = nationality
-
-                    address = member_payload.get("member_address")
-                    if address in (None, ""):
-                        address = getattr(application, "present_address", None) or getattr(application, "permanent_address", None)
-                    if address not in (None, ""):
-                        sb.address = address
-
-                    pan = member_payload.get("member_pan")
-                    if pan in (None, ""):
-                        pan = getattr(application, "pan", None)
-                    if pan not in (None, ""):
-                        sb.pan = pan
-
-                    if member_payload.get("aadhaar") not in (None, ""):
-                        sb.aadhaar = member_payload.get("aadhaar")
-                    if member_payload.get("member_mobile_number") not in (None, ""):
-                        sb.mobileNumber = member_payload.get("member_mobile_number")
-                    if member_payload.get("member_email") not in (None, ""):
-                        sb.emailId = member_payload.get("member_email")
-                    if member_payload.get("sikkim_subject") is not None:
-                        sb.sikkimSubject = member_payload.get("sikkim_subject")
-
-                    if member_payload.get("member_pass_photo") is not None:
-                        sb.passPhoto = member_payload.get("member_pass_photo")
-                    if member_payload.get("member_aadhaar_card") is not None:
-                        sb.aadhaarCard = member_payload.get("member_aadhaar_card")
-                    if member_payload.get("member_residential_certificate") is not None:
-                        sb.residentialCertificate = member_payload.get("member_residential_certificate")
-                    if member_payload.get("member_dob_proof") is not None:
-                        sb.dateofBirthProof = member_payload.get("member_dob_proof")
-
-                    if user and not getattr(sb, "applicant_id", None):
-                        sb.applicant = user
-                    if getattr(application, "site_district_id", None):
-                        sb.excise_district = application.site_district
-                    if getattr(application, "license_category_id", None):
-                        sb.license_category = application.license_category
-                    if mode in {"Salesman", "Barman"}:
-                        sb.role = mode
-
-                    sb.save()
-        except Exception:
-            # Don't block new license creation if salesman/barman details can't be saved.
-            pass
+        # Store the member payload on the instance so the view can create the
+        # SalesmanBarmanModel record AFTER the NLI transaction commits (in its own
+        # separate transaction). Doing it here inside the NLI atomic block caused
+        # nested transaction.atomic() calls in SalesmanBarmanModel.generate_application_id()
+        # to abort the outer transaction on any failure, rolling back the NLI save too.
+        application._member_payload = member_payload
 
         return application

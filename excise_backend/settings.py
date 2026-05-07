@@ -149,7 +149,7 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.FormParser',
         'rest_framework.parsers.MultiPartParser',
     ),
-}
+}   
 
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases

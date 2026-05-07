@@ -188,29 +188,67 @@ class NewLicenseApplication(models.Model):
     def save(self, *args, **kwargs):
         if not self.application_id:
             self.application_id = self.generate_application_id()
+            # Force INSERT for new records so auto_now_add fields are populated correctly.
+            kwargs.setdefault('force_insert', True)
 
-        # Best-effort: auto-fill licensee_fee_id based on current fields.
+        # Best-effort: auto-fill (or refresh) `licensee_fee_id` based on current fields.
         # This is intentionally non-blocking: fee configuration differs across deployments.
-        if not self.licensee_fee_id and self.license_category_id and self.license_sub_category_id and self.site_district_id:
+        if self.license_category_id and self.license_sub_category_id and self.site_district_id:
             try:
-                district_code = getattr(self.site_district, "district_code", None) or self.site_district_id
+                district_code = getattr(self.site_district, "district_code", None)
+                if district_code is None:
+                    district_code = self.site_district_id
+
                 location = (
                     Location.objects.filter(district_code=district_code, is_active=True)
                     .order_by("location_code")
                     .first()
                 )
-                if location:
-                    fee = (
-                        LicenseFee.objects.filter(
-                            license_category_id=self.license_category_id,
-                            license_subcategory_id=self.license_sub_category_id,
-                            location_code_id=getattr(location, "location_code", None),
-                            is_active=True,
-                        )
-                        .order_by("id")
-                        .first()
+                location_code = getattr(location, "location_code", None) if location else None
+
+                def _pick_fee():
+                    qs = LicenseFee.objects.filter(is_active=True)
+                    direct = qs.filter(
+                        license_category_id=self.license_category_id,
+                        license_subcategory_id=self.license_sub_category_id,
                     )
+                    if location_code is not None:
+                        direct = direct.filter(location_code_id=location_code)
+                    fee = direct.order_by("id").first()
                     if fee:
+                        return fee
+
+                    # Fallback: fee rows may not be location-specific.
+                    fee = qs.filter(
+                        license_category_id=self.license_category_id,
+                        license_subcategory_id=self.license_sub_category_id,
+                    ).order_by("id").first()
+                    if fee:
+                        return fee
+
+                    cat_code = getattr(self.license_category, "old_license_cat_code", None)
+                    scat_code = getattr(self.license_sub_category, "old_license_scat_code", None)
+                    if cat_code is None or scat_code is None:
+                        return None
+                    legacy = qs.filter(
+                        license_category__old_license_cat_code=int(cat_code),
+                        license_subcategory__old_license_scat_code=int(scat_code),
+                    )
+                    if location_code is not None:
+                        legacy = legacy.filter(location_code_id=location_code)
+                    fee = legacy.order_by("id").first()
+                    if fee:
+                        return fee
+
+                    return qs.filter(
+                        license_category__old_license_cat_code=int(cat_code),
+                        license_subcategory__old_license_scat_code=int(scat_code),
+                    ).order_by("id").first()
+
+                fee = _pick_fee()
+                if fee:
+                    # Refresh if missing or stale.
+                    if not self.licensee_fee_id or int(self.licensee_fee_id) != int(fee.id):
                         self.licensee_fee_id = int(fee.id)
             except Exception:
                 pass

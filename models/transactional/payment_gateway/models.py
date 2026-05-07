@@ -118,7 +118,6 @@ class MasterHeadOfAccount(models.Model):
     modified_date = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        # managed = False
         db_table = "sems_master_head_of_account"
 
     def __str__(self):
@@ -128,18 +127,17 @@ class MasterHeadOfAccount(models.Model):
 class MasterPaymentModule(models.Model):
     module_code = models.CharField(max_length=20, primary_key=True)
     module_desc = models.CharField(max_length=200)
+    license_fee = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
     visibility_status = models.CharField(max_length=1, default="Y")
     active_payment_mode = models.CharField(max_length=1, default="O")
-    payment_invoking_page = models.CharField(max_length=500, null=True, blank=True)
-    payment_response_page = models.CharField(max_length=500, null=True, blank=True)
     user_id = models.CharField(max_length=50, null=True, blank=True)
     opr_date = models.DateTimeField(null=True, blank=True)
     created_date = models.DateTimeField(default=timezone.now)
     modified_date = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        # managed = False
         db_table = "sems_master_payment_module"
+       
 
     def __str__(self):
         return f"{self.module_code} - {self.module_desc}"
@@ -164,6 +162,5 @@ class PaymentModuleHoa(models.Model):
     created_date = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        # managed = False
         db_table = "sems_module_hoa"
 

@@ -188,25 +188,143 @@ def _collect_reachable_stage_names(workflow_id: int, start_stage_names: set[str]
     return visited
 
 
+def _create_salesman_barman_record(application, user):
+    """
+    Create (or update) the linked SalesmanBarmanModel record after the NLI transaction
+    has committed. Must be called OUTSIDE the NLI atomic block to avoid nested
+    transaction.atomic() calls in generate_application_id() aborting the outer transaction.
+    """
+    mode = getattr(application, "mode_of_operation", None)
+    if mode not in {"Salesman", "Barman"}:
+        return
+
+    member_payload = getattr(application, "_member_payload", {}) or {}
+
+    try:
+        from models.transactional.salesman_barman.models import SalesmanBarmanModel
+        from auth.workflow.constants import WORKFLOW_IDS as _WF_IDS
+        from auth.workflow.models import WorkflowStage, Workflow
+
+        wf = Workflow.objects.filter(id=_WF_IDS.get("SALESMAN_BARMAN")).first()
+        if not wf:
+            import logging
+            logging.getLogger(__name__).warning("SALESMAN_BARMAN workflow (id=%s) not found.", _WF_IDS.get("SALESMAN_BARMAN"))
+            return
+
+        init = WorkflowStage.objects.filter(workflow=wf, is_initial=True).order_by("id").first()
+        if not init:
+            import logging
+            logging.getLogger(__name__).warning("No initial stage for SALESMAN_BARMAN workflow.")
+            return
+
+        sb = (
+            SalesmanBarmanModel.objects
+            .filter(new_license_application=application)
+            .first()
+        )
+        if not sb:
+            sb = SalesmanBarmanModel(
+                workflow=wf,
+                current_stage=init,
+                new_license_application=application,
+                excise_district=getattr(application, "site_district", None),
+                license_category=getattr(application, "license_category", None),
+                license=None,
+                applicant=user,
+                role=mode,
+            )
+
+        # Parse member name into parts
+        name = (member_payload.get("member_name") or "").strip()
+        parts = [p for p in name.split(" ") if p]
+        first_name = parts[0] if parts else None
+        last_name = parts[-1] if len(parts) > 1 else (parts[0] if parts else None)
+        middle_name = " ".join(parts[1:-1]) if len(parts) > 2 else None
+
+        sb.role = mode
+        if first_name:
+            sb.firstName = first_name
+        if middle_name is not None:
+            sb.middleName = middle_name
+        if last_name:
+            sb.lastName = last_name
+
+        father_husband_name = member_payload.get("member_father_husband_name") or getattr(application, "father_husband_name", None)
+        if father_husband_name:
+            sb.fatherHusbandName = father_husband_name
+
+        gender = member_payload.get("member_gender") or getattr(application, "gender", None)
+        if gender:
+            sb.gender = gender
+
+        dob = member_payload.get("member_dob") or getattr(application, "dob", None)
+        if dob is not None:
+            sb.dob = dob
+
+        nationality = member_payload.get("member_nationality") or getattr(application, "nationality", None)
+        if nationality:
+            sb.nationality = nationality
+
+        address = (member_payload.get("member_address") or
+                   getattr(application, "present_address", None) or
+                   getattr(application, "permanent_address", None))
+        if address:
+            sb.address = address
+
+        pan = member_payload.get("member_pan") or getattr(application, "pan", None)
+        if pan:
+            sb.pan = pan
+
+        if member_payload.get("aadhaar"):
+            sb.aadhaar = member_payload["aadhaar"]
+        if member_payload.get("member_mobile_number"):
+            sb.mobileNumber = member_payload["member_mobile_number"]
+        if member_payload.get("member_email"):
+            sb.emailId = member_payload["member_email"]
+        if member_payload.get("sikkim_subject") is not None:
+            sb.sikkimSubject = member_payload["sikkim_subject"]
+        if member_payload.get("member_pass_photo") is not None:
+            sb.passPhoto = member_payload["member_pass_photo"]
+        if member_payload.get("member_aadhaar_card") is not None:
+            sb.aadhaarCard = member_payload["member_aadhaar_card"]
+        if member_payload.get("member_residential_certificate") is not None:
+            sb.residentialCertificate = member_payload["member_residential_certificate"]
+        if member_payload.get("member_dob_proof") is not None:
+            sb.dateofBirthProof = member_payload["member_dob_proof"]
+
+        if user and not getattr(sb, "applicant_id", None):
+            sb.applicant = user
+        if getattr(application, "site_district_id", None):
+            sb.excise_district = application.site_district
+        if getattr(application, "license_category_id", None):
+            sb.license_category = application.license_category
+
+        sb.save()
+
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        # Do not re-raise — SB failure must never block the NLI response.
+
+
 def _create_application(request, workflow_id: int, serializer_cls, *, auto_submit: bool = True):
-    
+
     serializer = serializer_cls(data=request.data, context={"request": request})
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    application_pk = None
     try:
+        workflow = get_object_or_404(Workflow, id=workflow_id)
+
+        try:
+            initial_stage = workflow.stages.get(is_initial=True)
+        except WorkflowStage.DoesNotExist:
+            return Response(
+                {"detail": "Workflow has no initial stage (is_initial=True)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         with transaction.atomic():
-            workflow = get_object_or_404(Workflow, id=workflow_id)
-
-            try:
-                initial_stage = workflow.stages.get(is_initial=True)
-            except WorkflowStage.DoesNotExist:
-                return Response(
-                    {"detail": "Workflow has no initial stage (is_initial=True)."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
             district_code = serializer.validated_data['site_district'].district_code
             prefix = f"NLI/{district_code}/{NewLicenseApplication.generate_fin_year()}"
             last_app = NewLicenseApplication.objects.filter(
@@ -223,7 +341,6 @@ def _create_application(request, workflow_id: int, serializer_cls, *, auto_submi
                 application_id=new_application_id,
                 applicant=request.user
             )
-            application_pk = application.pk
 
             if auto_submit:
                 WorkflowService.submit_application(
@@ -231,9 +348,17 @@ def _create_application(request, workflow_id: int, serializer_cls, *, auto_submi
                     user=request.user,
                     remarks="Application submitted"
                 )
-        # Transaction committed — safe to query DB now
-        fresh = NewLicenseApplication.objects.get(pk=application_pk)
-        fresh_serializer = serializer_cls(fresh)
+
+        # Transaction committed — refresh from DB to pick up auto_now fields and any
+        # changes made by the model's save() (e.g. licensee_fee_id).
+        application.refresh_from_db()
+
+        # Create the linked SalesmanBarmanModel record AFTER the NLI transaction has
+        # committed and in its own separate transaction. This avoids nested atomic()
+        # calls inside generate_application_id() aborting the outer NLI transaction.
+        _create_salesman_barman_record(application, request.user)
+
+        fresh_serializer = serializer_cls(application)
         return Response(fresh_serializer.data, status=status.HTTP_201_CREATED)
 
     except ValidationError as e:
@@ -824,10 +949,79 @@ def _resolve_na_license_for_application(application: NewLicenseApplication) -> L
 
 def _resolve_license_fee_row(application: NewLicenseApplication) -> LicenseFee | None:
     fee_id = getattr(application, "licensee_fee_id", None)
-    if not fee_id:
-        return None
     try:
-        return LicenseFee.objects.filter(id=int(fee_id), is_active=True).first()
+        if fee_id:
+            fee = LicenseFee.objects.filter(id=int(fee_id), is_active=True).first()
+            if fee:
+                return fee
+    except Exception:
+        pass
+
+    # Fallback: resolve fee row from category/subcategory (+ location when available).
+    # This matches serializer behavior and prevents "fee structure not configured"
+    # when `licensee_fee_id` hasn't been persisted yet.
+    try:
+        cat_id = getattr(application, "license_category_id", None)
+        scat_id = getattr(application, "license_sub_category_id", None)
+        if not cat_id or not scat_id:
+            return None
+
+        district_code = None
+        try:
+            district_code = getattr(getattr(application, "site_district", None), "district_code", None)
+        except Exception:
+            district_code = None
+
+        location_code = None
+        if district_code is not None:
+            location = (
+                Location.objects.filter(district_code=district_code, is_active=True)
+                .order_by("location_code")
+                .first()
+            )
+            location_code = getattr(location, "location_code", None) if location else None
+
+        qs = LicenseFee.objects.filter(is_active=True)
+
+        direct = qs.filter(
+            license_category_id=int(cat_id),
+            license_subcategory_id=int(scat_id),
+        )
+        if location_code is not None:
+            direct = direct.filter(location_code_id=int(location_code))
+        fee = direct.order_by("id").first()
+        if fee:
+            return fee
+
+        # Try again without location constraint (fee rows may have null location_code).
+        fee = qs.filter(
+            license_category_id=int(cat_id),
+            license_subcategory_id=int(scat_id),
+        ).order_by("id").first()
+        if fee:
+            return fee
+
+        category = getattr(application, "license_category", None)
+        subcategory = getattr(application, "license_sub_category", None)
+        cat_code = getattr(category, "old_license_cat_code", None)
+        scat_code = getattr(subcategory, "old_license_scat_code", None)
+        if cat_code is None or scat_code is None:
+            return None
+
+        legacy = qs.filter(
+            license_category__old_license_cat_code=int(cat_code),
+            license_subcategory__old_license_scat_code=int(scat_code),
+        )
+        if location_code is not None:
+            legacy = legacy.filter(location_code_id=int(location_code))
+        fee = legacy.order_by("id").first()
+        if fee:
+            return fee
+
+        return qs.filter(
+            license_category__old_license_cat_code=int(cat_code),
+            license_subcategory__old_license_scat_code=int(scat_code),
+        ).order_by("id").first()
     except Exception:
         return None
 

@@ -123,6 +123,53 @@ def _validate_payment_module_code(module_code: str) -> str:
     raise ValueError(f"Invalid payment_module_code={code}. Not found in master module table.")
 
 
+def _get_module_license_fee(module_code: str) -> Decimal | None:
+    code = str(module_code or "").strip()
+    if not code:
+        return None
+    try:
+        module = (
+            MasterPaymentModule.objects
+            .only("module_code", "license_fee")
+            .filter(module_code=code)
+            .first()
+        )
+        fee = getattr(module, "license_fee", None) if module else None
+        if fee in (None, ""):
+            return None
+        return _normalize_amount(fee)
+    except Exception:
+        return None
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def get_payment_module(request, module_code: str):
+    code = str(module_code or "").strip()
+    if not code:
+        return Response({"detail": "module_code is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    module = MasterPaymentModule.objects.filter(module_code=code).first()
+    if not module:
+        return Response({"detail": f"Module not found for module_code={code}."}, status=status.HTTP_404_NOT_FOUND)
+
+    fee = None
+    try:
+        raw_fee = getattr(module, "license_fee", None)
+        if raw_fee not in (None, ""):
+            fee = _normalize_amount(raw_fee)
+    except Exception:
+        fee = None
+
+    return Response(
+        {
+            "module_code": str(getattr(module, "module_code", "") or "").strip(),
+            "module_desc": str(getattr(module, "module_desc", "") or "").strip(),
+            "license_fee": float(fee) if fee is not None else None,
+        }
+    )
+
+
 def _generate_transaction_id(prefix: str = "TXN") -> str:
     return f"{prefix}{timezone.now().strftime('%Y%m%d%H%M%S')}{secrets.token_hex(4).upper()}"
 
@@ -887,7 +934,30 @@ def billdesk_initiate_new_license_application_fee(request):
         )
 
     try:
-        amount = _normalize_amount(raw_amount or Decimal("500.00"))
+        module_fee = _get_module_license_fee(payment_module_code)
+        if module_fee is None:
+            return Response(
+                {
+                    "detail": f"license_fee is not configured for payment_module_code={payment_module_code}.",
+                    "payment_module_code": payment_module_code,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # If frontend sent an amount, ensure it matches DB (prevents tampering).
+        if raw_amount not in (None, ""):
+            client_amount = _normalize_amount(raw_amount)
+            if client_amount != module_fee:
+                return Response(
+                    {
+                        "detail": "Invalid amount. Please refresh and try again.",
+                        "expected_amount": float(module_fee),
+                        "received_amount": float(client_amount),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        amount = module_fee
     except Exception as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1195,41 +1265,45 @@ def billdesk_response(request):
 
                     # If the new license application captured salesman/barman details,
                     # create + auto-submit the linked salesman_barman_application as well.
+                    sbm_submitted = False
+                    sbm_application_id = ""
+                    sbm_submit_error = ""
                     try:
-                        sbm_submitted = False
-                        sbm_application_id = ""
-                        sbm_submit_error = ""
                         if getattr(app, "mode_of_operation", None) in {"Salesman", "Barman"}:
                             from models.transactional.salesman_barman.models import SalesmanBarmanModel
                             from auth.workflow.constants import WORKFLOW_IDS
                             from auth.workflow.models import WorkflowStage, Workflow
+                            from django.db import transaction as db_transaction
 
                             wf = Workflow.objects.filter(id=WORKFLOW_IDS.get("SALESMAN_BARMAN")).first()
-                            init = None
-                            if wf:
-                                init = WorkflowStage.objects.filter(workflow=wf, is_initial=True).order_by("id").first()
+                            if not wf:
+                                raise ValueError(f"SALESMAN_BARMAN workflow (id={WORKFLOW_IDS.get('SALESMAN_BARMAN')}) not found in DB.")
 
-                            if wf and init:
-                                sb = (
-                                    SalesmanBarmanModel.objects.select_related("workflow", "current_stage", "applicant")
-                                    .filter(new_license_application=app)
-                                    .first()
+                            init = WorkflowStage.objects.filter(workflow=wf, is_initial=True).order_by("id").first()
+                            if not init:
+                                raise ValueError("No initial stage found for SALESMAN_BARMAN workflow.")
+
+                            # Find existing SB record created during the draft save, or build a new one.
+                            sb = (
+                                SalesmanBarmanModel.objects.select_related("workflow", "current_stage", "applicant")
+                                .filter(new_license_application=app)
+                                .first()
+                            )
+
+                            if not sb:
+                                # SB record was not pre-created — build it now with available data.
+                                sb = SalesmanBarmanModel(
+                                    workflow=wf,
+                                    current_stage=init,
+                                    new_license_application=app,
+                                    excise_district=getattr(app, "site_district", None),
+                                    license_category=getattr(app, "license_category", None),
+                                    license=None,
+                                    applicant=user,
+                                    role=getattr(app, "mode_of_operation", None),
                                 )
-
-                                # Build if missing (details are captured directly into SalesmanBarmanModel
-                                # during the New License flow)
-                                if not sb:
-                                    sb = SalesmanBarmanModel(
-                                        workflow=wf,
-                                        current_stage=init,
-                                        new_license_application=app,
-                                        excise_district=getattr(app, "site_district", None),
-                                        license_category=getattr(app, "license_category", None),
-                                        license=None,
-                                        applicant=user,
-                                        role=getattr(app, "mode_of_operation", None),
-                                    )
-
+                            else:
+                                # Ensure required FK fields are set on the existing record.
                                 if not getattr(sb, "workflow_id", None):
                                     sb.workflow = wf
                                 if not getattr(sb, "current_stage_id", None):
@@ -1243,28 +1317,44 @@ def billdesk_response(request):
                                 if getattr(app, "mode_of_operation", None) in {"Salesman", "Barman"}:
                                     sb.role = app.mode_of_operation
 
+                            # Save in its own transaction so generate_application_id()'s nested
+                            # atomic() doesn't interfere with any surrounding transaction state.
+                            with db_transaction.atomic():
                                 sb.save()
-                                sbm_application_id = str(getattr(sb, "application_id", "") or "").strip()
 
-                                if getattr(getattr(sb, "current_stage", None), "is_initial", False):
+                            sbm_application_id = str(getattr(sb, "application_id", "") or "").strip()
+
+                            # Refresh to get the current_stage from DB after save.
+                            sb.refresh_from_db()
+                            if getattr(getattr(sb, "current_stage", None), "is_initial", False):
+                                try:
                                     WorkflowService.submit_application(
                                         application=sb,
                                         user=user,
                                         remarks="Auto-submitted with New License Application",
                                     )
                                     sbm_submitted = True
-                        # bubble up to redirect query params (defined later)
-                        request._sbm_submitted = sbm_submitted
-                        request._sbm_application_id = sbm_application_id
-                        request._sbm_submit_error = sbm_submit_error
-                    except Exception:
-                        try:
-                            request._sbm_submitted = False
-                            request._sbm_application_id = ""
-                            request._sbm_submit_error = "sbm_auto_submit_failed"
-                        except Exception:
-                            pass
-                        pass
+                                except Exception as _submit_exc:
+                                    logger.exception(
+                                        "SB WorkflowService.submit_application failed for sb=%s NLI=%s: %s",
+                                        sbm_application_id,
+                                        getattr(app, "application_id", "?"),
+                                        _submit_exc,
+                                    )
+                                    sbm_submit_error = f"sbm_workflow_submit_failed: {_submit_exc}"
+
+                    except Exception as _sbm_exc:
+                        logger.exception(
+                            "SB auto-submit failed for NLI application_id=%s: %s",
+                            getattr(app, "application_id", "?"),
+                            _sbm_exc,
+                        )
+                        sbm_submit_error = "sbm_auto_submit_failed"
+
+                    # bubble up to redirect query params (defined later)
+                    request._sbm_submitted = sbm_submitted
+                    request._sbm_application_id = sbm_application_id
+                    request._sbm_submit_error = sbm_submit_error
                     auto_submitted = True
                 except Exception as exc:
                     auto_submit_error = str(exc)

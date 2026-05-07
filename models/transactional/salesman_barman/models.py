@@ -108,6 +108,10 @@ class SalesmanBarmanModel(models.Model):
     def save(self, *args, **kwargs):
         if not self.application_id:
             self.application_id = self.generate_application_id()
+            # This is a new record — force INSERT so auto_now_add fields are populated
+            # correctly. Without this, Django may attempt an UPDATE (since the PK is now
+            # set) which excludes auto_now_add fields and causes a NOT NULL violation.
+            kwargs.setdefault('force_insert', True)
         super().save(*args, **kwargs)
 
     def generate_application_id(self):
@@ -124,12 +128,14 @@ class SalesmanBarmanModel(models.Model):
         else:
             fin_year = f"{year - 1}-{str(year)[2:]}"
 
-        prefix = f"{district_code}/{fin_year}"
+        # Prefix must match the full stored format "SBM/{district_code}/{fin_year}"
+        # so the startswith filter correctly finds existing records.
+        prefix = f"SBM/{district_code}/{fin_year}"
 
         with transaction.atomic():
             last_app = SalesmanBarmanModel.objects.filter(
                 application_id__startswith=prefix
-            ).order_by('-application_id').first()
+            ).select_for_update().order_by('-application_id').first()
 
             if last_app and last_app.application_id:
                 last_number_str = last_app.application_id.split('/')[-1]
@@ -143,7 +149,7 @@ class SalesmanBarmanModel(models.Model):
             new_number = last_number + 1
             new_number_str = str(new_number).zfill(4)
 
-            return f"SBM/{prefix}/{new_number_str}"
+            return f"{prefix}/{new_number_str}"
         
     @staticmethod
     def generate_fin_year():

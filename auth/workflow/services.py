@@ -432,10 +432,59 @@ class WorkflowService:
     @transaction.atomic
     def advance_stage(application, user, target_stage, context=None, remarks=None):
         context = context or {}
-        is_new_license_application = (
-            application._meta.app_label == "new_license_application"
-            and application._meta.model_name.lower() == "newlicenseapplication"
-        )
+        # Some deployments register the model under different app_labels; rely on model name.
+        is_new_license_application = application.__class__.__name__.lower() == "newlicenseapplication"
+        is_salesman_barman_application = application.__class__.__name__.lower() == "salesmanbarmanmodel"
+
+        requested_target_stage = target_stage
+        sync_new_license_payment_status = None
+        sync_salesman_barman_payment_status = None
+        if is_new_license_application:
+            from models.transactional.new_license_application.payment_status import (
+                route_approval_to_payment_stage,
+                enforce_new_license_payment_gate,
+                sync_new_license_payment_status as _sync_new_license_payment_status,
+            )
+            sync_new_license_payment_status = _sync_new_license_payment_status
+
+            # For new-license workflow, commissioner "Approve" should move the
+            # application to the payment-gate stage when unpaid (e.g. stage `awaiting_payment`).
+            # Only after successful fee+security payments should it reach final `approved`.
+            enforce_new_license_payment_gate(
+                application,
+                from_stage=application.current_stage,
+                target_stage=requested_target_stage,
+            )
+            # Route to payment-gate only when the application is being approved
+            # from the Commissioner stage. Otherwise earlier steps (e.g. Joint
+            # Commissioner forwarding to Commissioner) would incorrectly attempt
+            # Joint Commissioner -> awaiting_payment, which is not a valid transition.
+            from_name = str(getattr(application.current_stage, "name", "") or "").strip().lower()
+            if from_name in {"commissioner", "commisioner"}:
+                target_stage = route_approval_to_payment_stage(application, requested_target_stage)
+            else:
+                target_stage = requested_target_stage
+
+        if is_salesman_barman_application:
+            from models.transactional.salesman_barman.payment_status import (
+                route_approval_to_payment_stage as route_sb_approval_to_payment_stage,
+                enforce_salesman_barman_payment_gate,
+                sync_salesman_barman_payment_status as _sync_salesman_barman_payment_status,
+            )
+            sync_salesman_barman_payment_status = _sync_salesman_barman_payment_status
+
+            enforce_salesman_barman_payment_gate(
+                application,
+                from_stage=application.current_stage,
+                target_stage=requested_target_stage,
+                context=context,
+            )
+            target_stage = route_sb_approval_to_payment_stage(
+                application,
+                from_stage=application.current_stage,
+                target_stage=requested_target_stage,
+                context=context,
+            )
 
         # ---------- Permission ----------
         if not WorkflowService._has_stage_process_permission(
@@ -449,37 +498,6 @@ class WorkflowService:
         # ---------- Transition ----------
         WorkflowService.validate_transition(application, target_stage, context, user=user)
 
-        requested_target_stage = target_stage
-        sync_new_license_payment_status = None
-        if is_new_license_application:
-            from models.transactional.new_license_application.payment_status import (
-                route_approval_to_payment_stage,
-                enforce_new_license_payment_gate,
-                sync_new_license_payment_status as _sync_new_license_payment_status,
-            )
-            sync_new_license_payment_status = _sync_new_license_payment_status
-            action_name = str((context or {}).get("action") or "").strip().upper()
-
-            # Temporary fallback: treat officer approval as dummy-paid so approval
-            # can proceed while payment integration is pending.
-            if action_name == "APPROVE":
-                paid_update_fields = []
-                if hasattr(application, "is_license_fee_paid") and not getattr(application, "is_license_fee_paid", False):
-                    application.is_license_fee_paid = True
-                    paid_update_fields.append("is_license_fee_paid")
-                if hasattr(application, "is_security_fee_paid") and not getattr(application, "is_security_fee_paid", False):
-                    application.is_security_fee_paid = True
-                    paid_update_fields.append("is_security_fee_paid")
-                if paid_update_fields:
-                    application.save(update_fields=paid_update_fields)
-
-            enforce_new_license_payment_gate(
-                application,
-                from_stage=application.current_stage,
-                target_stage=requested_target_stage,
-            )
-            target_stage = route_approval_to_payment_stage(application, target_stage)
-
         # ---------- App-specific hooks (via context) ----------
         # if getattr(application, 'is_fee_calculated', None) is not None and target_stage.name == "level_1":
         #     if context.get("action") == "set_fee":
@@ -492,11 +510,55 @@ class WorkflowService:
         #         application.is_fee_calculated = True
 
         # ---------- Update stage ----------
+        # Persist selected license fee row (from JC "Confirm New License Approval")
+        # so licensee payment screens can show correct amounts.
+        if is_new_license_application:
+            try:
+                selected_fee_id = (
+                    (context or {}).get("selected_license_fee_id")
+                    or ((context or {}).get("license_fee_selection") or {}).get("id")
+                    or (context or {}).get("licensee_fee_id")
+                )
+                if selected_fee_id is not None:
+                    application.licensee_fee_id = int(selected_fee_id)
+            except Exception:
+                pass
+
+            # Business rule: when Joint Commissioner approves, mark fee/category steps done.
+            try:
+                action = str((context or {}).get("action") or "").strip().upper()
+                from_name = str(getattr(application.current_stage, "name", "") or "").strip().lower()
+                to_name = str(getattr(target_stage, "name", "") or "").strip().lower()
+                is_jc_approve = (
+                    action == "APPROVE"
+                    and "joint commissioner" in from_name
+                    and to_name in {"commissioner", "commisioner"}
+                )
+                if is_jc_approve:
+                    if hasattr(application, "is_fee_calculated"):
+                        application.is_fee_calculated = True
+                    if hasattr(application, "is_license_category_updated"):
+                        application.is_license_category_updated = True
+            except Exception:
+                pass
+
         application.current_stage = target_stage
-        application.save(update_fields=['current_stage'])
+        update_fields = ['current_stage']
+        if is_new_license_application:
+            for f in ("licensee_fee_id", "is_fee_calculated", "is_license_category_updated"):
+                if hasattr(application, f):
+                    update_fields.append(f)
+        application.save(update_fields=list(dict.fromkeys(update_fields)))
 
         if is_new_license_application and sync_new_license_payment_status:
             sync_new_license_payment_status(application)
+            refresh_fields = ['current_stage']
+            if hasattr(application, 'is_approved'):
+                refresh_fields.append('is_approved')
+            application.refresh_from_db(fields=refresh_fields)
+
+        if is_salesman_barman_application and sync_salesman_barman_payment_status:
+            sync_salesman_barman_payment_status(application)
             refresh_fields = ['current_stage']
             if hasattr(application, 'is_approved'):
                 refresh_fields.append('is_approved')
