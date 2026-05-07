@@ -228,9 +228,14 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         return getattr(fee, "security_amount", None) if fee else None
 
     def validate(self, data):
-        helpers.validate_mobile_number(data['mobile_number'])
-        helpers.validate_email_field(data['email'])
-        helpers.validate_pan_number(data['pan'])
+        # Resolve-objection updates are partial payloads, so only validate fields that
+        # are actually being updated in this request.
+        if 'mobile_number' in data:
+            helpers.validate_mobile_number(data['mobile_number'])
+        if 'email' in data:
+            helpers.validate_email_field(data['email'])
+        if 'pan' in data:
+            helpers.validate_pan_number(data['pan'])
         if data.get('company_pan'):
             helpers.validate_pan_number(data['company_pan'])
         if data.get('company_email'):
@@ -239,7 +244,8 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
             helpers.validate_mobile_number(data['company_phone_number'])
         if data.get('company_cin'):
             helpers.validate_cin_number(data['company_cin'])
-        helpers.validate_pin_code(data['pin_code'])
+        if 'pin_code' in data:
+            helpers.validate_pin_code(data['pin_code'])
         return data
 
     def create(self, validated_data):

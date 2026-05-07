@@ -19,6 +19,16 @@ from models.transactional.new_license_application.models import NewLicenseApplic
 from models.transactional.salesman_barman.models import SalesmanBarmanModel
 import logging
 
+def _normalized_role_token(user):
+    raw = getattr(getattr(user, 'role', None), 'name', '') or ''
+    token = ''.join(ch for ch in str(raw).lower() if ch.isalnum())
+    aliases = {
+        'licenseuser': 'licensee',
+        'licenseeuser': 'licensee',
+        'licencee': 'licensee',
+    }
+    return aliases.get(token, token)
+
 # Workflow views (from previous response)
 @permission_classes([HasAppPermission('workflows', 'view')])
 @api_view(['GET'])
@@ -377,6 +387,9 @@ def resolve_objections(request, application_id):
         return Response({"detail": str(e)}, status=400)
     except PermissionDenied as e:
         return Response({"detail": str(e)}, status=403)
+    except Exception as e:
+        logging.getLogger(__name__).exception("Unexpected error while resolving objections for %s", application_id)
+        return Response({"detail": f"Failed to resolve objections: {str(e)}"}, status=500)
 
     return _serialize_application(application)
 
@@ -483,7 +496,7 @@ def application_group(request):
     for Model in [m for m in models if m is not None]:
         qs = Model.objects.select_related('current_stage', 'workflow')
 
-        if (role_name or "").lower() == "licensee":
+        if _normalized_role_token(request.user) == "licensee":
             result["applied"] = result.get("applied", []) + list(qs.filter(
                 current_stage__name__in=['level_1', 'level_2', 'level_3', 'level_4', 'level_5']
             ))
@@ -624,7 +637,7 @@ def pay_license_fee(request, application_id):
     if not request.user.is_authenticated:
         return Response({"error": "Authentication required"}, status=status.HTTP_401_UNAUTHORIZED)
 
-    if getattr(request.user, 'role', None) and request.user.role.name != 'licensee':
+    if _normalized_role_token(request.user) != 'licensee':
         return Response(
             {"error": "Only licensees can pay the license fee."},
             status=status.HTTP_403_FORBIDDEN

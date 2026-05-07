@@ -160,6 +160,15 @@ class WorkflowService:
         return ''.join(ch for ch in str(value or '').lower() if ch.isalnum())
 
     @staticmethod
+    def _canonical_field_name(value):
+        raw = str(value or '').strip()
+        if not raw:
+            return ''
+        if '_' in raw:
+            return raw.lower()
+        return ''.join([f"_{ch.lower()}" if ch.isupper() else ch for ch in raw]).lstrip('_')
+
+    @staticmethod
     def _role_token_matches_cond(user_role_token, cond_role_token):
         user_role_token = WorkflowService._normalize_token(user_role_token)
         cond_role_token = WorkflowService._normalize_token(cond_role_token)
@@ -647,8 +656,16 @@ class WorkflowService:
     @transaction.atomic
     def resolve_objections(application, user, objection_ids=None, updated_fields=None, remarks=None):
 
-        if user.role.name != "licensee":
+        role_token = WorkflowService._normalize_token(getattr(getattr(user, "role", None), "name", ""))
+        if role_token in {"licenseuser", "licenseeuser", "licencee"}:
+            role_token = "licensee"
+
+        if role_token != "licensee":
             raise PermissionDenied("Only licensee can resolve objections.")
+
+        applicant_id = getattr(application, "applicant_id", None)
+        if applicant_id is not None and getattr(user, "id", None) != applicant_id:
+            raise PermissionDenied("Only the licensee who owns this application can resolve objections.")
 
         updated_fields = updated_fields or {}
         remarks = remarks or "Objections resolved and application returned to previous stage"
@@ -663,15 +680,28 @@ class WorkflowService:
 
         # --- 2. Strict validation: all objected fields must be updated ---
         required_fields = {obj.field_name for obj in unresolved_qs}
-        updated_keys = set(updated_fields.keys())
-        missing = required_fields - updated_keys
+        required_field_map = {
+            WorkflowService._canonical_field_name(field_name): field_name
+            for field_name in required_fields
+        }
+        normalized_updated_fields = {}
+        for key, value in (updated_fields or {}).items():
+            canonical = WorkflowService._canonical_field_name(key)
+            normalized_updated_fields[canonical or key] = value
+
+        updated_keys = set(normalized_updated_fields.keys())
+        missing = [
+            original_name
+            for canonical_name, original_name in required_field_map.items()
+            if canonical_name not in updated_keys
+        ]
         if missing:
             raise ValidationError(
                 f"Please provide updates for the following objected fields: {', '.join(missing)}"
             )
 
         # --- 3. Apply field updates using the correct app-specific serializer ---
-        if updated_fields:
+        if normalized_updated_fields:
             app_label = application._meta.app_label
             model_name = application._meta.model_name.lower()
 
@@ -688,7 +718,7 @@ class WorkflowService:
             except Exception as e:
                 raise ValidationError(f"Failed to load serializer: {str(e)}")
 
-            serializer = AppSerializer(application, data=updated_fields, partial=True)
+            serializer = AppSerializer(application, data=normalized_updated_fields, partial=True)
             serializer.is_valid(raise_exception=True)
             serializer.save()
 

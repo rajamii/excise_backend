@@ -11,10 +11,20 @@ class HasStagePermission(permissions.BasePermission):
         if not user.is_authenticated or not getattr(user, 'role', None):
             return False
 
+        def normalized_role_token() -> str:
+            raw = getattr(user.role, 'name', '') or ''
+            token = ''.join(ch for ch in str(raw).lower() if ch.isalnum())
+            aliases = {
+                'licenseuser': 'licensee',
+                'licenseeuser': 'licensee',
+                'licencee': 'licensee',
+            }
+            return aliases.get(token, token)
+
         # Allow licensee to resolve objections even if no StagePermission exists on the Objection stage.
         # The WorkflowService enforces that only the licensee can resolve objections.
         if request.method in ['POST', 'PUT', 'PATCH'] and '/resolve-objections/' in request.path:
-            return (getattr(user.role, 'name', '') or '').lower() == 'licensee'
+            return normalized_role_token() == 'licensee'
 
         # 1. Allow licensee to submit new applications
         if request.method == 'POST' and any(path in request.path for path in ['/apply/', '/create/']):
