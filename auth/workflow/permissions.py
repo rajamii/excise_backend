@@ -11,6 +11,11 @@ class HasStagePermission(permissions.BasePermission):
         if not user.is_authenticated or not getattr(user, 'role', None):
             return False
 
+        # Allow licensee to resolve objections even if no StagePermission exists on the Objection stage.
+        # The WorkflowService enforces that only the licensee can resolve objections.
+        if request.method in ['POST', 'PUT', 'PATCH'] and '/resolve-objections/' in request.path:
+            return (getattr(user.role, 'name', '') or '').lower() == 'licensee'
+
         # 1. Allow licensee to submit new applications
         if request.method == 'POST' and any(path in request.path for path in ['/apply/', '/create/']):
             return getattr(user.role, 'id', None) == 2

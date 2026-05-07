@@ -351,11 +351,26 @@ def resolve_objections(request, application_id):
         return Response({"detail": "Application not found"}, status=404)
 
     try:
+        # Frontend frequently submits multipart FormData where the corrected fields are at the top-level.
+        updated_fields = request.data.get("updated_fields", {})
+        if not updated_fields:
+            reserved = {"objection_ids", "remarks", "updated_fields"}
+            updated_fields = {}
+            for key in request.data.keys():
+                if key in reserved:
+                    continue
+                updated_fields[key] = request.data.get(key)
+
+        objection_ids = request.data.get("objection_ids")
+        if objection_ids is None and hasattr(request.data, "getlist"):
+            ids_list = request.data.getlist("objection_ids")
+            objection_ids = ids_list if ids_list else None
+
         WorkflowService.resolve_objections(
             application=application,
             user=request.user,
-            objection_ids=request.data.get("objection_ids"),
-            updated_fields=request.data.get("updated_fields", {}),
+            objection_ids=objection_ids,
+            updated_fields=updated_fields,
             remarks=request.data.get("remarks")
         )
     except ValidationError as e:
@@ -468,7 +483,7 @@ def application_group(request):
     for Model in [m for m in models if m is not None]:
         qs = Model.objects.select_related('current_stage', 'workflow')
 
-        if role_name == "licensee":
+        if (role_name or "").lower() == "licensee":
             result["applied"] = result.get("applied", []) + list(qs.filter(
                 current_stage__name__in=['level_1', 'level_2', 'level_3', 'level_4', 'level_5']
             ))
@@ -483,7 +498,30 @@ def application_group(request):
                 current_stage__name__icontains='rejected'
             ))
 
-        elif role_name.startswith("level_"):
+        else:
+            # Generic admin/officer grouping driven by StagePermission + workflow membership.
+            workflow_ids = list(
+                StagePermission.objects.filter(role=request.user.role).values_list("stage__workflow_id", flat=True).distinct()
+            )
+            # Always expose objection items to admins/officers even if StagePermission rows
+            # are not configured for the role yet (common in existing deployments).
+            result["objection"] += list(qs.filter(current_stage__name__icontains="objection"))
+
+            if not workflow_ids:
+                continue
+
+            scoped = qs.filter(workflow_id__in=workflow_ids)
+            processable_stage_ids = list(
+                StagePermission.objects.filter(role=request.user.role, can_process=True).values_list("stage_id", flat=True)
+            )
+
+            if processable_stage_ids:
+                result["pending"] += list(scoped.filter(current_stage_id__in=processable_stage_ids))
+
+            # Objection is already included above (unscoped), keep buckets stable.
+            result["approved"] += list(scoped.filter(current_stage__name__iexact="approved"))
+            result["rejected"] += list(scoped.filter(current_stage__name__icontains="rejected"))
+            continue
             level_num = role_name.replace("level_", "")  # "level_3" → "3"
 
             pending_stages = [role_name, f"{role_name}_objection"]

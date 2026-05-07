@@ -612,11 +612,17 @@ class WorkflowService:
         WorkflowService.validate_transition(application, target_stage, {"has_objections": True})
 
         for obj in objections:
+            field_name = obj.get("field") or obj.get("field_name") or obj.get("fieldName")
+            if not field_name:
+                raise ValidationError("Each objection must include 'field' (or 'field_name').")
+            objection_remarks = obj.get("remarks") or obj.get("remark") or obj.get("comment")
+            if not objection_remarks:
+                raise ValidationError("Each objection must include 'remarks'.")
             Objection.objects.create(
                 content_type=ContentType.objects.get_for_model(application),
                 object_id=str(application.pk),
-                field_name=obj["field"],
-                remarks=obj["remarks"],
+                field_name=str(field_name),
+                remarks=str(objection_remarks),
                 raised_by=user,
                 stage=target_stage
             )

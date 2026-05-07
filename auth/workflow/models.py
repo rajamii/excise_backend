@@ -87,6 +87,7 @@ class Objection(models.Model):
 
     class Meta:
         ordering = ['-raised_on']
+        db_table = "workflow_objection"
 
 
 # ---------- POLYMORPHIC REJECTION ----------
