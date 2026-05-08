@@ -2,8 +2,10 @@ from django.utils import timezone
 from django.db import transaction
 from django.core.exceptions import ValidationError, PermissionDenied
 from django.contrib.contenttypes.models import ContentType
+from django.core.serializers.json import DjangoJSONEncoder
 
 from django.apps import apps
+import json
 from .models import (
     WorkflowTransition, StagePermission,
     Transaction, Objection, Rejection
@@ -154,6 +156,47 @@ SERIALIZER_MAPPING = {
 }
 
 class WorkflowService:
+
+    @staticmethod
+    def _stringify_for_audit(value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        try:
+            if isinstance(value, (dict, list, tuple)):
+                return json.dumps(value, cls=DjangoJSONEncoder, ensure_ascii=False)
+        except Exception:
+            pass
+        return str(value)
+
+    @staticmethod
+    def _read_application_field_value(application, field_name):
+        """
+        Best-effort: read a value from the application model using a canonicalized field name.
+        Supports simple dotted paths for dict-like values (e.g. "address.line1").
+        """
+        canonical = WorkflowService._canonical_field_name(field_name)
+        candidates = [canonical, str(field_name or '').strip()]
+        for attr in candidates:
+            if not attr:
+                continue
+            if hasattr(application, attr):
+                value = getattr(application, attr)
+                return WorkflowService._stringify_for_audit(value)
+            if '.' in attr:
+                base, *rest = attr.split('.')
+                if not hasattr(application, base):
+                    continue
+                value = getattr(application, base)
+                for key in rest:
+                    if isinstance(value, dict) and key in value:
+                        value = value.get(key)
+                    else:
+                        value = None
+                        break
+                return WorkflowService._stringify_for_audit(value)
+        return None
 
     @staticmethod
     def _normalize_token(value):
@@ -627,11 +670,14 @@ class WorkflowService:
             objection_remarks = obj.get("remarks") or obj.get("remark") or obj.get("comment")
             if not objection_remarks:
                 raise ValidationError("Each objection must include 'remarks'.")
+
+            before_content = WorkflowService._read_application_field_value(application, field_name)
             Objection.objects.create(
                 content_type=ContentType.objects.get_for_model(application),
                 object_id=str(application.pk),
                 field_name=str(field_name),
                 remarks=str(objection_remarks),
+                before_content=before_content,
                 raised_by=user,
                 stage=target_stage
             )
@@ -701,6 +747,12 @@ class WorkflowService:
             )
 
         # --- 3. Apply field updates using the correct app-specific serializer ---
+        pre_update_values = {}
+        for obj in unresolved_qs:
+            canonical = WorkflowService._canonical_field_name(obj.field_name)
+            if canonical:
+                pre_update_values[canonical] = WorkflowService._read_application_field_value(application, canonical)
+
         if normalized_updated_fields:
             app_label = application._meta.app_label
             model_name = application._meta.model_name.lower()
@@ -723,10 +775,22 @@ class WorkflowService:
             serializer.save()
 
         # --- 4. Mark objections as resolved ---
+        now = timezone.now()
         qs = application.objections.filter(is_resolved=False)
         if objection_ids:
             qs = qs.filter(id__in=objection_ids)
-        qs.update(is_resolved=True, resolved_on=timezone.now(), resolved_by=user)
+
+        # Set per-row after_content (and backfill before_content if missing)
+        for obj in qs.select_for_update():
+            canonical = WorkflowService._canonical_field_name(obj.field_name)
+            if not obj.before_content and canonical:
+                obj.before_content = pre_update_values.get(canonical)
+            if canonical:
+                obj.after_content = WorkflowService._read_application_field_value(application, canonical)
+            obj.is_resolved = True
+            obj.resolved_on = now
+            obj.resolved_by = user
+            obj.save(update_fields=['before_content', 'after_content', 'is_resolved', 'resolved_on', 'resolved_by'])
 
         # --- 5. Find the transaction that moved INTO the current objection stage ---
         entry_to_objection_txn = application.transactions.filter(

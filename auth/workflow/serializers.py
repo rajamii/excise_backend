@@ -46,6 +46,8 @@ class WorkflowObjectionSerializer(serializers.ModelSerializer):
     resolvedAt = serializers.DateTimeField(source='resolved_on', read_only=True)
     fieldName = serializers.CharField(source='field_name', read_only=True)
     isResolved = serializers.BooleanField(source='is_resolved', read_only=True)
+    beforeContent = serializers.CharField(source='before_content', read_only=True, allow_null=True)
+    afterContent = serializers.CharField(source='after_content', read_only=True, allow_null=True)
 
     def get_raisedByName(self, obj):
         user = getattr(obj, 'raised_by', None)
@@ -69,6 +71,8 @@ class WorkflowObjectionSerializer(serializers.ModelSerializer):
             'object_id',
             'fieldName',
             'remarks',
+            'beforeContent',
+            'afterContent',
             'raised_by',
             'raisedByName',
             'raisedAt',
