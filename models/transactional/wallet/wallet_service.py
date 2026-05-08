@@ -1,12 +1,9 @@
 from __future__ import annotations
-
 from decimal import Decimal
 import logging
-
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-
 from .models import WalletBalance, WalletTransaction, _resolve_module_type_from_license_id, _resolve_wallet_row_licensee_id
 
 logger = logging.getLogger(__name__)
@@ -71,12 +68,11 @@ def credit_wallet_balance(
         if existing and not _is_pending_payment_status(getattr(existing, "payment_status", "")):
             return existing, None, True
 
-        wallet = (
-            WalletBalance.objects.select_for_update()
-            .filter(wallet_filter, wallet_type__iexact=wtype, head_of_account=hoa)
-            .order_by("wallet_balance_id")
-            .first()
-        )
+        wallet = WalletBalance.objects.select_for_update().filter(
+            licensee_id=licensee_id, 
+            head_of_account=head_of_account
+        ).first()
+        
         if not wallet:
             template = WalletBalance.objects.select_for_update().filter(wallet_filter).order_by("wallet_balance_id").first()
             wallet = WalletBalance.objects.create(

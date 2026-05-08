@@ -159,7 +159,8 @@ def wallet_summary(request, licensee_id):
     request_user = str(getattr(request.user, "username", "") or "").strip()
     effective_id = _active_na_license_id_for_applicant(request.user) or str(licensee_id or "").strip()
 
-    wallet_filter = Q(licensee_id__in=candidates)
+    wallet_filter = Q(licensee_id=licensee_id)
+
     if request_user:
         wallet_filter |= Q(user_id__iexact=request_user)
     qs = WalletBalance.objects.filter(wallet_filter).order_by("wallet_type", "head_of_account")
@@ -346,8 +347,7 @@ def wallet_recharge_credit(request, licensee_id):
     with transaction.atomic():
         wallet = (
             WalletBalance.objects.select_for_update()
-            .filter(wallet_filter, wallet_type__iexact=wallet_type, head_of_account=head_of_account)
-            .order_by("wallet_balance_id")
+            .filter(licensee_id=licensee_id, wallet_type__iexact=wallet_type, head_of_account=head_of_account)
             .first()
         )
         if not wallet:

@@ -30,11 +30,21 @@ from models.transactional.wallet.wallet_service import credit_wallet_balance, re
 logger = logging.getLogger(__name__)
 
 LICENSE_FEE_HOA = "0039-00-800-45-02"
-SECURITY_DEPOSIT_HOA_SENTINEL = "non"
+SECURITY_DEPOSIT_HOA_SENTINEL = "null"
 DEFAULT_LICENSE_RENEWAL_MODULE_CODE = "002"
 DEFAULT_WALLET_ADVANCE_MODULE_CODE = "999"
 DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE = "001"
 PENDING_RETRY_LOCK_MINUTES = 1
+
+html_content = """
+    <!DOCTYPE html>
+    <html>
+        <head><title>Processing Payment...</title></head>
+        <body onload="window.close();">
+            <p>Payment processed successfully. You may safely close this window.</p>
+        </body>
+    </html>
+    """
 
 
 def _build_pending_retry_response(tx: PaymentBilldeskTransaction, remaining_seconds: int) -> Response:
@@ -512,14 +522,7 @@ def billdesk_initiate_wallet_recharge(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def billdesk_initiate_license_fee(request):
-    """
-    License fee top-up via BillDesk.
-
-    As per payment logic document:
-    - AdditionalInfo1: Head of Account (0039-00-800-45-02)
-    - AdditionalInfo2: SIKPAY
-    - AdditionalInfo3: SIKPAY
-    """
+    
     data = request.data or {}
     device_data = data.get("device_data", {})
 
@@ -1099,24 +1102,14 @@ def billdesk_initiate_new_license_application_fee(request):
     )
 
 
-@csrf_exempt
-def billdesk_response(request):
-    if request.method != "POST":
-        return HttpResponseBadRequest("Invalid method")
+def _process_billdesk_transaction(transaction_response: str) -> bool:
 
-    # 1. Fetch the new encrypted response parameter
-    transaction_response = request.POST.get("transaction_response")
-    if not transaction_response:
-        return HttpResponseBadRequest("Missing transaction_response parameter")
-
-    # 2. Decode the JWS payload
     try:
         resp_data = _decode_jws_payload(transaction_response)
     except Exception as e:
         logger.error(f"Failed to decode JWS: {e}")
-        return HttpResponseBadRequest("Invalid response format")
+        return False
 
-    # 3. Extract parameters directly from the JSON dictionary
     txn_ref = resp_data.get("orderid", "")
     bank_ref = resp_data.get("bank_ref_no", "")
     resp_amount = resp_data.get("amount", "")
@@ -1128,7 +1121,6 @@ def billdesk_response(request):
     resp_txntype = resp_data.get("payment_method_type", "")
     resp_itemcode = resp_data.get("itemcode", "")
 
-    # Extract additional info dictionary
     add_info = resp_data.get("additional_info", {})
     resp_additional = [
         add_info.get("additional_info1", ""),
@@ -1140,7 +1132,6 @@ def billdesk_response(request):
         add_info.get("additional_info7", "")
     ]
 
-    # Fetch the Gateway config to get the encryption (secret) key
     gateway = PaymentGatewayParameters.objects.filter(
         is_active="Y", 
         payment_gateway_name__iexact="Billdesk"
@@ -1148,13 +1139,10 @@ def billdesk_response(request):
     
     encryption_key = str(getattr(gateway, "encryption_key", "") or "").strip()
 
-    tx = None
-    if txn_ref:
-        tx = PaymentBilldeskTransaction.objects.filter(utr=txn_ref).first()
-        if tx is None:
-            tx = PaymentBilldeskTransaction.objects.filter(transaction_id_no_hoa=txn_ref).first()
+    tx = PaymentBilldeskTransaction.objects.filter(utr=txn_ref).first()
+    if tx is None and txn_ref:
+        tx = PaymentBilldeskTransaction.objects.filter(transaction_id_no_hoa=txn_ref).first()
 
-    # VERIFY THE SIGNATURE
     checksum_ok = False
     if encryption_key:
         checksum_ok = verify_billdesk_jws(transaction_response, encryption_key)
@@ -1163,10 +1151,8 @@ def billdesk_response(request):
 
     if not checksum_ok:
         logger.critical(f"SECURITY ALERT: Invalid JWS Signature detected for order {txn_ref}!")
-        # Force a failure status if the signature is spoofed
         status_code = "F" 
     else:
-        # Proceed with normal status checking
         status_code = "S" if auth_status == "0300" else "F"
 
     if tx:
@@ -1179,8 +1165,8 @@ def billdesk_response(request):
 
         # Check if transaction is already marked as success BEFORE processing
         if tx and getattr(tx, "payment_status", "") == "S":
-            # It's a duplicate successful callback, acknowledge but do not re-process
-            return HttpResponse(html_content, content_type="text/html")
+           
+            return True
         
         # Save the raw JWS string to the DB for auditing
         tx.response_string = transaction_response 
@@ -1190,7 +1176,6 @@ def billdesk_response(request):
         tx.response_txnamount = parsed_amount
         tx.response_txntype = resp_txntype or None
         tx.response_itemcode = resp_itemcode or None
-        
         tx.response_authstatus = auth_status or None
         tx.response_additionalinfo1 = resp_additional[0] or None
         tx.response_additionalinfo2 = resp_additional[1] or None
@@ -1201,7 +1186,6 @@ def billdesk_response(request):
         tx.response_additionalinfo7 = resp_additional[6] or None
         tx.response_errorstatus = error_status or None
         tx.response_errordescription = error_desc or None
-        
         tx.response_initial_authstatus = auth_status or None
         tx.response_initial_datetime = timezone.now()
         tx.payment_status = status_code
@@ -1263,8 +1247,7 @@ def billdesk_response(request):
                             remarks="Application fee paid via BillDesk (auto-submitted)",
                         )
 
-                    # If the new license application captured salesman/barman details,
-                    # create + auto-submit the linked salesman_barman_application as well.
+                    
                     sbm_submitted = False
                     sbm_application_id = ""
                     sbm_submit_error = ""
@@ -1352,9 +1335,9 @@ def billdesk_response(request):
                         sbm_submit_error = "sbm_auto_submit_failed"
 
                     # bubble up to redirect query params (defined later)
-                    request._sbm_submitted = sbm_submitted
-                    request._sbm_application_id = sbm_application_id
-                    request._sbm_submit_error = sbm_submit_error
+                    transaction_response._sbm_submitted = sbm_submitted
+                    transaction_response._sbm_application_id = sbm_application_id
+                    transaction_response._sbm_submit_error = sbm_submit_error
                     auto_submitted = True
                 except Exception as exc:
                     auto_submit_error = str(exc)
@@ -1458,80 +1441,45 @@ def billdesk_response(request):
                         )
                 except Exception as exc:
                     logger.exception("Failed to log failed wallet transaction for txn_ref=%s: %s", txn_ref, exc)
+    return True
 
-    gateway = (
-        PaymentGatewayParameters.objects.filter(is_active="Y", payment_gateway_name__iexact="Billdesk")
-        .order_by("sl_no")
-        .first()
-    )
-    frontend_success = str(getattr(gateway, "frontend_success_url", "") or "").strip()
-    if not frontend_success:
-        frontend_success = str(getattr(settings, "PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL", "") or "").strip()
-
-    if tx and str(getattr(tx, "payment_module_code", "") or "").strip() == DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE:
-        configured = str(getattr(settings, "PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL", "") or "").strip()
-        if configured:
-            frontend_success = configured
-    if not frontend_success:
-        return HttpResponseBadRequest(
-            "Frontend success URL not configured (set Payment_Gateway_Parameters.frontend_success_url or PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL)."
-        )
-
-    if tx:
-        module_code = str(getattr(tx, "payment_module_code", "") or "").strip()
-        if module_code == DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE:
-            wallet_type = "application_fee"
-            hoa = str(tx.request_additionalinfo1 or "").strip()
-        else:
-            req_type = str(tx.request_additionalinfo2 or "").strip().upper()
-            if req_type == "SIKPAY":
-                wallet_type = "license_fee"
-                hoa = str(tx.request_additionalinfo1 or "").strip()
-            elif req_type == "SIKFDR":
-                wallet_type = "security_deposit"
-                hoa = SECURITY_DEPOSIT_HOA_SENTINEL
-            else:
-                wallet_type = str(tx.request_additionalinfo3 or "").strip()
-                hoa = str(tx.request_additionalinfo1 or "").strip()
-        amt = f"{Decimal(str(tx.transaction_amount or 0)).quantize(Decimal('0.01')):.2f}"
-        created_at = tx.transaction_date.isoformat() if tx.transaction_date else ""
-    else:
-        wallet_type = ""
-        hoa = ""
-        amt = resp_amount or ""
-        created_at = ""
-
-    ui_status = "success" if auth_status == "0300" and checksum_ok else "failed"
-    ui_reason = ""
-    if ui_status != "success":
-        ui_reason = str(error_desc or "").strip() or ("checksum_mismatch" if not checksum_ok else "failed")
-    # query = urlencode(
-    #     {
-    #         "transactionId": txn_ref,
-    #         "paymentModuleCode": str(getattr(tx, "payment_module_code", "") or "").strip() if tx else "",
-    #         "payerId": str(getattr(tx, "payer_id", "") or "").strip() if tx else "",
-    #         "applicationId": str(getattr(tx, "payer_id", "") or "").strip() if tx else "",
-    #         "walletType": wallet_type,
-    #         "hoa": hoa,
-    #         "amount": amt,
-    #         "status": ui_status,
-    #         "reason": ui_reason,
-    #         "createdAt": created_at,
-    #         "additionalInfo2": str(getattr(tx, "request_additionalinfo2", "") or "").strip() if tx else "",
-    #         "additionalInfo3": str(getattr(tx, "request_additionalinfo3", "") or "").strip() if tx else "",
-    #         "autoSubmitted": "1" if auto_submitted else "0",
-    #         "autoSubmitError": auto_submit_error[:200] if auto_submit_error else "",
-    #     }
-    # )
-    html_content = """
-    <!DOCTYPE html>
-    <html>
-        <head><title>Processing Payment...</title></head>
-        <body onload="window.close();">
-            <p>Payment processed successfully. You may safely close this window.</p>
-        </body>
-    </html>
+@csrf_exempt
+def billdesk_webhook(request):
     """
+    Dedicated endpoint for BillDesk Server-to-Server Webhooks.
+    """
+    if request.method != "POST":
+        return HttpResponseBadRequest("Invalid method")
+
+    # Webhooks might send data as form data OR as a raw body string
+    transaction_response = request.POST.get("transaction_response")
+    if not transaction_response:
+        transaction_response = request.body.decode('utf-8').strip()
+
+    if not transaction_response:
+        # Acknowledge with 200 so BillDesk stops retrying a malformed request
+        return HttpResponse("Missing payload", status=200)
+
+    # Process the transaction idempotently
+    _process_billdesk_transaction(transaction_response)
+
+    # BillDesk mandates returning a 2xx status code immediately to acknowledge the event
+    return HttpResponse("Webhook Received", status=200)
+
+@csrf_exempt
+def billdesk_response(request):
+    if request.method != "POST":
+        return HttpResponseBadRequest("Invalid method")
+
+    # 1. Fetch the new encrypted response parameter
+    transaction_response = request.POST.get("transaction_response")
+    if not transaction_response:
+        return HttpResponseBadRequest("Missing transaction_response parameter")
+
+    # Call the shared processor
+    _process_billdesk_transaction(transaction_response)
+
+    # Return the HTML to close the child window
     return HttpResponse(html_content, content_type="text/html")
 
 
