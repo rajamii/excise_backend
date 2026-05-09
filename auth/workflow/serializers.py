@@ -33,11 +33,39 @@ class StagePermissionSerializer(serializers.ModelSerializer):
 # shared in workflow/serializers.py
 class WorkflowTransactionSerializer(serializers.ModelSerializer):
     performed_by = UserSerializer(read_only=True)
+    performed_by_name = serializers.SerializerMethodField()
     forwarded_by = RoleSerializer(read_only=True)
+    forwarded_by_name = serializers.SerializerMethodField()
     forwarded_to = RoleSerializer(read_only=True)
+    forwarded_to_name = serializers.SerializerMethodField()
+
     class Meta:
         model = Transaction
         fields = '__all__'
+
+    def get_performed_by_name(self, obj):
+        user = getattr(obj, 'performed_by', None)
+        if not user:
+            return None
+        parts = [
+            str(getattr(user, 'first_name', '') or '').strip(),
+            str(getattr(user, 'middle_name', '') or '').strip(),
+            str(getattr(user, 'last_name', '') or '').strip(),
+        ]
+        name = ' '.join(p for p in parts if p).strip()
+        return name or str(getattr(user, 'username', '') or '').strip() or None
+
+    def get_forwarded_by_name(self, obj):
+        role = getattr(obj, 'forwarded_by', None)
+        if not role:
+            return None
+        return str(getattr(role, 'name', '') or '').strip() or None
+
+    def get_forwarded_to_name(self, obj):
+        role = getattr(obj, 'forwarded_to', None)
+        if not role:
+            return None
+        return str(getattr(role, 'name', '') or '').strip() or None
 
 class WorkflowObjectionSerializer(serializers.ModelSerializer):
     raisedByName = serializers.SerializerMethodField()
