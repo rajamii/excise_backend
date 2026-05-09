@@ -950,7 +950,7 @@ class WorkflowService:
         if not remarks:
             raise ValidationError("A remark is required when rejecting an application.")
 
-        WorkflowService.validate_transition(application, target_stage, {})
+        WorkflowService.validate_transition(application, target_stage, {}, user=user)
 
         # Create the rejection record
         Rejection.objects.create(
