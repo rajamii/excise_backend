@@ -3,7 +3,8 @@ from django.db import transaction
 from rest_framework.response import Response
 from rest_framework.views import PermissionDenied
 from django.apps import apps
-from django.forms import ValidationError
+from django.core.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import status
@@ -383,7 +384,17 @@ def resolve_objections(request, application_id):
             updated_fields=updated_fields,
             remarks=request.data.get("remarks")
         )
-    except ValidationError as e:
+    except (ValidationError, DRFValidationError) as e:
+        # Django's ValidationError and DRF's ValidationError have different shapes.
+        details = getattr(e, "detail", None)
+        if details is not None:
+            return Response(details, status=400)
+        message_dict = getattr(e, "message_dict", None)
+        if message_dict is not None:
+            return Response(message_dict, status=400)
+        messages = getattr(e, "messages", None)
+        if messages:
+            return Response({"detail": messages[0]}, status=400)
         return Response({"detail": str(e)}, status=400)
     except PermissionDenied as e:
         return Response({"detail": str(e)}, status=403)

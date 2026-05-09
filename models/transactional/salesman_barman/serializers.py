@@ -129,7 +129,9 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
         linked to `new_license_application`.
         """
         attrs = super().validate(attrs)
-        if not attrs.get("new_license_application"):
+        # Only enforce "required fields" on CREATE. For updates (including objection
+        # resolution) we must allow partial payloads.
+        if self.instance is None and not attrs.get("new_license_application"):
             required = [
                 "role",
                 "firstName",

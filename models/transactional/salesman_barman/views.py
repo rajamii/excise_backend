@@ -473,12 +473,14 @@ def dashboard_counts(request):
     if role == 'licensee':
         base_qs = SalesmanBarmanModel.objects.filter(applicant=request.user)
         applied_stages = set(stage_sets['initial'])
-        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
+        objection_stages = set(stage_sets['objection'])
+        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages - objection_stages
         # The licensee UI does not surface an "Applied" tile; treat initial-stage apps as pending.
         pending_for_ui = pending_stages | applied_stages
         return Response({
             "applied": base_qs.filter(current_stage__name__in=applied_stages).count(),
             "pending": base_qs.filter(current_stage__name__in=pending_for_ui).count(),
+            "objection": base_qs.filter(current_stage__name__in=objection_stages).count(),
             "approved": base_qs.filter(current_stage__name__in=stage_sets['approved']).count(),
             "rejected": base_qs.filter(current_stage__name__in=stage_sets['rejected']).count(),
         })
@@ -552,7 +554,8 @@ def application_group(request):
     if role == 'licensee':
         base_qs = SalesmanBarmanModel.objects.filter(applicant=request.user)
         applied_stages = set(stage_sets['initial'])
-        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
+        objection_stages = set(stage_sets['objection'])
+        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages - objection_stages
         result = {
             "applied": SalesmanBarmanSerializer(
                 base_qs.filter(current_stage__name__in=applied_stages),
@@ -560,6 +563,10 @@ def application_group(request):
             ).data,
             "pending": SalesmanBarmanSerializer(
                 base_qs.filter(current_stage__name__in=pending_stages),
+                many=True
+            ).data,
+            "objection": SalesmanBarmanSerializer(
+                base_qs.filter(current_stage__name__in=objection_stages),
                 many=True
             ).data,
             "approved": SalesmanBarmanSerializer(
