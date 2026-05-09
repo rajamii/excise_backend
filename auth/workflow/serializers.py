@@ -85,8 +85,21 @@ class WorkflowObjectionSerializer(serializers.ModelSerializer):
 
 class WorkflowRejectionSerializer(serializers.ModelSerializer):
     rejected_by = UserSerializer(read_only=True)
+    rejectedByName = serializers.SerializerMethodField()
     stage = WorkflowStageSerializer(read_only=True)
 
     class Meta:
         model = Rejection
-        fields = ['id', 'content_type', 'object_id', 'remarks', 'rejected_by', 'stage', 'rejected_on']
+        fields = ['id', 'content_type', 'object_id', 'remarks', 'rejected_by', 'rejectedByName', 'stage', 'rejected_on']
+
+    def get_rejectedByName(self, obj):
+        user = getattr(obj, "rejected_by", None)
+        if not user:
+            return None
+        parts = [
+            str(getattr(user, "first_name", "") or "").strip(),
+            str(getattr(user, "middle_name", "") or "").strip(),
+            str(getattr(user, "last_name", "") or "").strip(),
+        ]
+        name = " ".join(p for p in parts if p).strip()
+        return name or str(getattr(user, "username", "") or "").strip() or None
