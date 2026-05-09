@@ -176,8 +176,45 @@ class WorkflowService:
         Best-effort: read a value from the application model using a canonicalized field name.
         Supports simple dotted paths for dict-like values (e.g. "address.line1").
         """
-        canonical = WorkflowService._canonical_field_name(field_name)
-        candidates = [canonical, str(field_name or '').strip()]
+        raw = str(field_name or '').strip()
+        canonical = WorkflowService._canonical_field_name(raw)
+
+        # Some models use camelCase python attribute names with snake_case DB columns
+        # (e.g. SalesmanBarmanModel.emailId stored in DB as email_id). Objections may store
+        # either "emailId" or the canonicalized "email_id". Try both directions.
+        def _snake_to_camel(s: str) -> str:
+            parts = [p for p in str(s or '').split('_') if p]
+            if not parts:
+                return ''
+            return parts[0].lower() + ''.join(p[:1].upper() + p[1:] for p in parts[1:])
+
+        def _camel_to_snake(s: str) -> str:
+            s = str(s or '').strip()
+            if not s:
+                return ''
+            out = []
+            for ch in s:
+                if ch.isupper():
+                    out.append('_')
+                    out.append(ch.lower())
+                else:
+                    out.append(ch)
+            return ''.join(out).lstrip('_').lower()
+
+        candidates = []
+        for v in [canonical, raw]:
+            if not v:
+                continue
+            candidates.append(v)
+            # add cross-variant
+            if '_' in v:
+                candidates.append(_snake_to_camel(v))
+            else:
+                candidates.append(_camel_to_snake(v))
+
+        # De-dupe while preserving order.
+        seen = set()
+        candidates = [c for c in candidates if c and not (c in seen or seen.add(c))]
         for attr in candidates:
             if not attr:
                 continue
@@ -733,7 +770,7 @@ class WorkflowService:
         normalized_updated_fields = {}
         for key, value in (updated_fields or {}).items():
             canonical = WorkflowService._canonical_field_name(key)
-            normalized_updated_fields[canonical or key] = value
+            normalized_updated_fields[canonical or key] = {'provided': key, 'value': value}
 
         updated_keys = set(normalized_updated_fields.keys())
         missing = [
@@ -770,7 +807,45 @@ class WorkflowService:
             except Exception as e:
                 raise ValidationError(f"Failed to load serializer: {str(e)}")
 
-            serializer = AppSerializer(application, data=normalized_updated_fields, partial=True)
+            # Map incoming keys (often snake_case) to serializer field names (often camelCase).
+            def _snake_to_camel(s: str) -> str:
+                parts = [p for p in str(s or '').split('_') if p]
+                if not parts:
+                    return ''
+                return parts[0].lower() + ''.join(p[:1].upper() + p[1:] for p in parts[1:])
+
+            def _camel_to_snake(s: str) -> str:
+                s = str(s or '').strip()
+                if not s:
+                    return ''
+                out = []
+                for ch in s:
+                    if ch.isupper():
+                        out.append('_')
+                        out.append(ch.lower())
+                    else:
+                        out.append(ch)
+                return ''.join(out).lstrip('_').lower()
+
+            serializer_field_names = set(getattr(AppSerializer(application), 'fields', {}).keys())
+            serializer_payload = {}
+            for canonical_name, meta in normalized_updated_fields.items():
+                provided_name = str((meta or {}).get('provided') or '').strip()
+                value = (meta or {}).get('value')
+                original_name = str(required_field_map.get(canonical_name) or '').strip()
+
+                candidates = []
+                for name in [original_name, provided_name, canonical_name]:
+                    if not name:
+                        continue
+                    candidates.append(name)
+                    candidates.append(_snake_to_camel(name) if '_' in name else _camel_to_snake(name))
+
+                # pick first candidate that is accepted by the serializer
+                target = next((c for c in candidates if c in serializer_field_names), provided_name or canonical_name)
+                serializer_payload[target] = value
+
+            serializer = AppSerializer(application, data=serializer_payload, partial=True)
             serializer.is_valid(raise_exception=True)
             serializer.save()
 
