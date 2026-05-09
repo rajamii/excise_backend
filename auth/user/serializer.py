@@ -46,7 +46,9 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_role(self, obj):
         role = obj.role
-        return {'id': role.id} if role else None
+        if not role:
+            return None
+        return {'id': role.id, 'name': role.name}
 
     def get_created_by(self, obj):
         return obj.created_by.role.id if obj.created_by and obj.created_by.role else None
