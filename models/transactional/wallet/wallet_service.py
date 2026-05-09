@@ -268,6 +268,7 @@ def debit_wallet_balance(
     payment_status: str = "success",
     remarks: str = "",
     transaction_type: str = "payment",
+    reference_no: str = "",
 ) -> tuple[WalletTransaction | None, WalletBalance | None, bool]:
     """
     Debit a wallet balance and create a DR WalletTransaction.
@@ -347,7 +348,7 @@ def debit_wallet_balance(
             amount=amt,
             balance_before=before,
             balance_after=after,
-            reference_no=txn,
+            reference_no=str(reference_no or txn).strip(),
             source_module=str(source_module or "wallet_payment").strip(),
             payment_status=str(payment_status or "success").strip(),
             remarks=str(remarks or "").strip() or None,

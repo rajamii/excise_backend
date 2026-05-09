@@ -976,6 +976,7 @@ def pay_license_fee_wallet(request, application_id):
             amount=amount,
             user_id=str(getattr(request.user, "username", "") or "").strip(),
             remarks=f"License fee paid for {application.application_id}",
+            reference_no=application.application_id,
         )
     except Exception as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -1019,6 +1020,7 @@ def pay_security_fee_wallet(request, application_id):
             amount=amount,
             user_id=str(getattr(request.user, "username", "") or "").strip(),
             remarks=f"Security fee paid for {application.application_id}",
+            reference_no=application.application_id,
         )
     except Exception as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
