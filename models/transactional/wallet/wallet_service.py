@@ -69,27 +69,37 @@ def credit_wallet_balance(
             return existing, None, True
 
         wallet = WalletBalance.objects.select_for_update().filter(
-            licensee_id=licensee_id, 
-            head_of_account=head_of_account
-        ).first()
+            licensee_id__iexact=resolved_licensee_id,
+            wallet_type__iexact=wtype,
+            head_of_account=hoa,
+        ).order_by("wallet_balance_id").first()
         
+        # COMMENTED OUT: Wallet should already exist (created at commissioner approval stage).
+        # Creating a new dummy WalletBalance row here during payment was causing a duplicate/ghost
+        # row in wallet_balances. If the wallet is missing, raise an error instead.
         if not wallet:
-            template = WalletBalance.objects.select_for_update().filter(wallet_filter).order_by("wallet_balance_id").first()
-            wallet = WalletBalance.objects.create(
-                licensee_id=resolved_licensee_id,
-                licensee_name=str(licensee_name or getattr(template, "licensee_name", "") or "").strip(),
-                manufacturing_unit=str(getattr(template, "manufacturing_unit", "") or "").strip() if template else "",
-                user_id=str(user_id or getattr(template, "user_id", "") or "").strip(),
-                module_type=str(getattr(template, "module_type", "") or "").strip() if template else resolved_module_type,
-                wallet_type=wtype,
-                head_of_account=hoa,
-                opening_balance=Decimal("0.00"),
-                total_credit=Decimal("0.00"),
-                total_debit=Decimal("0.00"),
-                current_balance=Decimal("0.00"),
-                last_updated_at=now_ts,
-                created_at=now_ts,
+            raise ValueError(
+                f"Wallet not found for licensee_id={resolved_licensee_id}, wallet_type={wtype}, "
+                f"head_of_account={hoa}. "
+                "Wallet must be initialized at license approval before any payment can be credited."
             )
+        # if not wallet:
+        #     template = WalletBalance.objects.select_for_update().filter(wallet_filter).order_by("wallet_balance_id").first()
+        #     wallet = WalletBalance.objects.create(
+        #         licensee_id=resolved_licensee_id,
+        #         licensee_name=str(licensee_name or getattr(template, "licensee_name", "") or "").strip(),
+        #         manufacturing_unit=str(getattr(template, "manufacturing_unit", "") or "").strip() if template else "",
+        #         user_id=str(user_id or getattr(template, "user_id", "") or "").strip(),
+        #         module_type=str(getattr(template, "module_type", "") or "").strip() if template else resolved_module_type,
+        #         wallet_type=wtype,
+        #         head_of_account=hoa,
+        #         opening_balance=Decimal("0.00"),
+        #         total_credit=Decimal("0.00"),
+        #         total_debit=Decimal("0.00"),
+        #         current_balance=Decimal("0.00"),
+        #         last_updated_at=now_ts,
+        #         created_at=now_ts,
+        #     )
 
         before = Decimal(str(wallet.current_balance or 0)).quantize(Decimal("0.01"))
         after = (before + amt).quantize(Decimal("0.01"))
@@ -206,23 +216,31 @@ def record_wallet_transaction(
             .order_by("wallet_balance_id")
             .first()
         )
+        # COMMENTED OUT: Wallet should already exist (created at commissioner approval stage).
+        # Creating a new dummy WalletBalance row here during payment recording was causing a
+        # duplicate/ghost row in wallet_balances. Raise an error if wallet is missing instead.
         if not wallet:
-            template = WalletBalance.objects.select_for_update().filter(wallet_filter).order_by("wallet_balance_id").first()
-            wallet = WalletBalance.objects.create(
-                licensee_id=resolved_licensee_id,
-                licensee_name=str(licensee_name or getattr(template, "licensee_name", "") or "").strip(),
-                manufacturing_unit=str(getattr(template, "manufacturing_unit", "") or "").strip() if template else "",
-                user_id=str(user_id or getattr(template, "user_id", "") or "").strip(),
-                module_type=str(getattr(template, "module_type", "") or "").strip() if template else resolved_module_type,
-                wallet_type=wtype,
-                head_of_account=hoa,
-                opening_balance=Decimal("0.00"),
-                total_credit=Decimal("0.00"),
-                total_debit=Decimal("0.00"),
-                current_balance=Decimal("0.00"),
-                last_updated_at=now_ts,
-                created_at=now_ts,
+            raise ValueError(
+                f"Wallet not found for licensee_id={resolved_licensee_id}, wallet_type={wtype}, "
+                f"head_of_account={hoa}. Wallet must be initialized at license approval before recording transactions."
             )
+        # if not wallet:
+        #     template = WalletBalance.objects.select_for_update().filter(wallet_filter).order_by("wallet_balance_id").first()
+        #     wallet = WalletBalance.objects.create(
+        #         licensee_id=resolved_licensee_id,
+        #         licensee_name=str(licensee_name or getattr(template, "licensee_name", "") or "").strip(),
+        #         manufacturing_unit=str(getattr(template, "manufacturing_unit", "") or "").strip() if template else "",
+        #         user_id=str(user_id or getattr(template, "user_id", "") or "").strip(),
+        #         module_type=str(getattr(template, "module_type", "") or "").strip() if template else resolved_module_type,
+        #         wallet_type=wtype,
+        #         head_of_account=hoa,
+        #         opening_balance=Decimal("0.00"),
+        #         total_credit=Decimal("0.00"),
+        #         total_debit=Decimal("0.00"),
+        #         current_balance=Decimal("0.00"),
+        #         last_updated_at=now_ts,
+        #         created_at=now_ts,
+        #     )
 
         before = Decimal(str(wallet.current_balance or 0)).quantize(Decimal("0.01"))
         after = before
