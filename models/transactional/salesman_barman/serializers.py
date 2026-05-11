@@ -40,6 +40,8 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
     license_category_name = serializers.CharField(source='license_category.license_category', read_only=True)
     renewal_of_license_id = serializers.CharField(source='renewal_of.license_id', read_only=True)
+    license_id_display = serializers.CharField(source='license.license_id', read_only=True, allow_null=True)
+    new_license_application_id = serializers.CharField(source='new_license_application.application_id', read_only=True, allow_null=True)
     applicant_username = serializers.CharField(source='applicant.username', read_only=True)
     applicant_full_name = serializers.SerializerMethodField()
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)
@@ -129,7 +131,9 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
         linked to `new_license_application`.
         """
         attrs = super().validate(attrs)
-        if not attrs.get("new_license_application"):
+        # Only enforce "required fields" on CREATE. For updates (including objection
+        # resolution) we must allow partial payloads.
+        if self.instance is None and not attrs.get("new_license_application"):
             required = [
                 "role",
                 "firstName",

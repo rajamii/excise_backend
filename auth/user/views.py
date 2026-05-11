@@ -619,9 +619,10 @@ def licensee_signup(request):
 
 class UserListView(generics.ListAPIView):
     """
-    Lists all users. Requires 'user.view' permission.
+    Lists all users (active and inactive). Requires 'user.view' permission.
+    Inactive users are included so the site admin can see and reactivate them.
     """
-    queryset = CustomUser.objects.filter(is_oic_managed=False, is_active=True)
+    queryset = CustomUser.objects.filter(is_oic_managed=False).order_by('-is_active', 'first_name')
     serializer_class = UserSerializer
     permission_classes = [make_permission('user', 'view')]
 
@@ -683,29 +684,6 @@ class UserDeleteView(generics.DestroyAPIView):
     serializer_class = UserSerializer
     permission_classes = [make_permission('user', 'delete')]
 
-    def _soft_delete_user(self, instance: CustomUser) -> None:
-        timestamp_token = timezone.now().strftime('%Y%m%d%H%M%S')
-        unique_suffix = str(instance.pk)
-
-        instance.is_active = False
-
-        if instance.email:
-            local_part, _, domain_part = instance.email.partition('@')
-            sanitized_local = local_part[:20] if local_part else 'deleted'
-            domain_value = domain_part or 'deleted.local'
-            instance.email = f"{sanitized_local}.deleted.{timestamp_token}.{unique_suffix}@{domain_value}"
-
-        if instance.username:
-            instance.username = f"deleted_{timestamp_token}_{unique_suffix}"[:30]
-
-        # Keep phone unique after soft delete to allow reuse for new user creation.
-        replacement_phone = f"9{str(instance.pk).zfill(9)[-9:]}"
-        if CustomUser.objects.exclude(pk=instance.pk).filter(phone_number=replacement_phone).exists():
-            replacement_phone = f"8{timestamp_token[-9:]}"
-        instance.phone_number = replacement_phone
-
-        instance.save(update_fields=['is_active', 'email', 'username', 'phone_number'])
-
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
 
@@ -716,13 +694,47 @@ class UserDeleteView(generics.DestroyAPIView):
             ip_address=get_client_ip(request),
             user_agent=request.META.get('HTTP_USER_AGENT'),
             metadata={
-                'deleted_username': instance.username,
-                'deleted_user_id': str(instance.id),
+                'deactivated_username': instance.username,
+                'deactivated_user_id': str(instance.id),
             }
         )
 
-        self._soft_delete_user(instance)
-        return Response({'message': 'User deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
+        # Soft-deactivate: preserve all user data, only set is_active=False
+        instance.is_active = False
+        instance.save(update_fields=['is_active'])
+
+        return Response({'message': 'User deactivated successfully'}, status=status.HTTP_200_OK)
+
+
+class UserToggleActiveView(generics.UpdateAPIView):
+    """Toggle a user's is_active status (activate / deactivate)."""
+    queryset = CustomUser.objects.all()
+    serializer_class = UserSerializer
+    permission_classes = [make_permission('user', 'update')]
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        new_status = not instance.is_active
+        instance.is_active = new_status
+        instance.save(update_fields=['is_active'])
+
+        UserActivity.objects.create(
+            user=request.user,
+            activity_type=UserActivity.ActivityType.USER_UPDATE,
+            target_user=instance,
+            ip_address=get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT'),
+            metadata={
+                'toggled_username': instance.username,
+                'is_active': new_status,
+            }
+        )
+
+        action = 'activated' if new_status else 'deactivated'
+        return Response(
+            {'message': f'User {action} successfully', 'is_active': new_status},
+            status=status.HTTP_200_OK
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

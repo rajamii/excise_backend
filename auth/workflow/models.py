@@ -79,14 +79,24 @@ class Objection(models.Model):
 
     field_name = models.CharField(max_length=255)
     remarks = models.TextField()
+    before_content = models.TextField(null=True, blank=True)
+    after_content = models.TextField(null=True, blank=True)
     raised_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True)
     stage = models.ForeignKey(WorkflowStage, on_delete=models.SET_NULL, null=True)
     is_resolved = models.BooleanField(default=False)
     raised_on = models.DateTimeField(auto_now_add=True)
     resolved_on = models.DateTimeField(null=True, blank=True)
+    resolved_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='workflow_objections_resolved'
+    )
 
     class Meta:
         ordering = ['-raised_on']
+        db_table = "workflow_objection"
 
 
 # ---------- POLYMORPHIC REJECTION ----------
