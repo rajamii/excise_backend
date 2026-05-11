@@ -11,6 +11,7 @@ from auth.roles.permissions import HasAppPermission
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
 from auth.workflow.models import Workflow
+from auth.workflow.models import Transaction as WorkflowTransaction
 from auth.workflow.constants import WORKFLOW_IDS
 from .models import NewLicenseApplication
 from models.masters.license.models import License, LicenseValidationToken
@@ -418,7 +419,7 @@ def initiate_renewal(request, license_id):
 def list_license_applications(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
 
-    if role in ["single_window","site_admin"]:
+    if role in ["site_admin"]:
         applications = NewLicenseApplication.objects.all()
     elif role == "licensee":
         applications = NewLicenseApplication.objects.filter(applicant=request.user)
@@ -975,6 +976,7 @@ def pay_license_fee_wallet(request, application_id):
             amount=amount,
             user_id=str(getattr(request.user, "username", "") or "").strip(),
             remarks=f"License fee paid for {application.application_id}",
+            reference_no=application.application_id,
         )
     except Exception as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -1018,6 +1020,7 @@ def pay_security_fee_wallet(request, application_id):
             amount=amount,
             user_id=str(getattr(request.user, "username", "") or "").strip(),
             remarks=f"Security fee paid for {application.application_id}",
+            reference_no=application.application_id,
         )
     except Exception as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -1058,7 +1061,7 @@ def dashboard_counts(request):
             "rejected": paid_qs.filter(current_stage__name__in=rejected_stages).count(),
         })
 
-    if role in ['site_admin', 'single_window']:
+    if role in ['site_admin']:
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
@@ -1077,17 +1080,40 @@ def dashboard_counts(request):
     if not role_stage_names:
         return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
 
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import OuterRef, Subquery, IntegerField, Q
+
+    content_type = ContentType.objects.get_for_model(NewLicenseApplication)
+    txn_qs = (
+        WorkflowTransaction.objects.filter(content_type=content_type, object_id=OuterRef('application_id'))
+        .order_by('-timestamp')
+    )
+    last_actor_role_id = Subquery(txn_qs.values('performed_by__role_id')[:1], output_field=IntegerField())
+    prev_actor_role_id = Subquery(txn_qs.values('performed_by__role_id')[1:2], output_field=IntegerField())
+
     role_objection_stages = set(stage_sets['objection'])
     pending_stages = set(role_stage_names) | role_objection_stages
-
-    reachable_from_role = _collect_reachable_stage_names(workflow_id, set(role_stage_names))
     role_rejected_stages = set(stage_sets['rejected'])
-    forward_stages = set(reachable_from_role) - pending_stages - role_rejected_stages
+
+    pending_count = all_qs.filter(current_stage__name__in=pending_stages).count()
+    approved_count = (
+        all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages)
+        .annotate(_last_actor_role_id=last_actor_role_id)
+        .filter(_last_actor_role_id=getattr(getattr(request.user, 'role', None), 'id', None))
+        .count()
+    )
+    rejected_count = (
+        all_qs.filter(current_stage__name__in=role_rejected_stages)
+        .annotate(_last_actor_role_id=last_actor_role_id, _prev_actor_role_id=prev_actor_role_id)
+        .filter(Q(_prev_actor_role_id=getattr(getattr(request.user, 'role', None), 'id', None))
+                | Q(_last_actor_role_id=getattr(getattr(request.user, 'role', None), 'id', None)))
+        .count()
+    )
 
     return Response({
-        "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
-        "approved": all_qs.filter(current_stage__name__in=forward_stages).count(),
-        "rejected": all_qs.filter(current_stage__name__in=role_rejected_stages).count(),
+        "pending": pending_count,
+        "approved": approved_count,
+        "rejected": rejected_count,
     })
 
 # Application Grouping
@@ -1135,7 +1161,7 @@ def application_group(request):
             ).data
         })
 
-    if role in ['site_admin', 'single_window']:
+    if role in ['site_admin']:
         all_qs = _with_application_fee_payment_annotations(all_qs)
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
@@ -1164,26 +1190,46 @@ def application_group(request):
     role_stage_names = _get_role_stage_names(request.user, workflow_id)
     if role_stage_names:
         all_qs = _with_application_fee_payment_annotations(all_qs)
+        from django.contrib.contenttypes.models import ContentType
+        from django.db.models import OuterRef, Subquery, IntegerField, Q
+
+        content_type = ContentType.objects.get_for_model(NewLicenseApplication)
+        txn_qs = (
+            WorkflowTransaction.objects.filter(content_type=content_type, object_id=OuterRef('application_id'))
+            .order_by('-timestamp')
+        )
+        last_actor_role_id = Subquery(txn_qs.values('performed_by__role_id')[:1], output_field=IntegerField())
+        prev_actor_role_id = Subquery(txn_qs.values('performed_by__role_id')[1:2], output_field=IntegerField())
+
         role_objection_stages = set(stage_sets['objection'])
         pending_stages = set(role_stage_names) | role_objection_stages
-        reachable_from_role = _collect_reachable_stage_names(workflow_id, set(role_stage_names))
         role_rejected_stages = set(stage_sets['rejected'])
-        forward_stages = set(reachable_from_role) - pending_stages - role_rejected_stages
+        role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+        approved_qs = (
+            all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages)
+            .annotate(_last_actor_role_id=last_actor_role_id)
+            .filter(_last_actor_role_id=role_id)
+        )
+        rejected_qs = (
+            all_qs.filter(current_stage__name__in=role_rejected_stages)
+            .annotate(_last_actor_role_id=last_actor_role_id, _prev_actor_role_id=prev_actor_role_id)
+            .filter(Q(_prev_actor_role_id=role_id) | Q(_last_actor_role_id=role_id))
+        )
 
         return Response({
-            "applied": [],
-            "pending": NewLicenseApplicationSerializer(
-                all_qs.filter(current_stage__name__in=pending_stages), many=True
-            ).data,
-            "objection": NewLicenseApplicationSerializer(
-                all_qs.filter(current_stage__name__in=role_objection_stages), many=True
-            ).data,
-            "approved": NewLicenseApplicationSerializer(
-                all_qs.filter(current_stage__name__in=forward_stages), many=True
-            ).data,
-            "rejected": NewLicenseApplicationSerializer(
-                all_qs.filter(current_stage__name__in=role_rejected_stages), many=True
-            ).data
+             "applied": [],
+             "pending": NewLicenseApplicationSerializer(
+                 all_qs.filter(current_stage__name__in=pending_stages), many=True
+             ).data,
+             "objection": NewLicenseApplicationSerializer(
+                 all_qs.filter(current_stage__name__in=role_objection_stages), many=True
+             ).data,
+             "approved": NewLicenseApplicationSerializer(
+                 approved_qs, many=True
+             ).data,
+             "rejected": NewLicenseApplicationSerializer(
+                 rejected_qs, many=True
+             ).data
         })
 
     return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)

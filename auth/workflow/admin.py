@@ -8,7 +8,7 @@ class TransactionAdmin(admin.ModelAdmin):
 
 @admin.register(Objection)
 class ObjectionAdmin(admin.ModelAdmin):
-    list_display = ('application', 'field_name', 'is_resolved', 'raised_on')
+    list_display = ('application', 'field_name', 'is_resolved', 'raised_on', 'before_content', 'after_content')
 
 @admin.register(Rejection)
 class RejectionAdmin(admin.ModelAdmin):

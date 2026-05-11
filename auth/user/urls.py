@@ -8,6 +8,7 @@ from .views import (
     CurrentUserAPI,
     UserUpdateView,
     UserDeleteView,
+    UserToggleActiveView,
     TokenRefreshAPI,
     get_captcha,
     LoginAPI,
@@ -65,6 +66,7 @@ urlpatterns = [
     path('<int:pk>/detail/', UserDetailView.as_view(), name='user-detail'),
     path('<int:pk>/update/', UserUpdateView.as_view(), name='user-update'),
     path('<int:pk>/delete/', UserDeleteView.as_view(), name='user-delete'),
+    path('<int:pk>/toggle-active/', UserToggleActiveView.as_view(), name='user-toggle-active'),
 
     # LicenseeProfile CRUD  ← moved from core
     path('licensee-profiles/', include(licenseeprofile_patterns)),
