@@ -1,7 +1,7 @@
 from django.shortcuts import get_object_or_404
 from datetime import date, timedelta
 from django.db import transaction
-from django.db.models import OuterRef, Subquery
+from django.db.models import OuterRef, Subquery, BooleanField, TextField
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
@@ -64,6 +64,30 @@ def _with_application_fee_payment_annotations(qs):
             application_fee_transaction_id=Subquery(base.values("utr")[:1]),
             application_fee_payment_date=Subquery(base.values("transaction_date")[:1]),
             application_fee_error=Subquery(base.values("response_errordescription")[:1]),
+        )
+    except Exception:
+        return qs
+
+
+def _with_site_enquiry_revert_annotations(qs):
+    """
+    Annotate NewLicenseApplication queryset with SiteEnquiryReport revert info.
+
+    - site_enquiry_is_reverted: boolean
+    - site_enquiry_reverted_remarks: text
+    """
+    try:
+        from models.transactional.site_enquiry.models import SiteEnquiryReport
+
+        ct = ContentType.objects.get_for_model(NewLicenseApplication)
+        base = SiteEnquiryReport.objects.filter(
+            content_type=ct,
+            object_id=OuterRef("application_id"),
+        ).order_by("-updated_at", "-created_at")
+
+        return qs.annotate(
+            site_enquiry_is_reverted=Subquery(base.values("is_reverted")[:1], output_field=BooleanField()),
+            site_enquiry_reverted_remarks=Subquery(base.values("reverted_remarks")[:1], output_field=TextField()),
         )
     except Exception:
         return qs
@@ -1128,7 +1152,9 @@ def application_group(request):
     all_qs = NewLicenseApplication.objects.all()
 
     if role == 'licensee':
-        base_qs = _with_application_fee_payment_annotations(NewLicenseApplication.objects.filter(applicant=request.user))
+        base_qs = _with_site_enquiry_revert_annotations(
+            _with_application_fee_payment_annotations(NewLicenseApplication.objects.filter(applicant=request.user))
+        )
         unpaid_qs = base_qs.filter(is_application_fee_paid=False)
         paid_qs = base_qs.filter(is_application_fee_paid=True)
         applied_stages = set(stage_sets['initial'])
@@ -1162,7 +1188,7 @@ def application_group(request):
         })
 
     if role in ['site_admin']:
-        all_qs = _with_application_fee_payment_annotations(all_qs)
+        all_qs = _with_site_enquiry_revert_annotations(_with_application_fee_payment_annotations(all_qs))
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
@@ -1189,7 +1215,7 @@ def application_group(request):
 
     role_stage_names = _get_role_stage_names(request.user, workflow_id)
     if role_stage_names:
-        all_qs = _with_application_fee_payment_annotations(all_qs)
+        all_qs = _with_site_enquiry_revert_annotations(_with_application_fee_payment_annotations(all_qs))
         from django.contrib.contenttypes.models import ContentType
         from django.db.models import OuterRef, Subquery, IntegerField, Q
 

@@ -525,6 +525,26 @@ class WorkflowService:
         is_new_license_application = application.__class__.__name__.lower() == "newlicenseapplication"
         is_salesman_barman_application = application.__class__.__name__.lower() == "salesmanbarmanmodel"
 
+        # Guard: when a Site Enquiry Report is reverted by Joint Commissioner, the
+        # Site Enquiry Officer must re-submit the form before the workflow can move
+        # forward again from the Site Enquiry stage.
+        if is_new_license_application:
+            try:
+                from_name = str(getattr(getattr(application, "current_stage", None), "name", "") or "").strip().lower()
+                action = str((context or {}).get("action") or "").strip().upper()
+                if ("site enquiry" in from_name or "site_enquiry" in from_name or "site-enquiry" in from_name) and action in {"APPROVE", "FORWARD"}:
+                    from models.transactional.site_enquiry.models import SiteEnquiryReport
+
+                    ct = ContentType.objects.get_for_model(application)
+                    report = SiteEnquiryReport.objects.filter(content_type=ct, object_id=str(getattr(application, "application_id", "") or "")).first()
+                    if report and getattr(report, "is_reverted", False):
+                        raise ValidationError("Site enquiry report was reverted. Please re-submit the Site Enquiry Form before proceeding.")
+            except ValidationError:
+                raise
+            except Exception:
+                # Do not block workflow if site enquiry module is unavailable; validation is best-effort.
+                pass
+
         requested_target_stage = target_stage
         sync_new_license_payment_status = None
         sync_salesman_barman_payment_status = None

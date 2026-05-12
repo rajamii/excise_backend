@@ -109,6 +109,10 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     application_fee_payment_date = serializers.DateTimeField(read_only=True, allow_null=True)
     application_fee_error = serializers.CharField(read_only=True, allow_blank=True, allow_null=True)
 
+    # Site enquiry revert badge (annotated in views).
+    site_enquiry_is_reverted = serializers.BooleanField(read_only=True, default=False)
+    site_enquiry_reverted_remarks = serializers.CharField(read_only=True, allow_blank=True, allow_null=True)
+
     # Backward-compatible fee field used across multiple frontend screens.
     yearly_license_fee = serializers.SerializerMethodField()
     license_fee_amount = serializers.SerializerMethodField()

@@ -105,6 +105,11 @@ class SiteEnquiryReport(models.Model):
     special_remarks = models.TextField(blank=True)
     reporting_place = models.CharField(max_length=250, blank=True)
 
+    # Revert workflow (Joint Commissioner -> Site Enquiry Officer)
+    is_reverted = models.BooleanField(default=False)
+    reverted_remarks = models.TextField(blank=True)
+    reverted_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
