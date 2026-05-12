@@ -16,6 +16,7 @@ from .models import (
     _resolve_wallet_row_licensee_id,
 )
 from .serializers import WalletBalanceSerializer, WalletRechargeCreditSerializer, WalletTransactionSerializer
+from .wallet_service import credit_wallet_balance
 
 
 def _wallet_license_candidates(raw_licensee_id: str):
@@ -328,86 +329,27 @@ def wallet_recharge_credit(request, licensee_id):
     if not head_of_account:
         return Response({"detail": "head_of_account is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-    existing = WalletTransaction.objects.filter(
-        transaction_id=transaction_id,
-        transaction_type__iexact="recharge",
-        entry_type__iexact="CR",
-    ).order_by("-wallet_transaction_id").first()
-    if existing:
-        return Response(
-            {"status": "ok", "already_processed": True, "wallet_transaction": WalletTransactionSerializer(existing).data},
-            status=status.HTTP_200_OK,
-        )
-
-    candidates = _wallet_candidates_for_request(request, licensee_id)
-    wallet_filter = Q(licensee_id__in=candidates)
-    if request_user:
-        wallet_filter |= Q(user_id__iexact=request_user)
-
-    with transaction.atomic():
-        wallet = (
-            WalletBalance.objects.select_for_update()
-            .filter(licensee_id=licensee_id, wallet_type__iexact=wallet_type, head_of_account=head_of_account)
-            .first()
-        )
-        if not wallet:
-            now_ts = timezone.now()
-            template = WalletBalance.objects.select_for_update().filter(wallet_filter).order_by("wallet_balance_id").first()
-
-            template_licensee_id = str(getattr(template, "licensee_id", "") or "").strip() if template else ""
-            raw_licensee = template_licensee_id or str(licensee_id or "").strip()
-            resolved_licensee_id = _resolve_wallet_row_licensee_id(raw_licensee, request_user or "") or raw_licensee
-
-            template_module_type = str(getattr(template, "module_type", "") or "").strip() if template else ""
-            resolved_module_type = template_module_type or _resolve_module_type_from_license_id(
-                resolved_licensee_id,
-                fallback="other",
-            )
-
-            wallet = WalletBalance.objects.create(
-                licensee_id=resolved_licensee_id,
-                licensee_name=getattr(template, "licensee_name", "") if template else "",
-                manufacturing_unit=getattr(template, "manufacturing_unit", "") if template else "",
-                user_id=request_user or (getattr(template, "user_id", "") if template else ""),
-                module_type=resolved_module_type or "distillery",
-                wallet_type=wallet_type,
-                head_of_account=head_of_account,
-                opening_balance=Decimal("0.00"),
-                total_credit=Decimal("0.00"),
-                total_debit=Decimal("0.00"),
-                current_balance=Decimal("0.00"),
-                last_updated_at=now_ts,
-                created_at=now_ts,
-            )
-            _sync_wallet_balance_licensee_from_applicant_license(request.user, wallet)
-
-        before = Decimal(str(wallet.current_balance or 0)).quantize(Decimal("0.01"))
-        after = (before + amount).quantize(Decimal("0.01"))
-        now_ts = timezone.now()
-        wallet.current_balance = after
-        wallet.total_credit = (Decimal(str(wallet.total_credit or 0)) + amount).quantize(Decimal("0.01"))
-        wallet.last_updated_at = now_ts
-        wallet.save(update_fields=["current_balance", "total_credit", "last_updated_at"])
-
-        created = WalletTransaction.objects.create(
-            wallet_balance=wallet,
+    try:
+        wallet_txn, _, already_processed = credit_wallet_balance(
             transaction_id=transaction_id,
-            licensee_id=str(wallet.licensee_id or "").strip(),
-            licensee_name=str(wallet.licensee_name or "").strip() or None,
-            user_id=request_user or None,
-            module_type=str(wallet.module_type or "other").strip(),
-            wallet_type=str(wallet.wallet_type or wallet_type).strip(),
-            head_of_account=str(wallet.head_of_account or head_of_account).strip(),
+            licensee_id=str(licensee_id or "").strip(),
+            wallet_type=wallet_type,
+            head_of_account=head_of_account,
+            amount=amount,
             entry_type="CR",
             transaction_type="recharge",
-            amount=amount,
-            balance_before=before,
-            balance_after=after,
-            reference_no=transaction_id,
+            user_id=request_user,
             source_module="wallet_recharge",
             payment_status="success",
             remarks=remarks,
-            created_at=now_ts,
         )
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-    return Response({"status": "ok", "already_processed": False, "wallet_transaction": WalletTransactionSerializer(created).data})
+    if not wallet_txn:
+        return Response({"detail": "Unable to record wallet recharge."}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response(
+        {"status": "ok", "already_processed": already_processed, "wallet_transaction": WalletTransactionSerializer(wallet_txn).data},
+        status=status.HTTP_200_OK,
+    )
