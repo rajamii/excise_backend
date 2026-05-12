@@ -48,8 +48,29 @@ from django.utils.encoding import force_bytes, force_str
 from django.core.mail import send_mail
 from django.conf import settings
 import binascii
+from django.core.validators import validate_ipv46_address
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 User = get_user_model()
+
+
+def _safe_ip_address(request):
+    """
+    Return a valid IPv4/IPv6 string or None.
+    Some proxies include ports or malformed values which would break GenericIPAddressField validation.
+    """
+    try:
+        raw = get_client_ip(request)
+        if not raw:
+            return None
+        ip = str(raw).strip().split(',')[0].strip()
+        # Strip :port for IPv4 like "10.0.0.1:1234" while keeping IPv6 intact.
+        if ip.count(':') == 1 and '.' in ip and ip.split(':', 1)[0].replace('.', '').isdigit():
+            ip = ip.split(':', 1)[0].strip()
+        validate_ipv46_address(ip)
+        return ip
+    except (DjangoValidationError, Exception):
+        return None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OTP endpoints
@@ -839,6 +860,25 @@ class LoginAPI(APIView):
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
         validated_data = serializer.validated_data
+
+        # JWT login does not trigger Django's `user_logged_in` signal.
+        # Track login explicitly so `logs_useractivity` captures all users.
+        try:
+            user = validated_data.get('user') or None
+            if user:
+                UserActivity.objects.create(
+                    user=user,
+                    activity_type=UserActivity.ActivityType.LOGIN,
+                    ip_address=_safe_ip_address(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT'),
+                    metadata={
+                        "auth_method": "jwt",
+                    },
+                )
+        except Exception:
+            # Do not block login response if logging fails.
+            pass
+
         return Response({
             'success': True,
             'status_code': status.HTTP_200_OK,
@@ -863,8 +903,35 @@ class LogoutAPI(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             RefreshToken(refresh_token).blacklist()
+            try:
+                # JWT logout does not trigger Django's `user_logged_out` signal.
+                UserActivity.objects.create(
+                    user=request.user,
+                    activity_type=UserActivity.ActivityType.LOGOUT,
+                    ip_address=_safe_ip_address(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT'),
+                    metadata={
+                        "logout_method": "jwt_blacklist",
+                    },
+                )
+            except Exception:
+                pass
             return Response({"message": "User logged out successfully"})
         except TokenError:
+            # Token might already be blacklisted; still record logout attempt for auditing.
+            try:
+                UserActivity.objects.create(
+                    user=request.user,
+                    activity_type=UserActivity.ActivityType.LOGOUT,
+                    ip_address=_safe_ip_address(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT'),
+                    metadata={
+                        "logout_method": "jwt_blacklist",
+                        "note": "Token already blacklisted or invalid",
+                    },
+                )
+            except Exception:
+                pass
             return Response({"message": "Token already blacklisted or invalid"})
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -950,6 +1017,22 @@ def verify_otp_api(request):
             )
 
         refresh = RefreshToken.for_user(user)
+
+        # OTP/JWT login does not trigger Django's `user_logged_in` signal.
+        # Track login explicitly for OTP-based login too.
+        try:
+            UserActivity.objects.create(
+                user=user,
+                activity_type=UserActivity.ActivityType.LOGIN,
+                ip_address=_safe_ip_address(request),
+                user_agent=request.META.get('HTTP_USER_AGENT'),
+                metadata={
+                    "auth_method": "otp",
+                },
+            )
+        except Exception:
+            pass
+
         return Response({
             'success': True,
             'statusCode': status.HTTP_200_OK,
