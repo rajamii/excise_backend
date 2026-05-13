@@ -526,8 +526,9 @@ class DailyHologramRegisterSerializer(serializers.ModelSerializer):
         } for roll in rolls]
 
 from .models import HologramRollsDetails, HologramSerialRange, HologramUsageHistory
-
+ 
 class HologramRollsDetailsSerializer(serializers.ModelSerializer):
+    available_range = serializers.SerializerMethodField()
     procurement_ref = serializers.CharField(source='procurement.ref_no', read_only=True)
     procurement_date = serializers.DateTimeField(source='procurement.date', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
@@ -552,6 +553,17 @@ class HologramRollsDetailsSerializer(serializers.ModelSerializer):
         if stored:
             return stored
         return _get_user_display_name(getattr(obj, 'received_by', None)) or None
+
+    def get_available_range(self, obj):
+        """
+        Always compute from current serial-range state to avoid stale `available_range`
+        values (which can differ between local and server depending on when the field
+        was last persisted).
+        """
+        try:
+            return obj.calculate_available_range()
+        except Exception:
+            return getattr(obj, 'available_range', None)
 
 
 class HologramSerialRangeSerializer(serializers.ModelSerializer):

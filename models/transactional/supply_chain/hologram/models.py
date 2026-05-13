@@ -395,11 +395,13 @@ class DailyHologramRegister(models.Model):
 
 class HologramSerialRange(models.Model):
     STATUS_AVAILABLE = 'AVAILABLE'
+    STATUS_IN_USE = 'IN_USE'
     STATUS_USED = 'USED'
     STATUS_DAMAGED = 'DAMAGED'
-    
+     
     STATUS_CHOICES = [
         (STATUS_AVAILABLE, 'Available'),
+        (STATUS_IN_USE, 'In Use'),
         (STATUS_USED, 'Used'),
         (STATUS_DAMAGED, 'Damaged'),
     ]

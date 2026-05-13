@@ -1161,13 +1161,16 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
             Dict with allocation details: {'success': bool, 'allocated_ranges': list, 'message': str}
         """
         from models.transactional.supply_chain.hologram.models import HologramSerialRange
-        
-        
+         
+         
         # Get all available ranges ordered by from_serial (FIFO)
-        available_ranges = HologramSerialRange.objects.filter(
-            roll=roll,
-            status='AVAILABLE'
-        ).order_by('from_serial')  # CRITICAL: This ensures FIFO order
+        # NOTE: Use row-level locks to prevent concurrent approvals from allocating
+        # the same serial range on multi-worker server deployments.
+        available_ranges = (
+            HologramSerialRange.objects.select_for_update()
+            .filter(roll=roll, status=HologramSerialRange.STATUS_AVAILABLE)
+            .order_by('from_serial')  # CRITICAL: This ensures FIFO order
+        )
         
         
         # Check if we have enough inventory
@@ -1224,7 +1227,7 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
             
             if avail_from == alloc_from and avail_to == alloc_to:
                 # Exact match - convert entire range to IN_USE
-                avail_range.status = 'IN_USE'
+                avail_range.status = HologramSerialRange.STATUS_IN_USE
                 avail_range.used_date = usage_date
                 avail_range.reference_no = reference_no
                 avail_range.description = f'Allocated for request {reference_no}'
@@ -1238,7 +1241,7 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                     from_serial=str(alloc_from),
                     to_serial=str(alloc_to),
                     count=alloc_count,
-                    status='IN_USE',
+                    status=HologramSerialRange.STATUS_IN_USE,
                     used_date=usage_date,
                     reference_no=reference_no,
                     description=f'Allocated for request {reference_no}'
@@ -1256,7 +1259,7 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                     from_serial=str(alloc_from),
                     to_serial=str(alloc_to),
                     count=alloc_count,
-                    status='IN_USE',
+                    status=HologramSerialRange.STATUS_IN_USE,
                     used_date=usage_date,
                     reference_no=reference_no,
                     description=f'Allocated for request {reference_no}'
@@ -1274,7 +1277,7 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
                     from_serial=str(alloc_from),
                     to_serial=str(alloc_to),
                     count=alloc_count,
-                    status='IN_USE',
+                    status=HologramSerialRange.STATUS_IN_USE,
                     used_date=usage_date,
                     reference_no=reference_no,
                     description=f'Allocated for request {reference_no}'
