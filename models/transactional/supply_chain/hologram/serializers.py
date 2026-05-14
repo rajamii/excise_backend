@@ -62,6 +62,7 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
     carton_details = serializers.JSONField(required=False)
     total_available_holograms = serializers.SerializerMethodField()
     edit_history = serializers.SerializerMethodField()
+    supplier_details = serializers.SerializerMethodField()
 
     class Meta:
         model = HologramProcurement
@@ -74,6 +75,26 @@ class HologramProcurementSerializer(serializers.ModelSerializer):
         if 'carton_details' not in data:
             data['carton_details'] = instance.carton_details or []
         return data
+
+    def validate_supplier(self, value):
+        if value is None:
+            return value
+        if getattr(value, 'is_active', True) is False:
+            raise serializers.ValidationError('Selected supplier is not active.')
+        return value
+
+    def get_supplier_details(self, obj):
+        supplier = getattr(obj, 'supplier', None)
+        if not supplier:
+            return None
+        return {
+            'id': supplier.id,
+            'company_name': supplier.company_name,
+            'post': supplier.post,
+            'address': supplier.address,
+            'state': supplier.state,
+            'is_active': supplier.is_active,
+        }
 
     def get_total_available_holograms(self, obj):
         total = 0

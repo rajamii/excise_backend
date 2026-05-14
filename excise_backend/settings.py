@@ -79,6 +79,7 @@ INSTALLED_APPS = [
     'models.masters.supply_chain.profile',
     'models.masters.supply_chain.transit_permit',
     'models.masters.supply_chain.vehicles',
+    'models.masters.supply_chain.hologram_supplier',
     # 'models.masters.supply_chain.status_master',
 
     # transcational models
@@ -162,7 +163,7 @@ DATABASES = {
         'USER': 'postgres',         # Your PostgreSQL username
         'PASSWORD': 'sameer123',  # Your PostgreSQL password
         'HOST': 'localhost',        # Default host
-        'PORT': '5432',             # Default PostgreSQL port
+        'PORT': '5433',             # Default PostgreSQL port
         'CONN_MAX_AGE': 0,          # Don't reuse connections — avoids aborted transaction state
     }
 }

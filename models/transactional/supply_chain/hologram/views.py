@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.shortcuts import get_object_or_404
+from django.http import HttpResponse
 from django.db import transaction as db_transaction, models
 from decimal import Decimal
 import logging
@@ -13,7 +14,9 @@ from .serializers import HologramProcurementSerializer, HologramRequestSerialize
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition, Transaction, StagePermission
 from auth.workflow.constants import WORKFLOW_IDS
 from models.masters.supply_chain.profile.models import UserManufacturingUnit
+from models.masters.supply_chain.hologram_supplier.models import MasterHologramSupplier
 from models.transactional.supply_chain.access_control import scope_by_profile_or_workflow
+from utils.simple_pdf import PdfPage, build_text_pdf, paginate_lines
 
 HOLOGRAM_REF_PREFIX = 'HQR'
 HOLOGRAM_REF_DISTRICT_CODE = '1101'
@@ -318,6 +321,83 @@ def _generate_hologram_ref_no(model_cls):
 
     return f"{prefix}/{str(last_number + 1).zfill(4)}"
 
+
+def _is_payment_completed_stage(procurement: HologramProcurement) -> bool:
+    stage_name = str(getattr(getattr(procurement, 'current_stage', None), 'name', '') or '').strip().lower()
+    if stage_name == 'payment completed':
+        return True
+    return 'payment' in stage_name and 'completed' in stage_name
+
+
+def _format_quantity(value) -> str:
+    try:
+        val = Decimal(str(value or 0))
+    except Exception:
+        val = Decimal(0)
+    val = val.quantize(Decimal('1'))
+    return f"{int(val):,}"
+
+
+def _render_supply_order_letter_pdf(
+    *,
+    procurement: HologramProcurement,
+    supplier: MasterHologramSupplier,
+) -> bytes:
+    issued_date = timezone.localtime(procurement.date).strftime('%d/%m/%Y') if procurement.date else timezone.localtime().strftime('%d/%m/%Y')
+
+    local_qty = _format_quantity(procurement.local_qty)
+    export_qty = _format_quantity(procurement.export_qty)
+    defence_qty = _format_quantity(procurement.defence_qty)
+
+    total = _format_quantity((procurement.local_qty or 0) + (procurement.export_qty or 0) + (procurement.defence_qty or 0))
+
+    left = f"No. {procurement.ref_no}"
+    right = f"Dated: {issued_date}"
+    pad = max(1, 95 - len(left) - len(right))
+    header_line = f"{left}{' ' * pad}{right}"
+
+    lines: list[str] = [
+        "EXCISE DEPARTMENT",
+        "GOVERNMENT OF SIKKIM",
+        "",
+        header_line,
+        "",
+        "To,",
+        f"  {supplier.post or 'The General Manager'}",
+        f"  {supplier.company_name}",
+    ]
+
+    address_text = str(supplier.address or '').strip()
+    if address_text:
+        for part in address_text.splitlines():
+            if part.strip():
+                lines.append(f"  {part.strip()}")
+
+    state_text = str(supplier.state or '').strip()
+    if state_text and state_text.lower() not in address_text.lower():
+        lines.append(f"  ({state_text})")
+
+    lines.extend([
+        "",
+        "Subject: Supply of Hologram",
+        "",
+        f"Kindly arrange to Supply {total} no's of Hologram to {procurement.manufacturing_unit}.",
+        "",
+        "Details with regard to Number of Holograms are as under:",
+        "",
+        "Sl No.  SERIES                 QUANTITY",
+        f"1       Local                  {local_qty}",
+        f"2       Export                 {export_qty}",
+        f"3       Defence                {defence_qty}",
+        "----------------------------------------------",
+        f"TOTAL                          {total}",
+        "",
+        "*Dispatch Report may kindly be forwarded to the above mentioned Email Address.",
+    ])
+
+    pages = [PdfPage(lines=pg) for pg in paginate_lines(lines, max_chars=95, lines_per_page=52)]
+    return build_text_pdf(pages, font_size=11)
+
 class HologramProcurementViewSet(viewsets.ModelViewSet):
     queryset = HologramProcurement.objects.all()
     serializer_class = HologramProcurementSerializer
@@ -347,6 +427,21 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             workflow_id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT']
         )
         if visible_stage_ids:
+            # IT Cell requirement: once licensee completes payment, show the item on IT Cell dashboard
+            # so the supply order letter can be downloaded and sent to the supplier.
+            if user_role_name == 'itcell':
+                try:
+                    payment_stage_ids = list(
+                        WorkflowStage.objects.filter(
+                            workflow_id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'],
+                            name__iexact='Payment Completed',
+                        ).values_list('id', flat=True)
+                    )
+                    if payment_stage_ids:
+                        visible_stage_ids = list(set(list(visible_stage_ids) + payment_stage_ids))
+                except Exception:
+                    logger.exception("Failed to include Payment Completed stage for IT Cell visibility")
+
             return queryset.filter(current_stage_id__in=visible_stage_ids).order_by('-date')
             
         # Fallback: return all for authenticated users (Commissioner can see all)
@@ -624,6 +719,77 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         if wallet_result is not None:
             response_payload['wallet_deduction'] = wallet_result
         return Response(response_payload)
+
+    @action(detail=True, methods=['post'], url_path='set-supplier')
+    def set_supplier(self, request, pk=None):
+        instance = self.get_object()
+
+        if not _is_payment_completed_stage(instance):
+            return Response(
+                {'error': 'Supplier can be set only after payment is completed.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Limit to roles that have workflow processing permission on hologram procurement.
+        role_id = _get_user_role_id(request.user)
+        if not role_id or not StagePermission.objects.filter(
+            role_id=role_id,
+            can_process=True,
+            stage__workflow_id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'],
+        ).exists():
+            return Response({'error': 'Not permitted.'}, status=status.HTTP_403_FORBIDDEN)
+
+        supplier_id = request.data.get('supplier_id') or request.data.get('supplier')
+        try:
+            supplier_id = int(str(supplier_id).strip())
+        except Exception:
+            supplier_id = None
+        if not supplier_id:
+            return Response({'error': 'supplier_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        supplier = get_object_or_404(MasterHologramSupplier, id=supplier_id, is_active=True)
+        instance.supplier = supplier
+        instance.save(update_fields=['supplier'])
+        return Response({'success': True, 'supplier_id': supplier.id, 'supplier_company_name': supplier.company_name})
+
+    @action(detail=True, methods=['get'], url_path='supply-order-letter')
+    def supply_order_letter(self, request, pk=None):
+        instance = self.get_object()
+
+        if not _is_payment_completed_stage(instance):
+            return Response(
+                {'error': 'Supply order letter is available only after payment is completed.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # IT Cell/admin roles: require stage permission presence (same check as other IT Cell views).
+        role_id = _get_user_role_id(request.user)
+        if not role_id or not StagePermission.objects.filter(
+            role_id=role_id,
+            can_process=True,
+            stage__workflow_id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'],
+        ).exists():
+            return Response({'error': 'Not permitted.'}, status=status.HTTP_403_FORBIDDEN)
+
+        supplier_id = request.query_params.get('supplier_id')
+        supplier = None
+        if supplier_id:
+            try:
+                supplier_id_int = int(str(supplier_id).strip())
+            except Exception:
+                supplier_id_int = None
+            if supplier_id_int:
+                supplier = MasterHologramSupplier.objects.filter(id=supplier_id_int, is_active=True).first()
+        if supplier is None:
+            supplier = getattr(instance, 'supplier', None)
+        if supplier is None:
+            return Response({'error': 'supplier_id is required (or set a supplier first).'}, status=status.HTTP_400_BAD_REQUEST)
+
+        pdf = _render_supply_order_letter_pdf(procurement=instance, supplier=supplier)
+        filename = f"supply_order_{str(instance.ref_no or '').replace('/', '_') or instance.id}.pdf"
+        resp = HttpResponse(pdf, content_type='application/pdf')
+        resp['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return resp
 
     def _normalize_carton_key(self, value):
         text = str(value or '').strip().lower()

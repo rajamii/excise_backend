@@ -22,6 +22,14 @@ class HologramProcurement(models.Model):
     licensee = models.ForeignKey(UserManufacturingUnit, on_delete=models.PROTECT, related_name='hologram_procurements')
     license = models.ForeignKey('license.License', on_delete=models.PROTECT, related_name='hologram_procurements_by_license', null=True, blank=True, help_text='License associated with this hologram procurement')
     manufacturing_unit = models.CharField(max_length=255) # Storing name for display
+    supplier = models.ForeignKey(
+        'hologram_supplier.MasterHologramSupplier',
+        on_delete=models.PROTECT,
+        related_name='hologram_procurements',
+        null=True,
+        blank=True,
+        help_text='Supplier used for the supply order letter (IT Cell selects after payment).',
+    )
     date = models.DateTimeField(default=timezone.now)
     
     local_qty = models.DecimalField(max_digits=10, decimal_places=2, default=0)
