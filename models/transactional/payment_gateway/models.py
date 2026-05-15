@@ -154,7 +154,7 @@ class PaymentModuleHoa(models.Model):
         MasterHeadOfAccount,
         on_delete=models.RESTRICT,
         db_column="head_of_account",
-        to_field="head_of_account",
+        to_field="sl_no",
     )
     # user_id = models.CharField(max_length=50, null=True, blank=True)
     opr_date = models.DateTimeField(default=timezone.now)

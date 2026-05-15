@@ -30,7 +30,7 @@ from models.transactional.wallet.wallet_service import credit_wallet_balance, re
 logger = logging.getLogger(__name__)
 
 LICENSE_FEE_HOA = "0039-00-800-45-02"
-SECURITY_DEPOSIT_HOA_SENTINEL = "null"
+SECURITY_DEPOSIT_HOA_SENTINEL = "non"
 DEFAULT_LICENSE_RENEWAL_MODULE_CODE = "002"
 DEFAULT_WALLET_ADVANCE_MODULE_CODE = "999"
 DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE = "001"
@@ -532,7 +532,7 @@ def billdesk_initiate_license_fee(request):
     raw_amount = data.get("amount")
 
     if not payer_id:
-        return Response({"detail": "payer_id (licensee id) is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "licensee id is required."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         payment_module_code = _validate_payment_module_code(payment_module_code)
@@ -701,19 +701,10 @@ def billdesk_initiate_license_fee(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def billdesk_initiate_security_deposit(request):
-    """
-    Security deposit (FDR) via BillDesk.
-
-    As per payment logic document:
-    - AdditionalInfo1: Licensee Name
-    - AdditionalInfo2: SIKFDR
-    - AdditionalInfo3: Bank/FDR code
-    - AdditionalInfo4: Account holder full name (bank/FDR opening needs the name in the signed payload)
-    - AdditionalInfo5: License Type
-    - AdditionalInfo6: District
-    """
+    
     data = request.data or {}
     device_data = data.get("device_data", {})
+
     transaction_id = str(data.get("transaction_id") or "").strip() or _generate_transaction_id("SIKFDR")
     payer_id = str(data.get("payer_id") or data.get("licensee_id") or "").strip()[:50]
     licensee_name = str(data.get("licensee_name") or "").strip()
@@ -730,7 +721,7 @@ def billdesk_initiate_security_deposit(request):
     raw_amount = data.get("amount")
 
     if not payer_id:
-        return Response({"detail": "licensee_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "licensee id is required."}, status=status.HTTP_400_BAD_REQUEST)
 
     if not account_holder_name:
         account_holder_name = _build_full_name_from_user(getattr(request, "user", None))
