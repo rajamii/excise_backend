@@ -26,6 +26,7 @@ from auth.user.models import CustomUser
 from auth.workflow.services import WorkflowService
 from .models import PaymentBilldeskTransaction, PaymentGatewayParameters, PaymentSendHOA, MasterPaymentModule
 from models.transactional.wallet.wallet_service import credit_wallet_balance, record_wallet_transaction
+from models.transactional.wallet.models import WalletBalance
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,22 @@ def _normalize_wallet_type(wallet_type: str) -> str:
     if value in {"excise", "excise_duty", "excise_duty_wallet", "exciseduty", "excise_wallet"}:
         return "excise"
     return value
+
+
+def _resolve_wallet_head_of_account(*, licensee_id: str, wallet_type: str) -> str:
+    lid = str(licensee_id or "").strip()
+    wtype = str(wallet_type or "").strip()
+    if not lid or not wtype:
+        return ""
+    try:
+        row = (
+            WalletBalance.objects.filter(licensee_id__iexact=lid, wallet_type__iexact=wtype)
+            .order_by("wallet_balance_id")
+            .first()
+        )
+        return str(getattr(row, "head_of_account", "") or "").strip()
+    except Exception:
+        return ""
 
 
 def _active_na_license_id_for_applicant(user) -> str:
@@ -191,7 +208,8 @@ def _decode_jws_payload(jws_token: str) -> dict:
         return {}
     payload_b64 = parts[1]
     # Add padding back if necessary for standard base64 decoding
-    padding = '=' * (4 - len(payload_b64) % 4)
+    missing = (-len(payload_b64)) % 4
+    padding = '=' * missing
     payload_json = base64.urlsafe_b64decode(payload_b64 + padding).decode('utf-8')
     return json.loads(payload_json)
 
@@ -318,6 +336,7 @@ def billdesk_initiate_wallet_recharge(request):
     device_data = data.get("device_data", {})
     transaction_id = str(data.get("transaction_id") or "").strip()
     wallet_type = _normalize_wallet_type(data.get("wallet_type"))
+    licensee_id = str(data.get("licensee_id") or data.get("licenseeId") or "").strip()[:50]
     head_of_account = str(data.get("head_of_account") or "").strip()
     payment_module_code = str(data.get("payment_module_code") or "").strip()
     payer_id = str(data.get("payer_id") or getattr(request.user, "username", "") or "").strip()[:50]
@@ -327,8 +346,25 @@ def billdesk_initiate_wallet_recharge(request):
         return Response({"detail": "transaction_id is required."}, status=status.HTTP_400_BAD_REQUEST)
     if not wallet_type:
         return Response({"detail": "wallet_type is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not licensee_id:
+        # Backward compat: try to resolve the active NA license for the logged-in applicant.
+        licensee_id = str(_active_na_license_id_for_applicant(request.user) or "").strip()[:50]
+
+    resolved_hoa = ""
+    if licensee_id:
+        resolved_hoa = _resolve_wallet_head_of_account(licensee_id=licensee_id, wallet_type=wallet_type)
+    if resolved_hoa:
+        head_of_account = resolved_hoa
     if not head_of_account:
-        return Response({"detail": "head_of_account is required."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {
+                "detail": "head_of_account could not be resolved for the selected wallet.",
+                "wallet_type": wallet_type,
+                "licensee_id": licensee_id or None,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
 
     # When provided, it should map to the master module table; otherwise store a stable default.
@@ -482,7 +518,7 @@ def billdesk_initiate_wallet_recharge(request):
         transaction_id_no=transaction_id,
         head_of_account=head_of_account,
         defaults={
-            "licensee_id": str(data.get("licensee_id") or data.get("licenseeId") or payer_id or "").strip()[:50] or None,
+            "licensee_id": str(licensee_id or payer_id or "").strip()[:50] or None,
             "amount": amount,
             "payment_module_code": payment_module_code,
             "requisition_no": (_active_na_license_id_for_applicant(request.user) or "NA")[:50],
@@ -493,7 +529,7 @@ def billdesk_initiate_wallet_recharge(request):
     try:
         record_wallet_transaction(
             transaction_id=transaction_id,
-            licensee_id=str(data.get("licensee_id") or data.get("licenseeId") or payer_id or "").strip()[:50] or payer_id,
+            licensee_id=str(licensee_id or payer_id or "").strip()[:50] or payer_id,
             wallet_type=wallet_type,
             head_of_account=head_of_account,
             amount=amount,
