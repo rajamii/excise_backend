@@ -46,15 +46,34 @@ def _stage_is_awaiting_license_fee_payment(stage, *, application_model: str) -> 
     """
     if not stage:
         return False
-    name_lower = str(getattr(stage, "name", "") or "").strip().lower()
+    raw_name = str(getattr(stage, "name", "") or "").strip()
+    name_lower = raw_name.lower()
     if not name_lower or "reject" in name_lower:
         return False
     if (application_model or "").lower() != "newlicenseapplication":
         return False
-    if name_lower == "awaiting_payment":
-        return True
-    if "awaiting" in name_lower and "payment" in name_lower:
-        return True
+
+    # IMPORTANT:
+    # "Awaiting Payment" can exist in multiple workflows (e.g. application fee payment gate).
+    # We should only treat the specific stage that represents "Awaiting License Fee Payment"
+    # as the trigger to issue the NA/... license and seed wallets.
+    normalized = name_lower.replace("-", "_").replace(" ", "_")
+    desc_lower = str(getattr(stage, "description", "") or "").strip().lower()
+
+    # Prefer an explicit stage id match when deployments use the canonical id=23.
+    try:
+        if int(getattr(stage, "id", 0) or 0) == 23:
+            return True
+    except Exception:
+        pass
+
+    if normalized == "awaiting_payment":
+        # Disambiguate by description text where available.
+        if "license" in desc_lower and "fee" in desc_lower:
+            return True
+        if "license_fee" in desc_lower or "licensefee" in desc_lower:
+            return True
+
     return False
 
 
@@ -77,17 +96,10 @@ def _stage_should_issue_license(stage, *, application_model: str) -> bool:
 
     app = (application_model or "").lower()
     if app == "newlicenseapplication":
-        # Different deployments use slightly different stage naming:
-        # - "Commissioner" (or "Commissioner Approval")
-        # - "awaiting_payment" ("Awaiting License Fee Payment")
-        # - final "approved" stage
-        # To keep behavior stable, issue the NA/... license (and seed wallets) on any of these.
-        return bool(
-            _stage_is_commissioner_approval(stage)
-            or _stage_is_awaiting_license_fee_payment(stage, application_model=application_model)
-            or (getattr(stage, "is_final", False) and "reject" not in name_lower)
-            or name_lower == "approved"
-        )
+        # New license applications:
+        # Seed NA/... license + wallets at the explicit "Awaiting License Fee Payment" gate (stage id 23).
+        # The license row is created as inactive until both license fee + security fee payments complete.
+        return bool(_stage_is_awaiting_license_fee_payment(stage, application_model=application_model))
 
     # Other application types: deployments often use commissioner final stage naming instead of "approved".
     return bool(
