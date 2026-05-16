@@ -725,10 +725,13 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
             avg_batch_size=Avg('quantity_produced')
         )
         
-        # Get today's production
+        # Get today's production — check both created_at (for auto-synced hologram entries)
+        # and production_date (for manually entered batches with today's date)
+        today = timezone.now().date()
         today_production = ProductionBatch.objects.filter(
-            brand_warehouse__in=warehouse_queryset,
-            production_date=timezone.now().date()
+            brand_warehouse__in=warehouse_queryset
+        ).filter(
+            Q(created_at__date=today) | Q(production_date=today)
         ).aggregate(
             today_quantity=Sum('quantity_produced'),
             today_batches=Count('id')
@@ -744,11 +747,12 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
             week_batches=Count('id')
         )
         
-        # Get this month's production
+        # Get this month's production — use created_at (sync date) OR production_date
         month_start = timezone.now().date().replace(day=1)
         month_production = ProductionBatch.objects.filter(
-            brand_warehouse__in=warehouse_queryset,
-            production_date__gte=month_start
+            brand_warehouse__in=warehouse_queryset
+        ).filter(
+            Q(created_at__date__gte=month_start) | Q(production_date__gte=month_start)
         ).aggregate(
             month_quantity=Sum('quantity_produced'),
             month_batches=Count('id')
@@ -1004,6 +1008,15 @@ class BrandWarehouseUtilizationViewSet(viewsets.ModelViewSet):
         status_filter = self.request.query_params.get('status', None)
         if status_filter:
             queryset = queryset.filter(status=status_filter)
+
+        # Filter by date range (date field on utilization)
+        date_from = self.request.query_params.get('date_from', None)
+        if date_from:
+            queryset = queryset.filter(date__gte=date_from)
+
+        date_to = self.request.query_params.get('date_to', None)
+        if date_to:
+            queryset = queryset.filter(date__lte=date_to)
             
         # Newest first: date desc, then id desc for same-day rows.
         return queryset.order_by('-date', '-id')
