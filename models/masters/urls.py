@@ -5,6 +5,7 @@ urlpatterns = [
     path('core/', include(('models.masters.core.urls', 'core_urls'), namespace='core_urls')),
     path('contact_us/', include(('models.masters.contact_us.urls', 'contact_us'), namespace='contact_us')),
     path('about_us/', include(('models.masters.about_us.urls', 'about_us'), namespace='about_us')),
+    path('notification/', include(('models.masters.notification.urls', 'notification'), namespace='notification')),
     path('license/', include(('models.masters.license.urls', 'license'), namespace='license')),
     path('supply_chain/', include(('models.masters.supply_chain.urls', 'supply_chain_masters'), namespace='supply_chain_masters')),
     path('company-collaboration/', include(('models.masters.company_collaboration.urls', 'masters_company_collaboration'), namespace='masters_company_collaboration')),

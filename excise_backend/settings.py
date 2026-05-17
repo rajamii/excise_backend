@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     'models.masters.license',
     'models.masters.contact_us',
     'models.masters.about_us',
+    'models.masters.notification',
     'models.masters.company_collaboration',
 
     'models.masters.supply_chain.bulk_spirit',
@@ -158,11 +159,11 @@ REST_FRAMEWORK = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'eAbkari_db',       # Database name
+        'NAME': 'sems_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
         'PASSWORD': 'postgres',  # Your PostgreSQL password
         'HOST': 'localhost',        # Default host
-        'PORT': '5432',             # Default PostgreSQL port
+        'PORT': '5433',             # Default PostgreSQL port
         'CONN_MAX_AGE': 0,          # Don't reuse connections — avoids aborted transaction state
     }
 }
