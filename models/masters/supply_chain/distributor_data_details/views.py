@@ -7,6 +7,8 @@ from django.shortcuts import get_object_or_404
 
 from .models import TransitPermitDistributorData
 from .serializers import TransitPermitDistributorDataSerializer
+from auth.roles.permissions import HasAppPermission
+from rest_framework.permissions import IsAuthenticated
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +20,18 @@ class TransitPermitDistributorDataViewSet(viewsets.ModelViewSet):
     queryset = TransitPermitDistributorData.objects.all().order_by('id')
     serializer_class = TransitPermitDistributorDataSerializer
 
+    def get_permissions(self):
+        # View is allowed for authenticated users; non-staff are further restricted by license_id filtering.
+        if self.action in {'list', 'retrieve', 'search'}:
+            return [IsAuthenticated()]
+        if self.action == 'create':
+            return [HasAppPermission('masters', 'create')]
+        if self.action in {'update', 'partial_update'}:
+            return [HasAppPermission('masters', 'update')]
+        if self.action == 'destroy':
+            return [HasAppPermission('masters', 'delete')]
+        return [IsAuthenticated()]
+
     def get_queryset(self):
         """
         Optionally filter the distributor data by manufacturing unit or distributor name.
@@ -26,6 +40,24 @@ class TransitPermitDistributorDataViewSet(viewsets.ModelViewSet):
           - distributor_name (partial match)
         """
         queryset = super().get_queryset()
+
+        # If not staff/superuser, only show rows assigned to the user's license(s).
+        user = getattr(self.request, 'user', None)
+        role_name = (getattr(getattr(user, 'role', None), 'name', '') or '').strip().lower()
+        is_site_admin = role_name == 'site_admin'
+        if (
+            user
+            and user.is_authenticated
+            and not is_site_admin
+            and not (getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False))
+        ):
+            license_ids = list(
+                getattr(user, 'licenses', None)
+                .filter(is_active=True)
+                .values_list('license_id', flat=True)
+            ) if hasattr(user, 'licenses') else []
+            queryset = queryset.filter(license_id__in=license_ids)
+
         manufacturing_unit = self.request.query_params.get('manufacturing_unit', None)
         distributor_name = self.request.query_params.get('distributor_name', None)
 

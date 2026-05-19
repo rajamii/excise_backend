@@ -2,7 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.db.models import Q, Max, Count
 import logging
 from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
@@ -295,6 +295,16 @@ class MasterBottleTypeDetailView(APIView):
 
     GET/PATCH/DELETE by id.
     """
+
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            # Use the public GET endpoint `master_bottle_type_detail` for unauthenticated reads.
+            return [IsAuthenticated()]
+        if self.request.method == 'PATCH':
+            return [HasAppPermission('masters', 'update')]
+        if self.request.method == 'DELETE':
+            return [HasAppPermission('masters', 'delete')]
+        return [IsAuthenticated()]
 
     def get_object(self, pk: int):
         try:
