@@ -1,13 +1,11 @@
 from functools import lru_cache
 from decimal import Decimal
 import logging
-
-from django.db import connection, transaction
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-
-from models.transactional.payment_gateway.models import MasterHeadOfAccount
-
+from rest_framework.exceptions import ValidationError
+from models.transactional.payment_gateway.models import PaymentModuleHoa
 from .models import WalletBalance
 
 logger = logging.getLogger(__name__)
@@ -21,47 +19,47 @@ def _looks_like_brewery(text: str) -> bool:
     t = str(text or "").strip().lower()
     return ("brew" in t) or ("beer" in t)
 
-COMMON_EDUCATION_CESS_HOA = "0045-00-112-45-03"
-COMMON_HOLOGRAM_HOA = "0039-00-800-45-01"
-COMMON_SECURITY_DEPOSIT_HOA = "non"
-COMMON_LICENSE_FEE_HOA = "0039-00-800-45-02"
+# COMMON_EDUCATION_CESS_HOA = "0045-00-112-45-03"
+# COMMON_HOLOGRAM_HOA = "0039-00-800-45-01"
+# COMMON_SECURITY_DEPOSIT_HOA = "non"
+# COMMON_LICENSE_FEE_HOA = "0039-00-800-45-02"
 
-HOA_CANDIDATES = {
-    "distillery": {
-        "excise": ["0039-00-105-45-01"],
-        "education_cess": [COMMON_EDUCATION_CESS_HOA],
-        "hologram": [COMMON_HOLOGRAM_HOA],
-        "security_deposit": [COMMON_SECURITY_DEPOSIT_HOA],
-        "license_fee": [COMMON_LICENSE_FEE_HOA],
-    },
-    "brewery": {
-        "excise": ["0038-00-102-45-00"],
-        "education_cess": [COMMON_EDUCATION_CESS_HOA],
-        "hologram": [COMMON_HOLOGRAM_HOA],
-        "security_deposit": [COMMON_SECURITY_DEPOSIT_HOA],
-        "license_fee": [COMMON_LICENSE_FEE_HOA],
-    },
-    "other": {
-        "security_deposit": [COMMON_SECURITY_DEPOSIT_HOA],
-        "license_fee": [COMMON_LICENSE_FEE_HOA],
-    },
-}
+# HOA_CANDIDATES = {
+#     "distillery": {
+#         "excise": ["0039-00-105-45-01"],
+#         "education_cess": [COMMON_EDUCATION_CESS_HOA],
+#         "hologram": [COMMON_HOLOGRAM_HOA],
+#         "security_deposit": [COMMON_SECURITY_DEPOSIT_HOA],
+#         "license_fee": [COMMON_LICENSE_FEE_HOA],
+#     },
+#     "brewery": {
+#         "excise": ["0038-00-102-45-00"],
+#         "education_cess": [COMMON_EDUCATION_CESS_HOA],
+#         "hologram": [COMMON_HOLOGRAM_HOA],
+#         "security_deposit": [COMMON_SECURITY_DEPOSIT_HOA],
+#         "license_fee": [COMMON_LICENSE_FEE_HOA],
+#     },
+#     "other": {
+#         "security_deposit": [COMMON_SECURITY_DEPOSIT_HOA],
+#         "license_fee": [COMMON_LICENSE_FEE_HOA],
+#     },
+# }
 
-WALLET_LABELS = {
-    "excise": "Excise / Additional Wallet",
-    "education_cess": "Education Cess Wallet",
-    "hologram": "Hologram",
-    "security_deposit": "Security Deposit Wallet",
-    "license_fee": "License Fee Wallet",
-}
+# WALLET_LABELS = {
+#     "excise": "Excise / Additional Wallet",
+#     "education_cess": "Education Cess Wallet",
+#     "hologram": "Hologram",
+#     "security_deposit": "Security Deposit Wallet",
+#     "license_fee": "License Fee Wallet",
+# }
 
 
-@lru_cache(maxsize=1)
-def _hoa_master_table_exists() -> bool:
-    try:
-        return MasterHeadOfAccount._meta.db_table in set(connection.introspection.table_names())
-    except Exception:
-        return False
+# @lru_cache(maxsize=1)
+# def _hoa_master_table_exists() -> bool:
+#     try:
+#         return MasterHeadOfAccount._meta.db_table in set(connection.introspection.table_names())
+#     except Exception:
+#         return False
 
 
 def _resolve_module_type(license_obj) -> str:
@@ -105,39 +103,34 @@ def _resolve_module_type(license_obj) -> str:
 
 
 def _resolve_hoa_code(module_type: str, wallet_type: str) -> str:
-    candidates = HOA_CANDIDATES.get(module_type, {}).get(wallet_type, [])
-    if not candidates:
-        raise ValueError(f"No HOA candidates configured for module_type={module_type}, wallet_type={wallet_type}")
+    """
+    Strictly resolves the Head of Account from the database mapping table.
+    No hardcoded fallbacks are allowed.
+    """
+    
+    # 1. Query the mapping table directly using the Foreign Keys
+    mapping = PaymentModuleHoa.objects.select_related('head_of_account').filter(
+        module_code__module_desc__icontains=module_type,
+        wallet_type__code__iexact=wallet_type, # Using the new Foreign Key to MasterWalletType
+        is_active=True,                        # Using the new BooleanField
+        head_of_account__visible_status=True    
+    ).first()
 
-    # Some environments don't ship the SEMS master table in the same DB; fall back to configured code
-    # instead of running a failing query (PostgreSQL would abort the surrounding transaction).
-    if not _hoa_master_table_exists():
-        return candidates[0]
+    # 2. Return the Head of Account if a valid mapping exists
+    if mapping and mapping.head_of_account:
+        return mapping.head_of_account.head_of_account
 
-    active_codes = set(
-        MasterHeadOfAccount.objects.filter(head_of_account__in=candidates, visible_status="Y").values_list(
-            "head_of_account", flat=True
-        )
+    # 3. NO FALLBACK: Fail loudly if the DB doesn't have the mapping
+    error_msg = (
+        f"Configuration Error: No active Head of Account mapping found in the database "
+        f"(sems_module_hoa) for module_type='{module_type}' and wallet_type='{wallet_type}'."
     )
-    for code in candidates:
-        if code in active_codes:
-            return code
-
-    existing_codes = set(
-        MasterHeadOfAccount.objects.filter(head_of_account__in=candidates).values_list("head_of_account", flat=True)
-    )
-    for code in candidates:
-        if code in existing_codes:
-            return code
-
-    logger.warning(
-        "None of the configured HOA candidates exist in master table for module_type=%s, wallet_type=%s. "
-        "Using fallback candidate=%s",
-        module_type,
-        wallet_type,
-        candidates[0],
-    )
-    return candidates[0]
+    logger.critical(error_msg)
+    
+    raise ValidationError({
+        "detail": error_msg,
+        "code": "missing_hoa_mapping"
+    })
 
 
 def _build_person_name(license_obj) -> str:
@@ -302,11 +295,11 @@ def initialize_wallet_balances_for_license(license_obj) -> None:
 
             existing_qs = WalletBalance.objects.none()
             if user_id:
-                existing_qs = WalletBalance.objects.filter(user_id__iexact=user_id, wallet_type__iexact=wallet_type)
+                existing_qs = WalletBalance.objects.filter(user_id__iexact=user_id, wallet_type_id__iexact=wallet_type)
             if not existing_qs.exists():
                 existing_qs = WalletBalance.objects.filter(
                     Q(licensee_id=licensee_id) | Q(licensee_id=primary_licensee_id),
-                    wallet_type__iexact=wallet_type,
+                    wallet_type_id__iexact=wallet_type,
                 )
             if existing_qs.exists():
                 updates = {
@@ -330,7 +323,7 @@ def initialize_wallet_balances_for_license(license_obj) -> None:
                 manufacturing_unit=manufacturing_unit or "",
                 user_id=user_id or None,
                 module_type=module_type or "other",
-                wallet_type=wallet_type,
+                wallet_type_id=wallet_type,
                 head_of_account=hoa_code,
                 opening_balance=Decimal("0.00"),
                 total_credit=Decimal("0.00"),

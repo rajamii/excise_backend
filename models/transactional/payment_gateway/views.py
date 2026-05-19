@@ -8,7 +8,6 @@ import json
 import base64
 import requests
 import time
-
 from excise_backend.settings import BILLDESK_GATEWAY_URL
 from .billdesk_utils import generate_billdesk_jws, verify_billdesk_jws
 from django.conf import settings
@@ -36,17 +35,6 @@ DEFAULT_LICENSE_RENEWAL_MODULE_CODE = "002"
 DEFAULT_WALLET_ADVANCE_MODULE_CODE = "999"
 DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE = "001"
 PENDING_RETRY_LOCK_MINUTES = 1
-
-html_content = """
-    <!DOCTYPE html>
-    <html>
-        <head><title>Processing Payment...</title></head>
-        <body onload="window.close();">
-            <p>Payment processed successfully. You may safely close this window.</p>
-        </body>
-    </html>
-    """
-
 
 def _build_pending_retry_response(tx: PaymentBilldeskTransaction, remaining_seconds: int) -> Response:
     lock_until = (tx.transaction_date or timezone.now()) + timedelta(minutes=PENDING_RETRY_LOCK_MINUTES)
@@ -288,7 +276,19 @@ def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str
         }
     else:
         logger.error(f"BillDesk Create Order Failed: {response.text}")
-        return {"success": False, "error": response.text}
+        
+        # --- IMPLEMENTATION 4: DECODE ERROR JWS ---
+        error_details = response.text
+        try:
+            # Attempt to decode the payload if it's a JWS token
+            if '.' in response.text:
+                decoded_payload = _decode_jws_payload(response.text)
+                if decoded_payload:
+                    error_details = decoded_payload
+        except Exception as e:
+            logger.warning(f"Could not decode error JWS payload: {e}")
+            
+        return {"success": False, "error": error_details}
 
 
 def _build_billdesk_request_message(
@@ -411,7 +411,7 @@ def billdesk_initiate_wallet_recharge(request):
             return _build_pending_retry_response(pending_tx, remaining)
 
     gateway = (
-        PaymentGatewayParameters.objects.filter(is_active="Y", payment_gateway_name__iexact="Billdesk")
+        PaymentGatewayParameters.objects.filter(is_active=True, payment_gateway_name__iexact="Billdesk")
         .order_by("sl_no")
         .first()
     )
@@ -607,7 +607,7 @@ def billdesk_initiate_license_fee(request):
             return _build_pending_retry_response(pending_tx, remaining)
 
     gateway = (
-        PaymentGatewayParameters.objects.filter(is_active="Y", payment_gateway_name__iexact="Billdesk")
+        PaymentGatewayParameters.objects.filter(is_active=True, payment_gateway_name__iexact="Billdesk")
         .order_by("sl_no")
         .first()
     )
@@ -804,7 +804,7 @@ def billdesk_initiate_security_deposit(request):
             return _build_pending_retry_response(pending_tx, remaining)
 
     gateway = (
-        PaymentGatewayParameters.objects.filter(is_active="Y", payment_gateway_name__iexact="Billdesk")
+        PaymentGatewayParameters.objects.filter(is_active=True, payment_gateway_name__iexact="Billdesk")
         .order_by("sl_no")
         .first()
     )
@@ -1015,7 +1015,7 @@ def billdesk_initiate_new_license_application_fee(request):
             return _build_pending_retry_response(pending_tx, remaining)
 
     gateway = (
-        PaymentGatewayParameters.objects.filter(is_active="Y", payment_gateway_name__iexact="Billdesk")
+        PaymentGatewayParameters.objects.filter(is_active=True, payment_gateway_name__iexact="Billdesk")
         .order_by("sl_no")
         .first()
     )
@@ -1160,7 +1160,7 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
     ]
 
     gateway = PaymentGatewayParameters.objects.filter(
-        is_active="Y", 
+        is_active=True, 
         payment_gateway_name__iexact="Billdesk"
     ).order_by("sl_no").first()
     
@@ -1362,10 +1362,16 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                         sbm_submit_error = "sbm_auto_submit_failed"
 
                     # bubble up to redirect query params (defined later)
-                    transaction_response._sbm_submitted = sbm_submitted
-                    transaction_response._sbm_application_id = sbm_application_id
-                    transaction_response._sbm_submit_error = sbm_submit_error
+                    # transaction_response._sbm_submitted = sbm_submitted
+                    # transaction_response._sbm_application_id = sbm_application_id
+                    # transaction_response._sbm_submit_error = sbm_submit_error
+                    # INSTEAD, LOG OR STORE THEM IN A DICTIONARY:
+                    logger.info(
+                        f"SB auto-submit complete. Submitted: {sbm_submitted}, "
+                        f"ID: {sbm_application_id}, Error: {sbm_submit_error}"
+                    )
                     auto_submitted = True
+
                 except Exception as exc:
                     auto_submit_error = str(exc)
                     logger.exception("Failed to auto-submit new license application for txn_ref=%s: %s", txn_ref, exc)
@@ -1468,7 +1474,12 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                         )
                 except Exception as exc:
                     logger.exception("Failed to log failed wallet transaction for txn_ref=%s: %s", txn_ref, exc)
-    return True
+    return {
+        "success": True,
+        "sbm_submitted": locals().get("sbm_submitted", False),
+        "sbm_application_id": locals().get("sbm_application_id", ""),
+        "sbm_submit_error": locals().get("sbm_submit_error", "")
+    }
 
 @csrf_exempt
 def billdesk_webhook(request):
@@ -1498,7 +1509,7 @@ def billdesk_response(request):
     if request.method != "POST":
         return HttpResponseBadRequest("Invalid method")
 
-    # 1. Fetch the new encrypted response parameter
+    # 1. Fetch the encrypted response parameter
     transaction_response = request.POST.get("transaction_response")
     if not transaction_response:
         return HttpResponseBadRequest("Missing transaction_response parameter")
@@ -1506,8 +1517,68 @@ def billdesk_response(request):
     # Call the shared processor
     _process_billdesk_transaction(transaction_response)
 
-    # Return the HTML to close the child window
-    return HttpResponse(html_content, content_type="text/html")
+    # 2. Fetch the frontend success URL from the database
+    gateway = PaymentGatewayParameters.objects.filter(
+        is_active=True, 
+        payment_gateway_name__iexact="Billdesk"
+    ).order_by("sl_no").first()
+    
+    # Fallback to the root domain if frontend_success_url is not set
+    redirect_url = getattr(gateway, "frontend_success_url", "/") or "/"
+
+    # 3. Generate dynamic HTML with the robust popup-closing logic
+    dynamic_html = f"""
+    <!DOCTYPE html>
+    <html>
+        <head>
+            <title>Processing Payment...</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; text-align: center; padding-top: 50px; background-color: #f4f7f6; }}
+                .container {{ background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); display: inline-block; }}
+                .spinner {{ margin: 20px auto; border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; }}
+                @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h2 style="color: #4CAF50;">Payment Processed Successfully!</h2>
+                <p>Please wait, redirecting you back to the application in a few seconds...</p>
+                <div class="spinner"></div>
+            </div>
+
+            <script>
+                function executeRedirect() {{
+                    var targetUrl = "{redirect_url}";
+                    
+                    try {{
+                        // 1. Attempt to redirect the parent window if it exists and is accessible
+                        if (window.opener && !window.opener.closed) {{
+                            window.opener.location.href = targetUrl;
+                        }}
+                    }} catch (error) {{
+                        console.warn("Could not access parent window due to browser security:", error);
+                    }}
+
+                    // 2. Always attempt to close this popup window immediately
+                    window.close();
+
+                    // 3. Fallback: If the browser refuses to close the window 
+                    // (e.g., if it wasn't opened via a script), redirect this window as a last resort.
+                    setTimeout(function() {{
+                        if (!window.closed) {{
+                            window.location.href = targetUrl;
+                        }}
+                    }}, 500);
+                }}
+
+                // Wait 3 seconds before executing
+                setTimeout(executeRedirect, 3000);
+            </script>
+        </body>
+    </html>
+    """
+    
+    return HttpResponse(dynamic_html, content_type="text/html")
 
 
 # @csrf_exempt
@@ -1551,7 +1622,7 @@ def billdesk_response(request):
 #     amount = req_parts[3].strip()
 
 #     gateway = (
-#         PaymentGatewayParameters.objects.filter(is_active="Y", payment_gateway_name__iexact="Billdesk")
+#         PaymentGatewayParameters.objects.filter(is_active=True, payment_gateway_name__iexact="Billdesk")
 #         .order_by("sl_no")
 #         .first()
 #     )

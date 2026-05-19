@@ -10,7 +10,7 @@ class PaymentGatewayParameters(models.Model):
     encryption_key = models.CharField(max_length=255)
     return_url = models.CharField(max_length=500)
     frontend_success_url = models.CharField(max_length=500, null=True, blank=True)
-    is_active = models.CharField(max_length=1, default="Y")
+    is_active = models.BooleanField(default=True)
     created_date = models.DateTimeField(default=timezone.now)
     modified_date = models.DateTimeField(null=True, blank=True)
 
@@ -87,7 +87,7 @@ class PaymentBilldeskTransaction(models.Model):
         return f"{self.utr} ({self.payment_status})"
 
 
-# Formerly eAbgari_Payment_Send_HOA (pre-payment intent)
+
 class PaymentSendHOA(models.Model):
     id = models.BigAutoField(primary_key=True)
     transaction_id_no = models.CharField(max_length=50)
@@ -113,7 +113,7 @@ class MasterHeadOfAccount(models.Model):
     object_head = models.CharField(max_length=10, null=True, blank=True)
     detailed_head_driscription = models.CharField(max_length=500)
     pay_type = models.CharField(max_length=20, null=True, blank=True)
-    visible_status = models.CharField(max_length=1, default="Y")
+    visible_status = models.BooleanField(default=True)
     created_date = models.DateTimeField(default=timezone.now)
     modified_date = models.DateTimeField(null=True, blank=True)
 
@@ -128,8 +128,7 @@ class MasterPaymentModule(models.Model):
     module_code = models.CharField(max_length=20, primary_key=True)
     module_desc = models.CharField(max_length=200)
     license_fee = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
-    visibility_status = models.CharField(max_length=1, default="Y")
-    active_payment_mode = models.CharField(max_length=1, default="O")
+    visibility_status = models.BooleanField(default=True)
     user_id = models.CharField(max_length=50, null=True, blank=True)
     opr_date = models.DateTimeField(null=True, blank=True)
     created_date = models.DateTimeField(default=timezone.now)
@@ -150,6 +149,12 @@ class PaymentModuleHoa(models.Model):
         db_column="module_code",
         to_field="module_code",
     )
+    wallet_type = models.ForeignKey(
+        'wallet.MasterWalletType', 
+        on_delete=models.RESTRICT,
+        db_column="wallet_type",
+        to_field="code"
+    )
     head_of_account = models.ForeignKey(
         MasterHeadOfAccount,
         on_delete=models.RESTRICT,
@@ -158,7 +163,7 @@ class PaymentModuleHoa(models.Model):
     )
     # user_id = models.CharField(max_length=50, null=True, blank=True)
     opr_date = models.DateTimeField(default=timezone.now)
-    is_active = models.CharField(max_length=1, default="Y")
+    is_active = models.BooleanField(default=True)
     created_date = models.DateTimeField(default=timezone.now)
 
     class Meta:

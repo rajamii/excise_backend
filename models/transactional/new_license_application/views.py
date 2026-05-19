@@ -27,7 +27,7 @@ import base64
 import mimetypes
 from PIL import Image
 from utils.qrcodegen import QrCode
-import re
+from models.transactional.wallet.wallet_initializer import _resolve_hoa_code
 from models.masters.license.master_license_form import MasterLicenseForm
 from models.masters.license.master_license_form_terms import MasterLicenseFormTerms
 from models.masters.license.legacy_codes import resolve_codes_for_license_form
@@ -35,9 +35,8 @@ from django.core import signing
 from urllib.parse import quote
 import secrets
 import hashlib
-from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_role_stage_names, _collect_reachable_stage_names
+from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_role_stage_names
 from models.masters.core.models import LicenseFee
-from models.transactional.wallet.wallet_initializer import COMMON_LICENSE_FEE_HOA, COMMON_SECURITY_DEPOSIT_HOA
 from models.transactional.wallet.wallet_service import debit_wallet_balance
 from .payment_status import sync_new_license_payment_status
 
@@ -990,13 +989,15 @@ def pay_license_fee_wallet(request, application_id):
     if amount is None:
         return Response({"detail": "License fee amount not configured."}, status=status.HTTP_400_BAD_REQUEST)
 
+    license_fee_hoa = _resolve_hoa_code(module_type="other", wallet_type="license_fee")
+    
     txn_id = secrets.token_hex(12).upper()
     try:
         debit_wallet_balance(
             transaction_id=txn_id,
             licensee_id=str(lic.license_id),
             wallet_type="license_fee",
-            head_of_account=COMMON_LICENSE_FEE_HOA,
+            head_of_account=license_fee_hoa,
             amount=amount,
             user_id=str(getattr(request.user, "username", "") or "").strip(),
             remarks=f"License fee paid for {application.application_id}",
@@ -1033,14 +1034,14 @@ def pay_security_fee_wallet(request, application_id):
     amount = getattr(fee, "security_amount", None)
     if amount is None:
         return Response({"detail": "Security fee amount not configured."}, status=status.HTTP_400_BAD_REQUEST)
-
+    security_deposit_hoa = _resolve_hoa_code(module_type="other", wallet_type="security_deposit")
     txn_id = secrets.token_hex(12).upper()
     try:
         debit_wallet_balance(
             transaction_id=txn_id,
             licensee_id=str(lic.license_id),
             wallet_type="security_deposit",
-            head_of_account=COMMON_SECURITY_DEPOSIT_HOA,
+            head_of_account=security_deposit_hoa,
             amount=amount,
             user_id=str(getattr(request.user, "username", "") or "").strip(),
             remarks=f"Security fee paid for {application.application_id}",

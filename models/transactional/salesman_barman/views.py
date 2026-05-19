@@ -15,12 +15,11 @@ from .models import SalesmanBarmanModel
 from .serializers import SalesmanBarmanSerializer
 import re
 import secrets
-
+from models.transactional.wallet.wallet_initializer import _resolve_hoa_code
 from rest_framework.permissions import IsAuthenticated
 from django.core.exceptions import PermissionDenied
 from django.contrib.contenttypes.models import ContentType
 from models.transactional.payment_gateway.models import MasterPaymentModule
-from models.transactional.wallet.wallet_initializer import COMMON_LICENSE_FEE_HOA
 from models.transactional.wallet.wallet_service import debit_wallet_balance
 
 
@@ -291,6 +290,7 @@ def pay_registration_fee_wallet(request, application_id):
             pass
 
     wallet_licensee_id = nli_license_id or str(getattr(request.user, "username", "") or "").strip()
+    license_fee_hoa = _resolve_hoa_code(module_type="other", wallet_type="license_fee")
 
     txn_id = secrets.token_hex(12).upper()
     try:
@@ -298,7 +298,7 @@ def pay_registration_fee_wallet(request, application_id):
             transaction_id=txn_id,
             licensee_id=wallet_licensee_id,
             wallet_type="license_fee",
-            head_of_account=COMMON_LICENSE_FEE_HOA,
+            head_of_account=license_fee_hoa,
             amount=amount,
             user_id=str(getattr(request.user, "username", "") or "").strip(),
             remarks=f"Salesman/Barman registration fee paid for {application.application_id}",

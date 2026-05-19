@@ -214,6 +214,19 @@ def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = 
 
     return str(fallback or "").strip()
 
+
+class MasterWalletType(models.Model):
+    code = models.CharField(max_length=50, primary_key=True)  # e.g., 'license_fee', 'excise'
+    name = models.CharField(max_length=100)                   # e.g., 'License Fee Wallet', 'Excise Duty'
+    description = models.CharField(max_length=255, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    
+    class Meta:
+        db_table = "sems_master_wallet_type"
+
+    def __str__(self):
+        return self.name
+
 class WalletBalance(models.Model):
     wallet_balance_id = models.BigAutoField(primary_key=True)
     licensee_id = models.CharField(max_length=50)
@@ -221,7 +234,12 @@ class WalletBalance(models.Model):
     manufacturing_unit = models.CharField(max_length=150, null=True, blank=True)
     user_id = models.CharField(max_length=50, null=True, blank=True)
     module_type = models.CharField(max_length=20)
-    wallet_type = models.CharField(max_length=30)
+    wallet_type = models.ForeignKey(
+        'wallet.MasterWalletType', 
+        on_delete=models.RESTRICT,
+        db_column="wallet_type",
+        to_field="code"
+    )
     head_of_account = models.CharField(max_length=50)
     opening_balance = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     total_credit = models.DecimalField(max_digits=18, decimal_places=2, default=0)
@@ -260,7 +278,12 @@ class WalletTransaction(models.Model):
     licensee_name = models.CharField(max_length=150, null=True, blank=True)
     user_id = models.CharField(max_length=50, null=True, blank=True)
     module_type = models.CharField(max_length=20)
-    wallet_type = models.CharField(max_length=30)
+    wallet_type = models.ForeignKey(
+        'wallet.MasterWalletType', 
+        on_delete=models.RESTRICT,
+        db_column="wallet_type",
+        to_field="code"
+    )
     head_of_account = models.CharField(max_length=50)
     entry_type = models.CharField(max_length=10)
     transaction_type = models.CharField(max_length=20)
