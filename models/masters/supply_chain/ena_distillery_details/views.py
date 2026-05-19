@@ -1,15 +1,16 @@
 import logging
-import logging
 import traceback
 import re
 from difflib import SequenceMatcher
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
 from .models import enaDistilleryTypes
 from models.masters.license.models import License
-
-logger = logging.getLogger(__name__)
+from .serializers import enaDistilleryTypesSerializer
+from auth.roles.permissions import HasAppPermission  # type: ignore
+from models.masters.supply_chain.scoping import is_licensee_or_oic_user, user_scoped_license_ids
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,25 @@ class enaDistilleryTypesListAPIView(APIView):
     """
     def get(self, request, format=None):
         try:
+            # Licensee/OIC users see only distilleries explicitly assigned via licensee_id.
+            if is_licensee_or_oic_user(request.user):
+                scoped = user_scoped_license_ids(request.user)
+                distilleries = enaDistilleryTypes.objects.using('default').filter(
+                    licensee_id__in=list(scoped)
+                )
+                data = [{
+                    'id': distillery.id,
+                    'distillery_name': distillery.distillery_name,
+                    'licensee_id': distillery.licensee_id,
+                    'via_route': distillery.via_route,
+                    'state': distillery.distillery_state
+                } for distillery in distilleries]
+                return Response({
+                    'success': True,
+                    'count': len(data),
+                    'data': data
+                }, status=status.HTTP_200_OK)
+
             requested_licensee_ids = self._extract_licensee_ids(request)
             requested_license_ids = self._extract_license_ids(request)
             establishment_names = self._extract_establishment_names(request)
@@ -27,15 +47,6 @@ class enaDistilleryTypesListAPIView(APIView):
             )
             all_establishment_names = establishment_names + license_establishment_names
 
-            # Debug: Check if we can query the model
-            from django.apps import apps
-            from django.db import connection
-            
-            # Log available models and database tables
-            logger.info(f"Available models: {[m.__name__ for m in apps.get_models()]}")
-            logger.info(f"Database tables: {connection.introspection.table_names()}")
-            
-            # Query all distillery types with explicit database routing
             all_distilleries = enaDistilleryTypes.objects.using('default').all()
             distilleries = all_distilleries
 
@@ -70,10 +81,6 @@ class enaDistilleryTypesListAPIView(APIView):
                 distilleries_list = self._filter_by_establishment_names(
                     list(all_distilleries), all_establishment_names
                 )
-            logger.info(f"Found {distilleries.count()} distilleries")
-            
-            logger.info(f"Distilleries list length: {len(distilleries_list)}")
-            
             # Prepare the response data
             data = [{
                 'id': distillery.id,
@@ -82,9 +89,6 @@ class enaDistilleryTypesListAPIView(APIView):
                 'via_route': distillery.via_route,
                 'state': distillery.distillery_state
             } for distillery in distilleries_list]
-            
-            logger.info(f"First distillery (if any): {data[0] if data else 'No data'}")
-            
             return Response({
                 'success': True,
                 'count': len(data),
@@ -159,7 +163,6 @@ class enaDistilleryTypesListAPIView(APIView):
             if clean:
                 names.append(clean)
 
-        # Deduplicate while preserving order
         unique = []
         seen = set()
         for name in names:
@@ -198,6 +201,99 @@ class enaDistilleryTypesListAPIView(APIView):
             for token in str(normalized_name or '').split()
             if token and token not in ignore_tokens
         }
+
+    def _is_probable_name_match(self, distillery_name, target_name):
+        distillery_name = str(distillery_name or '').strip()
+        target_name = str(target_name or '').strip()
+        if not distillery_name or not target_name:
+            return False
+
+        dn = self._normalize_name(distillery_name)
+        tn = self._normalize_name(target_name)
+        if not dn or not tn:
+            return False
+
+        if dn in tn or tn in dn:
+            return True
+
+        d_tokens = self._tokenize_name(dn)
+        t_tokens = self._tokenize_name(tn)
+        if d_tokens and t_tokens and (d_tokens & t_tokens):
+            return True
+
+        ratio = SequenceMatcher(None, dn, tn).ratio()
+        return ratio >= 0.72
+
+    def _filter_by_establishment_names(self, distillery_rows, names_to_match):
+        names_to_match = [str(n or '').strip() for n in (names_to_match or []) if str(n or '').strip()]
+        if not names_to_match:
+            return []
+
+        filtered = []
+        for row in distillery_rows:
+            name = getattr(row, 'distillery_name', '')
+            if any(self._is_probable_name_match(name, target) for target in names_to_match):
+                filtered.append(row)
+        return filtered
+
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def distillery_admin_list(request):
+    serializer = enaDistilleryTypesSerializer(
+        enaDistilleryTypes.objects.using('default').all().order_by('id'),
+        many=True
+    )
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@permission_classes([HasAppPermission('masters', 'create')])
+@api_view(['POST'])
+def distillery_create(request):
+    serializer = enaDistilleryTypesSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def distillery_detail(request, pk: int):
+    try:
+        obj = enaDistilleryTypes.objects.using('default').get(pk=pk)
+    except enaDistilleryTypes.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+    serializer = enaDistilleryTypesSerializer(obj)
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PUT', 'PATCH'])
+def distillery_update(request, pk: int):
+    try:
+        obj = enaDistilleryTypes.objects.using('default').get(pk=pk)
+    except enaDistilleryTypes.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = enaDistilleryTypesSerializer(
+        instance=obj,
+        data=request.data,
+        partial=request.method == 'PATCH',
+    )
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@permission_classes([HasAppPermission('masters', 'delete')])
+@api_view(['DELETE'])
+def distillery_delete(request, pk: int):
+    try:
+        obj = enaDistilleryTypes.objects.using('default').get(pk=pk)
+    except enaDistilleryTypes.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+    obj.delete()
+    return Response({'message': 'Deleted successfully.'}, status=status.HTTP_200_OK)
 
     def _is_probable_name_match(self, distillery_name, target_name):
         if not distillery_name or not target_name:

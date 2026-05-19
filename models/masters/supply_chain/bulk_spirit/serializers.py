@@ -5,7 +5,7 @@ class BulkSpiritTypeSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = BulkSpiritType
-        fields = ['sprit_id', 'bulk_spirit_kind_type', 'strength', 'price_bl', 'created_at', 'updated_at']
+        fields = ['sprit_id', 'bulk_spirit_kind_type', 'strength', 'price_bl', 'license_id', 'created_at', 'updated_at']
         read_only_fields = ['sprit_id', 'created_at', 'updated_at']
 
     def to_representation(self, instance):

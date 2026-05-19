@@ -1187,7 +1187,25 @@ class PerformRequisitionActionAPIView(APIView):
             )
             if strength:
                 qs = qs.filter(strength__iexact=strength)
-            row = qs.order_by('sprit_id').first()
+
+            def _expand_aliases(value: str):
+                value = str(value or '').strip()
+                if not value:
+                    return []
+                aliases = [value]
+                if value.startswith('NLI/'):
+                    aliases.append(f"NA/{value[4:]}")
+                elif value.startswith('NA/'):
+                    aliases.append(f"NLI/{value[3:]}")
+                return aliases
+
+            licensee_id = str(getattr(requisition, 'licensee_id', '') or '').strip()
+            if licensee_id:
+                row = qs.filter(license_id__in=_expand_aliases(licensee_id)).order_by('sprit_id').first()
+            else:
+                row = None
+            if row is None:
+                row = qs.order_by('sprit_id').first()
             if row and row.price_bl is not None:
                 return Decimal(str(row.price_bl)) * total_bl
         except Exception:
