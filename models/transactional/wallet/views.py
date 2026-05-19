@@ -160,7 +160,9 @@ def wallet_summary(request, licensee_id):
     request_user = str(getattr(request.user, "username", "") or "").strip()
     effective_id = _active_na_license_id_for_applicant(request.user) or str(licensee_id or "").strip()
 
-    wallet_filter = Q(licensee_id=licensee_id)
+    # Use all license id variants (NA/NLI + related active licenses) so the balance updates
+    # immediately even when different endpoints/clients send different id formats.
+    wallet_filter = Q(licensee_id__in=candidates)
 
     if request_user:
         wallet_filter |= Q(user_id__iexact=request_user)
