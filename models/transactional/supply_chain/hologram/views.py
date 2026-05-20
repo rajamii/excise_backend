@@ -932,7 +932,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             return {
                 'transaction_id': existing.transaction_id,
                 'amount': Decimal(str(existing.amount or 0)),
-                'wallet_type': existing.wallet_type,
+                'wallet_type': existing.wallet_type.code if existing.wallet_type else None,
                 'head_of_account': existing.head_of_account,
                 'balance_after': Decimal(str(existing.balance_after or 0)),
                 'reference_no': existing.reference_no,
@@ -947,7 +947,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
 
             wallet = (
                 WalletBalance.objects.select_for_update()
-                .filter(wallet_filter, wallet_type__iexact='hologram')
+                .filter(wallet_filter, wallet_type__code__iexact='hologram') 
                 .order_by('wallet_balance_id')
                 .first()
             )
@@ -993,7 +993,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         return {
             'transaction_id': transaction_id,
             'amount': amount,
-            'wallet_type': wallet.wallet_type,
+            'wallet_type': wallet.wallet_type.code if wallet.wallet_type else None,
             'head_of_account': wallet.head_of_account,
             'balance_after': after,
             'reference_no': instance.ref_no,

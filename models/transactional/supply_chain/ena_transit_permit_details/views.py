@@ -382,13 +382,13 @@ class SubmitTransitPermitAPIView(views.APIView):
 
             excise_wallet = (
                 WalletBalance.objects.select_for_update()
-                .filter(wallet_filter, wallet_type__iexact='excise')
+                .filter(wallet_filter, wallet_type__code__iexact='excise')
                 .order_by('wallet_balance_id')
                 .first()
             )
             education_wallet = (
                 WalletBalance.objects.select_for_update()
-                .filter(wallet_filter, wallet_type__iexact='education_cess')
+                .filter(wallet_filter, wallet_type__code__iexact='education_cess')
                 .order_by('wallet_balance_id')
                 .first()
             )
