@@ -981,10 +981,10 @@ def send_otp_api(request):
             )
 
     try:
-        otp_obj = get_new_otp(phone_number)
+        otp_obj, raw_otp = get_new_otp(phone_number)
         return Response({
             'otp_id': str(otp_obj.id),
-            'otp': otp_obj.otp  # REMOVE IN PRODUCTION
+            'otp': raw_otp  # REMOVE IN PRODUCTION
         })
     except ValueError as e:
         return Response({'error': str(e)}, status=status.HTTP_429_TOO_MANY_REQUESTS)
