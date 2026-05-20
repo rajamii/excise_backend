@@ -50,6 +50,7 @@ from django.conf import settings
 import binascii
 from django.core.validators import validate_ipv46_address
 from django.core.exceptions import ValidationError as DjangoValidationError
+from auth.user.services import create_oic_officer_service
 
 User = get_user_model()
 
@@ -348,90 +349,31 @@ def oic_officer_list(request):
 def oic_officer_create(request):
     _ensure_site_admin(request)
 
+    # 1. Validate HTTP request body using serializers
     serializer = OICOfficerCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     payload = serializer.validated_data
 
-    application = get_object_or_404(
-        NewLicenseApplication,
-        application_id=payload['approved_application_id']
-    )
-    content_type = ContentType.objects.get_for_model(NewLicenseApplication)
-    license_obj = (
-        License.objects.filter(
-            source_type='new_license_application',
-            source_content_type=content_type,
-            source_object_id=str(application.application_id),
-            is_active=True,
+    # 2. Delegate to the Service Layer
+    try:
+        officer, assignment, password = create_oic_officer_service(
+            payload=payload, 
+            created_by_user=request.user
         )
-        .order_by('-issue_date')
-        .first()
-    )
-    if not license_obj:
+    except DjangoValidationError as e:
+        # Handle business logic violations gracefully
         return Response(
-            {'detail': 'No active license found for selected approved application.'},
+            {'detail': str(e.message) if hasattr(e, 'message') else str(e)},
             status=status.HTTP_400_BAD_REQUEST,
         )
-
-    oic_role = (
-        Role.objects.filter(name__iexact='officer_in_charge').first()
-        or Role.objects.filter(id=7).first()
-        or Role.objects.filter(name__icontains='officer').first()
-    )
-    if not oic_role:
+    except Exception as e:
+        # Catch unexpected errors (optional but good practice)
         return Response(
-            {'detail': 'Officer In Charge role not configured.'},
+            {'detail': 'An unexpected error occurred during officer creation.'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
-    first_name, last_name = _split_full_name(payload['name'])
-    password = _generate_temp_password()
-    address = (
-        str(getattr(application, 'business_address', '') or '').strip()
-        or str(getattr(application, 'present_address', '') or '').strip()
-        or 'N/A'
-    )
-    licensee_id = _derive_licensee_id(application, license_obj)
-    license_type_name = (
-        str(getattr(getattr(application, 'license_type', None), 'license_type', '') or '').strip()
-        or None
-    )
-
-    with transaction.atomic():
-        officer = CustomUser.objects.create_user(
-            email=payload['email'],
-            first_name=first_name,
-            middle_name='',
-            last_name=last_name,
-            phone_number=payload['phone_number'],
-            district=application.site_district,
-            subdivision=application.site_subdivision,
-            address=address,
-            password=password,
-            role=oic_role,
-            created_by=request.user,
-            is_oic_managed=True,
-        )
-
-        assignment = OICOfficerAssignment.objects.create(
-            officer=officer,
-            approved_application=application,
-            license=license_obj,
-            licensee_id=licensee_id,
-            establishment_name=application.establishment_name,
-            created_by=request.user,
-        )
-
-        UserManufacturingUnit.objects.update_or_create(
-            user=officer,
-            licensee_id=licensee_id,
-            defaults={
-                'manufacturing_unit_name': application.establishment_name,
-                'license_type': license_type_name,
-                'address': address,
-            }
-        )
-
+    # 3. Format and return HTTP response
     assignment_serializer = OICOfficerAssignmentSerializer(assignment)
     return Response(
         {
@@ -444,7 +386,6 @@ def oic_officer_create(request):
         },
         status=status.HTTP_201_CREATED,
     )
-
 
 @api_view(['PUT', 'PATCH'])
 @permission_classes([IsAuthenticated])

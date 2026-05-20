@@ -93,24 +93,25 @@ class HasAppPermission(permissions.BasePermission):
         required_labels = self._label_aliases(self.app_label)
 
         if not (required_labels & normalized_allowed):
-            # Backward compatibility:
-            # Some existing roles (e.g., Licensee) were configured with
-            # company_registration in can_view but not in can_add.
-            # Allow create for this one app when view permission exists.
-            if self.action == 'create' and self._normalize_label(self.app_label) == 'company_registration':
-                view_labels = getattr(role, 'can_view', []) or []
-                normalized_view = set()
-                for label in view_labels:
-                    normalized_view.update(self._label_aliases(label))
-                if required_labels & normalized_view:
-                    return True
+           
+            # # Backward compatibility:
+            # # Some existing roles (e.g., Licensee) were configured with
+            # # company_registration in can_view but not in can_add.
+            # # Allow create for this one app when view permission exists.
+            # if self.action == 'create' and self._normalize_label(self.app_label) == 'company_registration':
+            #     view_labels = getattr(role, 'can_view', []) or []
+            #     normalized_view = set()
+            #     for label in view_labels:
+            #         normalized_view.update(self._label_aliases(label))
+            #     if required_labels & normalized_view:
+            #         return True
 
             self._raise_denied(
                 f"Cannot {self.action} {self.app_label}",
                 f"cannot_{self.action}"
             )
 
-        return True  # Explicit return for type checker
+        return True
 
 def make_permission(app_label: str, action: PermissionAction):
     class CustomPermission(HasAppPermission):
