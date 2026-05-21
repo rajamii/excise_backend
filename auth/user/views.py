@@ -9,6 +9,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from django.shortcuts import get_object_or_404
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
+from django.db.models import Prefetch, Exists, OuterRef
 from captcha.helpers import captcha_image_url
 from captcha.models import CaptchaStore
 from auth.roles.permissions import HasAppPermission, make_permission
@@ -32,6 +33,7 @@ from auth.user.otp import (
     get_new_otp, verify_otp,
     mark_phone_as_verified, clear_phone_verified, is_phone_verified,
 )
+from models.transactional.license_application.models import LicenseApplication
 from models.transactional.logs.models import UserActivity
 from models.transactional.logs.signals import get_client_ip
 from models.transactional.new_license_application.models import NewLicenseApplication
@@ -291,6 +293,16 @@ def oic_approved_establishments(request):
     _ensure_site_admin_or_commissioner(request)
 
     content_type = ContentType.objects.get_for_model(NewLicenseApplication)
+    
+    application_prefetch = Prefetch(
+        'source_application',
+        queryset=NewLicenseApplication.objects.select_related(
+            'site_district', 
+            'site_subdivision'
+        )
+    )
+
+    
     licenses = (
         License.objects.filter(
             source_type='new_license_application',
@@ -298,6 +310,7 @@ def oic_approved_establishments(request):
             is_active=True,
         )
         .select_related('applicant')
+        .prefetch_related(application_prefetch)
         .order_by('-issue_date')
     )
 
@@ -305,7 +318,9 @@ def oic_approved_establishments(request):
     seen_applications = set()
 
     for license_obj in licenses:
-        application = license_obj.source_application
+        
+        application = license_obj.source_application 
+        
         if not isinstance(application, NewLicenseApplication):
             continue
         if application.application_id in seen_applications:
@@ -313,7 +328,9 @@ def oic_approved_establishments(request):
         seen_applications.add(application.application_id)
 
         licensee_id = _derive_licensee_id(application, license_obj)
+        
         district_code = str(getattr(application.site_district, 'district_code', '') or '')
+
         subdivision_code = str(getattr(application.site_subdivision, 'subdivision_code', '') or '')
 
         rows.append({
@@ -580,13 +597,27 @@ def licensee_signup(request):
 
 
 class UserListView(generics.ListAPIView):
-    """
-    Lists all users (active and inactive). Requires 'user.view' permission.
-    Inactive users are included so the site admin can see and reactivate them.
-    """
-    queryset = CustomUser.objects.filter(is_oic_managed=False).order_by('-is_active', 'first_name')
     serializer_class = UserSerializer
     permission_classes = [make_permission('user', 'view')]
+
+    def get_queryset(self):
+        # Create subqueries to check for approved applications
+        has_new_app = NewLicenseApplication.objects.filter(
+            applicant=OuterRef('pk'), 
+            current_stage__name='approved'
+        )
+        
+        has_old_app = LicenseApplication.objects.filter(applicant=OuterRef('pk'), current_stage__name='approved')
+
+        return CustomUser.objects.filter(is_oic_managed=False).select_related(
+            'role', 
+            'district', 
+            'subdivision', 
+            'created_by__role'
+        ).annotate(
+            has_active_license_annotated=Exists(has_new_app) | Exists(has_old_app)
+            # has_active_license_annotated=Exists(has_new_app) 
+        ).order_by('-is_active', 'first_name')
 
 
 class UserDetailView(generics.RetrieveAPIView):

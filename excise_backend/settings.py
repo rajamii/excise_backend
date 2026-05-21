@@ -164,7 +164,7 @@ DATABASES = {
         'PASSWORD': 'postgres',  # Your PostgreSQL password
         'HOST': '10.182.154.196',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
-        'CONN_MAX_AGE': 0,          # Don't reuse connections — avoids aborted transaction state
+        'CONN_MAX_AGE': 300,          # Don't reuse connections — avoids aborted transaction state
     }
 }
 

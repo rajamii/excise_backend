@@ -62,11 +62,10 @@ class UserSerializer(serializers.ModelSerializer):
         return {'name': subdivision.subdivision, 'code': subdivision.subdivision_code} if subdivision else None
 
     def get_hasActiveLicense(self, obj):
-        if obj.license_applications.filter(current_stage__name='approved').exists():
-            return True
-        if obj.new_license_applications.filter(current_stage__name='approved').exists():
-            return True
-        return False
+        return getattr(obj, 'has_active_license_annotated', 
+            obj.license_applications.filter(current_stage__name='approved').exists() or 
+            obj.new_license_applications.filter(current_stage__name='approved').exists()
+        )
 
     def get_panNumber(self, obj):
         try:
