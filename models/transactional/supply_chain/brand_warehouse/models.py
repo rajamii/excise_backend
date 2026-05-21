@@ -91,13 +91,13 @@ class BrandWarehouse(models.Model):
 
     # Capacity Information (normalized via master table)
     capacity_size = models.ForeignKey(
-        'liquor_data.MasterLiquorCategory',
+        'liquor_data.MasterLiquorCapacity',
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
         db_column='capacity_size',
         related_name='brand_warehouses',
-        help_text='Pack size (FK to master_liquor_category.id)'
+        help_text='Pack size (FK to master_liquor_capacity.id)'
     )
 
     # Status

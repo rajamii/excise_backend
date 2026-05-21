@@ -5,7 +5,7 @@ from datetime import timedelta
 from .models import BrandWarehouse, BrandWarehouseArrival
 from models.masters.supply_chain.liquor_data.models import (
     MasterLiquorType,
-    MasterLiquorCategory,
+    MasterLiquorCapacity,
     MasterBrandList,
     MasterFactoryList,
 )
@@ -51,7 +51,7 @@ class BrandWarehouseStockService:
         return obj
 
     @staticmethod
-    def _resolve_capacity_size(size_ml: Optional[int] = None) -> Optional[MasterLiquorCategory]:
+    def _resolve_capacity_size(size_ml: Optional[int] = None) -> Optional[MasterLiquorCapacity]:
         """
         Resolve (or create) the master capacity size row.
 
@@ -64,7 +64,7 @@ class BrandWarehouseStockService:
             normalized = int(size_ml or 0)
         except (TypeError, ValueError):
             normalized = 0
-        obj, _ = MasterLiquorCategory.objects.get_or_create(size_ml=normalized)
+        obj, _ = MasterLiquorCapacity.objects.get_or_create(size_ml=normalized)
         return obj
 
     @staticmethod

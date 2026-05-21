@@ -42,7 +42,7 @@ def _get_size_ml_value(item) -> int:
     """
     Return the ml value for a permit row.
 
-    After migration, `item.size_ml` is a MasterLiquorCategory FK, so `int(item.size_ml)` yields ml.
+    After migration, `item.size_ml` is a MasterLiquorCapacity FK, so `int(item.size_ml)` yields ml.
     """
     try:
         if getattr(item, 'size_ml_id', None):
@@ -78,12 +78,12 @@ class SubmitTransitPermitAPIView(views.APIView):
         except Exception:
             return 0
 
-    def _resolve_master_liquor_category(self, size_ml):
-        from models.masters.supply_chain.liquor_data.models import MasterLiquorCategory
+    def _resolve_master_liquor_capacity(self, size_ml):
+        from models.masters.supply_chain.liquor_data.models import MasterLiquorCapacity
 
         normalized = self._parse_int_from_size(size_ml)
 
-        obj, _ = MasterLiquorCategory.objects.get_or_create(size_ml=normalized)
+        obj, _ = MasterLiquorCapacity.objects.get_or_create(size_ml=normalized)
         return obj
 
     def _resolve_master_liquor_type(self, liquor_type):
@@ -355,7 +355,7 @@ class SubmitTransitPermitAPIView(views.APIView):
     def _debit_wallet_balances_for_submit(self, user, license_id: str, bill_no: str, permit_rows):
         """
         Debit Excise and Education Cess wallets at submit time and persist wallet transactions.
-        Additional excise is debited from excise wallet.
+        Additional excise is debited from excise wallet (tracked separately in wallet history).
         """
         from models.transactional.wallet.models import WalletBalance, WalletTransaction
         from django.db.models import Q
@@ -364,12 +364,15 @@ class SubmitTransitPermitAPIView(views.APIView):
         if not license_id:
             raise ValueError("Unable to resolve approved license id for wallet deduction.")
 
-        excise_total = Decimal("0.00")
+        excise_duty_total = Decimal("0.00")
+        additional_excise_total = Decimal("0.00")
         education_total = Decimal("0.00")
         for row in permit_rows:
-            excise_total += Decimal(str(row.total_excise_duty or 0)) + Decimal(str(row.total_additional_excise or 0))
+            excise_duty_total += Decimal(str(row.total_excise_duty or 0))
+            additional_excise_total += Decimal(str(row.total_additional_excise or 0))
             education_total += Decimal(str(row.total_education_cess or 0))
 
+        excise_total = (excise_duty_total + additional_excise_total).quantize(Decimal("0.01"))
         if excise_total <= 0 and education_total <= 0:
             return
 
@@ -410,46 +413,85 @@ class SubmitTransitPermitAPIView(views.APIView):
             now_ts = timezone.now()
 
             if excise_wallet and excise_total > 0:
-                excise_transaction_id = f"TRP-{bill_no}-EXCISE"
-                excise_exists = WalletTransaction.objects.filter(
-                    transaction_id=excise_transaction_id,
-                    head_of_account=excise_wallet.head_of_account,
-                    entry_type='DR',
-                    source_module='transit_permit',
-                ).exists()
-                if excise_exists:
-                    raise ValueError(
-                        f"Transit wallet debit already exists for bill {bill_no}. "
-                        "Please refresh and continue with the latest reference."
+                # Track excise duty and additional excise separately, but both debit the same excise wallet.
+                excise_before = Decimal(str(excise_wallet.current_balance or 0))
+                running_balance = excise_before
+
+                def _ensure_not_exists(txn_id: str) -> None:
+                    exists = WalletTransaction.objects.filter(
+                        transaction_id=txn_id,
+                        head_of_account=excise_wallet.head_of_account,
+                        entry_type='DR',
+                        source_module='transit_permit',
+                    ).exists()
+                    if exists:
+                        raise ValueError(
+                            f"Transit wallet debit already exists for bill {bill_no}. "
+                            "Please refresh and continue with the latest reference."
+                        )
+
+                if excise_duty_total > 0:
+                    excise_duty_transaction_id = f"TRP-{bill_no}-EXCISE_DUTY"
+                    _ensure_not_exists(excise_duty_transaction_id)
+
+                    before = running_balance
+                    after = before - excise_duty_total
+                    running_balance = after
+
+                    WalletTransaction.objects.create(
+                        wallet_balance=excise_wallet,
+                        transaction_id=excise_duty_transaction_id,
+                        licensee_id=license_id,
+                        licensee_name=excise_wallet.licensee_name,
+                        user_id=username or excise_wallet.user_id,
+                        module_type=excise_wallet.module_type,
+                        wallet_type=excise_wallet.wallet_type,
+                        head_of_account=excise_wallet.head_of_account,
+                        entry_type='DR',
+                        transaction_type='debit',
+                        amount=excise_duty_total,
+                        balance_before=before,
+                        balance_after=after,
+                        reference_no=bill_no,
+                        source_module='transit_permit',
+                        payment_status='success',
+                        remarks='Transit - Excise Duty',
+                        created_at=now_ts,
                     )
 
-                before = Decimal(str(excise_wallet.current_balance or 0))
-                after = before - excise_total
-                excise_wallet.current_balance = after
+                if additional_excise_total > 0:
+                    additional_transaction_id = f"TRP-{bill_no}-ADDITIONAL_EXCISE"
+                    _ensure_not_exists(additional_transaction_id)
+
+                    before = running_balance
+                    after = before - additional_excise_total
+                    running_balance = after
+
+                    WalletTransaction.objects.create(
+                        wallet_balance=excise_wallet,
+                        transaction_id=additional_transaction_id,
+                        licensee_id=license_id,
+                        licensee_name=excise_wallet.licensee_name,
+                        user_id=username or excise_wallet.user_id,
+                        module_type=excise_wallet.module_type,
+                        wallet_type=excise_wallet.wallet_type,
+                        head_of_account=excise_wallet.head_of_account,
+                        entry_type='DR',
+                        transaction_type='debit',
+                        amount=additional_excise_total,
+                        balance_before=before,
+                        balance_after=after,
+                        reference_no=bill_no,
+                        source_module='transit_permit',
+                        payment_status='success',
+                        remarks='Transit - Additional Excise',
+                        created_at=now_ts,
+                    )
+
+                excise_wallet.current_balance = running_balance
                 excise_wallet.total_debit = Decimal(str(excise_wallet.total_debit or 0)) + excise_total
                 excise_wallet.last_updated_at = now_ts
                 excise_wallet.save(update_fields=['current_balance', 'total_debit', 'last_updated_at'])
-
-                WalletTransaction.objects.create(
-                    wallet_balance=excise_wallet,
-                    transaction_id=excise_transaction_id,
-                    licensee_id=license_id,
-                    licensee_name=excise_wallet.licensee_name,
-                    user_id=username or excise_wallet.user_id,
-                    module_type=excise_wallet.module_type,
-                    wallet_type=excise_wallet.wallet_type,
-                    head_of_account=excise_wallet.head_of_account,
-                    entry_type='DR',
-                    transaction_type='debit',
-                    amount=excise_total,
-                    balance_before=before,
-                    balance_after=after,
-                    reference_no=bill_no,
-                    source_module='transit_permit',
-                    payment_status='success',
-                    remarks='Transit permit submit debit (excise + additional excise)',
-                    created_at=now_ts,
-                )
 
             if education_wallet and education_total > 0:
                 education_transaction_id = f"TRP-{bill_no}-EDUCATION"
@@ -617,7 +659,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                             licensee_id=licensee_id,
                             
                             brand=product.get('brand'),
-                            size_ml=self._resolve_master_liquor_category(product.get('size')),
+                            size_ml=self._resolve_master_liquor_capacity(product.get('size')),
                             cases=product.get('cases'),
                             bottle_type=product.get('bottle_type', ''), # Save bottle_type
 

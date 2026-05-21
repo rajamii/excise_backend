@@ -9,7 +9,7 @@ from models.transactional.supply_chain.brand_warehouse.models import BrandWareho
 from auth.roles.permissions import HasAppPermission  # type: ignore
 from .models import (
     MasterLiquorType,
-    MasterLiquorCategory,
+    MasterLiquorCapacity,
     MasterBottleType,
     MasterBrandList,
     MasterFactoryList,
@@ -17,7 +17,7 @@ from .models import (
 )
 from .serializers import (
     MasterLiquorTypeSerializer,
-    MasterLiquorCategorySerializer,
+    MasterLiquorCapacitySerializer,
     MasterBottleTypeSerializer,
     MasterBrandListSerializer,
     MasterFactoryListSerializer,
@@ -229,7 +229,7 @@ class LiquorRatesView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-class MasterLiquorCategoryListView(APIView):
+class MasterLiquorCapacityListView(APIView):
     """
     Master table endpoint for pack sizes (ml).
 
@@ -240,11 +240,11 @@ class MasterLiquorCategoryListView(APIView):
     def get(self, request):
         include_zero = str(request.query_params.get('include_zero') or '').strip().lower() in {'1', 'true', 'yes'}
 
-        qs = MasterLiquorCategory.objects.all()
+        qs = MasterLiquorCapacity.objects.all()
         if not include_zero:
             qs = qs.filter(size_ml__gt=0)
 
-        data = MasterLiquorCategorySerializer(qs, many=True).data
+        data = MasterLiquorCapacitySerializer(qs, many=True).data
         return Response({'success': True, 'data': data, 'total': len(data)})
 
 

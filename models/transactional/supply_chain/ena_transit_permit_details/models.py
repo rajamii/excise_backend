@@ -8,7 +8,7 @@ class EnaTransitPermitDetail(models.Model):
     depot_address = models.CharField(max_length=100, default='', blank=True)
     brand = models.CharField(max_length=255, default='', blank=True)
     size_ml = models.ForeignKey(
-        'liquor_data.MasterLiquorCategory',
+        'liquor_data.MasterLiquorCapacity',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
