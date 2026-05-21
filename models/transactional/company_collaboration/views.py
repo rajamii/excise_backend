@@ -1,5 +1,4 @@
 import json
-
 from django.db import transaction
 from django.http import Http404
 from django.shortcuts import get_object_or_404

@@ -3,8 +3,8 @@ from django.utils import timezone
 from django.db.utils import DatabaseError, ProgrammingError
 from auth.user.models import CustomUser, LicenseeProfile, OICOfficerAssignment
 from auth.roles.models import Role
+from auth.user.captcha_services import verify_redis_captcha
 from models.masters.core.models import District, Subdivision
-from captcha.models import CaptchaStore
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
@@ -222,20 +222,10 @@ class LoginSerializer(serializers.Serializer):
         if not user:
             raise serializers.ValidationError("Invalid login credentials.")
 
-        try:
-            captcha_store = CaptchaStore.objects.get(hashkey=hashkey)
-            if captcha_store.response.strip().lower() != response.strip().lower():
-                raise serializers.ValidationError("Invalid captcha.")
-            captcha_store.delete()
-        except CaptchaStore.DoesNotExist:
-            raise serializers.ValidationError("Invalid captcha.")
-
-        refresh = RefreshToken.for_user(user)
+        # Return authenticated user and data back cleanly without cache side-effects
         return {
             'user': user,
             'username': user.username,
-            'access': str(refresh.access_token),
-            'refresh': str(refresh),
         }
 
 

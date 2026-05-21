@@ -45,7 +45,7 @@ licenseeprofile_patterns = [
 urlpatterns = [
     # Captcha
     path('get_captcha/', get_captcha, name='captcha'),
-    path('', include('captcha.urls')),
+    # path('', include('captcha.urls')),
 
     # Auth endpoints
     path('login/',         LoginAPI.as_view(),      name='user-login'),

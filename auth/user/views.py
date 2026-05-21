@@ -10,8 +10,6 @@ from django.shortcuts import get_object_or_404
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
 from django.db.models import Prefetch, Exists, OuterRef
-from captcha.helpers import captcha_image_url
-from captcha.models import CaptchaStore
 from auth.roles.permissions import HasAppPermission, make_permission
 from auth.roles.models import Role
 from auth.user.models import CustomUser, LicenseeProfile, OICOfficerAssignment
@@ -53,6 +51,7 @@ import binascii
 from django.core.validators import validate_ipv46_address
 from django.core.exceptions import ValidationError as DjangoValidationError
 from auth.user.services import create_oic_officer_service
+from auth.user.captcha_services import generate_redis_captcha, verify_redis_captcha
 
 User = get_user_model()
 
@@ -133,17 +132,12 @@ def licensee_register_after_verification(request):
     clear_phone_verified(phone_number)
 
     # Validate CAPTCHA
-    try:
-        captcha_store = CaptchaStore.objects.get(hashkey=request.data['hashkey'])
-        if captcha_store.response.strip().lower() != request.data['response'].strip().lower():
-            return Response(
-                {'success': False, 'errors': {'captcha': ['Invalid CAPTCHA.']}},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        captcha_store.delete()
-    except CaptchaStore.DoesNotExist:
+    hashkey = request.data.get('hashkey')
+    response_input = request.data.get('response')
+    
+    if not verify_redis_captcha(hashkey, response_input):
         return Response(
-            {'success': False, 'errors': {'captcha': ['Invalid CAPTCHA key.']}},
+            {'success': False, 'errors': {'captcha': ['Invalid or expired CAPTCHA.']}},
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -826,15 +820,34 @@ class MyLicenseeProfileView(APIView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class LoginAPI(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
     serializer_class = LoginSerializer
 
     def post(self, request):
+        # ─── DIAGNOSTIC PRINTS ───────────────────────────────────────────────
+        print("=== DEBUG CAPTCHA PAYLOAD INSPECTION ===")
+        print(f"Raw request.data keys received: {list(request.data.keys())}")
+        print(f"Value of 'hashkey': {request.data.get('hashkey')}")
+        print(f"Value of 'hash_key': {request.data.get('hash_key')}")
+        print(f"Value of 'response': {request.data.get('response')}")
+        print("========================================")
+
+        # Handle fallback for CamelCase transformations automatically
+        hashkey = request.data.get('hashkey') or request.data.get('hash_key')
+        response_input = request.data.get('response')
+
+        if not verify_redis_captcha(hashkey, response_input):
+            return Response({
+                'success': False,
+                'status_code': status.HTTP_400_BAD_REQUEST,
+                'non_field_errors': ['Invalid or expired captcha.']
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
         validated_data = serializer.validated_data
 
-        # JWT login does not trigger Django's `user_logged_in` signal.
-        # Track login explicitly so `logs_useractivity` captures all users.
         try:
             user = validated_data.get('user') or None
             if user:
@@ -843,13 +856,14 @@ class LoginAPI(APIView):
                     activity_type=UserActivity.ActivityType.LOGIN,
                     ip_address=_safe_ip_address(request),
                     user_agent=request.META.get('HTTP_USER_AGENT'),
-                    metadata={
-                        "auth_method": "jwt",
-                    },
+                    metadata={"auth_method": "jwt"},
                 )
         except Exception:
-            # Do not block login response if logging fails.
             pass
+
+        # ─── FIX: GENERATE TOKENS HERE IN THE VIEW ───
+        user = validated_data['user']
+        refresh = RefreshToken.for_user(user)
 
         return Response({
             'success': True,
@@ -857,8 +871,8 @@ class LoginAPI(APIView):
             'message': 'User logged in successfully',
             'authenticated_user': {
                 'username': validated_data['username'],
-                'access':   validated_data['access'],
-                'refresh':  validated_data['refresh'],
+                'access':   str(refresh.access_token), # Convert to string
+                'refresh':  str(refresh),              # Convert to string
             },
         })
 
@@ -910,9 +924,11 @@ class LogoutAPI(APIView):
 
 
 @api_view(['GET'])
+@permission_classes([AllowAny])
 def get_captcha(request):
-    hashkey = CaptchaStore.generate_key()
-    return Response({'key': hashkey, 'image_url': captcha_image_url(hashkey)})
+    # Generates image and stores text in Redis
+    captcha_data = generate_redis_captcha()
+    return Response(captcha_data)
 
 
 class TokenRefreshAPI(TokenRefreshView):

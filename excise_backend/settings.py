@@ -51,9 +51,6 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',
 
-    # captcha
-    'captcha',
-
     # Cross-Origin Resource Sharing
     'corsheaders',
 
@@ -193,6 +190,17 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 2621440
 # OTP Configuration
 OTP_EXPIRY_SECONDS = 600  # 10 minutes
 
+# Redis cache configuration for CAPTCHA storage
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': 'redis://127.0.0.1:6379/1',
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+        }
+    }
+}
+
 AUTH_USER_MODEL = 'user.CustomUser'
 
 
@@ -281,7 +289,7 @@ PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL = os.getenv(
 
 # Captcha tuning: keep it readable with only light line noise.
 CAPTCHA_LENGTH = 5
-CAPTCHA_TIMEOUT = 5  # minutes
+CAPTCHA_TIMEOUT = 300  # minutes
 CAPTCHA_FONT_SIZE = 30
 CAPTCHA_IMAGE_SIZE = (130, 42)
 CAPTCHA_LETTER_ROTATION = (-5, 5)

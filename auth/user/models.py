@@ -8,8 +8,6 @@ from models.masters.core.models import District, Subdivision
 from models.masters.core.helper import GENDER_CHOICES, MARITAL_STATUS_CHOICES, RESIDENTIAL_STATUS_CHOICES
 from django.utils import timezone
 import uuid
-import random
-
 
 class CustomUserManager(BaseUserManager):
     def create_user(self, email, first_name, last_name, phone_number,
