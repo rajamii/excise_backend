@@ -499,7 +499,12 @@ def dashboard_counts(request):
 
     role_stage_names = _get_role_stage_names(request.user, workflow_id)
     if not role_stage_names:
-        return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            "pending": 0,
+            "approved": 0,
+            "rejected": 0,
+            "objection": 0,
+        })
 
     from django.db.models import OuterRef, Exists, Q
 
@@ -647,4 +652,10 @@ def application_group(request):
             "objection": SalesmanBarmanSerializer(objection_qs, many=True).data,
         })
 
-    return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({
+        "applied": [],
+        "pending": [],
+        "approved": [],
+        "rejected": [],
+        "objection": []
+    })

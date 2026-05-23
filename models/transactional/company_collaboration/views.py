@@ -517,7 +517,11 @@ def dashboard_counts(request):
         }
 
     else:
-        return Response({'detail': 'Invalid or unsupported role.'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            "pending": 0,
+            "approved": 0,
+            "rejected": 0,
+        })
 
     return Response(counts)
 
@@ -587,4 +591,10 @@ def application_group(request):
             'rejected':  _serialize(base_qs.filter(current_stage__name=STAGE_REJECTED)),
         })
 
-    return Response({'detail': 'Invalid or unsupported role.'}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({
+        "applied": [],
+        "pending": [],
+        "objection": [],
+        "approved": [],
+        "rejected": []
+    })
