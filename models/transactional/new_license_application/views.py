@@ -1106,15 +1106,18 @@ def dashboard_counts(request):
         return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
 
     from django.contrib.contenttypes.models import ContentType
-    from django.db.models import OuterRef, Subquery, IntegerField, Q
+    from django.db.models import OuterRef, Exists, Q
 
     content_type = ContentType.objects.get_for_model(NewLicenseApplication)
-    txn_qs = (
-        WorkflowTransaction.objects.filter(content_type=content_type, object_id=OuterRef('application_id'))
-        .order_by('-timestamp')
+    role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+    
+    acted_by_role = Exists(
+        WorkflowTransaction.objects.filter(
+            content_type=content_type, 
+            object_id=OuterRef('application_id'),
+            performed_by__role_id=role_id
+        )
     )
-    last_actor_role_id = Subquery(txn_qs.values('performed_by__role_id')[:1], output_field=IntegerField())
-    prev_actor_role_id = Subquery(txn_qs.values('performed_by__role_id')[1:2], output_field=IntegerField())
 
     role_objection_stages = set(stage_sets['objection'])
     pending_stages = set(role_stage_names) | role_objection_stages
@@ -1123,15 +1126,14 @@ def dashboard_counts(request):
     pending_count = all_qs.filter(current_stage__name__in=pending_stages).count()
     approved_count = (
         all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages)
-        .annotate(_last_actor_role_id=last_actor_role_id)
-        .filter(_last_actor_role_id=getattr(getattr(request.user, 'role', None), 'id', None))
+        .annotate(_acted_by_role=acted_by_role)
+        .filter(_acted_by_role=True)
         .count()
     )
     rejected_count = (
         all_qs.filter(current_stage__name__in=role_rejected_stages)
-        .annotate(_last_actor_role_id=last_actor_role_id, _prev_actor_role_id=prev_actor_role_id)
-        .filter(Q(_prev_actor_role_id=getattr(getattr(request.user, 'role', None), 'id', None))
-                | Q(_last_actor_role_id=getattr(getattr(request.user, 'role', None), 'id', None)))
+        .annotate(_acted_by_role=acted_by_role)
+        .filter(_acted_by_role=True)
         .count()
     )
 
@@ -1218,29 +1220,32 @@ def application_group(request):
     if role_stage_names:
         all_qs = _with_site_enquiry_revert_annotations(_with_application_fee_payment_annotations(all_qs))
         from django.contrib.contenttypes.models import ContentType
-        from django.db.models import OuterRef, Subquery, IntegerField, Q
+        from django.db.models import OuterRef, Exists, Q
 
         content_type = ContentType.objects.get_for_model(NewLicenseApplication)
-        txn_qs = (
-            WorkflowTransaction.objects.filter(content_type=content_type, object_id=OuterRef('application_id'))
-            .order_by('-timestamp')
+        role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+        
+        acted_by_role = Exists(
+            WorkflowTransaction.objects.filter(
+                content_type=content_type, 
+                object_id=OuterRef('application_id'),
+                performed_by__role_id=role_id
+            )
         )
-        last_actor_role_id = Subquery(txn_qs.values('performed_by__role_id')[:1], output_field=IntegerField())
-        prev_actor_role_id = Subquery(txn_qs.values('performed_by__role_id')[1:2], output_field=IntegerField())
 
         role_objection_stages = set(stage_sets['objection'])
         pending_stages = set(role_stage_names) | role_objection_stages
         role_rejected_stages = set(stage_sets['rejected'])
-        role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+        
         approved_qs = (
             all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages)
-            .annotate(_last_actor_role_id=last_actor_role_id)
-            .filter(_last_actor_role_id=role_id)
+            .annotate(_acted_by_role=acted_by_role)
+            .filter(_acted_by_role=True)
         )
         rejected_qs = (
             all_qs.filter(current_stage__name__in=role_rejected_stages)
-            .annotate(_last_actor_role_id=last_actor_role_id, _prev_actor_role_id=prev_actor_role_id)
-            .filter(Q(_prev_actor_role_id=role_id) | Q(_last_actor_role_id=role_id))
+            .annotate(_acted_by_role=acted_by_role)
+            .filter(_acted_by_role=True)
         )
 
         return Response({

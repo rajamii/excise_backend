@@ -501,15 +501,18 @@ def dashboard_counts(request):
     if not role_stage_names:
         return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
 
-    from django.db.models import OuterRef, Subquery, IntegerField, Q
+    from django.db.models import OuterRef, Exists, Q
 
     content_type = ContentType.objects.get_for_model(SalesmanBarmanModel)
-    txn_qs = (
-        WorkflowTransaction.objects.filter(content_type=content_type, object_id=OuterRef('application_id'))
-        .order_by('-timestamp')
+    role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+    
+    acted_by_role = Exists(
+        WorkflowTransaction.objects.filter(
+            content_type=content_type, 
+            object_id=OuterRef('application_id'),
+            performed_by__role_id=role_id
+        )
     )
-    last_actor_role_id = Subquery(txn_qs.values('performed_by__role_id')[:1], output_field=IntegerField())
-    prev_actor_role_id = Subquery(txn_qs.values('performed_by__role_id')[1:2], output_field=IntegerField())
 
     role_id = getattr(getattr(request.user, 'role', None), 'id', None)
     pending_stages = set(role_stage_names)
@@ -519,20 +522,20 @@ def dashboard_counts(request):
     pending_count = all_qs.filter(current_stage__name__in=pending_stages).count()
     approved_count = (
         all_qs.exclude(current_stage__name__in=pending_stages | rejected_stages | objection_stages)
-        .annotate(_last_actor_role_id=last_actor_role_id)
-        .filter(_last_actor_role_id=role_id)
+        .annotate(_acted_by_role=acted_by_role)
+        .filter(_acted_by_role=True)
         .count()
     )
     rejected_count = (
         all_qs.filter(current_stage__name__in=rejected_stages)
-        .annotate(_last_actor_role_id=last_actor_role_id, _prev_actor_role_id=prev_actor_role_id)
-        .filter(Q(_prev_actor_role_id=role_id) | Q(_last_actor_role_id=role_id))
+        .annotate(_acted_by_role=acted_by_role)
+        .filter(_acted_by_role=True)
         .count()
     )
     objection_count = (
         all_qs.filter(current_stage__name__in=objection_stages)
-        .annotate(_last_actor_role_id=last_actor_role_id)
-        .filter(_last_actor_role_id=role_id)
+        .annotate(_acted_by_role=acted_by_role)
+        .filter(_acted_by_role=True)
         .count()
     )
 
@@ -601,15 +604,18 @@ def application_group(request):
 
     role_stage_names = _get_role_stage_names(request.user, workflow_id)
     if role_stage_names:
-        from django.db.models import OuterRef, Subquery, IntegerField, Q
+        from django.db.models import OuterRef, Exists, Q
 
         content_type = ContentType.objects.get_for_model(SalesmanBarmanModel)
-        txn_qs = (
-            WorkflowTransaction.objects.filter(content_type=content_type, object_id=OuterRef('application_id'))
-            .order_by('-timestamp')
+        role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+        
+        acted_by_role = Exists(
+            WorkflowTransaction.objects.filter(
+                content_type=content_type, 
+                object_id=OuterRef('application_id'),
+                performed_by__role_id=role_id
+            )
         )
-        last_actor_role_id = Subquery(txn_qs.values('performed_by__role_id')[:1], output_field=IntegerField())
-        prev_actor_role_id = Subquery(txn_qs.values('performed_by__role_id')[1:2], output_field=IntegerField())
 
         role_id = getattr(getattr(request.user, 'role', None), 'id', None)
         pending_stages = set(role_stage_names)
@@ -618,18 +624,18 @@ def application_group(request):
 
         approved_qs = (
             all_qs.exclude(current_stage__name__in=pending_stages | rejected_stages | objection_stages)
-            .annotate(_last_actor_role_id=last_actor_role_id)
-            .filter(_last_actor_role_id=role_id)
+            .annotate(_acted_by_role=acted_by_role)
+            .filter(_acted_by_role=True)
         )
         rejected_qs = (
             all_qs.filter(current_stage__name__in=rejected_stages)
-            .annotate(_last_actor_role_id=last_actor_role_id, _prev_actor_role_id=prev_actor_role_id)
-            .filter(Q(_prev_actor_role_id=role_id) | Q(_last_actor_role_id=role_id))
+            .annotate(_acted_by_role=acted_by_role)
+            .filter(_acted_by_role=True)
         )
         objection_qs = (
             all_qs.filter(current_stage__name__in=objection_stages)
-            .annotate(_last_actor_role_id=last_actor_role_id)
-            .filter(_last_actor_role_id=role_id)
+            .annotate(_acted_by_role=acted_by_role)
+            .filter(_acted_by_role=True)
         )
 
         return Response({
