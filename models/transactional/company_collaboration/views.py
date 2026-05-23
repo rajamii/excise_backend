@@ -12,6 +12,9 @@ from auth.roles.permissions import HasAppPermission
 from auth.workflow.models import Workflow, WorkflowStage
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
+from auth.workflow.models import Transaction as WorkflowTransaction
+from django.db.models import OuterRef, Exists
+from django.contrib.contenttypes.models import ContentType
 
 from .models import CompanyCollaboration
 from .serializers import CompanyCollaborationSerializer
@@ -462,10 +465,34 @@ def dashboard_counts(request):
     # ── Officer roles ────────────────────────────────────────────────────
     if role in ROLE_STAGE_MAP:
         stages = ROLE_STAGE_MAP[role]
+        
+        content_type = ContentType.objects.get_for_model(CompanyCollaboration)
+        role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+        
+        acted_by_role = Exists(
+            WorkflowTransaction.objects.filter(
+                content_type=content_type, 
+                object_id=OuterRef('application_id'),
+                performed_by__role_id=role_id
+            )
+        )
+        
+        pending_stages = stages['pending']
+        
         counts = {
-            'pending':  base_qs.filter(current_stage__name__in=stages['pending']).count(),
-            'approved': base_qs.filter(current_stage__name__in=stages['approved']).count(),
-            'rejected': base_qs.filter(current_stage__name__in=stages['rejected']).count(),
+            'pending':  base_qs.filter(current_stage__name__in=pending_stages).count(),
+            'approved': (
+                base_qs.exclude(current_stage__name__in=pending_stages + [STAGE_REJECTED])
+                .annotate(_acted_by_role=acted_by_role)
+                .filter(_acted_by_role=True)
+                .count()
+            ),
+            'rejected': (
+                base_qs.filter(current_stage__name=STAGE_REJECTED)
+                .annotate(_acted_by_role=acted_by_role)
+                .filter(_acted_by_role=True)
+                .count()
+            ),
         }
 
     # ── Applicant / licensee ─────────────────────────────────────────────
@@ -512,11 +539,31 @@ def application_group(request):
     # ── Officer roles ────────────────────────────────────────────────────
     if role in ROLE_STAGE_MAP:
         stages = ROLE_STAGE_MAP[role]
+        
+        content_type = ContentType.objects.get_for_model(CompanyCollaboration)
+        role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+        
+        acted_by_role = Exists(
+            WorkflowTransaction.objects.filter(
+                content_type=content_type, 
+                object_id=OuterRef('application_id'),
+                performed_by__role_id=role_id
+            )
+        )
+        
+        pending_stages = stages['pending']
+        
         return Response({
-            'pending':  _serialize(base_qs.filter(current_stage__name__in=stages['pending'])),
-            'approved': _serialize(base_qs.filter(current_stage__name__in=stages['approved'])),
+            'pending':  _serialize(base_qs.filter(current_stage__name__in=pending_stages)),
+            'approved': _serialize(
+                base_qs.exclude(current_stage__name__in=pending_stages + [STAGE_REJECTED])
+                .annotate(_acted_by_role=acted_by_role)
+                .filter(_acted_by_role=True)
+            ),
             'rejected': _serialize(
-                base_qs.filter(current_stage__name__in=stages['rejected'], is_approved=False)
+                base_qs.filter(current_stage__name=STAGE_REJECTED)
+                .annotate(_acted_by_role=acted_by_role)
+                .filter(_acted_by_role=True)
             ),
         })
 
