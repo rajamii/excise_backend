@@ -25,6 +25,7 @@ from auth.user.models import CustomUser
 from auth.workflow.services import WorkflowService
 from .models import PaymentBilldeskTransaction, PaymentGatewayParameters, PaymentSendHOA, MasterPaymentModule
 from models.transactional.wallet.wallet_service import credit_wallet_balance, record_wallet_transaction
+from models.transactional.wallet.models import _resolve_wallet_row_licensee_id
 from models.transactional.wallet.models import WalletBalance
 
 logger = logging.getLogger(__name__)
@@ -75,17 +76,32 @@ def _normalize_wallet_type(wallet_type: str) -> str:
     return value
 
 
-def _resolve_wallet_head_of_account(*, licensee_id: str, wallet_type: str) -> str:
+def _resolve_wallet_head_of_account(*, licensee_id: str, wallet_type: str, user_id: str = "") -> str:
+    """
+    Resolve Head Of Account for wallet recharge initiation.
+
+    Important: the incoming licensee_id may be a username or a NA/NLI alias used by
+    different clients. Use the same resolver as wallet transaction recording to
+    map it to the actual WalletBalance.licensee_id stored in DB.
+    """
     lid = str(licensee_id or "").strip()
     wtype = str(wallet_type or "").strip()
+    uid = str(user_id or "").strip()
     if not lid or not wtype:
         return ""
     try:
-        row = (
-            WalletBalance.objects.filter(licensee_id__iexact=lid, wallet_type__iexact=wtype)
+        resolved_lid = _resolve_wallet_row_licensee_id(lid, uid) or lid
+        qs = (
+            WalletBalance.objects.filter(
+                licensee_id__iexact=resolved_lid,
+                wallet_type__code__iexact=wtype,
+            )
             .order_by("wallet_balance_id")
-            .first()
         )
+        # Prefer a non-empty/non-sentinel HOA if multiple rows exist.
+        row = qs.exclude(head_of_account__isnull=True).exclude(head_of_account__exact="").exclude(head_of_account__iexact="non").first()
+        if not row:
+            row = qs.first()
         return str(getattr(row, "head_of_account", "") or "").strip()
     except Exception:
         return ""
@@ -353,7 +369,11 @@ def billdesk_initiate_wallet_recharge(request):
 
     resolved_hoa = ""
     if licensee_id:
-        resolved_hoa = _resolve_wallet_head_of_account(licensee_id=licensee_id, wallet_type=wallet_type)
+        resolved_hoa = _resolve_wallet_head_of_account(
+            licensee_id=licensee_id,
+            wallet_type=wallet_type,
+            user_id=str(getattr(request.user, "username", "") or "").strip(),
+        )
     if resolved_hoa:
         head_of_account = resolved_hoa
     if not head_of_account:
