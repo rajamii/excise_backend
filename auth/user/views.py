@@ -825,14 +825,6 @@ class LoginAPI(APIView):
     serializer_class = LoginSerializer
 
     def post(self, request):
-        # ─── DIAGNOSTIC PRINTS ───────────────────────────────────────────────
-        print("=== DEBUG CAPTCHA PAYLOAD INSPECTION ===")
-        print(f"Raw request.data keys received: {list(request.data.keys())}")
-        print(f"Value of 'hashkey': {request.data.get('hashkey')}")
-        print(f"Value of 'hash_key': {request.data.get('hash_key')}")
-        print(f"Value of 'response': {request.data.get('response')}")
-        print("========================================")
-
         # Handle fallback for CamelCase transformations automatically
         hashkey = request.data.get('hashkey') or request.data.get('hash_key')
         response_input = request.data.get('response')
