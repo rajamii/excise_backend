@@ -39,6 +39,7 @@ from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_
 from models.masters.core.models import LicenseFee
 from models.transactional.wallet.wallet_service import debit_wallet_balance
 from .payment_status import sync_new_license_payment_status
+from decimal import Decimal
 
 
 def _with_application_fee_payment_annotations(qs):
@@ -968,6 +969,31 @@ def _resolve_license_fee_row(application: NewLicenseApplication) -> LicenseFee |
         return None
 
 
+PACHWAI_MODULE_CODE = "NLI_ADD_PACHWAI"
+DRAUGHT_BEER_MODULE_CODE = "NLI_ADD_DRAUGHT_BEER"
+
+
+def _get_additional_charge_total(application: NewLicenseApplication) -> Decimal:
+    total = Decimal("0.00")
+    try:
+        from models.transactional.payment_gateway.models import MasterPaymentModule
+
+        module_fees = {
+            m["module_code"]: (m["license_fee"] if m["license_fee"] is not None else Decimal("0.00"))
+            for m in MasterPaymentModule.objects.filter(
+                module_code__in=[PACHWAI_MODULE_CODE, DRAUGHT_BEER_MODULE_CODE],
+                visibility_status=True,
+            ).values("module_code", "license_fee")
+        }
+        if getattr(application, "pachwai", False):
+            total += module_fees.get(PACHWAI_MODULE_CODE, Decimal("0.00"))
+        if getattr(application, "draught_beer", False):
+            total += module_fees.get(DRAUGHT_BEER_MODULE_CODE, Decimal("0.00"))
+    except Exception:
+        pass
+    return total
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 @parser_classes([JSONParser, FormParser, MultiPartParser])
@@ -988,6 +1014,7 @@ def pay_license_fee_wallet(request, application_id):
     amount = getattr(fee, "license_fee", None)
     if amount is None:
         return Response({"detail": "License fee amount not configured."}, status=status.HTTP_400_BAD_REQUEST)
+    amount = amount + _get_additional_charge_total(application)
 
     license_fee_hoa = _resolve_hoa_code(module_type="other", wallet_type="license_fee")
     
@@ -1034,6 +1061,7 @@ def pay_security_fee_wallet(request, application_id):
     amount = getattr(fee, "security_amount", None)
     if amount is None:
         return Response({"detail": "Security fee amount not configured."}, status=status.HTTP_400_BAD_REQUEST)
+    amount = amount + _get_additional_charge_total(application)
     security_deposit_hoa = _resolve_hoa_code(module_type="other", wallet_type="security_deposit")
     txn_id = secrets.token_hex(12).upper()
     try:
