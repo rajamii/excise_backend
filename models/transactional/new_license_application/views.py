@@ -39,6 +39,12 @@ from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_
 from models.masters.core.models import LicenseFee
 from models.transactional.wallet.wallet_service import debit_wallet_balance
 from .payment_status import sync_new_license_payment_status
+import logging
+import secrets
+from decimal import Decimal
+from django.conf import settings
+
+logger = logging.getLogger(__name__)
 from decimal import Decimal
 
 
@@ -337,6 +343,166 @@ def create_new_license_application_draft(request):
     is auto-submitted only after a successful gateway callback.
     """
     return _create_application(request, WORKFLOW_IDS['LICENSE_APPROVAL'], NewLicenseApplicationSerializer, auto_submit=False)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def force_submit_new_license_application(request, application_id):
+    """
+    DEV/LOCALHOST ONLY: Force-submit a new license application by simulating a successful
+    application-fee payment (BillDesk module_code=001).
+
+    This exists to enable local testing where the payment gateway cannot be used.
+    """
+    allow = bool(getattr(settings, "DEBUG", False) or getattr(settings, "BILLDESK_USE_MOCK", False))
+    if not allow:
+        return Response({"detail": "Force submit is disabled in this environment."}, status=status.HTTP_403_FORBIDDEN)
+
+    role = _normalize_role(request.user.role.name if getattr(request.user, "role", None) else None)
+    if role != "licensee":
+        return Response({"detail": "Only licensees can force submit."}, status=status.HTTP_403_FORBIDDEN)
+
+    app_id = str(application_id or "").strip()
+    app = (
+        NewLicenseApplication.objects.select_related("workflow", "current_stage", "applicant")
+        .filter(application_id__iexact=app_id)
+        .first()
+    )
+    if not app or getattr(app, "applicant_id", None) != getattr(request.user, "id", None):
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Resolve module fee from master payment module (001). Non-blocking if missing.
+    module_fee = Decimal("0.00")
+    try:
+        from models.transactional.payment_gateway.models import MasterPaymentModule, PaymentBilldeskTransaction
+
+        mm = MasterPaymentModule.objects.filter(module_code="001", visibility_status=True).first()
+        if mm and mm.license_fee is not None:
+            module_fee = Decimal(str(mm.license_fee)).quantize(Decimal("0.01"))
+
+        # Create a synthetic successful payment transaction so annotation queries can show status.
+        utr = f"FORCE-NLI-{secrets.token_hex(8).upper()}"
+        PaymentBilldeskTransaction.objects.create(
+            utr=utr,
+            transaction_id_no_hoa=utr,
+            payer_id=str(app.application_id),
+            payment_module_code="001",
+            transaction_amount=module_fee,
+            payment_status="S",
+            user_id=str(getattr(request.user, "username", "") or "").strip()[:50] or None,
+        )
+    except Exception as exc:
+        logger.warning("Force-submit: failed to record synthetic payment transaction for %s: %s", app.application_id, exc)
+
+    # Persist application-fee payment status on the application row.
+    try:
+        if not getattr(app, "is_application_fee_paid", False):
+            app.is_application_fee_paid = True
+            app.save(update_fields=["is_application_fee_paid"])
+    except Exception:
+        pass
+
+    # Restore to initial stage if it was previously pushed into a rejected/final stage.
+    try:
+        stage = getattr(app, "current_stage", None)
+        stage_name = str(getattr(stage, "name", "") or "").strip().lower()
+        is_rejected_or_final = bool((stage_name and "reject" in stage_name) or bool(getattr(stage, "is_final", False)))
+        if is_rejected_or_final and getattr(app, "workflow", None):
+            initial = app.workflow.stages.filter(is_initial=True).order_by("id").first()
+            if initial and getattr(app, "current_stage_id", None) != getattr(initial, "id", None):
+                app.current_stage = initial
+                app.save(update_fields=["current_stage"])
+    except Exception:
+        pass
+
+    # Submit the workflow if still at the initial stage.
+    try:
+        if getattr(getattr(app, "current_stage", None), "is_initial", False):
+            WorkflowService.submit_application(
+                application=app,
+                user=request.user,
+                remarks="Force submitted (localhost/dev): application fee bypassed",
+            )
+    except Exception as exc:
+        logger.exception("Force-submit: WorkflowService.submit_application failed for %s: %s", app.application_id, exc)
+        return Response({"detail": f"Force submit failed: {exc}"}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Try auto-submit the salesman/barman linked workflow (best effort).
+    sbm_submitted = False
+    sbm_application_id = ""
+    sbm_submit_error = ""
+    try:
+        if getattr(app, "mode_of_operation", None) in {"Salesman", "Barman"}:
+            from models.transactional.salesman_barman.models import SalesmanBarmanModel
+            from auth.workflow.constants import WORKFLOW_IDS as _WF_IDS
+            from auth.workflow.models import WorkflowStage as _WFStage, Workflow as _WF
+            from django.db import transaction as db_transaction
+
+            wf = _WF.objects.filter(id=_WF_IDS.get("SALESMAN_BARMAN")).first()
+            if not wf:
+                raise ValueError(f"SALESMAN_BARMAN workflow (id={_WF_IDS.get('SALESMAN_BARMAN')}) not found in DB.")
+
+            init = _WFStage.objects.filter(workflow=wf, is_initial=True).order_by("id").first()
+            if not init:
+                raise ValueError("No initial stage found for SALESMAN_BARMAN workflow.")
+
+            sb = (
+                SalesmanBarmanModel.objects.select_related("workflow", "current_stage", "applicant")
+                .filter(new_license_application=app)
+                .first()
+            )
+            if not sb:
+                sb = SalesmanBarmanModel(
+                    workflow=wf,
+                    current_stage=init,
+                    new_license_application=app,
+                    excise_district=getattr(app, "site_district", None),
+                    license_category=getattr(app, "license_category", None),
+                    license=None,
+                    applicant=request.user,
+                    role=getattr(app, "mode_of_operation", None),
+                )
+            else:
+                if not getattr(sb, "workflow_id", None):
+                    sb.workflow = wf
+                if not getattr(sb, "current_stage_id", None):
+                    sb.current_stage = init
+                if getattr(app, "site_district_id", None):
+                    sb.excise_district = app.site_district
+                if getattr(app, "license_category_id", None):
+                    sb.license_category = app.license_category
+                if getattr(app, "mode_of_operation", None) in {"Salesman", "Barman"}:
+                    sb.role = app.mode_of_operation
+
+            with db_transaction.atomic():
+                sb.save()
+
+            sbm_application_id = str(getattr(sb, "application_id", "") or "").strip()
+            sb.refresh_from_db()
+            if getattr(getattr(sb, "current_stage", None), "is_initial", False):
+                WorkflowService.submit_application(
+                    application=sb,
+                    user=request.user,
+                    remarks="Auto-submitted with New License Application (force submit)",
+                )
+                sbm_submitted = True
+    except Exception as exc:
+        logger.warning("Force-submit: SBM auto-submit failed for %s: %s", app.application_id, exc)
+        sbm_submit_error = str(exc)
+
+    serializer = NewLicenseApplicationSerializer(app)
+    return Response(
+        {
+            "application_id": app.application_id,
+            "forced": True,
+            "is_application_fee_paid": True,
+            "sbm_submitted": sbm_submitted,
+            "sbm_application_id": sbm_application_id,
+            "sbm_submit_error": sbm_submit_error,
+            "application": serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
 
 
 @api_view(['POST'])
