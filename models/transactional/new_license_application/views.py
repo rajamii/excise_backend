@@ -36,7 +36,7 @@ from urllib.parse import quote
 import secrets
 import hashlib
 from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_role_stage_names
-from models.masters.core.models import LicenseFee
+from models.masters.core.models import LicenseFee, SupplyChainTimerConfig
 from models.transactional.wallet.wallet_service import debit_wallet_balance
 from .payment_status import sync_new_license_payment_status
 import logging
@@ -520,11 +520,45 @@ def initiate_renewal(request, license_id):
     if old_app.applicant != request.user:
         return Response({"detail": "You can only renew your own license."}, status=status.HTTP_403_FORBIDDEN)
 
+    def get_timer_days(code: str, default_days: int) -> int:
+        cfg = (
+            SupplyChainTimerConfig.objects.filter(code=code, is_active=True)
+            .order_by("-updated_at", "-id")
+            .first()
+        )
+        if not cfg:
+            return int(default_days)
+
+        days = getattr(cfg, "validity_period_days", None)
+        if days is not None:
+            try:
+                return max(0, int(days))
+            except (TypeError, ValueError):
+                return int(default_days)
+
+        unit = str(getattr(cfg, "delay_unit", "") or "").lower().strip()
+        value = getattr(cfg, "delay_value", None)
+        try:
+            value_int = max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return int(default_days)
+
+        if unit.endswith("s"):
+            unit = unit[:-1]
+        if unit == "day":
+            return value_int
+        if unit in ("month", "mon", "mo"):
+            return value_int * 30
+        if unit in ("hour", "hr"):
+            return max(0, value_int // 24)
+        return int(default_days)
+
     today = date.today()
-    if old_license.valid_up_to > today + timedelta(days=90):
+    reminder_days = get_timer_days("LICENSE_RENEWAL_REMINDER_TIMER", 90)
+    if old_license.valid_up_to > today + timedelta(days=reminder_days):
         return Response({
             "detail": f"Renewal not allowed yet. License valid until {old_license.valid_up_to.strftime('%d/%m/%Y')}. "
-                     "You can renew within the last 90 days or after expiry."
+                     f"You can renew within the last {reminder_days} days or after expiry."
         }, status=status.HTTP_400_BAD_REQUEST)
 
     # Build pre-filled data

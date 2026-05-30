@@ -23,7 +23,7 @@ from models.masters.license.master_license_form_terms import MasterLicenseFormTe
 from models.masters.license.legacy_codes import resolve_codes_for_license_form
 from models.masters.license.models import License
 from models.masters.license.models import LicenseValidationToken
-from models.transactional.license_application.models import LicenseApplication
+from models.transactional.license_renewal_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
 from utils.simple_pdf import PdfPage, build_text_pdf, build_validation_pdf_multi, paginate_lines
 

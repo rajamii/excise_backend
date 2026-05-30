@@ -83,7 +83,7 @@ INSTALLED_APPS = [
     'models.transactional',
     'models.transactional.company_registration',
     'models.transactional.company_collaboration',
-    'models.transactional.license_application',
+    'models.transactional.license_renewal_application',
     'models.transactional.site_enquiry',
     'models.transactional.new_license_application',
     'models.transactional.label_registration',
@@ -158,8 +158,8 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'sems_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'postgres',  # Your PostgreSQL password
-        'HOST': '10.182.154.196',        # Default host
+        'PASSWORD': 'sameer123',  # Your PostgreSQL password
+        'HOST': 'localhost',        # Default host
         'PORT': '5432',             # Default PostgreSQL port
         'CONN_MAX_AGE': 300,          # Don't reuse connections — avoids aborted transaction state
     }
@@ -192,12 +192,8 @@ OTP_EXPIRY_SECONDS = 600  # 10 minutes
 
 # Redis cache configuration for CAPTCHA storage
 CACHES = {
-    'default': {
-        'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': 'redis://127.0.0.1:6379/1',
-        'OPTIONS': {
-            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-        }
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     }
 }
 

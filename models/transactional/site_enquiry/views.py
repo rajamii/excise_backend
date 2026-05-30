@@ -10,7 +10,7 @@ from django.contrib.contenttypes.models import ContentType
 from .models import SiteEnquiryReport
 from .serializers import SiteEnquiryReportSerializer
 from auth.workflow.permissions import HasStagePermission
-from models.transactional.license_application.models import LicenseApplication
+from models.transactional.license_renewal_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
 from auth.workflow.models import WorkflowStage
 from auth.workflow.services import WorkflowService

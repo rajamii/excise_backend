@@ -31,7 +31,7 @@ from auth.user.otp import (
     get_new_otp, verify_otp,
     mark_phone_as_verified, clear_phone_verified, is_phone_verified,
 )
-from models.transactional.license_application.models import LicenseApplication
+from models.transactional.license_renewal_application.models import LicenseApplication
 from models.transactional.logs.models import UserActivity
 from models.transactional.logs.signals import get_client_ip
 from models.transactional.new_license_application.models import NewLicenseApplication
