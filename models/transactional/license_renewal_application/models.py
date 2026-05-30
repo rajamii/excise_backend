@@ -3,6 +3,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.db import models
 
 from auth.user.models import CustomUser
+from auth.workflow.models import Workflow, WorkflowStage
 from models.masters.core.models import LicenseCategory, LicenseSubcategory
 
 
@@ -54,9 +55,42 @@ class LicenseApplication(models.Model):
         blank=True,
     )
 
+    # Workflow tracking (same stage machine as New License).
+    workflow = models.ForeignKey(
+        Workflow,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="license_renewal_applications",
+        db_column="workflow_id",
+    )
+    current_stage = models.ForeignKey(
+        WorkflowStage,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="license_renewal_applications",
+        db_column="current_stage_id",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
     class Meta:
         db_table = "license_renewal_application"
         indexes = [
             models.Index(fields=["applicant"]),
             models.Index(fields=["source_content_type", "source_object_id"]),
         ]
+
+    @staticmethod
+    def generate_fin_year(today=None) -> str:
+        """
+        Financial year (April–March): e.g. '2026-27'.
+        """
+        from django.utils.timezone import now
+
+        d = today or now().date()
+        year = d.year
+        if d.month >= 4:
+            return f"{year}-{str(year + 1)[2:]}"
+        return f"{year - 1}-{str(year)[2:]}"
