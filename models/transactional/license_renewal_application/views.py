@@ -18,6 +18,8 @@ from models.transactional.wallet.wallet_service import debit_wallet_balance
 import secrets
 from django.core.exceptions import PermissionDenied
 from decimal import Decimal
+from auth.workflow.models import Transaction as WorkflowTransaction
+from auth.workflow.models import WorkflowStage
 
 
 @api_view(["POST"])
@@ -175,6 +177,128 @@ def _resolve_new_license_application_from_license(lic: License):
         return None
 
 
+def _renewal_source_application(application):
+    old_license = None
+    if getattr(application, "old_license_id", None):
+        old_license = License.objects.filter(license_id=str(application.old_license_id)).first()
+    if old_license is not None:
+        source_app = _resolve_new_license_application_from_license(old_license)
+        if source_app is not None:
+            return source_app
+    try:
+        return application.source_object
+    except Exception:
+        return None
+
+
+def _renewal_is_paid(application) -> bool:
+    source_app = _renewal_source_application(application)
+    return bool(
+        source_app
+        and getattr(source_app, "is_license_fee_paid", False)
+        and getattr(source_app, "is_security_fee_paid", False)
+    )
+
+
+def _renewal_awaiting_payment_stage(application):
+    if not getattr(application, "workflow_id", None):
+        return None
+    return (
+        WorkflowStage.objects.filter(workflow_id=application.workflow_id, name__iexact="Awaiting Payment")
+        .order_by("id")
+        .first()
+        or WorkflowStage.objects.filter(workflow_id=application.workflow_id, name__icontains="payment")
+        .exclude(name__icontains="reject")
+        .order_by("id")
+        .first()
+    )
+
+
+def _renewal_approved_stage(application):
+    if not getattr(application, "workflow_id", None):
+        return None
+    return (
+        WorkflowStage.objects.filter(workflow_id=application.workflow_id, name__iexact="approved")
+        .order_by("id")
+        .first()
+        or WorkflowStage.objects.filter(workflow_id=application.workflow_id, is_final=True)
+        .exclude(name__icontains="reject")
+        .order_by("id")
+        .first()
+    )
+
+
+def _renewal_role_stage_names(user, workflow_id: int):
+    role_stage_names = _get_role_stage_names(user, workflow_id)
+    if role_stage_names:
+        return role_stage_names
+
+    role_token = _normalize_role(user.role.name if getattr(user, "role", None) else None)
+    if not role_token:
+        return set()
+
+    stage_names = set(_get_stage_sets(workflow_id)["all"])
+    aliases = {
+        "district_user": ["district user"],
+        "site_enquiry_officer": ["site enquiry officer"],
+        "joint_commissioner": ["joint commissioner"],
+        "commissioner": ["commissioner"],
+        "secretary": ["secretary"],
+    }
+    tokens = aliases.get(role_token, [role_token.replace("_", " ")])
+    matched = {name for name in stage_names if any(token in str(name).lower() for token in tokens)}
+    if role_token == "commissioner":
+        matched = {name for name in matched if "joint commissioner" not in str(name).lower()}
+    return matched
+
+
+def _route_renewal_approval_to_payment_stage(application, target_stage):
+    if _renewal_is_paid(application):
+        return target_stage
+
+    awaiting_payment_stage = _renewal_awaiting_payment_stage(application)
+    if not awaiting_payment_stage:
+        return target_stage
+
+    target_name = str(getattr(target_stage, "name", "") or "").strip().lower()
+    if "reject" in target_name or "objection" in target_name:
+        return target_stage
+
+    return awaiting_payment_stage
+
+
+def _sync_renewal_payment_status(application):
+    paid = _renewal_is_paid(application)
+    update_fields = []
+
+    if paid:
+        approved_stage = _renewal_approved_stage(application)
+        if approved_stage and application.current_stage_id != approved_stage.id:
+            application.current_stage = approved_stage
+            update_fields.append("current_stage")
+        if not getattr(application, "is_approved", False):
+            application.is_approved = True
+            update_fields.append("is_approved")
+    else:
+        awaiting_stage = _renewal_awaiting_payment_stage(application)
+        current_stage = getattr(application, "current_stage", None)
+        current_name = str(getattr(current_stage, "name", "") or "").strip().lower()
+        if awaiting_stage and (
+            application.current_stage_id != awaiting_stage.id
+            and ("approved" in current_name or "payment" in current_name)
+        ):
+            application.current_stage = awaiting_stage
+            update_fields.append("current_stage")
+        if getattr(application, "is_approved", False):
+            application.is_approved = False
+            update_fields.append("is_approved")
+
+    if update_fields:
+        application.save(update_fields=list(dict.fromkeys(update_fields)))
+
+    return paid
+
+
 def _serialize_renewal_application(obj: LicenseApplication):
     data = dict(LicenseApplicationSerializer(obj).data)
     old_license = None
@@ -215,6 +339,62 @@ def _serialize_renewal_application(obj: LicenseApplication):
     data["submitted_on"] = obj.created_at
     data["current_stage_name"] = getattr(getattr(obj, "current_stage", None), "name", None)
     return data
+
+
+def _pick_renewal_target_stage(application, mode: str) -> WorkflowStage | None:
+    transitions = list(WorkflowService.get_next_stages(application).select_related("to_stage"))
+    if not transitions:
+        return None
+
+    mode = str(mode or "").strip().lower()
+    paid = _renewal_is_paid(application)
+
+    def _action(transition):
+        condition = getattr(transition, "condition", {}) or {}
+        if not isinstance(condition, dict):
+            return ""
+        return str(condition.get("action", "") or "").strip().upper()
+
+    def _name(transition):
+        return str(getattr(getattr(transition, "to_stage", None), "name", "") or "").strip().lower()
+
+    def _has_special_condition(transition):
+        condition = getattr(transition, "condition", {}) or {}
+        if not isinstance(condition, dict):
+            return False
+        return (
+            condition.get("is_reverted") is True
+            or condition.get("isReverted") is True
+            or condition.get("objections_resolved") is True
+            or condition.get("objectionsResolved") is True
+        )
+
+    if mode == "reject":
+        for transition in transitions:
+            if _action(transition) == "REJECT" or "reject" in _name(transition):
+                return transition.to_stage
+        return None
+
+    if not paid:
+        for transition in transitions:
+            if _action(transition) == "PAY" or "payment" in _name(transition):
+                return transition.to_stage
+
+    for transition in transitions:
+        if _action(transition) in {"APPROVE", "FORWARD"}:
+            return transition.to_stage
+
+    for transition in transitions:
+        name = _name(transition)
+        if "approved" in name or "payment" in name:
+            return transition.to_stage
+
+    for transition in transitions:
+        name = _name(transition)
+        if "reject" not in name and "objection" not in name and not _has_special_condition(transition):
+            return transition.to_stage
+
+    return transitions[0].to_stage
 
 
 @api_view(["POST"])
@@ -281,6 +461,11 @@ def pay_license_fee_wallet(request, application_id):
 
     _extend_license_validity(old_license)
 
+    try:
+        _sync_renewal_payment_status(app)
+    except Exception:
+        pass
+
     return Response({"success": True, "transaction_id": txn_id, "license_id": old_license.license_id})
 
 
@@ -342,7 +527,60 @@ def pay_security_fee_wallet(request, application_id):
         except Exception:
             pass
 
+    try:
+        _sync_renewal_payment_status(app)
+    except Exception:
+        pass
+
     return Response({"success": True, "transaction_id": txn_id, "license_id": old_license.license_id})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def approve_renewal_application(request, application_id):
+    app = get_object_or_404(LicenseApplication, application_id=str(application_id))
+    target_stage = _pick_renewal_target_stage(app, "approve")
+    if not target_stage:
+        return Response({"detail": "No valid target stage found for approval."}, status=status.HTTP_400_BAD_REQUEST)
+
+    remarks = str(request.data.get("remarks") or "").strip() or "Approved"
+    try:
+        WorkflowService.advance_stage(
+            application=app,
+            user=request.user,
+            target_stage=target_stage,
+            context={"action": "APPROVE", **(request.data.get("context_data") or {})},
+            remarks=remarks,
+        )
+        app.refresh_from_db()
+        return Response(_serialize_renewal_application(app), status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def reject_renewal_application(request, application_id):
+    app = get_object_or_404(LicenseApplication, application_id=str(application_id))
+    target_stage = _pick_renewal_target_stage(app, "reject")
+    if not target_stage:
+        return Response({"detail": "No valid target stage found for rejection."}, status=status.HTTP_400_BAD_REQUEST)
+
+    remarks = str(request.data.get("remarks") or "").strip()
+    if not remarks:
+        return Response({"detail": "Remarks are required when rejecting a renewal application."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        WorkflowService.reject_application(
+            application=app,
+            user=request.user,
+            target_stage=target_stage,
+            remarks=remarks,
+        )
+        app.refresh_from_db()
+        return Response(_serialize_renewal_application(app), status=status.HTTP_200_OK)
+    except Exception as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(["GET"])
@@ -402,16 +640,39 @@ def dashboard_counts(request):
             }
         )
 
-    role_stage_names = _get_role_stage_names(request.user, wf.id)
+    role_stage_names = _renewal_role_stage_names(request.user, wf.id)
     if not role_stage_names:
         return Response({"pending": 0, "approved": 0, "rejected": 0})
+
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Exists, OuterRef
+
+    content_type = ContentType.objects.get_for_model(LicenseApplication)
+    role_id = getattr(getattr(request.user, "role", None), "id", None)
+    acted_by_role = Exists(
+        WorkflowTransaction.objects.filter(
+            content_type=content_type,
+            object_id=OuterRef("application_id"),
+            performed_by__role_id=role_id,
+        )
+    )
 
     pending_for_role = set(role_stage_names) | objection_stages
     return Response(
         {
             "pending": all_qs.filter(current_stage__name__in=pending_for_role).count(),
-            "approved": all_qs.exclude(current_stage__name__in=pending_for_role | rejected_stages).count(),
-            "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
+            "approved": (
+                all_qs.exclude(current_stage__name__in=pending_for_role | rejected_stages)
+                .annotate(_acted_by_role=acted_by_role)
+                .filter(_acted_by_role=True)
+                .count()
+            ),
+            "rejected": (
+                all_qs.filter(current_stage__name__in=rejected_stages)
+                .annotate(_acted_by_role=acted_by_role)
+                .filter(_acted_by_role=True)
+                .count()
+            ),
         }
     )
 
@@ -476,7 +737,7 @@ def application_group(request):
             }
         )
 
-    role_stage_names = _get_role_stage_names(request.user, wf.id)
+    role_stage_names = _renewal_role_stage_names(request.user, wf.id)
     if not role_stage_names:
         return Response({"applied": [], "pending": [], "objection": [], "approved": [], "rejected": []})
 

@@ -35,6 +35,10 @@ urlpatterns = [
     # Wallet fee payments (post-commissioner approval)
     path('<everything:application_id>/pay-license-fee/', views.pay_license_fee_wallet, name='pay-license-fee-wallet'),
     path('<everything:application_id>/pay-security-fee/', views.pay_security_fee_wallet, name='pay-security-fee-wallet'),
+
+    # Workflow actions for renewal applications
+    path('<everything:application_id>/approve/', views.approve_renewal_application, name='approve-renewal-application'),
+    path('<everything:application_id>/reject/', views.reject_renewal_application, name='reject-renewal-application'),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
