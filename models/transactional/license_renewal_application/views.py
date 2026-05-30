@@ -59,6 +59,27 @@ def initiate_renewal(request, license_id):
     if not initial_stage:
         return Response({"detail": "Renewal workflow has no initial stage."}, status=status.HTTP_400_BAD_REQUEST)
 
+    stage_sets = _get_stage_sets(wf.id)
+    final_stages = set(stage_sets["approved"]) | set(stage_sets["rejected"])
+    active_renewal = (
+        LicenseApplication.objects.filter(
+            applicant=request.user,
+            old_license_id=old_license.license_id,
+            workflow=wf,
+        )
+        .exclude(current_stage__name__in=final_stages)
+        .order_by("-created_at")
+        .first()
+    )
+    if active_renewal:
+        return Response(
+            {
+                "detail": "A renewal application is already submitted for this license.",
+                "application_id": active_renewal.application_id,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     district_code = str(getattr(getattr(old_license, "excise_district", None), "district_code", "") or "000").strip()
     fin_year = LicenseApplication.generate_fin_year()
     prefix = f"LRA/{district_code}/{fin_year}"
@@ -90,7 +111,7 @@ def initiate_renewal(request, license_id):
 
     WorkflowService.submit_application(application=app, user=request.user, remarks="Renewal application submitted")
 
-    return Response(LicenseApplicationSerializer(app).data, status=status.HTTP_201_CREATED)
+    return Response(_serialize_renewal_application(app), status=status.HTTP_201_CREATED)
 
 
 def _require_licensee_user(request):
@@ -152,6 +173,48 @@ def _resolve_new_license_application_from_license(lic: License):
         return lic.source_application
     except Exception:
         return None
+
+
+def _serialize_renewal_application(obj: LicenseApplication):
+    data = dict(LicenseApplicationSerializer(obj).data)
+    old_license = None
+    if getattr(obj, "old_license_id", None):
+        old_license = License.objects.filter(license_id=str(obj.old_license_id)).first()
+
+    source_app = None
+    if old_license is not None:
+        source_app = _resolve_new_license_application_from_license(old_license)
+    if source_app is None:
+        try:
+            source_app = obj.source_object
+        except Exception:
+            source_app = None
+
+    if source_app is not None:
+        try:
+            from models.transactional.new_license_application.serializers import NewLicenseApplicationSerializer
+
+            source_data = dict(NewLicenseApplicationSerializer(source_app).data)
+            source_data.update(data)
+            data = source_data
+        except Exception:
+            pass
+
+    if old_license is not None:
+        data.update(
+            {
+                "old_license_id": old_license.license_id,
+                "license_id_display": old_license.license_id,
+                "old_license_issue_date": old_license.issue_date,
+                "old_license_valid_up_to": old_license.valid_up_to,
+                "valid_up_to": old_license.valid_up_to,
+                "expired_date": old_license.valid_up_to,
+            }
+        )
+    data["application_id"] = obj.application_id
+    data["submitted_on"] = obj.created_at
+    data["current_stage_name"] = getattr(getattr(obj, "current_stage", None), "name", None)
+    return data
 
 
 @api_view(["POST"])
@@ -288,7 +351,7 @@ def list_license_applications(request):
     qs = LicenseApplication.objects.all()
     if not getattr(request.user, "is_staff", False) and not getattr(request.user, "is_superuser", False):
         qs = qs.filter(applicant=request.user)
-    data = LicenseApplicationSerializer(qs.order_by("-application_id"), many=True).data
+    data = [_serialize_renewal_application(obj) for obj in qs.order_by("-application_id")]
     return Response(data, status=status.HTTP_200_OK)
 
 
@@ -296,7 +359,7 @@ def list_license_applications(request):
 @permission_classes([IsAuthenticated])
 def license_application_detail(request, pk):
     obj = get_object_or_404(LicenseApplication, application_id=str(pk))
-    return Response(LicenseApplicationSerializer(obj).data, status=status.HTTP_200_OK)
+    return Response(_serialize_renewal_application(obj), status=status.HTTP_200_OK)
 
 
 @permission_classes([IsAuthenticated])
