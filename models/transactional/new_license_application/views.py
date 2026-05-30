@@ -613,7 +613,12 @@ def initiate_renewal(request, license_id):
         new_number = str(last_number + 1).zfill(4)
         new_application_id = f"{prefix}/{new_number}"
 
-        workflow = get_object_or_404(Workflow, id=WORKFLOW_IDS['LICENSE_APPROVAL'])
+        # Renewal flow uses the same stages as License Approval, but is tracked under a
+        # dedicated workflow in DB for reporting/permissions.
+        workflow = (
+            Workflow.objects.filter(name="License Renewal Application").order_by("id").first()
+            or get_object_or_404(Workflow, id=WORKFLOW_IDS['LICENSE_APPROVAL'])
+        )
         initial_stage = workflow.stages.get(is_initial=True)
 
         new_application = NewLicenseApplication.objects.create(
