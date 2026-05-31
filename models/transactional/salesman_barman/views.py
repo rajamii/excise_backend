@@ -4,6 +4,7 @@ from rest_framework.decorators import api_view, parser_classes, permission_class
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
 from rest_framework import status
+from django.utils import timezone
 from auth.roles.permissions import HasAppPermission
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition
@@ -386,19 +387,38 @@ def initiate_renewal(request, license_id):
             unit = unit[:-1]
         if unit == "day":
             return value_int
+        if unit in ("week", "wk"):
+            return value_int * 7
         if unit in ("month", "mon", "mo"):
             return value_int * 30
+        if unit in ("year", "yr"):
+            return value_int * 365
         if unit in ("hour", "hr"):
             return max(0, value_int // 24)
         return int(default_days)
 
-    from datetime import date, timedelta
-    today = date.today()
+    from datetime import timedelta
+    now_dt = timezone.now()
     reminder_days = get_timer_days("LICENSE_RENEWAL_REMINDER_TIMER", 90)
-    if old_license.valid_up_to > today + timedelta(days=reminder_days):
+
+    # Best-effort: keep license status consistent once it crosses expiry.
+    if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to < now_dt and getattr(old_license, "is_active", True):
+        old_license.is_active = False
+        old_license.save(update_fields=["is_active"])
+
+    if old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
+        window_start = old_license.valid_up_to - timedelta(days=reminder_days)
+        window_end = old_license.valid_up_to
         return Response({
-            "detail": f"Renewal not allowed yet. License valid until {old_license.valid_up_to.strftime('%d/%m/%Y')}. "
-                     f"You can renew within the last {reminder_days} days or after expiry."
+            "detail": (
+                "Renewal not allowed yet. "
+                f"You can renew from {window_start.strftime('%d/%m/%Y')} "
+                f"to {window_end.strftime('%d/%m/%Y')}."
+            ),
+            "renewal_window_starts_on": window_start.isoformat(),
+            "renewal_window_ends_on": window_end.isoformat(),
+            "license_valid_up_to": old_license.valid_up_to.isoformat(),
+            "reminder_window_days": reminder_days,
         }, status=status.HTTP_400_BAD_REQUEST)
 
     # Build pre-filled data

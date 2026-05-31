@@ -99,10 +99,10 @@ def _collect_user_license_ids(user):
 
     licenses = getattr(user, 'licenses', None)
     if licenses is not None:
-        today = timezone.now().date()
+        now_dt = timezone.now()
 
         for source_object_id in (
-            licenses.filter(source_type='new_license_application', is_active=True, valid_up_to__gte=today)
+            licenses.filter(source_type='new_license_application', is_active=True, valid_up_to__gte=now_dt)
             .exclude(source_object_id__isnull=True)
             .exclude(source_object_id='')
             .order_by('-issue_date')
@@ -111,7 +111,7 @@ def _collect_user_license_ids(user):
             _append(source_object_id)
 
         for issued_license_id in (
-            licenses.filter(is_active=True, valid_up_to__gte=today)
+            licenses.filter(is_active=True, valid_up_to__gte=now_dt)
             .exclude(license_id__isnull=True)
             .exclude(license_id='')
             .order_by('-issue_date')

@@ -33,8 +33,8 @@ class LicenseDetailSerializer(serializers.ModelSerializer):
     license_category_name = serializers.CharField(source='license_category.license_category', read_only=True)
     license_sub_category_name = serializers.CharField(source='license_sub_category.description', read_only=True)
     excise_district_name = serializers.CharField(source='excise_district.district', read_only=True)
-    issue_date = serializers.DateField(format="%d/%m/%Y")
-    valid_up_to = serializers.DateField(format="%d/%m/%Y")
+    issue_date = serializers.DateTimeField(format="%d/%m/%Y %H:%M:%S")
+    valid_up_to = serializers.DateTimeField(format="%d/%m/%Y %H:%M:%S")
 
     source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
     source_application_id = serializers.CharField(source='source_application.application_id', read_only=True)

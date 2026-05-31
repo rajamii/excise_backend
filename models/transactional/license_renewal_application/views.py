@@ -1,5 +1,6 @@
 from django.shortcuts import get_object_or_404
-from datetime import date, timedelta
+from datetime import timedelta
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
@@ -52,6 +53,33 @@ def initiate_renewal(request, license_id):
     old_license = get_object_or_404(License, license_id=str(license_id))
     if old_license.applicant_id != request.user.id:
         return Response({"detail": "You can only renew your own license."}, status=status.HTTP_403_FORBIDDEN)
+
+    now_dt = timezone.now()
+    reminder_days = _get_timer_days("LICENSE_RENEWAL_REMINDER_TIMER", 90)
+
+    # Best-effort: keep license status consistent once it crosses expiry.
+    if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to < now_dt and getattr(old_license, "is_active", True):
+        old_license.is_active = False
+        old_license.save(update_fields=["is_active"])
+
+    # Renewal window opens only within the reminder window (or after expiry).
+    if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
+        window_start = old_license.valid_up_to - timedelta(days=reminder_days)
+        window_end = old_license.valid_up_to
+        return Response(
+            {
+                "detail": (
+                    "Renewal not allowed yet. "
+                    f"You can renew from {window_start.strftime('%d/%m/%Y')} "
+                    f"to {window_end.strftime('%d/%m/%Y')}."
+                ),
+                "renewal_window_starts_on": window_start.isoformat(),
+                "renewal_window_ends_on": window_end.isoformat(),
+                "license_valid_up_to": old_license.valid_up_to.isoformat(),
+                "reminder_window_days": reminder_days,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     wf = _get_renewal_workflow()
     if not wf:
@@ -151,17 +179,21 @@ def _get_timer_days(code: str, default_days: int) -> int:
         unit = unit[:-1]
     if unit == "day":
         return value_int
+    if unit in ("week", "wk"):
+        return value_int * 7
     if unit in ("month", "mon", "mo"):
         return value_int * 30
+    if unit in ("year", "yr"):
+        return value_int * 365
     if unit in ("hour", "hr"):
         return max(0, value_int // 24)
     return int(default_days)
 
 
 def _extend_license_validity(lic: License) -> License:
-    today = date.today()
+    now_dt = timezone.now()
     renewal_days = _get_timer_days("LICENSE_RENEWAL_TIMER", 365)
-    base = lic.valid_up_to if lic.valid_up_to and lic.valid_up_to > today else today
+    base = lic.valid_up_to if lic.valid_up_to and lic.valid_up_to > now_dt else now_dt
     lic.valid_up_to = base + timedelta(days=renewal_days)
     lic.is_active = True
     lic.save(update_fields=["valid_up_to", "is_active"])

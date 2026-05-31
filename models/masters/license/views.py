@@ -176,7 +176,7 @@ def active_licensees(request):
     
     licensees = License.objects.filter(
         is_active=True,
-        valid_up_to__gte=now().date()
+        valid_up_to__gte=now()
         ).select_related(
         'excise_district',
         'license_category',
@@ -216,7 +216,7 @@ def active_licensees(request):
             "license_category": license.license_category.license_category,
             "district": license.excise_district.district,
             "district_code": license.excise_district.district_code,
-            "valid_up_to": license.valid_up_to.strftime("%Y-%m-%d"),
+            "valid_up_to": license.valid_up_to.isoformat() if getattr(license, "valid_up_to", None) else "",
             "mode_of_operation": mode_of_operation,
             "status": "Active"
         })
