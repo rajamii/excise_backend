@@ -530,6 +530,29 @@ def initiate_renewal(request, license_id):
         if not cfg:
             return int(default_days)
 
+        unit = str(getattr(cfg, "delay_unit", "") or "").lower().strip()
+        value = getattr(cfg, "delay_value", None)
+        try:
+            value_int = max(0, int(value or 0))
+        except (TypeError, ValueError):
+            value_int = 0
+
+        # Prefer configured unit/value (so changing delay_value/unit takes effect immediately),
+        # fallback to validity_period_days if unit/value are missing or not meaningful.
+        if value_int > 0 and unit:
+            if unit.endswith("s"):
+                unit = unit[:-1]
+            if unit == "day":
+                return value_int
+            if unit in ("week", "wk"):
+                return value_int * 7
+            if unit in ("month", "mon", "mo"):
+                return value_int * 30
+            if unit in ("year", "yr"):
+                return value_int * 365
+            if unit in ("hour", "hr"):
+                return max(0, value_int // 24)
+
         days = getattr(cfg, "validity_period_days", None)
         if days is not None:
             try:
@@ -537,25 +560,6 @@ def initiate_renewal(request, license_id):
             except (TypeError, ValueError):
                 return int(default_days)
 
-        unit = str(getattr(cfg, "delay_unit", "") or "").lower().strip()
-        value = getattr(cfg, "delay_value", None)
-        try:
-            value_int = max(0, int(value or 0))
-        except (TypeError, ValueError):
-            return int(default_days)
-
-        if unit.endswith("s"):
-            unit = unit[:-1]
-        if unit == "day":
-            return value_int
-        if unit in ("week", "wk"):
-            return value_int * 7
-        if unit in ("month", "mon", "mo"):
-            return value_int * 30
-        if unit in ("year", "yr"):
-            return value_int * 365
-        if unit in ("hour", "hr"):
-            return max(0, value_int // 24)
         return int(default_days)
 
     now_dt = timezone.now()
