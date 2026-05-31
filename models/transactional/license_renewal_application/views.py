@@ -199,9 +199,20 @@ def _extend_license_validity(lic: License) -> License:
     renewal_days = _get_timer_days("LICENSE_RENEWAL_TIMER", 365)
     base = lic.valid_up_to if lic.valid_up_to and lic.valid_up_to > now_dt else now_dt
     lic.valid_up_to = base + timedelta(days=renewal_days)
-    lic.is_active = True
-    lic.save(update_fields=["valid_up_to", "is_active"])
+    lic.save(update_fields=["valid_up_to"])
     return lic
+
+
+def _sync_license_active_from_renewal_payment(lic: License, application: LicenseApplication) -> None:
+    """
+    Renewal activation rule:
+    - license becomes active only after BOTH renewal payments are completed.
+    - if not fully paid, keep it inactive (but validity may already be extended).
+    """
+    should_be_active = _renewal_is_paid(application)
+    if bool(getattr(lic, "is_active", False)) != bool(should_be_active):
+        lic.is_active = bool(should_be_active)
+        lic.save(update_fields=["is_active"])
 
 
 def _resolve_new_license_application_from_license(lic: License):
@@ -496,6 +507,10 @@ def pay_license_fee_wallet(request, application_id):
             pass
 
     _extend_license_validity(old_license)
+    try:
+        _sync_license_active_from_renewal_payment(old_license, app)
+    except Exception:
+        pass
 
     try:
         _sync_renewal_payment_status(app)
@@ -562,6 +577,12 @@ def pay_security_fee_wallet(request, application_id):
             src_app.save(update_fields=["is_security_fee_paid"])
         except Exception:
             pass
+
+    # If both renewal payments are complete, activate license (validity may have been extended already).
+    try:
+        _sync_license_active_from_renewal_payment(old_license, app)
+    except Exception:
+        pass
 
     try:
         _sync_renewal_payment_status(app)

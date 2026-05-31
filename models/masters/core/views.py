@@ -95,8 +95,12 @@ def timer_config(request):
         multiplier = 60 * 60
     elif unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_DAY:
         multiplier = 24 * 60 * 60
+    elif unit == getattr(masters_model.SupplyChainTimerConfig, "TIMER_UNIT_WEEK", "week"):
+        multiplier = 7 * 24 * 60 * 60
     elif unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_MONTH:
         multiplier = 30 * 24 * 60 * 60
+    elif unit == getattr(masters_model.SupplyChainTimerConfig, "TIMER_UNIT_YEAR", "year"):
+        multiplier = 365 * 24 * 60 * 60
 
     seconds = max(0, value * multiplier)
     return Response(

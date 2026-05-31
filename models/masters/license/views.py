@@ -348,6 +348,57 @@ class MyLicensesListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def list(self, request, *args, **kwargs):
+        # Best-effort: keep license status consistent (expired -> inactive, paid+valid -> active).
+        try:
+            from django.utils import timezone
+            from django.contrib.contenttypes.models import ContentType
+            from models.transactional.new_license_application.models import NewLicenseApplication
+
+            now_dt = timezone.now()
+            base_qs = self.get_queryset()
+
+            # 1) Expired => inactive
+            expired_qs = base_qs.filter(is_active=True, valid_up_to__lt=now_dt)
+            if expired_qs.exists():
+                expired_qs.update(is_active=False)
+
+            # For new-license sourced licenses, also flip payment flags back to False on expiry
+            # so supply-chain menus hide and renewal payments are required again.
+            new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
+            for lic in expired_qs.filter(source_content_type=new_app_ct):
+                try:
+                    src = getattr(lic, "source_application", None)
+                    if src is not None:
+                        changed = False
+                        if getattr(src, "is_license_fee_paid", None) is True:
+                            src.is_license_fee_paid = False
+                            changed = True
+                        if getattr(src, "is_security_fee_paid", None) is True:
+                            src.is_security_fee_paid = False
+                            changed = True
+                        if changed:
+                            src.save(update_fields=["is_license_fee_paid", "is_security_fee_paid"])
+                except Exception:
+                    pass
+
+            # 2) If admin extends valid_up_to, reactivate eligible licenses.
+            # For new-license source, only reactivate if both fees are marked paid.
+            eligible_qs = base_qs.filter(is_active=False, valid_up_to__gte=now_dt)
+
+            new_source_qs = eligible_qs.filter(source_content_type=new_app_ct)
+            for lic in new_source_qs.select_related("source_content_type"):
+                src = getattr(lic, "source_application", None)
+                if src and getattr(src, "is_license_fee_paid", False) and getattr(src, "is_security_fee_paid", False):
+                    lic.is_active = True
+                    lic.save(update_fields=["is_active"])
+
+            # Non new-license sources: validity implies active.
+            other_qs = eligible_qs.exclude(source_content_type=new_app_ct)
+            if other_qs.exists():
+                other_qs.update(is_active=True)
+        except Exception:
+            pass
+
         # Ensure wallet rows exist for the licensee before returning /me/ payload.
         # This is idempotent and helps recover from missed workflow signals.
         try:
@@ -369,17 +420,11 @@ class MyLicensesListView(generics.ListAPIView):
             applicant=user
         ).values_list('application_id', flat=True)
 
-        # Primary match: direct applicant linkage on License.
-        qs_by_applicant = License.objects.filter(
-            applicant=user,
-            source_content_type=new_app_ct
-        )
+        # Primary match: any issued license for this applicant (covers renewals too).
+        qs_by_applicant = License.objects.filter(applicant=user)
 
         # Compatibility fallback: match by source_object_id from user's applications.
-        qs_by_source_object = License.objects.filter(
-            source_content_type=new_app_ct,
-            source_object_id__in=user_app_ids
-        )
+        qs_by_source_object = License.objects.filter(source_content_type=new_app_ct, source_object_id__in=user_app_ids)
 
         return (qs_by_applicant | qs_by_source_object).distinct().select_related(
             'license_category',
