@@ -39,7 +39,7 @@ class Migration(migrations.Migration):
                 ('created_at', models.DateTimeField(auto_now_add=True, db_column='created_at')),
                 ('updated_at', models.DateTimeField(auto_now=True, db_column='updated_at')),
                 ('brand', models.ForeignKey(blank=True, db_column='brand_id', help_text='Master brand (FK to master_brand_list.id)', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='brand_warehouses', to='liquor_data.masterbrandlist')),
-                ('capacity_size', models.ForeignKey(blank=True, db_column='capacity_size', help_text='Pack size (FK to master_liquor_category.id)', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='brand_warehouses', to='liquor_data.masterliquorcategory')),
+                ('capacity_size', models.ForeignKey(blank=True, db_column='capacity_size', help_text='Pack size (FK to master_liquor_category.id)', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='brand_warehouses', to='liquor_data.masterliquorcapacity')),
                 ('factory', models.ForeignKey(blank=True, db_column='factory_id', help_text='Master factory (FK to master_factory_list.id)', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='brand_warehouses', to='liquor_data.masterfactorylist')),
                 ('liquor_type', models.ForeignKey(blank=True, db_column='liquor_type', help_text='Master liquor type (FK to master_liquor_type.id)', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='brand_warehouses', to='liquor_data.masterliquortype')),
             ],

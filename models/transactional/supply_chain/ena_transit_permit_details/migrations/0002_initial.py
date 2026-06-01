@@ -30,7 +30,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='enatransitpermitdetail',
             name='size_ml',
-            field=models.ForeignKey(blank=True, db_column='size_ml', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='transit_permit_details', to='liquor_data.masterliquorcategory'),
+            field=models.ForeignKey(blank=True, db_column='size_ml', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='transit_permit_details', to='liquor_data.masterliquorcapacity'),
         ),
         migrations.AddField(
             model_name='enatransitpermitdetail',
