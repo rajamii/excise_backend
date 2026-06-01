@@ -5,6 +5,7 @@ from django.db.models import OuterRef, Subquery, BooleanField, TextField
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from auth.roles.permissions import HasAppPermission
@@ -36,9 +37,16 @@ from urllib.parse import quote
 import secrets
 import hashlib
 from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_role_stage_names
-from models.masters.core.models import LicenseFee
+from models.masters.core.models import LicenseFee, SupplyChainTimerConfig
 from models.transactional.wallet.wallet_service import debit_wallet_balance
 from .payment_status import sync_new_license_payment_status
+import logging
+import secrets
+from decimal import Decimal
+from django.conf import settings
+
+logger = logging.getLogger(__name__)
+from decimal import Decimal
 
 
 def _with_application_fee_payment_annotations(qs):
@@ -338,6 +346,166 @@ def create_new_license_application_draft(request):
     return _create_application(request, WORKFLOW_IDS['LICENSE_APPROVAL'], NewLicenseApplicationSerializer, auto_submit=False)
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def force_submit_new_license_application(request, application_id):
+    """
+    DEV/LOCALHOST ONLY: Force-submit a new license application by simulating a successful
+    application-fee payment (BillDesk module_code=001).
+
+    This exists to enable local testing where the payment gateway cannot be used.
+    """
+    allow = bool(getattr(settings, "DEBUG", False) or getattr(settings, "BILLDESK_USE_MOCK", False))
+    if not allow:
+        return Response({"detail": "Force submit is disabled in this environment."}, status=status.HTTP_403_FORBIDDEN)
+
+    role = _normalize_role(request.user.role.name if getattr(request.user, "role", None) else None)
+    if role != "licensee":
+        return Response({"detail": "Only licensees can force submit."}, status=status.HTTP_403_FORBIDDEN)
+
+    app_id = str(application_id or "").strip()
+    app = (
+        NewLicenseApplication.objects.select_related("workflow", "current_stage", "applicant")
+        .filter(application_id__iexact=app_id)
+        .first()
+    )
+    if not app or getattr(app, "applicant_id", None) != getattr(request.user, "id", None):
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Resolve module fee from master payment module (001). Non-blocking if missing.
+    module_fee = Decimal("0.00")
+    try:
+        from models.transactional.payment_gateway.models import MasterPaymentModule, PaymentBilldeskTransaction
+
+        mm = MasterPaymentModule.objects.filter(module_code="001", visibility_status=True).first()
+        if mm and mm.license_fee is not None:
+            module_fee = Decimal(str(mm.license_fee)).quantize(Decimal("0.01"))
+
+        # Create a synthetic successful payment transaction so annotation queries can show status.
+        utr = f"FORCE-NLI-{secrets.token_hex(8).upper()}"
+        PaymentBilldeskTransaction.objects.create(
+            utr=utr,
+            transaction_id_no_hoa=utr,
+            payer_id=str(app.application_id),
+            payment_module_code="001",
+            transaction_amount=module_fee,
+            payment_status="S",
+            user_id=str(getattr(request.user, "username", "") or "").strip()[:50] or None,
+        )
+    except Exception as exc:
+        logger.warning("Force-submit: failed to record synthetic payment transaction for %s: %s", app.application_id, exc)
+
+    # Persist application-fee payment status on the application row.
+    try:
+        if not getattr(app, "is_application_fee_paid", False):
+            app.is_application_fee_paid = True
+            app.save(update_fields=["is_application_fee_paid"])
+    except Exception:
+        pass
+
+    # Restore to initial stage if it was previously pushed into a rejected/final stage.
+    try:
+        stage = getattr(app, "current_stage", None)
+        stage_name = str(getattr(stage, "name", "") or "").strip().lower()
+        is_rejected_or_final = bool((stage_name and "reject" in stage_name) or bool(getattr(stage, "is_final", False)))
+        if is_rejected_or_final and getattr(app, "workflow", None):
+            initial = app.workflow.stages.filter(is_initial=True).order_by("id").first()
+            if initial and getattr(app, "current_stage_id", None) != getattr(initial, "id", None):
+                app.current_stage = initial
+                app.save(update_fields=["current_stage"])
+    except Exception:
+        pass
+
+    # Submit the workflow if still at the initial stage.
+    try:
+        if getattr(getattr(app, "current_stage", None), "is_initial", False):
+            WorkflowService.submit_application(
+                application=app,
+                user=request.user,
+                remarks="Force submitted (localhost/dev): application fee bypassed",
+            )
+    except Exception as exc:
+        logger.exception("Force-submit: WorkflowService.submit_application failed for %s: %s", app.application_id, exc)
+        return Response({"detail": f"Force submit failed: {exc}"}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Try auto-submit the salesman/barman linked workflow (best effort).
+    sbm_submitted = False
+    sbm_application_id = ""
+    sbm_submit_error = ""
+    try:
+        if getattr(app, "mode_of_operation", None) in {"Salesman", "Barman"}:
+            from models.transactional.salesman_barman.models import SalesmanBarmanModel
+            from auth.workflow.constants import WORKFLOW_IDS as _WF_IDS
+            from auth.workflow.models import WorkflowStage as _WFStage, Workflow as _WF
+            from django.db import transaction as db_transaction
+
+            wf = _WF.objects.filter(id=_WF_IDS.get("SALESMAN_BARMAN")).first()
+            if not wf:
+                raise ValueError(f"SALESMAN_BARMAN workflow (id={_WF_IDS.get('SALESMAN_BARMAN')}) not found in DB.")
+
+            init = _WFStage.objects.filter(workflow=wf, is_initial=True).order_by("id").first()
+            if not init:
+                raise ValueError("No initial stage found for SALESMAN_BARMAN workflow.")
+
+            sb = (
+                SalesmanBarmanModel.objects.select_related("workflow", "current_stage", "applicant")
+                .filter(new_license_application=app)
+                .first()
+            )
+            if not sb:
+                sb = SalesmanBarmanModel(
+                    workflow=wf,
+                    current_stage=init,
+                    new_license_application=app,
+                    excise_district=getattr(app, "site_district", None),
+                    license_category=getattr(app, "license_category", None),
+                    license=None,
+                    applicant=request.user,
+                    role=getattr(app, "mode_of_operation", None),
+                )
+            else:
+                if not getattr(sb, "workflow_id", None):
+                    sb.workflow = wf
+                if not getattr(sb, "current_stage_id", None):
+                    sb.current_stage = init
+                if getattr(app, "site_district_id", None):
+                    sb.excise_district = app.site_district
+                if getattr(app, "license_category_id", None):
+                    sb.license_category = app.license_category
+                if getattr(app, "mode_of_operation", None) in {"Salesman", "Barman"}:
+                    sb.role = app.mode_of_operation
+
+            with db_transaction.atomic():
+                sb.save()
+
+            sbm_application_id = str(getattr(sb, "application_id", "") or "").strip()
+            sb.refresh_from_db()
+            if getattr(getattr(sb, "current_stage", None), "is_initial", False):
+                WorkflowService.submit_application(
+                    application=sb,
+                    user=request.user,
+                    remarks="Auto-submitted with New License Application (force submit)",
+                )
+                sbm_submitted = True
+    except Exception as exc:
+        logger.warning("Force-submit: SBM auto-submit failed for %s: %s", app.application_id, exc)
+        sbm_submit_error = str(exc)
+
+    serializer = NewLicenseApplicationSerializer(app)
+    return Response(
+        {
+            "application_id": app.application_id,
+            "forced": True,
+            "is_application_fee_paid": True,
+            "sbm_submitted": sbm_submitted,
+            "sbm_application_id": sbm_application_id,
+            "sbm_submit_error": sbm_submit_error,
+            "application": serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
 @api_view(['POST'])
 @permission_classes([HasStagePermission])
 def initiate_renewal(request, license_id):
@@ -353,11 +521,68 @@ def initiate_renewal(request, license_id):
     if old_app.applicant != request.user:
         return Response({"detail": "You can only renew your own license."}, status=status.HTTP_403_FORBIDDEN)
 
-    today = date.today()
-    if old_license.valid_up_to > today + timedelta(days=90):
+    def get_timer_days(code: str, default_days: int) -> int:
+        cfg = (
+            SupplyChainTimerConfig.objects.filter(code=code, is_active=True)
+            .order_by("-updated_at", "-id")
+            .first()
+        )
+        if not cfg:
+            return int(default_days)
+
+        unit = str(getattr(cfg, "delay_unit", "") or "").lower().strip()
+        value = getattr(cfg, "delay_value", None)
+        try:
+            value_int = max(0, int(value or 0))
+        except (TypeError, ValueError):
+            value_int = 0
+
+        # Prefer configured unit/value (so changing delay_value/unit takes effect immediately),
+        # fallback to validity_period_days if unit/value are missing or not meaningful.
+        if value_int > 0 and unit:
+            if unit.endswith("s"):
+                unit = unit[:-1]
+            if unit == "day":
+                return value_int
+            if unit in ("week", "wk"):
+                return value_int * 7
+            if unit in ("month", "mon", "mo"):
+                return value_int * 30
+            if unit in ("year", "yr"):
+                return value_int * 365
+            if unit in ("hour", "hr"):
+                return max(0, value_int // 24)
+
+        days = getattr(cfg, "validity_period_days", None)
+        if days is not None:
+            try:
+                return max(0, int(days))
+            except (TypeError, ValueError):
+                return int(default_days)
+
+        return int(default_days)
+
+    now_dt = timezone.now()
+    reminder_days = get_timer_days("LICENSE_RENEWAL_REMINDER_TIMER", 90)
+
+    # Best-effort: keep license status consistent once it crosses expiry.
+    if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to < now_dt and getattr(old_license, "is_active", True):
+        old_license.is_active = False
+        old_license.save(update_fields=["is_active"])
+
+    if old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
+        window_start = old_license.valid_up_to - timedelta(days=reminder_days)
+        window_end = old_license.valid_up_to
         return Response({
-            "detail": f"Renewal not allowed yet. License valid until {old_license.valid_up_to.strftime('%d/%m/%Y')}. "
-                     "You can renew within the last 90 days or after expiry."
+            "detail": (
+                "Renewal not allowed yet. "
+                f"You can renew from {window_start.strftime('%d/%m/%Y')} "
+                f"to {window_end.strftime('%d/%m/%Y')}."
+            ),
+            "renewal_window_starts_on": window_start.isoformat(),
+            "renewal_window_ends_on": window_end.isoformat(),
+            "license_valid_up_to": old_license.valid_up_to.isoformat(),
+            "reminder_window_days": reminder_days,
         }, status=status.HTTP_400_BAD_REQUEST)
 
     # Build pre-filled data
@@ -412,7 +637,12 @@ def initiate_renewal(request, license_id):
         new_number = str(last_number + 1).zfill(4)
         new_application_id = f"{prefix}/{new_number}"
 
-        workflow = get_object_or_404(Workflow, id=WORKFLOW_IDS['LICENSE_APPROVAL'])
+        # Renewal flow uses the same stages as License Approval, but is tracked under a
+        # dedicated workflow in DB for reporting/permissions.
+        workflow = (
+            Workflow.objects.filter(name="License Renewal Application").order_by("id").first()
+            or get_object_or_404(Workflow, id=WORKFLOW_IDS['LICENSE_APPROVAL'])
+        )
         initial_stage = workflow.stages.get(is_initial=True)
 
         new_application = NewLicenseApplication.objects.create(
@@ -968,6 +1198,31 @@ def _resolve_license_fee_row(application: NewLicenseApplication) -> LicenseFee |
         return None
 
 
+PACHWAI_MODULE_CODE = "NLI_ADD_PACHWAI"
+DRAUGHT_BEER_MODULE_CODE = "NLI_ADD_DRAUGHT_BEER"
+
+
+def _get_additional_charge_total(application: NewLicenseApplication) -> Decimal:
+    total = Decimal("0.00")
+    try:
+        from models.transactional.payment_gateway.models import MasterPaymentModule
+
+        module_fees = {
+            m["module_code"]: (m["license_fee"] if m["license_fee"] is not None else Decimal("0.00"))
+            for m in MasterPaymentModule.objects.filter(
+                module_code__in=[PACHWAI_MODULE_CODE, DRAUGHT_BEER_MODULE_CODE],
+                visibility_status=True,
+            ).values("module_code", "license_fee")
+        }
+        if getattr(application, "pachwai", False):
+            total += module_fees.get(PACHWAI_MODULE_CODE, Decimal("0.00"))
+        if getattr(application, "draught_beer", False):
+            total += module_fees.get(DRAUGHT_BEER_MODULE_CODE, Decimal("0.00"))
+    except Exception:
+        pass
+    return total
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 @parser_classes([JSONParser, FormParser, MultiPartParser])
@@ -988,6 +1243,7 @@ def pay_license_fee_wallet(request, application_id):
     amount = getattr(fee, "license_fee", None)
     if amount is None:
         return Response({"detail": "License fee amount not configured."}, status=status.HTTP_400_BAD_REQUEST)
+    amount = amount + _get_additional_charge_total(application)
 
     license_fee_hoa = _resolve_hoa_code(module_type="other", wallet_type="license_fee")
     
@@ -1034,6 +1290,7 @@ def pay_security_fee_wallet(request, application_id):
     amount = getattr(fee, "security_amount", None)
     if amount is None:
         return Response({"detail": "Security fee amount not configured."}, status=status.HTTP_400_BAD_REQUEST)
+    amount = amount + _get_additional_charge_total(application)
     security_deposit_hoa = _resolve_hoa_code(module_type="other", wallet_type="security_deposit")
     txn_id = secrets.token_hex(12).upper()
     try:

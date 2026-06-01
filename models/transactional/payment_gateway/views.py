@@ -6,7 +6,10 @@ import secrets
 from datetime import timedelta
 import json
 import base64
-import requests
+try:
+    import requests  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    requests = None
 import time
 from excise_backend.settings import BILLDESK_GATEWAY_URL
 from .billdesk_utils import generate_billdesk_jws, verify_billdesk_jws

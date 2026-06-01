@@ -1,7 +1,8 @@
-from datetime import date
+from datetime import date, datetime, time
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.contrib.contenttypes.models import ContentType
+from django.utils import timezone
 from auth.workflow.models import Transaction
 from .models import License
 import logging
@@ -116,13 +117,20 @@ def _new_license_payments_complete(application) -> bool:
     )
 
 
-def get_license_valid_up_to(issue_date: date) -> date:
-    year = issue_date.year
-    if issue_date.month >= 3:  
-        end_year = year + 1
-    else: 
-        end_year = year
-    return date(end_year, 3, 31)
+def get_license_valid_up_to(issue_date: date) -> datetime:
+    """
+    Returns the FY end as an aware datetime (end-of-day).
+
+    Accepts either a `date` or `datetime` input.
+    """
+    issue_day = issue_date.date() if isinstance(issue_date, datetime) else issue_date
+    year = issue_day.year
+    end_year = year + 1 if issue_day.month >= 3 else year
+
+    fy_end_day = date(end_year, 3, 31)
+    fy_end_dt = datetime.combine(fy_end_day, time.max.replace(microsecond=0))
+    tz = timezone.get_current_timezone()
+    return timezone.make_aware(fy_end_dt, tz) if timezone.is_naive(fy_end_dt) else fy_end_dt
 
 
 @receiver(post_save, sender=Transaction)
@@ -215,7 +223,8 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
         logger.error(f"Error accessing fields on {type(application)}: {e}")
         return
     
-    issue_date = instance.timestamp.date()
+    issue_dt = instance.timestamp if getattr(instance, "timestamp", None) else timezone.now()
+    issue_day = issue_dt.date()
     is_renewal = hasattr(application, 'renewal_of') and application.renewal_of is not None
 
     def get_current_fy_end(d):
@@ -226,26 +235,32 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
             return date(y, 3, 31)
 
     if is_renewal:
-        valid_up_to = get_current_fy_end(issue_date).replace(year=get_current_fy_end(issue_date).year + 1)
+        fy_end = get_current_fy_end(issue_day)
+        valid_day = fy_end.replace(year=fy_end.year + 1)
     else:
-        valid_up_to = get_current_fy_end(issue_date)
+        valid_day = get_current_fy_end(issue_day)
+
+    valid_up_to_dt = timezone.make_aware(
+        datetime.combine(valid_day, time.max.replace(microsecond=0)),
+        timezone.get_current_timezone(),
+    )
 
     # === license_id logic ===
     district_code = str(excise_district.district_code)
 
     if is_renewal:
         # Force NEXT financial year
-        renewal_year = issue_date.year
-        if issue_date.month >= 4:
+        renewal_year = issue_day.year
+        if issue_day.month >= 4:
             fin_year = f"{renewal_year}-{str(renewal_year + 1)[2:]}"
         else:
             fin_year = f"{renewal_year}-{str(renewal_year + 1)[2:]}"  # Jan-Mar 2026 → 2026-27
     else:
         # Let model handle it (but we can still use same logic for consistency)
-        if issue_date.month >= 4:
-            fin_year = f"{issue_date.year}-{str(issue_date.year + 1)[2:]}"
+        if issue_day.month >= 4:
+            fin_year = f"{issue_day.year}-{str(issue_day.year + 1)[2:]}"
         else:
-            fin_year = f"{issue_date.year - 1}-{str(issue_date.year)[2:]}"  # 2025-26
+            fin_year = f"{issue_day.year - 1}-{str(issue_day.year)[2:]}"  # 2025-26
 
     prefix_map = {'new_license_application': 'NA', 'license_application': 'LA', 'salesman_barman': 'SB'}
     prefix = prefix_map.get(source_type, 'XX')
@@ -276,8 +291,8 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
             license_category=license_category,
             license_sub_category=license_sub_category,
             excise_district=excise_district,
-            issue_date=issue_date,
-            valid_up_to=valid_up_to,
+            issue_date=issue_dt,
+            valid_up_to=valid_up_to_dt,
             is_active=license_is_active
         )
         logger.info(f"License created for application {application.pk}")

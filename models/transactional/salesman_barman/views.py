@@ -4,6 +4,7 @@ from rest_framework.decorators import api_view, parser_classes, permission_class
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
 from rest_framework import status
+from django.utils import timezone
 from auth.roles.permissions import HasAppPermission
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition
@@ -11,6 +12,7 @@ from auth.workflow.models import Transaction as WorkflowTransaction
 from auth.workflow.constants import WORKFLOW_IDS
 from auth.workflow.services import WorkflowService
 from models.masters.license.models import License
+from models.masters.core.models import SupplyChainTimerConfig
 from .models import SalesmanBarmanModel
 from .serializers import SalesmanBarmanSerializer
 import re
@@ -358,13 +360,69 @@ def initiate_renewal(request, license_id):
     if old_app.applicant != request.user:
         return Response({"detail": "You can only renew your own license."}, status=status.HTTP_403_FORBIDDEN)
 
-    # Optional early renewal restriction (adjust or remove as needed)
-    from datetime import date, timedelta
-    today = date.today()
-    if old_license.valid_up_to > today + timedelta(days=90):  # More than 90 days left
+    def get_timer_days(code: str, default_days: int) -> int:
+        cfg = (
+            SupplyChainTimerConfig.objects.filter(code=code, is_active=True)
+            .order_by("-updated_at", "-id")
+            .first()
+        )
+        if not cfg:
+            return int(default_days)
+
+        unit = str(getattr(cfg, "delay_unit", "") or "").lower().strip()
+        value = getattr(cfg, "delay_value", None)
+        try:
+            value_int = max(0, int(value or 0))
+        except (TypeError, ValueError):
+            value_int = 0
+
+        # Prefer configured unit/value (so changing delay_value/unit takes effect immediately),
+        # fallback to validity_period_days if unit/value are missing or not meaningful.
+        if value_int > 0 and unit:
+            if unit.endswith("s"):
+                unit = unit[:-1]
+            if unit == "day":
+                return value_int
+            if unit in ("week", "wk"):
+                return value_int * 7
+            if unit in ("month", "mon", "mo"):
+                return value_int * 30
+            if unit in ("year", "yr"):
+                return value_int * 365
+            if unit in ("hour", "hr"):
+                return max(0, value_int // 24)
+
+        days = getattr(cfg, "validity_period_days", None)
+        if days is not None:
+            try:
+                return max(0, int(days))
+            except (TypeError, ValueError):
+                return int(default_days)
+
+        return int(default_days)
+
+    from datetime import timedelta
+    now_dt = timezone.now()
+    reminder_days = get_timer_days("LICENSE_RENEWAL_REMINDER_TIMER", 90)
+
+    # Best-effort: keep license status consistent once it crosses expiry.
+    if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to < now_dt and getattr(old_license, "is_active", True):
+        old_license.is_active = False
+        old_license.save(update_fields=["is_active"])
+
+    if old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
+        window_start = old_license.valid_up_to - timedelta(days=reminder_days)
+        window_end = old_license.valid_up_to
         return Response({
-            "detail": f"Renewal not allowed yet. License valid until {old_license.valid_up_to.strftime('%d/%m/%Y')}. "
-                     "You can renew within the last 90 days or after expiry."
+            "detail": (
+                "Renewal not allowed yet. "
+                f"You can renew from {window_start.strftime('%d/%m/%Y')} "
+                f"to {window_end.strftime('%d/%m/%Y')}."
+            ),
+            "renewal_window_starts_on": window_start.isoformat(),
+            "renewal_window_ends_on": window_end.isoformat(),
+            "license_valid_up_to": old_license.valid_up_to.isoformat(),
+            "reminder_window_days": reminder_days,
         }, status=status.HTTP_400_BAD_REQUEST)
 
     # Build pre-filled data

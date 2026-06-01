@@ -25,22 +25,20 @@ urlpatterns = [
     # Retrieve details of a specific license application by its primary key (GET)
     path('detail/<everything:pk>/', views.license_application_detail, name='license-application-details'), 
 
-    # Final license data for UI/printing (GET)
-    path('final-license/<everything:application_id>/', views.final_license_detail, name='final-license-detail'),
-    path('final-license/<everything:application_id>/passport-photo/', views.final_license_passport_photo, name='final-license-passport-photo'),
-    path('final-license/<everything:application_id>/qr-code/', views.final_license_qr_code, name='final-license-qr-code'),
-
-    # Get dashboard statistics/counts (e.g., total applications, approved, pending, etc.) (GET)
+    # Dashboard counts + grouping (same shape as new_license_application)
     path('dashboard-counts/', views.dashboard_counts, name='dashboard-counts'),
-
-    # List applications filtered by their current status (e.g., pending, approved, etc.) (GET)
     path('list-by-status/', views.application_group, name='applications-by-status'),
 
-    path('location-fee/', views.get_location_fees, name='get-location-fees'),
+    # Initiate renewal tracking application (LRA/...)
+    path('renew/<everything:license_id>/', views.initiate_renewal, name='renew'),
 
-    path('<everything:application_id>/print/', views.print_license_view, name='print-license'),
+    # Wallet fee payments (post-commissioner approval)
+    path('<everything:application_id>/pay-license-fee/', views.pay_license_fee_wallet, name='pay-license-fee-wallet'),
+    path('<everything:application_id>/pay-security-fee/', views.pay_security_fee_wallet, name='pay-security-fee-wallet'),
 
-    path('renew/<everything:license_id>/', views.initiate_renewal, name='initiate-renewal'),
+    # Workflow actions for renewal applications
+    path('<everything:application_id>/approve/', views.approve_renewal_application, name='approve-renewal-application'),
+    path('<everything:application_id>/reject/', views.reject_renewal_application, name='reject-renewal-application'),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

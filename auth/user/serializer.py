@@ -62,10 +62,25 @@ class UserSerializer(serializers.ModelSerializer):
         return {'name': subdivision.subdivision, 'code': subdivision.subdivision_code} if subdivision else None
 
     def get_hasActiveLicense(self, obj):
-        return getattr(obj, 'has_active_license_annotated', 
-            obj.license_applications.filter(current_stage__name='approved').exists() or 
-            obj.new_license_applications.filter(current_stage__name='approved').exists()
+        annotated = getattr(obj, 'has_active_license_annotated', None)
+        if annotated is not None:
+            return annotated
+
+        def has_approved(reverse_manager):
+            if not reverse_manager:
+                return False
+            try:
+                return reverse_manager.filter(current_stage__name='approved').exists()
+            except Exception:
+                return False
+
+        # Backwards/forwards compatible: different apps used different reverse accessor names.
+        # Evaluate all known accessors without failing if one is missing.
+        candidates = (
+            getattr(obj, 'license_applications', None),
+            getattr(obj, 'new_license_applications', None),
         )
+        return any(has_approved(mgr) for mgr in candidates)
 
     def get_panNumber(self, obj):
         try:

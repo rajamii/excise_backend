@@ -63,6 +63,47 @@ class MasterLiquorTypeListView(APIView):
 
         return Response({'success': True, 'data': data, 'total': len(data)})
 
+    def post(self, request):
+        """Create a new liquor type."""
+        serializer = MasterLiquorTypeSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        obj = serializer.save()
+        return Response(MasterLiquorTypeSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+
+class MasterLiquorTypeDetailView(APIView):
+    """Retrieve, update or delete a single liquor type by pk."""
+
+    def _get_object(self, pk):
+        try:
+            return MasterLiquorType.objects.get(pk=pk)
+        except MasterLiquorType.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        obj = self._get_object(pk)
+        if obj is None:
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(MasterLiquorTypeSerializer(obj).data)
+
+    def patch(self, request, pk):
+        obj = self._get_object(pk)
+        if obj is None:
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = MasterLiquorTypeSerializer(obj, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        obj = serializer.save()
+        return Response(MasterLiquorTypeSerializer(obj).data)
+
+    def delete(self, request, pk):
+        obj = self._get_object(pk)
+        if obj is None:
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        obj.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 class BrandSizeListView(APIView):
     def get(self, request):

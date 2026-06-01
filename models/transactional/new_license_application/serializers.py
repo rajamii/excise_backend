@@ -17,6 +17,38 @@ from models.masters.core.models import (
 from utils.fields import CodeRelatedField
 from . import helpers
 
+from decimal import Decimal
+
+
+PACHWAI_MODULE_CODE = "NLI_ADD_PACHWAI"
+DRAUGHT_BEER_MODULE_CODE = "NLI_ADD_DRAUGHT_BEER"
+
+
+def _get_additional_charge_total(obj: NewLicenseApplication) -> Decimal:
+    """
+    Additional charges are configurable in `sems_master_payment_module` (MasterPaymentModule.license_fee).
+    They are added to both license fee and security fee when selected by the applicant.
+    """
+    total = Decimal("0.00")
+    try:
+        from models.transactional.payment_gateway.models import MasterPaymentModule
+
+        module_fees = {
+            m["module_code"]: (m["license_fee"] if m["license_fee"] is not None else Decimal("0.00"))
+            for m in MasterPaymentModule.objects.filter(
+                module_code__in=[PACHWAI_MODULE_CODE, DRAUGHT_BEER_MODULE_CODE],
+                visibility_status=True,
+            ).values("module_code", "license_fee")
+        }
+        if getattr(obj, "pachwai", False):
+            total += module_fees.get(PACHWAI_MODULE_CODE, Decimal("0.00"))
+        if getattr(obj, "draught_beer", False):
+            total += module_fees.get(DRAUGHT_BEER_MODULE_CODE, Decimal("0.00"))
+    except Exception:
+        # Non-blocking: if the master table isn't configured in a deployment, fall back to 0.
+        pass
+    return total
+
 
 class UserShortSerializer(serializers.ModelSerializer):
     role_id = serializers.IntegerField(source='role.id', read_only=True)
@@ -219,17 +251,26 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         if not fee:
             return ""
         try:
-            return str(fee.license_fee)
+            base = getattr(fee, "license_fee", None)
+            if base is None:
+                return ""
+            return str(base + _get_additional_charge_total(obj))
         except Exception:
             return ""
 
     def get_license_fee_amount(self, obj):
         fee = self._resolve_license_fee(obj)
-        return getattr(fee, "license_fee", None) if fee else None
+        base = getattr(fee, "license_fee", None) if fee else None
+        if base is None:
+            return None
+        return base + _get_additional_charge_total(obj)
 
     def get_security_fee_amount(self, obj):
         fee = self._resolve_license_fee(obj)
-        return getattr(fee, "security_amount", None) if fee else None
+        base = getattr(fee, "security_amount", None) if fee else None
+        if base is None:
+            return None
+        return base + _get_additional_charge_total(obj)
 
     def validate(self, data):
         # Resolve-objection updates are partial payloads, so only validate fields that

@@ -23,7 +23,7 @@ from models.masters.license.master_license_form_terms import MasterLicenseFormTe
 from models.masters.license.legacy_codes import resolve_codes_for_license_form
 from models.masters.license.models import License
 from models.masters.license.models import LicenseValidationToken
-from models.transactional.license_application.models import LicenseApplication
+from models.transactional.license_renewal_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
 from utils.simple_pdf import PdfPage, build_text_pdf, build_validation_pdf_multi, paginate_lines
 
@@ -285,7 +285,8 @@ def _validate_license_pdf_from_code(request, code: str):
     if not source or not application_id:
         return Response({'detail': 'Invalid validation code.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    now_date = timezone.now().date()
+    now_dt = timezone.now()
+    now_date = now_dt.date()
     # Some production deployments (nginx) proxy only `/masters/...` to Django and serve `/` from Angular (SPA).
     # Expose the validation link under `/masters/v/<code>/` so it works without extra reverse-proxy routes.
     validation_pdf_url = request.build_absolute_uri('/masters/v/' + quote(token, safe=':') + '/')
@@ -377,9 +378,9 @@ def _validate_license_pdf_from_code(request, code: str):
             return Response({'detail': 'Unknown validation token (not a recognized printed copy).'}, status=status.HTTP_403_FORBIDDEN)
     if not bool(getattr(license_obj, 'is_active', True)):
         return Response({'detail': 'License is not active.'}, status=status.HTTP_403_FORBIDDEN)
-    if getattr(license_obj, 'issue_date', None) and license_obj.issue_date > now_date:
+    if getattr(license_obj, 'issue_date', None) and license_obj.issue_date > now_dt:
         return Response({'detail': 'License is not valid yet.'}, status=status.HTTP_403_FORBIDDEN)
-    if getattr(license_obj, 'valid_up_to', None) and license_obj.valid_up_to < now_date:
+    if getattr(license_obj, 'valid_up_to', None) and license_obj.valid_up_to < now_dt:
         return Response({'detail': 'License has expired.'}, status=status.HTTP_403_FORBIDDEN)
 
     response_payload['validatedViaCode'] = True
@@ -559,7 +560,8 @@ def _build_validation_page(result: dict) -> str:
 
 def _resolve_validation_result(request, code: str) -> dict:
     token = _normalize_token(code)
-    now_date = timezone.now().date()
+    now_dt = timezone.now()
+    now_date = now_dt.date()
     watermark_data_url = _get_watermark_data_url()
 
     try:
@@ -729,13 +731,13 @@ def _resolve_validation_result(request, code: str) -> dict:
             message = 'License is not active.'
         can_download = False
         authenticity = 'Digitally signed QR (license inactive)'
-    elif getattr(license_obj, 'issue_date', None) and license_obj.issue_date > now_date:
+    elif getattr(license_obj, 'issue_date', None) and license_obj.issue_date > now_dt:
         status_code = 'inactive'
         if is_current_copy:
             message = 'License is not valid yet.'
         can_download = False
         authenticity = 'Digitally signed QR (not valid yet)'
-    elif getattr(license_obj, 'valid_up_to', None) and license_obj.valid_up_to < now_date:
+    elif getattr(license_obj, 'valid_up_to', None) and license_obj.valid_up_to < now_dt:
         status_code = 'expired'
         if is_current_copy:
             message = 'License has expired.'

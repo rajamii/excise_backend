@@ -99,10 +99,10 @@ def _collect_user_license_ids(user):
 
     licenses = getattr(user, 'licenses', None)
     if licenses is not None:
-        today = timezone.now().date()
+        now_dt = timezone.now()
 
         for source_object_id in (
-            licenses.filter(source_type='new_license_application', is_active=True, valid_up_to__gte=today)
+            licenses.filter(source_type='new_license_application', is_active=True, valid_up_to__gte=now_dt)
             .exclude(source_object_id__isnull=True)
             .exclude(source_object_id='')
             .order_by('-issue_date')
@@ -111,7 +111,7 @@ def _collect_user_license_ids(user):
             _append(source_object_id)
 
         for issued_license_id in (
-            licenses.filter(is_active=True, valid_up_to__gte=today)
+            licenses.filter(is_active=True, valid_up_to__gte=now_dt)
             .exclude(license_id__isnull=True)
             .exclude(license_id='')
             .order_by('-issue_date')
@@ -238,25 +238,30 @@ def _scope_queryset_by_active_license(queryset, user, field_name: str):
     scoped_ids = _collect_user_license_ids(user)
     establishment_name = _get_active_establishment_name(user)
 
-    if scoped_ids and establishment_name:
-        # Prefer strict license scoping but keep a safe fallback to establishment name.
-        filters = Q(**{f'{field_name}__in': scoped_ids})
-        if _supports_lookup(queryset.model, 'factory__factory_name'):
-            filters |= Q(factory__factory_name__icontains=establishment_name)
-        elif _supports_lookup(queryset.model, 'brand_warehouse__factory__factory_name'):
-            filters |= Q(brand_warehouse__factory__factory_name__icontains=establishment_name)
-        return queryset.filter(filters)
-
     if scoped_ids:
-        return queryset.filter(**{f'{field_name}__in': scoped_ids})
+        strict_queryset = queryset.filter(**{f'{field_name}__in': scoped_ids})
+        if strict_queryset.exists():
+            return strict_queryset
+
+        # Fallback only when stock rows are missing license_id.
+        # DO NOT OR-in establishment name when license_id rows exist, because multiple
+        # licenses can share the same establishment name and that leaks cross-license data.
+        if establishment_name:
+            missing_license_filter = Q(**{f'{field_name}__isnull': True}) | Q(**{f'{field_name}': ''})
+            if _supports_lookup(queryset.model, 'factory__factory_name'):
+                return queryset.filter(factory__factory_name__icontains=establishment_name).filter(missing_license_filter)
+            if _supports_lookup(queryset.model, 'brand_warehouse__factory__factory_name'):
+                return queryset.filter(brand_warehouse__factory__factory_name__icontains=establishment_name).filter(missing_license_filter)
+        return strict_queryset
 
     # Fallback: some deployments have license mappings that don't match stored stock rows.
     # Keep scoped users limited to their establishment name so dashboards don't show empty inventory.
     if establishment_name:
+        missing_license_filter = Q(**{f'{field_name}__isnull': True}) | Q(**{f'{field_name}': ''})
         if _supports_lookup(queryset.model, 'factory__factory_name'):
-            return queryset.filter(factory__factory_name__icontains=establishment_name)
+            return queryset.filter(factory__factory_name__icontains=establishment_name).filter(missing_license_filter)
         if _supports_lookup(queryset.model, 'brand_warehouse__factory__factory_name'):
-            return queryset.filter(brand_warehouse__factory__factory_name__icontains=establishment_name)
+            return queryset.filter(brand_warehouse__factory__factory_name__icontains=establishment_name).filter(missing_license_filter)
         return queryset.none()
 
     return queryset.none()

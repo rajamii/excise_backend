@@ -50,8 +50,8 @@ class License(models.Model):
         related_name='licenses_issued_in_districts'
     )
 
-    issue_date = models.DateField(default=now)
-    valid_up_to = models.DateField()
+    issue_date = models.DateTimeField(default=now)
+    valid_up_to = models.DateTimeField()
 
     print_count = models.PositiveIntegerField(default=0)
     is_print_fee_paid = models.BooleanField(default=False)

@@ -403,6 +403,8 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
             'excise_duty_rs_per_case',
             'education_cess_rs_per_case',
             'additional_excise_duty_rs_per_case',
+            'additional_excise_duty_12_5_percent_rs_per_case',
+            'mrp_rs_per_bottle',
             'total_utilized',
             'utilization_percentage',
             'utilization_count',

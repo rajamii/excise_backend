@@ -15,7 +15,7 @@ from .serializers import WorkflowSerializer, WorkflowStageSerializer, WorkflowTr
 from auth.roles.permissions import HasAppPermission
 from .permissions import HasStagePermission
 from .services import SERIALIZER_MAPPING, WorkflowService
-from models.transactional.license_application.models import LicenseApplication
+from models.transactional.license_renewal_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
 from models.transactional.salesman_barman.models import SalesmanBarmanModel
 import logging
@@ -584,6 +584,7 @@ def _get_application_by_id(application_id):
         ("company_registration", "CompanyRegistration"),
         ("company_collaboration", "CompanyCollaboration"),
         ("license_application", "LicenseApplication"),
+        ("license_renewal_application", "LicenseApplication"),
         ("new_license_application", "NewLicenseApplication"),
         ("salesman_barman", "SalesmanBarmanModel"),
     ]

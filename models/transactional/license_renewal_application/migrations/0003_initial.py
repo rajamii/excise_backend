@@ -11,7 +11,7 @@ class Migration(migrations.Migration):
     dependencies = [
         ('core', '0002_initial'),
         ('license', '0002_initial'),
-        ('license_application', '0002_initial'),
+        ('license_renewal_application', '0002_initial'),
         ('workflow', '0001_initial'),
     ]
 

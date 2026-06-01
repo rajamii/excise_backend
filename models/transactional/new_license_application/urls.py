@@ -16,6 +16,7 @@ urlpatterns = [
     # Create a new license application (POST)
     path('apply/', views.create_new_license_application, name='new-license-apply'),
     path('apply/draft/', views.create_new_license_application_draft, name='new-license-apply-draft'),
+    path('force-submit/<everything:application_id>/', views.force_submit_new_license_application, name='new-license-force-submit'),
 
     # List all license applications (GET)
     path('list/', views.list_license_applications, name='new-license-list-all'),
