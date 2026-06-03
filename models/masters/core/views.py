@@ -12,6 +12,20 @@ from .serializers.state_serializer import StateSerializer
 from .serializers.district_serializer import DistrictSerializer
 from .serializers.subdivision_serializer import SubdivisionSerializer
 from .serializers.policestation_serializer import PoliceStationSerializer
+from django.shortcuts import get_object_or_404
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
+from rest_framework.response import Response
+from rest_framework.permissions import AllowAny
+from auth.roles.permissions import HasAppPermission  # type: ignore
+
+from . import models as masters_model
+from .serializers.licensecategory_serializer import LicenseCategorySerializer
+from .serializers.licensetype_serializer import LicenseTypeSerializer
+from .serializers.state_serializer import StateSerializer
+from .serializers.district_serializer import DistrictSerializer
+from .serializers.subdivision_serializer import SubdivisionSerializer
+from .serializers.policestation_serializer import PoliceStationSerializer
 from .serializers.licensesubcategory_serializer import LicenseSubcategorySerializer
 from .serializers.licensetitle_serializer import LicenseTitleSerializer
 from .serializers.road_serializer import RoadSerializer
@@ -20,6 +34,7 @@ from .serializers.licensefee_serializer import LicenseFeeSerializer
 from .serializers.locationcategory_serializer import LocationCategorySerializer
 from .serializers.locationsubcategory_serializer import LocationSubcategorySerializer
 from .serializers.ward_serializer import WardSerializer
+from .serializers.renewalapplicationconfig_serializer import RenewalApplicationConfigSerializer
 
 # NOTE: LicenseeProfile views have been moved to auth.user.views.
 # Endpoints are now served under /api/users/licensee-profiles/
@@ -1044,3 +1059,30 @@ def ward_delete(request, pk):
         {'message': f'Ward {ward.ward_number} - "{ward.ward_name}" deactivated successfully.'},
         status=status.HTTP_200_OK
     )
+
+@permission_classes([HasAppPermission('masters', 'read')])
+@api_view(['GET'])
+def renewal_application_config_detail(request):
+    """Fetch the singleton RenewalApplicationConfig."""
+    config, _ = masters_model.RenewalApplicationConfig.objects.get_or_create(
+        id=1,
+        defaults={'renewal_month': 3, 'renewal_day': 31, 'renewal_time': '23:59:59'}
+    )
+    serializer = RenewalApplicationConfigSerializer(config)
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PUT'])
+def renewal_application_config_update(request):
+    """Update the singleton RenewalApplicationConfig."""
+    config, _ = masters_model.RenewalApplicationConfig.objects.get_or_create(
+        id=1,
+        defaults={'renewal_month': 3, 'renewal_day': 31, 'renewal_time': '23:59:59'}
+    )
+    serializer = RenewalApplicationConfigSerializer(
+        instance=config, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
