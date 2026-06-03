@@ -117,6 +117,14 @@ def _new_license_payments_complete(application) -> bool:
     )
 
 
+def _get_dynamic_renewal_date():
+    from models.masters.core.models import RenewalApplicationConfig
+    config = RenewalApplicationConfig.objects.first()
+    if config:
+        return config.renewal_month, config.renewal_day, config.renewal_time
+    return 3, 31, time.max.replace(microsecond=0)
+
+
 def get_license_valid_up_to(issue_date: date) -> datetime:
     """
     Returns the FY end as an aware datetime (end-of-day).
@@ -125,10 +133,15 @@ def get_license_valid_up_to(issue_date: date) -> datetime:
     """
     issue_day = issue_date.date() if isinstance(issue_date, datetime) else issue_date
     year = issue_day.year
-    end_year = year + 1 if issue_day.month >= 3 else year
+    r_month, r_day, r_time = _get_dynamic_renewal_date()
+    
+    if issue_day.month > r_month or (issue_day.month == r_month and issue_day.day >= r_day):
+        end_year = year + 1
+    else:
+        end_year = year
 
-    fy_end_day = date(end_year, 3, 31)
-    fy_end_dt = datetime.combine(fy_end_day, time.max.replace(microsecond=0))
+    fy_end_day = date(end_year, r_month, r_day)
+    fy_end_dt = datetime.combine(fy_end_day, r_time)
     tz = timezone.get_current_timezone()
     return timezone.make_aware(fy_end_dt, tz) if timezone.is_naive(fy_end_dt) else fy_end_dt
 
@@ -229,19 +242,24 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
 
     def get_current_fy_end(d):
         y = d.year
-        if d.month >= 4:
-            return date(y + 1, 3, 31)
+        from models.masters.core.models import RenewalApplicationConfig
+        config = RenewalApplicationConfig.objects.first()
+        r_month, r_day = (config.renewal_month, config.renewal_day) if config else (3, 31)
+        r_time = config.renewal_time if config else time.max.replace(microsecond=0)
+        
+        if d.month > r_month or (d.month == r_month and d.day >= r_day):
+            return date(y + 1, r_month, r_day), r_time
         else:
-            return date(y, 3, 31)
+            return date(y, r_month, r_day), r_time
 
     if is_renewal:
-        fy_end = get_current_fy_end(issue_day)
+        fy_end, valid_time = get_current_fy_end(issue_day)
         valid_day = fy_end.replace(year=fy_end.year + 1)
     else:
-        valid_day = get_current_fy_end(issue_day)
+        valid_day, valid_time = get_current_fy_end(issue_day)
 
     valid_up_to_dt = timezone.make_aware(
-        datetime.combine(valid_day, time.max.replace(microsecond=0)),
+        datetime.combine(valid_day, valid_time),
         timezone.get_current_timezone(),
     )
 
