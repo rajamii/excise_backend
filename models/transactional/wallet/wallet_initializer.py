@@ -295,11 +295,11 @@ def initialize_wallet_balances_for_license(license_obj) -> None:
 
             existing_qs = WalletBalance.objects.none()
             if user_id:
-                existing_qs = WalletBalance.objects.filter(user_id__iexact=user_id, wallet_type_id__iexact=wallet_type)
+                existing_qs = WalletBalance.objects.filter(user_id__iexact=user_id, wallet_type_id=wallet_type)
             if not existing_qs.exists():
                 existing_qs = WalletBalance.objects.filter(
                     Q(licensee_id=licensee_id) | Q(licensee_id=primary_licensee_id),
-                    wallet_type_id__iexact=wallet_type,
+                    wallet_type_id=wallet_type,
                 )
             if existing_qs.exists():
                 updates = {
