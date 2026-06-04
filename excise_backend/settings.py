@@ -158,14 +158,14 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'sems_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'postgres',  # Your PostgreSQL password
-        'HOST': '10.182.154.196',        # Default host
+        'PASSWORD': 'sameer123',  # Your PostgreSQL password
+        'HOST': 'localhost',        
         'PORT': '5432',             # Default PostgreSQL port
         'CONN_MAX_AGE': 300,          # Don't reuse connections — avoids aborted transaction state
     }
 }
 
-# Forgot Password Email Settings
+# Forgot Password Email SettingsSS
 # EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # For production, use SMTP:
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
