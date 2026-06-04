@@ -149,6 +149,8 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     yearly_license_fee = serializers.SerializerMethodField()
     license_fee_amount = serializers.SerializerMethodField()
     security_fee_amount = serializers.SerializerMethodField()
+    valid_up_to = serializers.SerializerMethodField()
+    issued_license_id = serializers.SerializerMethodField()
 
     class Meta:
         model = NewLicenseApplication
@@ -323,3 +325,27 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         application._member_payload = member_payload
 
         return application
+
+    def get_valid_up_to(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            ct = ContentType.objects.get_for_model(obj)
+            license_obj = License.objects.filter(source_content_type=ct, source_object_id=obj.pk).first()
+            if license_obj and license_obj.valid_up_to:
+                return license_obj.valid_up_to.isoformat()
+        except Exception:
+            pass
+        return None
+
+    def get_issued_license_id(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            ct = ContentType.objects.get_for_model(obj)
+            license_obj = License.objects.filter(source_content_type=ct, source_object_id=obj.pk).first()
+            if license_obj:
+                return license_obj.license_id
+        except Exception:
+            pass
+        return None

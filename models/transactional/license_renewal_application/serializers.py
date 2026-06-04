@@ -24,7 +24,36 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
             "current_stage_name",
             "created_at",
             "updated_at",
+            "valid_up_to",
+            "issued_license_id",
         ]
+
+    valid_up_to = serializers.SerializerMethodField()
+    issued_license_id = serializers.SerializerMethodField()
+
+    def get_valid_up_to(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            ct = ContentType.objects.get_for_model(obj)
+            license_obj = License.objects.filter(source_content_type=ct, source_object_id=obj.pk).first()
+            if license_obj and license_obj.valid_up_to:
+                return license_obj.valid_up_to.isoformat()
+        except Exception:
+            pass
+        return None
+
+    def get_issued_license_id(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            ct = ContentType.objects.get_for_model(obj)
+            license_obj = License.objects.filter(source_content_type=ct, source_object_id=obj.pk).first()
+            if license_obj:
+                return license_obj.license_id
+        except Exception:
+            pass
+        return getattr(obj, "old_license_id", None)
 
     def get_applicant_name(self, obj):
         user = getattr(obj, "applicant", None)
