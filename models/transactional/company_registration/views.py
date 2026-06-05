@@ -121,6 +121,11 @@ def company_registration_detail(request, application_id):
 @permission_classes([HasAppPermission('company_registration', 'view')])
 @api_view(['GET'])
 def dashboard_counts(request):
+    try:
+        from models.masters.license.views import deactivate_all_expired_licenses
+        deactivate_all_expired_licenses()
+    except Exception:
+        pass
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['COMPANY_REGISTRATION']
     stage_sets = _get_stage_sets(workflow_id)

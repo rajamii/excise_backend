@@ -696,6 +696,12 @@ def license_application_detail(request, pk):
 @permission_classes([IsAuthenticated])
 @api_view(["GET"])
 def dashboard_counts(request):
+    try:
+        from models.masters.license.views import deactivate_all_expired_licenses
+        deactivate_all_expired_licenses()
+    except Exception:
+        pass
+
     wf = _get_renewal_workflow()
     if not wf:
         return Response({"applied": 0, "pending": 0, "objection": 0, "approved": 0, "rejected": 0})

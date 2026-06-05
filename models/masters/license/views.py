@@ -342,6 +342,41 @@ def master_license_form_terms_update(request):
         status=status.HTTP_200_OK,
     )
 
+def deactivate_all_expired_licenses():
+    try:
+        from django.utils import timezone
+        from django.contrib.contenttypes.models import ContentType
+        from models.transactional.new_license_application.models import NewLicenseApplication
+        from .models import License
+
+        now_dt = timezone.now()
+        # Find all expired active licenses globally
+        all_expired_qs = License.objects.filter(valid_up_to__lt=now_dt)
+        active_expired_qs = all_expired_qs.filter(is_active=True)
+        if active_expired_qs.exists():
+            active_expired_qs.update(is_active=False)
+
+        # For new-license sourced licenses, also flip payment flags back to False on expiry
+        new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
+        for lic in all_expired_qs.filter(source_content_type=new_app_ct):
+            try:
+                src = getattr(lic, "source_application", None)
+                if src is not None:
+                    changed = False
+                    if getattr(src, "is_license_fee_paid", None) is True:
+                        src.is_license_fee_paid = False
+                        changed = True
+                    if getattr(src, "is_security_fee_paid", None) is True:
+                        src.is_security_fee_paid = False
+                        changed = True
+                    if changed:
+                        src.save(update_fields=["is_license_fee_paid", "is_security_fee_paid"])
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 class MyLicensesListView(generics.ListAPIView):
    
     serializer_class = MyLicenseDetailsSerializer
@@ -349,6 +384,8 @@ class MyLicensesListView(generics.ListAPIView):
 
     def list(self, request, *args, **kwargs):
         # Best-effort: keep license status consistent (expired -> inactive, paid+valid -> active).
+        deactivate_all_expired_licenses()
+
         try:
             from django.utils import timezone
             from django.contrib.contenttypes.models import ContentType
@@ -356,31 +393,7 @@ class MyLicensesListView(generics.ListAPIView):
 
             now_dt = timezone.now()
             base_qs = self.get_queryset()
-
-            # 1) Expired => inactive
-            all_expired_qs = base_qs.filter(valid_up_to__lt=now_dt)
-            active_expired_qs = all_expired_qs.filter(is_active=True)
-            if active_expired_qs.exists():
-                active_expired_qs.update(is_active=False)
-
-            # For new-license sourced licenses, also flip payment flags back to False on expiry
-            # so supply-chain menus hide and renewal payments are required again.
             new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
-            for lic in all_expired_qs.filter(source_content_type=new_app_ct):
-                try:
-                    src = getattr(lic, "source_application", None)
-                    if src is not None:
-                        changed = False
-                        if getattr(src, "is_license_fee_paid", None) is True:
-                            src.is_license_fee_paid = False
-                            changed = True
-                        if getattr(src, "is_security_fee_paid", None) is True:
-                            src.is_security_fee_paid = False
-                            changed = True
-                        if changed:
-                            src.save(update_fields=["is_license_fee_paid", "is_security_fee_paid"])
-                except Exception:
-                    pass
 
             # 2) If admin extends valid_up_to, reactivate eligible licenses.
             # For new-license source, only reactivate if both fees are marked paid.

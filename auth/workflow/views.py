@@ -467,6 +467,11 @@ def get_rejections(request, application_id):
 @api_view(['GET'])
 @permission_classes([HasStagePermission])
 def dashboard_counts(request):
+    try:
+        from models.masters.license.views import deactivate_all_expired_licenses
+        deactivate_all_expired_licenses()
+    except Exception:
+        pass
     models = [_get_model("license_application", "LicenseApplication"),
               _get_model("new_license_application", "NewLicenseApplication")]
 
