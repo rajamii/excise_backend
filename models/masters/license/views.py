@@ -358,14 +358,15 @@ class MyLicensesListView(generics.ListAPIView):
             base_qs = self.get_queryset()
 
             # 1) Expired => inactive
-            expired_qs = base_qs.filter(is_active=True, valid_up_to__lt=now_dt)
-            if expired_qs.exists():
-                expired_qs.update(is_active=False)
+            all_expired_qs = base_qs.filter(valid_up_to__lt=now_dt)
+            active_expired_qs = all_expired_qs.filter(is_active=True)
+            if active_expired_qs.exists():
+                active_expired_qs.update(is_active=False)
 
             # For new-license sourced licenses, also flip payment flags back to False on expiry
             # so supply-chain menus hide and renewal payments are required again.
             new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
-            for lic in expired_qs.filter(source_content_type=new_app_ct):
+            for lic in all_expired_qs.filter(source_content_type=new_app_ct):
                 try:
                     src = getattr(lic, "source_application", None)
                     if src is not None:

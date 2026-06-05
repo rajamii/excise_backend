@@ -62,6 +62,13 @@ def initiate_renewal(request, license_id):
         old_license.is_active = False
         old_license.save(update_fields=["is_active"])
 
+    # Flip fee-paid flags on source application to False when renewal starts, so they must pay again.
+    src_app = _resolve_new_license_application_from_license(old_license)
+    if src_app is not None:
+        src_app.is_license_fee_paid = False
+        src_app.is_security_fee_paid = False
+        src_app.save(update_fields=["is_license_fee_paid", "is_security_fee_paid"])
+
     # Renewal window opens only within the reminder window (or after expiry).
     if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
         window_start = old_license.valid_up_to - timedelta(days=reminder_days)
@@ -195,10 +202,38 @@ def _get_timer_days(code: str, default_days: int) -> int:
 
 
 def _extend_license_validity(lic: License) -> License:
+    from models.masters.core.models import RenewalApplicationConfig
+    from datetime import date, datetime, time as dt_time
+    
     now_dt = timezone.now()
-    renewal_days = _get_timer_days("LICENSE_RENEWAL_TIMER", 365)
-    base = lic.valid_up_to if lic.valid_up_to and lic.valid_up_to > now_dt else now_dt
-    lic.valid_up_to = base + timedelta(days=renewal_days)
+    base_dt = lic.valid_up_to if lic.valid_up_to and lic.valid_up_to > now_dt else now_dt
+    
+    config = RenewalApplicationConfig.objects.first()
+    r_month = config.renewal_month if config else 3
+    r_day = config.renewal_day if config else 31
+    r_time = config.renewal_time if config else dt_time(23, 59, 59)
+    
+    # Convert base_dt to local timezone
+    tz = timezone.get_current_timezone()
+    local_base = timezone.localtime(base_dt, tz)
+    
+    base_renewal_date = date(local_base.year, r_month, r_day)
+    if local_base.date() >= base_renewal_date:
+        next_year = local_base.year + 1
+    else:
+        next_year = local_base.year
+        
+    next_valid_day = date(next_year, r_month, r_day)
+    
+    if isinstance(r_time, str):
+        try:
+            t_parts = r_time.split(":")
+            r_time = dt_time(int(t_parts[0]), int(t_parts[1]), int(t_parts[2] if len(t_parts) > 2 else 0))
+        except:
+            r_time = dt_time(23, 59, 59)
+            
+    next_valid_dt = datetime.combine(next_valid_day, r_time)
+    lic.valid_up_to = timezone.make_aware(next_valid_dt, tz) if timezone.is_naive(next_valid_dt) else next_valid_dt
     lic.save(update_fields=["valid_up_to"])
     return lic
 
