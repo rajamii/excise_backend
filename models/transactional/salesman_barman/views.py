@@ -254,10 +254,6 @@ def pay_registration_fee_wallet(request, application_id):
     except Exception:
         pass
 
-    lic = _resolve_sb_license_for_application(application)
-    if not lic:
-        return Response({"detail": "License not issued yet."}, status=status.HTTP_400_BAD_REQUEST)
-
     amount = _get_salesman_barman_registration_fee()
     if amount is None or amount <= 0:
         return Response(
