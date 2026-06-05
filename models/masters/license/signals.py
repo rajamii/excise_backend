@@ -193,6 +193,11 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
                 if existing_license.is_active != should_be_active:
                     existing_license.is_active = should_be_active
                     existing_license.save(update_fields=["is_active"])
+            elif source_type == "salesman_barman":
+                app_print_paid = getattr(application, "is_print_fee_paid", False)
+                if existing_license.is_print_fee_paid != app_print_paid:
+                    existing_license.is_print_fee_paid = app_print_paid
+                    existing_license.save(update_fields=["is_print_fee_paid"])
 
         # Still ensure wallets exist (and get updated metadata) whenever an approval-stage
         # transaction is logged for the application.
@@ -313,7 +318,8 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
             excise_district=excise_district,
             issue_date=issue_dt,
             valid_up_to=valid_up_to_dt,
-            is_active=license_is_active
+            is_active=license_is_active,
+            is_print_fee_paid=getattr(application, "is_print_fee_paid", False)
         )
         logger.info(f"License created for application {application.pk}")
 
