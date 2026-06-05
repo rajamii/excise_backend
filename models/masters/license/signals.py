@@ -131,6 +131,7 @@ def get_license_valid_up_to(issue_date: date) -> datetime:
 
     Accepts either a `date` or `datetime` input.
     """
+    from zoneinfo import ZoneInfo
     issue_day = issue_date.date() if isinstance(issue_date, datetime) else issue_date
     year = issue_day.year
     r_month, r_day, r_time = _get_dynamic_renewal_date()
@@ -142,7 +143,7 @@ def get_license_valid_up_to(issue_date: date) -> datetime:
 
     fy_end_day = date(end_year, r_month, r_day)
     fy_end_dt = datetime.combine(fy_end_day, r_time)
-    tz = timezone.get_current_timezone()
+    tz = ZoneInfo("Asia/Kolkata")
     return timezone.make_aware(fy_end_dt, tz) if timezone.is_naive(fy_end_dt) else fy_end_dt
 
 
@@ -258,9 +259,10 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
     else:
         valid_day, valid_time = get_current_fy_end(issue_day)
 
+    from zoneinfo import ZoneInfo
     valid_up_to_dt = timezone.make_aware(
         datetime.combine(valid_day, valid_time),
-        timezone.get_current_timezone(),
+        ZoneInfo("Asia/Kolkata"),
     )
 
     # === license_id logic ===

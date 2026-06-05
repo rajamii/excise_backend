@@ -204,6 +204,7 @@ def _get_timer_days(code: str, default_days: int) -> int:
 def _extend_license_validity(lic: License) -> License:
     from models.masters.core.models import RenewalApplicationConfig
     from datetime import date, datetime, time as dt_time
+    from zoneinfo import ZoneInfo
     
     now_dt = timezone.now()
     base_dt = lic.valid_up_to if lic.valid_up_to and lic.valid_up_to > now_dt else now_dt
@@ -214,8 +215,8 @@ def _extend_license_validity(lic: License) -> License:
     r_time = config.renewal_time if config else dt_time(23, 59, 59)
     
     # Convert base_dt to local timezone
-    tz = timezone.get_current_timezone()
-    local_base = timezone.localtime(base_dt, tz)
+    local_tz = ZoneInfo("Asia/Kolkata")
+    local_base = timezone.localtime(base_dt, local_tz)
     
     base_renewal_date = date(local_base.year, r_month, r_day)
     if local_base.date() >= base_renewal_date:
@@ -233,7 +234,7 @@ def _extend_license_validity(lic: License) -> License:
             r_time = dt_time(23, 59, 59)
             
     next_valid_dt = datetime.combine(next_valid_day, r_time)
-    lic.valid_up_to = timezone.make_aware(next_valid_dt, tz) if timezone.is_naive(next_valid_dt) else next_valid_dt
+    lic.valid_up_to = timezone.make_aware(next_valid_dt, local_tz) if timezone.is_naive(next_valid_dt) else next_valid_dt
     lic.save(update_fields=["valid_up_to"])
     return lic
 
