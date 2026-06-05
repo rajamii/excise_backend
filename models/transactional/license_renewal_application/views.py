@@ -275,12 +275,17 @@ def _renewal_source_application(application):
 
 
 def _renewal_is_paid(application) -> bool:
+    old_license = None
+    if getattr(application, "old_license_id", None):
+        old_license = License.objects.filter(license_id=str(application.old_license_id)).first()
+
+    if old_license and old_license.source_type == "salesman_barman":
+        return bool(getattr(application, "is_license_fee_paid", False))
+
     source_app = _renewal_source_application(application)
-    return bool(
-        source_app
-        and getattr(source_app, "is_license_fee_paid", False)
-        and getattr(source_app, "is_security_fee_paid", False)
-    )
+    app_license_paid = getattr(application, "is_license_fee_paid", False) or (source_app and getattr(source_app, "is_license_fee_paid", False))
+    app_security_paid = getattr(application, "is_security_fee_paid", False) or (source_app and getattr(source_app, "is_security_fee_paid", False))
+    return bool(source_app and app_license_paid and app_security_paid)
 
 
 def _renewal_awaiting_payment_stage(application):
@@ -399,9 +404,14 @@ def _serialize_renewal_application(obj: LicenseApplication):
 
     if source_app is not None:
         try:
-            from models.transactional.new_license_application.serializers import NewLicenseApplicationSerializer
+            model_name = source_app.__class__.__name__.lower()
+            if model_name == "salesmanbarmanmodel":
+                from models.transactional.salesman_barman.serializers import SalesmanBarmanSerializer
+                source_data = dict(SalesmanBarmanSerializer(source_app).data)
+            else:
+                from models.transactional.new_license_application.serializers import NewLicenseApplicationSerializer
+                source_data = dict(NewLicenseApplicationSerializer(source_app).data)
 
-            source_data = dict(NewLicenseApplicationSerializer(source_app).data)
             source_data.update(data)
             data = source_data
         except Exception:
@@ -418,6 +428,21 @@ def _serialize_renewal_application(obj: LicenseApplication):
                 "expired_date": old_license.valid_up_to,
             }
         )
+        if getattr(old_license, "source_type", None) == "salesman_barman":
+            try:
+                from models.transactional.salesman_barman.views import _get_salesman_barman_registration_fee
+                sb_fee = _get_salesman_barman_registration_fee()
+            except Exception:
+                sb_fee = None
+            if sb_fee is not None:
+                data.update({
+                    "license_fee_amount": sb_fee,
+                    "licenseFeeAmount": sb_fee,
+                    "yearly_license_fee": sb_fee,
+                    "yearlyLicenseFee": sb_fee,
+                    "security_fee_amount": 0,
+                    "securityFeeAmount": 0,
+                })
     data["application_id"] = obj.application_id
     data["submitted_on"] = obj.created_at
     data["current_stage_name"] = getattr(getattr(obj, "current_stage", None), "name", None)
@@ -501,7 +526,7 @@ def pay_license_fee_wallet(request, application_id):
 
     old_license = get_object_or_404(License, license_id=str(app.old_license_id))
 
-    # Resolve fee from underlying NewLicenseApplication when available.
+    # Resolve fee from underlying application when available.
     amount = None
     src_app = _resolve_new_license_application_from_license(old_license)
     if src_app is not None:
@@ -514,16 +539,51 @@ def pay_license_fee_wallet(request, application_id):
                 amount = amount + _get_additional_charge_total(src_app)
         except Exception:
             amount = None
+    else:
+        if getattr(old_license, "source_type", None) == "salesman_barman":
+            try:
+                from models.transactional.salesman_barman.views import _get_salesman_barman_registration_fee
+                amount = _get_salesman_barman_registration_fee()
+            except Exception:
+                amount = None
 
     if amount is None:
         return Response({"detail": "License fee structure not configured for this renewal."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Resolve wallet licensee id
+    wallet_licensee_id = str(old_license.license_id)
+    if getattr(old_license, "source_type", None) == "salesman_barman":
+        sb_app = getattr(old_license, "source_application", None)
+        nli_license_id = None
+        if sb_app:
+            nli_app = getattr(sb_app, "new_license_application", None)
+            if nli_app:
+                try:
+                    from django.contrib.contenttypes.models import ContentType as CT
+                    from models.masters.license.models import License as Lic
+                    from models.transactional.new_license_application.models import NewLicenseApplication as NLI
+                    nli_ct = CT.objects.get_for_model(NLI)
+                    nli_lic = (
+                        Lic.objects.filter(
+                            source_type="new_license_application",
+                            source_content_type=nli_ct,
+                            source_object_id=str(nli_app.pk),
+                        )
+                        .order_by("-issue_date", "-license_id")
+                        .first()
+                    )
+                    if nli_lic:
+                        nli_license_id = str(nli_lic.license_id).strip()
+                except Exception:
+                    pass
+        wallet_licensee_id = nli_license_id or str(getattr(request.user, "username", "") or "").strip()
 
     license_fee_hoa = _resolve_hoa_code(module_type="other", wallet_type="license_fee")
     txn_id = secrets.token_hex(12).upper()
     try:
         debit_wallet_balance(
             transaction_id=txn_id,
-            licensee_id=str(old_license.license_id),
+            licensee_id=wallet_licensee_id,
             wallet_type="license_fee",
             head_of_account=license_fee_hoa,
             amount=Decimal(str(amount)),
@@ -533,6 +593,10 @@ def pay_license_fee_wallet(request, application_id):
         )
     except Exception as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Mark fee as paid on the renewal tracking application itself
+    app.is_license_fee_paid = True
+    app.save(update_fields=["is_license_fee_paid"])
 
     # Flip fee-paid flags on source application (if it was toggled to False after expiry).
     if src_app is not None and not getattr(src_app, "is_license_fee_paid", False):
@@ -606,6 +670,10 @@ def pay_security_fee_wallet(request, application_id):
         )
     except Exception as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Mark fee as paid on the renewal tracking application itself
+    app.is_security_fee_paid = True
+    app.save(update_fields=["is_security_fee_paid"])
 
     if src_app is not None and not getattr(src_app, "is_security_fee_paid", False):
         try:

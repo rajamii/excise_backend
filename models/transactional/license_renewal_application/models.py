@@ -30,7 +30,7 @@ class LicenseApplication(models.Model):
         null=True,
         blank=True,
     )
-    source_object_id = models.PositiveBigIntegerField(null=True, blank=True)
+    source_object_id = models.CharField(max_length=60, null=True, blank=True)
     source_object = GenericForeignKey("source_content_type", "source_object_id")
 
     applicant = models.ForeignKey(
@@ -72,6 +72,8 @@ class LicenseApplication(models.Model):
         related_name="license_renewal_applications",
         db_column="current_stage_id",
     )
+    is_license_fee_paid = models.BooleanField(default=False)
+    is_security_fee_paid = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

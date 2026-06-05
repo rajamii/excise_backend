@@ -421,71 +421,85 @@ def initiate_renewal(request, license_id):
             "reminder_window_days": reminder_days,
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    # Build pre-filled data
-    new_data = {
-        'role': old_app.role,
-        'firstName': old_app.firstName,
-        'middleName': old_app.middleName or '',
-        'lastName': old_app.lastName,
-        'fatherHusbandName': old_app.fatherHusbandName,
-        'gender': old_app.gender,
-        'dob': old_app.dob.strftime('%Y-%m-%d'),
-        'nationality': old_app.nationality,
-        'address': old_app.address,
-        'pan': old_app.pan,
-        'aadhaar': old_app.aadhaar,
-        'mobileNumber': old_app.mobileNumber,
-        'emailId': old_app.emailId or '',
-        'sikkimSubject': old_app.sikkimSubject,
-        'excise_district': old_app.excise_district,
-        'license_category': old_app.license_category,
-        'license': old_app.license,
-    }
-
-    # Generate application_id manually
+    # Generate application_id manually using RSBM prefix
     district_code = str(old_app.excise_district.district_code)
-    fin_year = SalesmanBarmanModel.generate_fin_year()
-    prefix = f"SBM/{district_code}/{fin_year}"
+    from models.transactional.license_renewal_application.models import LicenseApplication
+    fin_year = LicenseApplication.generate_fin_year()
+    prefix = f"RSBM/{district_code}/{fin_year}"
 
     with transaction.atomic():
-        last_app = SalesmanBarmanModel.objects.filter(
-            application_id__startswith=prefix
-        ).select_for_update().order_by('-application_id').first()
-
-        last_number = int(last_app.application_id.split('/')[-1]) if last_app else 0
+        last = (
+            LicenseApplication.objects.filter(
+                application_id__startswith=prefix + "/"
+            ).select_for_update().order_by('-application_id').first()
+        )
+        last_number = 0
+        if last and "/" in last.application_id:
+            try:
+                last_number = int(last.application_id.split("/")[-1])
+            except Exception:
+                last_number = 0
         new_number = str(last_number + 1).zfill(4)
         new_application_id = f"{prefix}/{new_number}"
 
-        # Get workflow and initial stage
-        workflow = get_object_or_404(Workflow, id=WORKFLOW_IDS['SALESMAN_BARMAN'])
-        initial_stage = workflow.stages.get(is_initial=True)
+        # Get workflow and initial stage for renewal
+        from models.transactional.license_renewal_application.views import _get_renewal_workflow
+        wf = _get_renewal_workflow()
+        if not wf:
+            return Response({"detail": "Renewal workflow is not configured."}, status=status.HTTP_400_BAD_REQUEST)
+        initial_stage = wf.stages.filter(is_initial=True).order_by("id").first()
+        if not initial_stage:
+            return Response({"detail": "Renewal workflow has no initial stage."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Create the application instance directly
-        new_application = SalesmanBarmanModel.objects.create(
+        # Check for active renewal
+        from models.transactional.helpers import _get_stage_sets
+        stage_sets = _get_stage_sets(wf.id)
+        final_stages = set(stage_sets["approved"]) | set(stage_sets["rejected"])
+        active_renewal = (
+            LicenseApplication.objects.filter(
+                applicant=request.user,
+                old_license_id=old_license.license_id,
+                workflow=wf,
+            )
+            .exclude(current_stage__name__in=final_stages)
+            .order_by("-created_at")
+            .first()
+        )
+        if active_renewal:
+            return Response(
+                {
+                    "detail": "A renewal application is already submitted for this license.",
+                    "application_id": active_renewal.application_id,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from django.contrib.contenttypes.models import ContentType
+        new_application = LicenseApplication.objects.create(
             application_id=new_application_id,
-            workflow=workflow,
-            current_stage=initial_stage,
+            is_approved=False,
+            old_license_id=old_license.license_id,
             applicant=request.user,
-            renewal_of=old_license,
-            **new_data,
-            passPhoto=old_app.passPhoto,
-            aadhaarCard=old_app.aadhaarCard,
-            residentialCertificate=old_app.residentialCertificate,
-            dateofBirthProof=old_app.dateofBirthProof,
+            license_category=old_license.license_category,
+            license_sub_category=old_license.license_sub_category,
+            workflow=wf,
+            current_stage=initial_stage,
+            source_content_type=ContentType.objects.get_for_model(SalesmanBarmanModel),
+            source_object_id=old_app.pk,
         )
 
     # Log submission transaction
     WorkflowService.submit_application(
         application=new_application,
         user=request.user,
-        remarks="Renewal application auto-submitted (pre-filled from previous license)"
+        remarks="Renewal application initiated and submitted successfully (Salesman/Barman)"
     )
 
-    # Return fresh serialized data
-    serializer = SalesmanBarmanSerializer(new_application)
+    # Return serialized renewal application data
+    from models.transactional.license_renewal_application.views import _serialize_renewal_application
     return Response({
         "detail": "Renewal application initiated and submitted successfully.",
-        "application": serializer.data
+        "application": _serialize_renewal_application(new_application)
     }, status=status.HTTP_201_CREATED)
 
 
