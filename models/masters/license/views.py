@@ -373,6 +373,24 @@ def deactivate_all_expired_licenses():
                         src.save(update_fields=["is_license_fee_paid", "is_security_fee_paid"])
             except Exception:
                 pass
+
+        # For salesman-barman sourced licenses, also flip is_print_fee_paid back to False on expiry
+        from models.transactional.salesman_barman.models import SalesmanBarmanModel
+        sb_app_ct = ContentType.objects.get_for_model(SalesmanBarmanModel)
+        for lic in all_expired_qs.filter(source_content_type=sb_app_ct):
+            try:
+                src = getattr(lic, "source_application", None)
+                if src is not None:
+                    if getattr(src, "is_print_fee_paid", None) is True:
+                        src.is_print_fee_paid = False
+                        src.save(update_fields=["is_print_fee_paid"])
+            except Exception:
+                pass
+
+        # Also flip is_print_fee_paid on the License itself for all expired licenses
+        expired_print_fee_qs = all_expired_qs.filter(is_print_fee_paid=True)
+        if expired_print_fee_qs.exists():
+            expired_print_fee_qs.update(is_print_fee_paid=False)
     except Exception:
         pass
 
