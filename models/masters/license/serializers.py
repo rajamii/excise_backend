@@ -146,6 +146,8 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
     renewal_window_starts_on = serializers.SerializerMethodField()
     renewal_window_ends_on = serializers.SerializerMethodField()
     reminder_window_days = serializers.SerializerMethodField()
+    renewal_count = serializers.SerializerMethodField()
+    renewal_details = serializers.SerializerMethodField()
 
     first_name = serializers.CharField(source='source_application.applicant.first_name', read_only=True)
     middle_name = serializers.CharField(source='source_application.applicant.middle_name', read_only=True)
@@ -289,6 +291,29 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
         reminder_days, _start, _end, _can = self._renewal_window(obj)
         return int(reminder_days)
 
+    def get_renewal_count(self, obj):
+        try:
+            from models.transactional.license_renewal_application.models import LicenseApplication
+            return LicenseApplication.objects.filter(old_license_id=obj.license_id, is_approved=True).count()
+        except Exception:
+            return 0
+
+    def get_renewal_details(self, obj):
+        try:
+            from models.transactional.license_renewal_application.models import LicenseApplication
+            qs = LicenseApplication.objects.filter(old_license_id=obj.license_id, is_approved=True).order_by('updated_at')
+            details = []
+            for app in qs:
+                dt = app.updated_at or app.created_at
+                date_str = dt.strftime("%d/%m/%Y") if dt else ""
+                details.append({
+                    "application_id": app.application_id,
+                    "date": date_str
+                })
+            return details
+        except Exception:
+            return []
+
     class Meta:
         model = License
         fields = [
@@ -321,4 +346,6 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
             'license_sub_category',
             'establishment_name',
             'site_district',
+            'renewal_count',
+            'renewal_details',
         ]
