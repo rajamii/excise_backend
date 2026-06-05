@@ -48,6 +48,8 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
     objections = WorkflowObjectionSerializer(many=True, read_only=True)
     application_fee_payment_status = serializers.SerializerMethodField()
     application_fee_payment_status_display = serializers.SerializerMethodField()
+    valid_up_to = serializers.SerializerMethodField()
+    license_id = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesmanBarmanModel
@@ -63,6 +65,46 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
             'applicant',
             'workflow'
             ]
+
+    def get_valid_up_to(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            ct = ContentType.objects.get_for_model(obj)
+            license_obj = (
+                License.objects.filter(
+                    source_type="salesman_barman",
+                    source_content_type=ct,
+                    source_object_id=str(obj.pk),
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if license_obj and license_obj.valid_up_to:
+                return license_obj.valid_up_to.isoformat()
+        except Exception:
+            pass
+        return None
+
+    def get_license_id(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            ct = ContentType.objects.get_for_model(obj)
+            license_obj = (
+                License.objects.filter(
+                    source_type="salesman_barman",
+                    source_content_type=ct,
+                    source_object_id=str(obj.pk),
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if license_obj:
+                return license_obj.license_id
+        except Exception:
+            pass
+        return None
 
     def get_applicant_full_name(self, obj):
         applicant = obj.applicant
