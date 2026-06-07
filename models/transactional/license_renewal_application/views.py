@@ -340,6 +340,46 @@ def _renewal_role_stage_names(user, workflow_id: int):
     return matched
 
 
+def _renewal_queryset_visible_to_role(qs, user, role_stage_names):
+    """
+    Admin dashboards should only see renewal applications that are with their
+    role now, or have already reached their role in the current submission cycle.
+    """
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Exists, OuterRef, Q, Subquery
+
+    role_id = getattr(getattr(user, "role", None), "id", None)
+    if not role_id or not role_stage_names:
+        return qs.none()
+
+    content_type = ContentType.objects.get_for_model(LicenseApplication)
+    latest_submission_id = (
+        WorkflowTransaction.objects.filter(
+            content_type=content_type,
+            object_id=OuterRef("application_id"),
+            stage__is_initial=True,
+        )
+        .order_by("-id")
+        .values("id")[:1]
+    )
+    qs = qs.annotate(_latest_submission_id=Subquery(latest_submission_id))
+    reached_role = Exists(
+        WorkflowTransaction.objects.filter(
+            content_type=content_type,
+            object_id=OuterRef("application_id"),
+            id__gte=OuterRef("_latest_submission_id"),
+        ).filter(
+            Q(performed_by__role_id=role_id)
+            | Q(forwarded_to_id=role_id)
+        )
+    )
+
+    return (
+        qs.annotate(_reached_role=reached_role)
+        .filter(Q(current_stage__name__in=role_stage_names) | Q(_reached_role=True))
+    )
+
+
 def _route_renewal_approval_to_payment_stage(application, target_stage):
     if _renewal_is_paid(application):
         return target_stage
@@ -796,50 +836,21 @@ def dashboard_counts(request):
             }
         )
 
-    if role in ["site_admin"]:
-        return Response(
-            {
-                "applied": all_qs.filter(current_stage__name__in=applied_stages).count(),
-                "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
-                "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
-                "approved": all_qs.filter(current_stage__name__in=approved_stages).count(),
-                "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
-            }
-        )
-
     role_stage_names = _renewal_role_stage_names(request.user, wf.id)
     if not role_stage_names:
-        return Response({"pending": 0, "approved": 0, "rejected": 0})
+        return Response({"applied": 0, "pending": 0, "objection": 0, "approved": 0, "rejected": 0})
 
-    from django.contrib.contenttypes.models import ContentType
-    from django.db.models import Exists, OuterRef
-
-    content_type = ContentType.objects.get_for_model(LicenseApplication)
-    role_id = getattr(getattr(request.user, "role", None), "id", None)
-    acted_by_role = Exists(
-        WorkflowTransaction.objects.filter(
-            content_type=content_type,
-            object_id=OuterRef("application_id"),
-            performed_by__role_id=role_id,
-        )
-    )
-
-    pending_for_role = set(role_stage_names) | objection_stages
+    visible_qs = _renewal_queryset_visible_to_role(all_qs, request.user, role_stage_names)
+    pending_for_role = set(role_stage_names)
     return Response(
         {
-            "pending": all_qs.filter(current_stage__name__in=pending_for_role).count(),
-            "approved": (
-                all_qs.exclude(current_stage__name__in=pending_for_role | rejected_stages)
-                .annotate(_acted_by_role=acted_by_role)
-                .filter(_acted_by_role=True)
-                .count()
-            ),
-            "rejected": (
-                all_qs.filter(current_stage__name__in=rejected_stages)
-                .annotate(_acted_by_role=acted_by_role)
-                .filter(_acted_by_role=True)
-                .count()
-            ),
+            "applied": 0,
+            "pending": visible_qs.filter(current_stage__name__in=pending_for_role).count(),
+            "objection": visible_qs.filter(current_stage__name__in=objection_stages).count(),
+            "approved": visible_qs.exclude(
+                current_stage__name__in=pending_for_role | objection_stages | rejected_stages
+            ).count(),
+            "rejected": visible_qs.filter(current_stage__name__in=rejected_stages).count(),
         }
     )
 
@@ -883,46 +894,26 @@ def application_group(request):
             }
         )
 
-    if role in ["site_admin"]:
-        return Response(
-            {
-                "applied": LicenseApplicationSerializer(
-                    all_qs.filter(current_stage__name__in=applied_stages), many=True
-                ).data,
-                "pending": LicenseApplicationSerializer(
-                    all_qs.filter(current_stage__name__in=pending_stages), many=True
-                ).data,
-                "objection": LicenseApplicationSerializer(
-                    all_qs.filter(current_stage__name__in=objection_stages), many=True
-                ).data,
-                "approved": LicenseApplicationSerializer(
-                    all_qs.filter(current_stage__name__in=approved_stages), many=True
-                ).data,
-                "rejected": LicenseApplicationSerializer(
-                    all_qs.filter(current_stage__name__in=rejected_stages), many=True
-                ).data,
-            }
-        )
-
     role_stage_names = _renewal_role_stage_names(request.user, wf.id)
     if not role_stage_names:
         return Response({"applied": [], "pending": [], "objection": [], "approved": [], "rejected": []})
 
-    pending_for_role = set(role_stage_names) | objection_stages
+    visible_qs = _renewal_queryset_visible_to_role(all_qs, request.user, role_stage_names)
+    pending_for_role = set(role_stage_names)
     return Response(
         {
             "applied": [],
             "pending": LicenseApplicationSerializer(
-                all_qs.filter(current_stage__name__in=pending_for_role), many=True
+                visible_qs.filter(current_stage__name__in=pending_for_role), many=True
             ).data,
             "objection": LicenseApplicationSerializer(
-                all_qs.filter(current_stage__name__in=objection_stages), many=True
+                visible_qs.filter(current_stage__name__in=objection_stages), many=True
             ).data,
             "approved": LicenseApplicationSerializer(
-                all_qs.exclude(current_stage__name__in=pending_for_role | rejected_stages), many=True
+                visible_qs.exclude(current_stage__name__in=pending_for_role | objection_stages | rejected_stages), many=True
             ).data,
             "rejected": LicenseApplicationSerializer(
-                all_qs.filter(current_stage__name__in=rejected_stages), many=True
+                visible_qs.filter(current_stage__name__in=rejected_stages), many=True
             ).data,
         }
     )
