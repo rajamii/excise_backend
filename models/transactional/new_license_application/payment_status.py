@@ -233,7 +233,24 @@ def sync_new_license_payment_status(application):
 
     if license_obj and license_obj.is_active != paid:
         license_obj.is_active = paid
-        license_obj.save(update_fields=["is_active"])
+        if paid and getattr(application, "renewal_of", None):
+            license_obj.print_count = 0
+            license_obj.printed_on = None
+            license_obj.is_print_fee_paid = False
+            license_obj.print_fee_paid_on = None
+            license_obj.validation_nonce = ''
+            license_obj.validation_nonce_updated_at = None
+            license_obj.save(update_fields=[
+                "is_active",
+                "print_count",
+                "printed_on",
+                "is_print_fee_paid",
+                "print_fee_paid_on",
+                "validation_nonce",
+                "validation_nonce_updated_at"
+            ])
+        else:
+            license_obj.save(update_fields=["is_active"])
 
     if paid and license_obj:
         try:

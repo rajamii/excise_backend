@@ -13,8 +13,8 @@ class Migration(migrations.Migration):
             -- Fix Postgres sequence drift when rows were inserted manually.
             SELECT setval(
                 pg_get_serial_sequence('brand_ml_in_cases', 'id'),
-                COALESCE((SELECT MAX(id) FROM brand_ml_in_cases), 0),
-                true
+                COALESCE((SELECT MAX(id) FROM brand_ml_in_cases), 1),
+                (CASE WHEN (SELECT MAX(id) FROM brand_ml_in_cases) IS NULL THEN false ELSE true END)
             );
             """,
             reverse_sql=migrations.RunSQL.noop,

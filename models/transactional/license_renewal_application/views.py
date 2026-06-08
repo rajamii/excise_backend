@@ -246,9 +246,27 @@ def _sync_license_active_from_renewal_payment(lic: License, application: License
     - if not fully paid, keep it inactive (but validity may already be extended).
     """
     should_be_active = _renewal_is_paid(application)
-    if bool(getattr(lic, "is_active", False)) != bool(should_be_active):
-        lic.is_active = bool(should_be_active)
-        lic.save(update_fields=["is_active"])
+    if should_be_active and not getattr(application, "is_approved", False):
+        lic.is_active = True
+        lic.print_count = 0
+        lic.printed_on = None
+        lic.is_print_fee_paid = False
+        lic.print_fee_paid_on = None
+        lic.validation_nonce = ''
+        lic.validation_nonce_updated_at = None
+        lic.save(update_fields=[
+            "is_active",
+            "print_count",
+            "printed_on",
+            "is_print_fee_paid",
+            "print_fee_paid_on",
+            "validation_nonce",
+            "validation_nonce_updated_at"
+        ])
+    else:
+        if bool(getattr(lic, "is_active", False)) != bool(should_be_active):
+            lic.is_active = bool(should_be_active)
+            lic.save(update_fields=["is_active"])
 
 
 def _resolve_new_license_application_from_license(lic: License):
