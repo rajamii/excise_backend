@@ -210,3 +210,81 @@ class LicenseRenewalPrintResetTests(TestCase):
 
     def assertNil(self, val):
         self.assertTrue(val is None or val == '')
+
+
+from django.contrib.auth import get_user_model
+
+class LicenseRenewalDashboardCountsTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user_model = get_user_model()
+
+        self.state = State.objects.create(state="Sikkim", state_code=11, is_active=True)
+        self.district = District.objects.create(district="Gangtok", district_code=225, is_active=True, state_code=self.state)
+        self.subdivision = Subdivision.objects.create(subdivision="Gangtok Subdivision", subdivision_code=1553, is_active=True, district_code=self.district)
+
+        self.category = LicenseCategory.objects.create(license_category="Test Category")
+        self.subcategory = LicenseSubcategory.objects.create(description="FLR Shop", category=self.category)
+
+        self.licensee_role = Role.objects.create(name='licensee')
+        self.licensee_user = self.user_model.objects.create_user(
+            password='password123',
+            email='licensee@example.com',
+            role=self.licensee_role,
+            district=self.district,
+            subdivision=self.subdivision,
+            phone_number="9999999901",
+            first_name="Licensee",
+            last_name="User",
+            address="Test address 1"
+        )
+        self.licensee_user.username = 'licensee_user'
+        self.licensee_user.save(update_fields=['username'])
+
+        self.workflow = Workflow.objects.create(id=1, name='License Approval')
+        self.stages = {
+            name: WorkflowStage.objects.create(workflow=self.workflow, name=name)
+            for name in [
+                'Applied', 'Awaiting Payment', 'approved', 'Objection'
+            ]
+        }
+        
+        self.client.force_authenticate(user=self.licensee_user)
+
+    def test_dashboard_counts_separated_awaiting_payment(self):
+        # Create one renewal application in Awaiting Payment stage
+        LicenseApplication.objects.create(
+            application_id='LRA/225/2026-27/0001',
+            workflow=self.workflow,
+            current_stage=self.stages['Awaiting Payment'],
+            applicant=self.licensee_user,
+            license_category=self.category,
+            license_sub_category=self.subcategory,
+            old_license_id="SB/225/2025-26/0001",
+            is_approved=False
+        )
+
+        url = reverse("license_renewal_application:dashboard-counts")
+        resp = self.client.get(url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data.get("awaiting_payment"), 1)
+        self.assertEqual(resp.data.get("pending"), 0)
+
+    def test_dashboard_counts_initial_pending(self):
+        # Create one renewal application in Applied stage
+        LicenseApplication.objects.create(
+            application_id='LRA/225/2026-27/0002',
+            workflow=self.workflow,
+            current_stage=self.stages['Applied'],
+            applicant=self.licensee_user,
+            license_category=self.category,
+            license_sub_category=self.subcategory,
+            old_license_id="SB/225/2025-26/0002",
+            is_approved=False
+        )
+
+        url = reverse("license_renewal_application:dashboard-counts")
+        resp = self.client.get(url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data.get("awaiting_payment"), 0)
+        self.assertEqual(resp.data.get("pending"), 1)

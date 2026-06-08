@@ -1338,7 +1338,8 @@ def dashboard_counts(request):
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
         rejected_stages = set(stage_sets['rejected'])
-        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
+        payment_stages = set(stage_sets['payment'])
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
 
         return Response({
             # Licensee UX: application is considered "Pending" until application-fee payment succeeds.
@@ -1347,6 +1348,7 @@ def dashboard_counts(request):
             "objection": paid_qs.filter(current_stage__name__in=objection_stages).count(),
             "approved": paid_qs.filter(current_stage__name__in=approved_stages).count(),
             "rejected": paid_qs.filter(current_stage__name__in=rejected_stages).count(),
+            "awaiting_payment": paid_qs.filter(current_stage__name__in=payment_stages).count(),
         })
 
     if role in ['site_admin']:

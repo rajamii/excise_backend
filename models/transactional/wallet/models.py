@@ -204,6 +204,10 @@ def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = 
     if sid == 1:
         return "brewery"
 
+    source_type = str(getattr(lic, "source_type", "") or "").strip().lower()
+    if source_type in {"salesman_barman", "license_application"}:
+        return "other"
+
     source = getattr(lic, "source_application", None)
     license_type = getattr(source, "license_type", None) if source is not None else None
     type_name = str(getattr(license_type, "license_type", "") or "").strip().lower()

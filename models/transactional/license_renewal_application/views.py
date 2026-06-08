@@ -840,7 +840,8 @@ def dashboard_counts(request):
     objection_stages = set(stage_sets["objection"])
     approved_stages = set(stage_sets["approved"])
     rejected_stages = set(stage_sets["rejected"])
-    pending_stages = set(stage_sets["all"]) - applied_stages - approved_stages - rejected_stages - objection_stages
+    payment_stages = set(stage_sets["payment"])
+    pending_stages = set(stage_sets["all"]) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
 
     if role == "licensee":
         base_qs = all_qs.filter(applicant=request.user)
@@ -851,6 +852,7 @@ def dashboard_counts(request):
                 "objection": base_qs.filter(current_stage__name__in=objection_stages).count(),
                 "approved": base_qs.filter(current_stage__name__in=approved_stages).count(),
                 "rejected": base_qs.filter(current_stage__name__in=rejected_stages).count(),
+                "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
             }
         )
 

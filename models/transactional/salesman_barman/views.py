@@ -548,7 +548,8 @@ def dashboard_counts(request):
         base_qs = SalesmanBarmanModel.objects.filter(applicant=request.user)
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
-        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages - objection_stages
+        payment_stages = set(stage_sets['payment'])
+        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages - objection_stages - payment_stages
         # The licensee UI does not surface an "Applied" tile; treat initial-stage apps as pending.
         pending_for_ui = pending_stages | applied_stages
         return Response({
@@ -557,6 +558,7 @@ def dashboard_counts(request):
             "objection": base_qs.filter(current_stage__name__in=objection_stages).count(),
             "approved": base_qs.filter(current_stage__name__in=stage_sets['approved']).count(),
             "rejected": base_qs.filter(current_stage__name__in=stage_sets['rejected']).count(),
+            "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
         })
 
     if role in ['site_admin']:

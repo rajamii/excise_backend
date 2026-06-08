@@ -1,14 +1,15 @@
-from datetime import date
+from datetime import date, datetime
 
 from django.test import TestCase
 from rest_framework.test import APIClient
 from django.urls import reverse
+from django.utils import timezone
 
 from auth.user.models import CustomUser
 from models.masters.core.models import District, LicenseCategory, LicenseSubcategory, State, Subdivision
 from models.masters.license.models import License
 from models.transactional.wallet.models import WalletBalance
-from models.transactional.wallet.wallet_initializer import initialize_wallet_balances_for_license
+from models.transactional.wallet.wallet_initializer import initialize_wallet_balances_for_license, _resolve_module_type
 
 
 class WalletInitializerPrimaryHolderTests(TestCase):
@@ -112,6 +113,22 @@ class WalletInitializerPrimaryHolderTests(TestCase):
         self.assertEqual(rows.count(), 5)
         self.assertEqual(rows.filter(wallet_type="security_deposit").count(), 1)
         self.assertEqual(rows.filter(wallet_type="license_fee").count(), 1)
+
+    def test_salesman_barman_without_subcategory_resolves_other_without_warning(self):
+        license_obj = License.objects.create(
+            license_id="SB/225/2026-27/0001",
+            source_type="salesman_barman",
+            applicant=self.user,
+            license_category=self.cat,
+            license_sub_category=None,
+            excise_district=self.district,
+            issue_date=timezone.make_aware(datetime(2026, 4, 1)),
+            valid_up_to=timezone.make_aware(datetime(2027, 3, 31, 23, 59, 59)),
+            is_active=True,
+        )
+
+        with self.assertNoLogs("models.transactional.wallet.wallet_initializer", level="WARNING"):
+            self.assertEqual(_resolve_module_type(license_obj), "other")
 
 
 class WalletSummaryScopeFilteringTests(TestCase):
