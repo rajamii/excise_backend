@@ -93,6 +93,21 @@ def _build_salesman_barman_address(app: SalesmanBarmanModel) -> str:
     return ', '.join(dict.fromkeys([p for p in parts if p]))
 
 
+def _salesman_barman_kind_of_shop(app: SalesmanBarmanModel, issued_license: License | None = None) -> str:
+    source_license = issued_license or getattr(app, 'license', None)
+    category = (
+        getattr(getattr(source_license, 'license_category', None), 'license_category', None)
+        or getattr(getattr(app, 'license_category', None), 'license_category', None)
+        or ''
+    )
+    subcategory = (
+        getattr(getattr(source_license, 'license_sub_category', None), 'description', None)
+        or getattr(getattr(getattr(app, 'license', None), 'license_sub_category', None), 'description', None)
+        or ''
+    )
+    return ' - '.join(dict.fromkeys([str(p).strip() for p in [category, subcategory] if str(p).strip()]))
+
+
 def _resolve_license_obj(source: str, application_id: str, model_cls):
     ct = ContentType.objects.get_for_model(model_cls)
     return (
@@ -408,7 +423,7 @@ def _validate_license_pdf_from_code(request, code: str):
             'licenseTitle': f'{role_label} Registration Certificate',
             'licenseeName': _salesman_barman_name(app),
             'fatherOrHusbandName': str(getattr(app, 'fatherHusbandName', '') or ''),
-            'kindOfShop': getattr(getattr(app, 'license_category', None), 'license_category', '') or '',
+            'kindOfShop': _salesman_barman_kind_of_shop(app, license_obj),
             'addressOfBusiness': _build_salesman_barman_address(app),
             'district': getattr(getattr(app, 'excise_district', None), 'district', '') or '',
             'modeOfOperation': role_label,
@@ -766,7 +781,7 @@ def _resolve_validation_result(request, code: str) -> dict:
                 'licenseTitle': f'{role_label} Registration Certificate',
                 'licenseNumber': (license_obj.license_id if license_obj else app.application_id),
                 'licenseeName': _salesman_barman_name(app),
-                'kindOfShop': getattr(getattr(app, 'license_category', None), 'license_category', '') or '',
+                'kindOfShop': _salesman_barman_kind_of_shop(app, license_obj),
                 'addressOfBusiness': _build_salesman_barman_address(app),
                 'district': getattr(getattr(app, 'excise_district', None), 'district', '') or '',
                 'validFrom': _fmt_dt(license_obj.issue_date) if license_obj else '',

@@ -271,6 +271,22 @@ def _build_sb_address(application: SalesmanBarmanModel) -> str:
     return ", ".join(dict.fromkeys([p for p in parts if p]))
 
 
+def _sb_kind_of_shop(application: SalesmanBarmanModel, issued_license: License | None = None) -> str:
+    source_license = issued_license or getattr(application, "license", None)
+    category = (
+        getattr(getattr(source_license, "license_category", None), "license_category", None)
+        or getattr(getattr(application, "license_category", None), "license_category", None)
+        or ""
+    )
+    subcategory = (
+        getattr(getattr(source_license, "license_sub_category", None), "description", None)
+        or getattr(getattr(getattr(application, "license", None), "license_sub_category", None), "description", None)
+        or ""
+    )
+    parts = [str(category).strip(), str(subcategory).strip()]
+    return " - ".join(dict.fromkeys([p for p in parts if p]))
+
+
 def _make_qr_data_url(payload: str) -> str:
     qr = QrCode.encode_text(str(payload or ""), QrCode.Ecc.MEDIUM)
     size = qr.get_size()
@@ -701,8 +717,6 @@ def final_license_detail(request, application_id):
 
     role_label = str(getattr(application, "role", "") or "Salesman").strip().title()
     license_number = license_obj.license_id if license_obj else application.application_id
-    license_category = getattr(application, "license_category", None)
-    category_name = getattr(license_category, "license_category", "") or ""
     district = getattr(getattr(application, "excise_district", None), "district", "") or ""
 
     response = {
@@ -718,7 +732,7 @@ def final_license_detail(request, application_id):
         "terms": [],
         "licenseeName": _full_name(application),
         "fatherOrHusbandName": str(getattr(application, "fatherHusbandName", "") or ""),
-        "kindOfShop": category_name,
+        "kindOfShop": _sb_kind_of_shop(application, license_obj),
         "addressOfBusiness": _build_sb_address(application),
         "district": district,
         "modeOfOperation": role_label,
