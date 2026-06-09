@@ -193,15 +193,13 @@ def active_licensees(request):
 
     for license in licensees:
         source_app = license.source_application
-        establishment_name = str(getattr(license, "license_id", "") or "")
-        mode_of_operation = "N/A"
 
         if source_app:
             if hasattr(source_app, 'establishment_name'):
-                establishment_name = source_app.establishment_name or establishment_name
+                establishment_name = source_app.establishment_name
 
             if hasattr(source_app, 'mode_of_operation'):
-                mode_of_operation = source_app.mode_of_operation or mode_of_operation
+                mode_of_operation = source_app.mode_of_operation
 
             if mode:
                 mode_formatted = mode.capitalize()
