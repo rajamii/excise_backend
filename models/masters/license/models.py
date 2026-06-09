@@ -81,12 +81,7 @@ class License(models.Model):
         return f"{self.license_id} — {self.get_source_type_display()}"
     
     def can_print_license(self):
-        if self.print_count < 5:
-            return True, 0  # Allowed to print, no fee required
-        elif self.is_print_fee_paid:
-            return True, 500  # Allowed to print, fee has been paid
-        else:
-            return False, 500  # Not allowed, fee required
+        return True, 0  # Allowed to print, no fee required
 
     def record_license_print(self, fee_paid=False):
         self.print_count += 1
