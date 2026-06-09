@@ -1,5 +1,6 @@
 from django.db import transaction
 from django.shortcuts import get_object_or_404
+from django.http import FileResponse, HttpResponse
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
@@ -11,12 +12,20 @@ from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition
 from auth.workflow.models import Transaction as WorkflowTransaction
 from auth.workflow.constants import WORKFLOW_IDS
 from auth.workflow.services import WorkflowService
-from models.masters.license.models import License
+from models.masters.license.models import License, LicenseValidationToken
 from models.masters.core.models import SupplyChainTimerConfig
 from .models import SalesmanBarmanModel
 from .serializers import SalesmanBarmanSerializer
 import re
 import secrets
+import base64
+import hashlib
+import mimetypes
+from io import BytesIO
+from urllib.parse import quote
+from django.core import signing
+from PIL import Image
+from utils.qrcodegen import QrCode
 from models.transactional.wallet.wallet_initializer import _resolve_hoa_code
 from rest_framework.permissions import IsAuthenticated
 from django.core.exceptions import PermissionDenied
@@ -216,6 +225,130 @@ def _resolve_sb_license_for_application(application: SalesmanBarmanModel) -> Lic
         )
     except Exception:
         return None
+
+
+def _fmt_dt(value) -> str:
+    if not value:
+        return ""
+    if hasattr(value, "date") and not hasattr(value, "strftime"):
+        value = value.date()
+    if hasattr(value, "date") and hasattr(value, "hour"):
+        value = value.date()
+    return value.strftime("%d/%m/%Y") if hasattr(value, "strftime") else ""
+
+
+def _fmt_dt_time(value) -> str:
+    if not value:
+        return ""
+    return timezone.localtime(value).strftime("%d/%m/%Y %I:%M %p") if hasattr(value, "tzinfo") else _fmt_dt(value)
+
+
+def _full_name(application: SalesmanBarmanModel) -> str:
+    return " ".join(
+        p for p in [
+            str(getattr(application, "firstName", "") or "").strip(),
+            str(getattr(application, "middleName", "") or "").strip(),
+            str(getattr(application, "lastName", "") or "").strip(),
+        ] if p
+    )
+
+
+def _build_sb_address(application: SalesmanBarmanModel) -> str:
+    parts = []
+    if getattr(application, "address", None):
+        parts.append(str(application.address).strip())
+    license_obj = getattr(application, "license", None)
+    source_app = getattr(license_obj, "source_application", None) if license_obj else None
+    if source_app:
+        for attr in ("location_name", "business_address"):
+            value = getattr(source_app, attr, None)
+            if value:
+                parts.append(str(value).strip())
+        if getattr(source_app, "police_station", None) and getattr(source_app.police_station, "police_station", None):
+            parts.append(f"P.S - {source_app.police_station.police_station}")
+        if getattr(source_app, "ward_name", None):
+            parts.append(f"Ward: {source_app.ward_name}")
+    return ", ".join(dict.fromkeys([p for p in parts if p]))
+
+
+def _make_qr_data_url(payload: str) -> str:
+    qr = QrCode.encode_text(str(payload or ""), QrCode.Ecc.MEDIUM)
+    size = qr.get_size()
+    border = 2
+    scale = 4
+    img_size = (size + border * 2) * scale
+    img = Image.new("RGB", (img_size, img_size), "white")
+    pixels = img.load()
+    for y in range(size):
+        for x in range(size):
+            if qr.get_module(x, y):
+                for dy in range(scale):
+                    for dx in range(scale):
+                        pixels[(x + border) * scale + dx, (y + border) * scale + dy] = (0, 0, 0)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+
+
+def _ensure_sb_validation_nonce(license_obj: License | None) -> str:
+    if not license_obj:
+        return ""
+    latest = LicenseValidationToken.objects.filter(license=license_obj).order_by("-created_at").first()
+    if latest and latest.nonce:
+        if str(getattr(license_obj, "validation_nonce", "") or "").strip() != latest.nonce:
+            license_obj.validation_nonce = latest.nonce
+            license_obj.validation_nonce_updated_at = timezone.now()
+            license_obj.save(update_fields=["validation_nonce", "validation_nonce_updated_at"])
+        return latest.nonce
+    nonce = secrets.token_hex(16)
+    license_obj.validation_nonce = nonce
+    license_obj.validation_nonce_updated_at = timezone.now()
+    license_obj.save(update_fields=["validation_nonce", "validation_nonce_updated_at"])
+    return nonce
+
+
+def _build_sb_validation_link(request, *, application_id: str, nonce: str) -> tuple[str, str, str]:
+    signed_code = signing.dumps(
+        {"applicationId": application_id, "source": "salesman_barman", "nonce": nonce},
+        salt="final-license",
+    )
+    validation_url = request.build_absolute_uri(f"/v/{quote(signed_code, safe=':')}/")
+    verification_id = hashlib.sha256(signed_code.encode("utf-8")).hexdigest()[:12]
+    return signed_code, validation_url, verification_id
+
+
+def _get_sb_validation_payload(request, application: SalesmanBarmanModel, license_obj: License | None):
+    if not license_obj:
+        return "", "", ""
+    latest = LicenseValidationToken.objects.filter(license=license_obj).order_by("-created_at").first()
+    if latest and getattr(latest, "signed_code", "") and getattr(latest, "validation_url", ""):
+        return str(latest.signed_code), str(latest.validation_url), str(latest.verification_id or "")
+    nonce = _ensure_sb_validation_nonce(license_obj)
+    signed_code, validation_url, verification_id = _build_sb_validation_link(
+        request, application_id=application.application_id, nonce=nonce
+    )
+    LicenseValidationToken.objects.update_or_create(
+        license=license_obj,
+        nonce=nonce,
+        defaults={
+            "signed_code": signed_code,
+            "validation_url": validation_url,
+            "verification_id": verification_id,
+        },
+    )
+    return signed_code, validation_url, verification_id
+
+
+def _passport_data_url(passport_file) -> str:
+    try:
+        if not passport_file or not getattr(passport_file, "name", None) or not passport_file.storage.exists(passport_file.name):
+            return ""
+        with passport_file.open("rb") as f:
+            raw = f.read()
+        mime = mimetypes.guess_type(passport_file.name)[0] or "application/octet-stream"
+        return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+    except Exception:
+        return ""
 
 
 def _get_salesman_barman_registration_fee() -> float | None:
@@ -528,6 +661,117 @@ def salesman_barman_detail(request, application_id):
     app = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
     serializer = SalesmanBarmanSerializer(app)
     return Response(serializer.data)
+
+
+@permission_classes([HasAppPermission('salesman_barman_registration', 'view')])
+@api_view(['GET'])
+def final_license_detail(request, application_id):
+    raw_id = str(application_id or "").strip()
+    token = raw_id
+    low = token.lower()
+    if low.startswith("val:") or low.startswith("val-") or low.startswith("val "):
+        token = token[4:].strip()
+
+    resolved_application_id = raw_id
+    validated_via_code = False
+    try:
+        payload = signing.loads(token, salt="final-license")
+        if isinstance(payload, dict) and payload.get("source") == "salesman_barman" and payload.get("applicationId"):
+            resolved_application_id = str(payload["applicationId"])
+            validated_via_code = True
+    except Exception:
+        resolved_application_id = raw_id
+
+    application = get_object_or_404(SalesmanBarmanModel, application_id=resolved_application_id)
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role == "licensee" and application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    license_obj = _resolve_sb_license_for_application(application)
+    validation_code, validation_url, _verification_id = _get_sb_validation_payload(request, application, license_obj)
+    passport_file = getattr(application, "passPhoto", None)
+    passport_exists = False
+    passport_url = ""
+    try:
+        passport_exists = bool(passport_file and getattr(passport_file, "name", None) and passport_file.storage.exists(passport_file.name))
+        if passport_exists and hasattr(passport_file, "url"):
+            passport_url = request.build_absolute_uri(passport_file.url)
+    except Exception:
+        passport_exists = False
+
+    role_label = str(getattr(application, "role", "") or "Salesman").strip().title()
+    license_number = license_obj.license_id if license_obj else application.application_id
+    license_category = getattr(application, "license_category", None)
+    category_name = getattr(license_category, "license_category", "") or ""
+    district = getattr(getattr(application, "excise_district", None), "district", "") or ""
+
+    response = {
+        "applicationId": application.application_id,
+        "certificateType": "salesman-barman",
+        "licenseNumber": license_number,
+        "licenseTitle": f"{role_label} Registration Certificate",
+        "validationCode": validation_code,
+        "validationPdfUrl": validation_url,
+        "validatedViaCode": validated_via_code,
+        "print_count": int(getattr(license_obj, "print_count", 0) or getattr(application, "print_count", 0) or 0),
+        "is_print_fee_paid": bool(getattr(license_obj, "is_print_fee_paid", False) or getattr(application, "is_print_fee_paid", False)),
+        "terms": [],
+        "licenseeName": _full_name(application),
+        "fatherOrHusbandName": str(getattr(application, "fatherHusbandName", "") or ""),
+        "kindOfShop": category_name,
+        "addressOfBusiness": _build_sb_address(application),
+        "district": district,
+        "modeOfOperation": role_label,
+        "passportPhotoUrl": passport_url,
+        "passportPhotoExists": passport_exists,
+        "passportPhotoDataUrl": _passport_data_url(passport_file),
+        "licenseFee": "",
+        "transactionRef": "",
+        "transactionDate": "",
+        "validFrom": _fmt_dt(getattr(license_obj, "issue_date", None)),
+        "validTo": _fmt_dt(getattr(license_obj, "valid_up_to", None)),
+        "generatedOn": _fmt_dt(timezone.now().date()),
+        "applicationDateTime": _fmt_dt_time(getattr(application, "created_at", None)),
+        "qrCodeDataUrl": _make_qr_data_url(validation_url),
+    }
+
+    return Response(response, status=status.HTTP_200_OK)
+
+
+@permission_classes([HasAppPermission('salesman_barman_registration', 'view')])
+@api_view(['GET'])
+def final_license_passport_photo(request, application_id):
+    application = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role == "licensee" and application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    passport_file = getattr(application, "passPhoto", None)
+    try:
+        if not passport_file or not getattr(passport_file, "name", None) or not passport_file.storage.exists(passport_file.name):
+            return Response({"detail": "Photo not available."}, status=status.HTTP_404_NOT_FOUND)
+        f = passport_file.open("rb")
+    except Exception:
+        return Response({"detail": "Photo not available."}, status=status.HTTP_404_NOT_FOUND)
+
+    mime = mimetypes.guess_type(passport_file.name)[0] or "application/octet-stream"
+    return FileResponse(f, content_type=mime)
+
+
+@permission_classes([HasAppPermission('salesman_barman_registration', 'view')])
+@api_view(['GET'])
+def final_license_qr_code(request, application_id):
+    application = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role == "licensee" and application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    license_obj = _resolve_sb_license_for_application(application)
+    _validation_code, validation_url, _verification_id = _get_sb_validation_payload(request, application, license_obj)
+
+    data_url = _make_qr_data_url(validation_url)
+    b64 = data_url.split(",", 1)[1] if "," in data_url else ""
+    return HttpResponse(base64.b64decode(b64), content_type="image/png")
 
 
 # Dashboard Counts

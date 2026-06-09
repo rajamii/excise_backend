@@ -25,6 +25,7 @@ from models.masters.license.models import License
 from models.masters.license.models import LicenseValidationToken
 from models.transactional.license_renewal_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
+from models.transactional.salesman_barman.models import SalesmanBarmanModel
 from utils.simple_pdf import PdfPage, build_text_pdf, build_validation_pdf_multi, paginate_lines
 
 _BRANDING_CACHE: tuple[object|None, object|None] | None = None
@@ -62,6 +63,34 @@ def _build_address_from_application(app) -> str:
     if getattr(app, 'pin_code', None):
         parts.append(f"Pin - {app.pin_code}")
     return ', '.join([p for p in parts if p])
+
+
+def _salesman_barman_name(app: SalesmanBarmanModel) -> str:
+    return ' '.join(
+        p for p in [
+            str(getattr(app, 'firstName', '') or '').strip(),
+            str(getattr(app, 'middleName', '') or '').strip(),
+            str(getattr(app, 'lastName', '') or '').strip(),
+        ] if p
+    )
+
+
+def _build_salesman_barman_address(app: SalesmanBarmanModel) -> str:
+    parts: list[str] = []
+    if getattr(app, 'address', None):
+        parts.append(str(app.address).strip())
+    license_obj = getattr(app, 'license', None)
+    source_app = getattr(license_obj, 'source_application', None) if license_obj else None
+    if source_app:
+        if getattr(source_app, 'location_name', None):
+            parts.append(str(source_app.location_name).strip())
+        if getattr(source_app, 'business_address', None):
+            parts.append(str(source_app.business_address).strip())
+        if getattr(source_app, 'police_station', None) and getattr(source_app.police_station, 'police_station', None):
+            parts.append(f"P.S - {source_app.police_station.police_station}")
+        if getattr(source_app, 'ward_name', None):
+            parts.append(f"Ward: {source_app.ward_name}")
+    return ', '.join(dict.fromkeys([p for p in parts if p]))
 
 
 def _resolve_license_obj(source: str, application_id: str, model_cls):
@@ -362,6 +391,34 @@ def _validate_license_pdf_from_code(request, code: str):
             'validationPdfUrl': validation_pdf_url,
             'validatedViaCode': False,
             'terms': terms,
+        }
+
+    elif source == 'salesman_barman':
+        app = SalesmanBarmanModel.objects.filter(application_id=application_id).first()
+        if not app:
+            return Response({'detail': 'License not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        license_obj = _resolve_license_obj(source, app.application_id, SalesmanBarmanModel)
+        license_number = license_obj.license_id if license_obj else app.application_id
+        role_label = str(getattr(app, 'role', '') or 'Salesman').strip().title()
+
+        response_payload = {
+            'applicationId': app.application_id,
+            'licenseNumber': license_number,
+            'licenseTitle': f'{role_label} Registration Certificate',
+            'licenseeName': _salesman_barman_name(app),
+            'fatherOrHusbandName': str(getattr(app, 'fatherHusbandName', '') or ''),
+            'kindOfShop': getattr(getattr(app, 'license_category', None), 'license_category', '') or '',
+            'addressOfBusiness': _build_salesman_barman_address(app),
+            'district': getattr(getattr(app, 'excise_district', None), 'district', '') or '',
+            'modeOfOperation': role_label,
+            'validFrom': _fmt_dt(license_obj.issue_date) if license_obj else '',
+            'validTo': _fmt_dt(license_obj.valid_up_to) if license_obj else '',
+            'generatedOn': _fmt_dt(now_date),
+            'validationCode': token,
+            'validationPdfUrl': validation_pdf_url,
+            'validatedViaCode': False,
+            'terms': [],
         }
 
     else:
@@ -686,6 +743,34 @@ def _resolve_validation_result(request, code: str) -> dict:
                 'district': app.excise_district.district if getattr(app, 'excise_district', None) else '',
                 'validFrom': _fmt_dt(license_obj.issue_date) if license_obj else '',
                 'validTo': _fmt_dt(license_obj.valid_up_to) if license_obj else (_fmt_dt(getattr(app, 'valid_up_to', None)) if getattr(app, 'valid_up_to', None) else ''),
+            }
+        )
+    elif source == 'salesman_barman':
+        app = SalesmanBarmanModel.objects.filter(application_id=application_id).first()
+        if not app:
+            return {
+                'status': 'not_found',
+                'message': 'License not found.',
+                'code': token,
+                'signatureVerified': True,
+                'authenticity': 'Digitally signed QR (record not found)',
+                'canDownload': False,
+                'details': details,
+                'verificationId': hashlib.sha256(token.encode('utf-8')).hexdigest()[:12],
+                'watermarkUrl': watermark_data_url,
+            }
+        license_obj = _resolve_license_obj(source, app.application_id, SalesmanBarmanModel)
+        role_label = str(getattr(app, 'role', '') or 'Salesman').strip().title()
+        details.update(
+            {
+                'licenseTitle': f'{role_label} Registration Certificate',
+                'licenseNumber': (license_obj.license_id if license_obj else app.application_id),
+                'licenseeName': _salesman_barman_name(app),
+                'kindOfShop': getattr(getattr(app, 'license_category', None), 'license_category', '') or '',
+                'addressOfBusiness': _build_salesman_barman_address(app),
+                'district': getattr(getattr(app, 'excise_district', None), 'district', '') or '',
+                'validFrom': _fmt_dt(license_obj.issue_date) if license_obj else '',
+                'validTo': _fmt_dt(license_obj.valid_up_to) if license_obj else '',
             }
         )
     else:
