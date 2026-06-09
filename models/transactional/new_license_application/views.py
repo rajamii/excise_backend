@@ -763,6 +763,26 @@ def final_license_detail(request, application_id):
             parts.append(f"Pin - {application.pin_code}")
         return ", ".join([p for p in parts if p])
 
+    def build_license_classification():
+        category = (
+            getattr(getattr(license_obj, "license_category", None), "license_category", None)
+            or getattr(getattr(application, "license_category", None), "license_category", None)
+            or ""
+        )
+        subcategory = (
+            getattr(getattr(license_obj, "license_sub_category", None), "description", None)
+            or getattr(getattr(application, "license_sub_category", None), "description", None)
+            or ""
+        )
+        parts = [str(category).strip(), str(subcategory).strip()]
+        return " - ".join(dict.fromkeys([p for p in parts if p]))
+
+    def build_mode_display():
+        raw_mode = application.get_mode_of_operation_display() if hasattr(application, "get_mode_of_operation_display") else application.mode_of_operation
+        if str(raw_mode or "").strip().lower() == "self":
+            return build_license_classification() or str(raw_mode or "")
+        return str(raw_mode or "")
+
     def _pick_passport_file():
         candidates = [getattr(application, "pass_photo", None)]
         if getattr(application, "renewal_of", None) and getattr(application.renewal_of, "source_application", None):
@@ -860,10 +880,10 @@ def final_license_detail(request, application_id):
         "termsScatCode": None,
         "licenseeName": application.applicant_name,
         "fatherOrHusbandName": application.father_husband_name,
-        "kindOfShop": application.license_type.license_type if application.license_type else "",
+        "kindOfShop": build_license_classification() or (application.license_type.license_type if application.license_type else ""),
         "addressOfBusiness": build_address(),
         "district": application.site_district.district if application.site_district else "",
-        "modeOfOperation": application.get_mode_of_operation_display() if hasattr(application, "get_mode_of_operation_display") else application.mode_of_operation,
+        "modeOfOperation": build_mode_display(),
         "passportPhotoUrl": photo_url,
         "passportPhotoExists": photo_exists,
         "passportPhotoDataUrl": passport_photo_data_url,

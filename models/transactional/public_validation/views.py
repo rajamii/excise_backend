@@ -121,6 +121,27 @@ def _resolve_license_obj(source: str, application_id: str, model_cls):
     )
 
 
+def _license_classification(app, license_obj: License | None = None) -> str:
+    category = (
+        getattr(getattr(license_obj, 'license_category', None), 'license_category', None)
+        or getattr(getattr(app, 'license_category', None), 'license_category', None)
+        or ''
+    )
+    subcategory = (
+        getattr(getattr(license_obj, 'license_sub_category', None), 'description', None)
+        or getattr(getattr(app, 'license_sub_category', None), 'description', None)
+        or ''
+    )
+    return ' - '.join(dict.fromkeys([str(p).strip() for p in [category, subcategory] if str(p).strip()]))
+
+
+def _mode_display_for_license(app, license_obj: License | None = None) -> str:
+    raw_mode = app.get_mode_of_operation_display() if hasattr(app, 'get_mode_of_operation_display') else getattr(app, 'mode_of_operation', '')
+    if str(raw_mode or '').strip().lower() == 'self':
+        return _license_classification(app, license_obj) or str(raw_mode or '')
+    return str(raw_mode or '')
+
+
 def _fetch_title_terms(cat_code: int | None, scat_code: int | None) -> tuple[str, list[str]]:
     if cat_code is None or scat_code is None:
         return '', []
@@ -359,10 +380,10 @@ def _validate_license_pdf_from_code(request, code: str):
             'licenseTitle': license_title,
             'licenseeName': app.applicant_name,
             'fatherOrHusbandName': app.father_husband_name,
-            'kindOfShop': app.license_type.license_type if getattr(app, 'license_type', None) else '',
+            'kindOfShop': _license_classification(app, license_obj) or (app.license_type.license_type if getattr(app, 'license_type', None) else ''),
             'addressOfBusiness': _build_address_from_application(app),
             'district': app.site_district.district if getattr(app, 'site_district', None) else '',
-            'modeOfOperation': app.get_mode_of_operation_display() if hasattr(app, 'get_mode_of_operation_display') else getattr(app, 'mode_of_operation', ''),
+            'modeOfOperation': _mode_display_for_license(app, license_obj),
             'validFrom': _fmt_dt(license_obj.issue_date) if license_obj else _fmt_dt(getattr(app, 'created_at', None).date() if getattr(app, 'created_at', None) else None),
             'validTo': _fmt_dt(license_obj.valid_up_to) if license_obj else '',
             'generatedOn': _fmt_dt(now_date),
@@ -718,7 +739,7 @@ def _resolve_validation_result(request, code: str) -> dict:
                 'licenseTitle': license_title,
                 'licenseNumber': (license_obj.license_id if license_obj else app.application_id),
                 'licenseeName': getattr(app, 'applicant_name', '') or '',
-                'kindOfShop': app.license_type.license_type if getattr(app, 'license_type', None) else '',
+                'kindOfShop': _license_classification(app, license_obj) or (app.license_type.license_type if getattr(app, 'license_type', None) else ''),
                 'addressOfBusiness': _build_address_from_application(app),
                 'district': app.site_district.district if getattr(app, 'site_district', None) else '',
                 'validFrom': _fmt_dt(license_obj.issue_date) if license_obj else _fmt_dt(getattr(app, 'created_at', None).date() if getattr(app, 'created_at', None) else None),
