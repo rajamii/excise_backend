@@ -71,7 +71,12 @@ def _expand_license_aliases(license_id: str):
 def _collect_user_license_ids(user):
     """
     Collect all license identifiers that can scope this user in brand_warehouse.
-    Includes profile/history IDs, issued license IDs, and NA/NLI aliases.
+    Includes issued license IDs and NA/NLI aliases.
+
+    IMPORTANT: source_object_id (application ID like NLI/.../0005) is NOT expanded
+    to an NA/ alias because application sequential numbers do NOT necessarily match
+    the issued license sequential numbers. Expanding would create incorrect cross-user
+    aliases (e.g. NLI/.../0005 → NA/.../0005 could belong to a different licensee).
     """
     scoped_ids = []
     seen = set()
@@ -81,6 +86,13 @@ def _collect_user_license_ids(user):
             if alias and alias not in seen:
                 seen.add(alias)
                 scoped_ids.append(alias)
+
+    def _append_raw(value):
+        """Append a value WITHOUT expanding aliases (used for source_object_id)."""
+        normalized = str(value or '').strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            scoped_ids.append(normalized)
 
     assignment = _get_oic_assignment(user)
     _append(getattr(getattr(assignment, 'approved_application', None), 'application_id', ''))
@@ -101,6 +113,8 @@ def _collect_user_license_ids(user):
     if licenses is not None:
         now_dt = timezone.now()
 
+        # Add source_object_id WITHOUT alias expansion — application IDs do NOT
+        # reliably map to issued license IDs via simple prefix swap (NLI→NA).
         for source_object_id in (
             licenses.filter(source_type='new_license_application', is_active=True, valid_up_to__gte=now_dt)
             .exclude(source_object_id__isnull=True)
@@ -108,8 +122,10 @@ def _collect_user_license_ids(user):
             .order_by('-issue_date')
             .values_list('source_object_id', flat=True)
         ):
-            _append(source_object_id)
+            _append_raw(source_object_id)
 
+        # Issued license IDs ARE expanded via alias (NA↔NLI) since brand_warehouse
+        # entries may be tagged with either form.
         for issued_license_id in (
             licenses.filter(is_active=True, valid_up_to__gte=now_dt)
             .exclude(license_id__isnull=True)
@@ -126,7 +142,7 @@ def _collect_user_license_ids(user):
             .order_by('-issue_date')
             .values_list('source_object_id', flat=True)
         ):
-            _append(source_object_id)
+            _append_raw(source_object_id)
 
         for issued_license_id in (
             licenses.exclude(license_id__isnull=True)
@@ -220,49 +236,10 @@ def _get_active_establishment_name(user, active_license_id: str = '') -> str:
 
 
 def _scope_queryset_by_active_license(queryset, user, field_name: str):
-    def _supports_lookup(model, lookup: str) -> bool:
-        current = model
-        for part in str(lookup or '').split('__'):
-            if not part:
-                return False
-            try:
-                field = current._meta.get_field(part)
-            except Exception:
-                return False
-            if getattr(field, 'is_relation', False):
-                current = getattr(field, 'related_model', None)
-                if current is None:
-                    return False
-        return True
-
     scoped_ids = _collect_user_license_ids(user)
-    establishment_name = _get_active_establishment_name(user)
 
     if scoped_ids:
-        strict_queryset = queryset.filter(**{f'{field_name}__in': scoped_ids})
-        if strict_queryset.exists():
-            return strict_queryset
-
-        # Fallback only when stock rows are missing license_id.
-        # DO NOT OR-in establishment name when license_id rows exist, because multiple
-        # licenses can share the same establishment name and that leaks cross-license data.
-        if establishment_name:
-            missing_license_filter = Q(**{f'{field_name}__isnull': True}) | Q(**{f'{field_name}': ''})
-            if _supports_lookup(queryset.model, 'factory__factory_name'):
-                return queryset.filter(factory__factory_name__icontains=establishment_name).filter(missing_license_filter)
-            if _supports_lookup(queryset.model, 'brand_warehouse__factory__factory_name'):
-                return queryset.filter(brand_warehouse__factory__factory_name__icontains=establishment_name).filter(missing_license_filter)
-        return strict_queryset
-
-    # Fallback: some deployments have license mappings that don't match stored stock rows.
-    # Keep scoped users limited to their establishment name so dashboards don't show empty inventory.
-    if establishment_name:
-        missing_license_filter = Q(**{f'{field_name}__isnull': True}) | Q(**{f'{field_name}': ''})
-        if _supports_lookup(queryset.model, 'factory__factory_name'):
-            return queryset.filter(factory__factory_name__icontains=establishment_name).filter(missing_license_filter)
-        if _supports_lookup(queryset.model, 'brand_warehouse__factory__factory_name'):
-            return queryset.filter(brand_warehouse__factory__factory_name__icontains=establishment_name).filter(missing_license_filter)
-        return queryset.none()
+        return queryset.filter(**{f'{field_name}__in': scoped_ids})
 
     return queryset.none()
 
