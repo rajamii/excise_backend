@@ -170,6 +170,8 @@ def license_detail(request, license_id):
 @api_view(['GET'])
 def active_licensees(request):
 
+    from django.db.models import Q
+
     district_code = request.query_params.get('district_code', None)
     license_category = request.query_params.get('license_category', None)
     mode = request.query_params.get('mode', None)
@@ -182,6 +184,20 @@ def active_licensees(request):
         'license_category',
         'source_content_type'
     )
+
+    # Filter by logged-in licensee user's own licenses if they have a 'Licensee' role
+    if request.user.is_authenticated and not request.user.is_superuser:
+        role_name = getattr(getattr(request.user, 'role', None), 'name', '').lower()
+        if role_name == 'licensee':
+            new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
+            user_app_ids = NewLicenseApplication.objects.filter(
+                applicant=request.user
+            ).values_list('application_id', flat=True)
+            
+            licensees = licensees.filter(
+                Q(applicant=request.user) | 
+                Q(source_content_type=new_app_ct, source_object_id__in=user_app_ids)
+            )
 
     if district_code:
         licensees = licensees.filter(excise_district__district_code=district_code)
