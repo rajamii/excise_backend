@@ -390,6 +390,13 @@ def pay_registration_fee_wallet(request, application_id):
     if application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    nli_app = getattr(application, "new_license_application", None)
+    if nli_app and not nli_app.is_license_fee_paid:
+        return Response(
+            {"detail": "Pay the license fee first, then only you can pay for salesman/barman application."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     # Only allow payment once the application is routed to awaiting_payment.
     try:
         from models.transactional.salesman_barman.payment_status import get_awaiting_payment_stage

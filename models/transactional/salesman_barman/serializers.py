@@ -51,6 +51,7 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
     valid_up_to = serializers.SerializerMethodField()
     license_id = serializers.SerializerMethodField()
     renewal_application_id = serializers.SerializerMethodField()
+    is_parent_license_fee_paid = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesmanBarmanModel
@@ -119,6 +120,15 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
         except Exception:
             pass
         return None
+
+    def get_is_parent_license_fee_paid(self, obj):
+        try:
+            nli_app = getattr(obj, "new_license_application", None)
+            if nli_app:
+                return bool(nli_app.is_license_fee_paid)
+        except Exception:
+            pass
+        return True
 
     def get_applicant_full_name(self, obj):
         applicant = obj.applicant
