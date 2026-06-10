@@ -123,12 +123,33 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
 
     def get_is_parent_license_fee_paid(self, obj):
         try:
+            # 1. Check fresh license flow
             nli_app = getattr(obj, "new_license_application", None)
             if nli_app:
                 return bool(nli_app.is_license_fee_paid)
+            
+            # 2. Check existing license / renewal flow
+            main_license = getattr(obj, "license", None)
+            if main_license:
+                from django.utils.timezone import now
+                from models.transactional.license_renewal_application.models import LicenseApplication
+                
+                # Check renewal applications
+                renewal_apps = LicenseApplication.objects.filter(old_license_id=main_license.license_id)
+                if renewal_apps.exists():
+                    latest_renewal = renewal_apps.order_by("-created_at").first()
+                    if latest_renewal and not latest_renewal.is_license_fee_paid:
+                        return False
+                
+                # Check expiration
+                if main_license.valid_up_to and main_license.valid_up_to < now():
+                    has_paid_renewal = renewal_apps.filter(is_license_fee_paid=True).exists()
+                    if not has_paid_renewal:
+                        return False
         except Exception:
             pass
         return True
+
 
     def get_applicant_full_name(self, obj):
         applicant = obj.applicant

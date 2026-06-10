@@ -397,6 +397,28 @@ def pay_registration_fee_wallet(request, application_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    main_license = getattr(application, "license", None)
+    if main_license:
+        from django.utils.timezone import now
+        from models.transactional.license_renewal_application.models import LicenseApplication
+        
+        renewal_apps = LicenseApplication.objects.filter(old_license_id=main_license.license_id)
+        if renewal_apps.exists():
+            latest_renewal = renewal_apps.order_by("-created_at").first()
+            if latest_renewal and not latest_renewal.is_license_fee_paid:
+                return Response(
+                    {"detail": "Pay the license fee first, then only you can pay for salesman/barman application."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        
+        if main_license.valid_up_to and main_license.valid_up_to < now():
+            has_paid_renewal = renewal_apps.filter(is_license_fee_paid=True).exists()
+            if not has_paid_renewal:
+                return Response(
+                    {"detail": "Pay the license fee first, then only you can pay for salesman/barman application."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
     # Only allow payment once the application is routed to awaiting_payment.
     try:
         from models.transactional.salesman_barman.payment_status import get_awaiting_payment_stage
@@ -683,7 +705,11 @@ def list_salesman_barman(request):
 def salesman_barman_detail(request, application_id):
     app = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
     serializer = SalesmanBarmanSerializer(app)
-    return Response(serializer.data)
+    response = Response(serializer.data)
+    response["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
+    return response
 
 
 @permission_classes([HasAppPermission('salesman_barman_registration', 'view')])
