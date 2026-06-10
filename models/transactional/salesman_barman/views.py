@@ -398,6 +398,17 @@ def pay_registration_fee_wallet(request, application_id):
         )
 
     main_license = getattr(application, "license", None)
+    if not main_license and nli_app:
+        from django.contrib.contenttypes.models import ContentType
+        from models.masters.license.models import License
+        from models.transactional.new_license_application.models import NewLicenseApplication
+        nli_ct = ContentType.objects.get_for_model(NewLicenseApplication)
+        main_license = License.objects.filter(
+            source_type="new_license_application",
+            source_content_type=nli_ct,
+            source_object_id=str(nli_app.pk)
+        ).first()
+
     if main_license:
         from django.utils.timezone import now
         from models.transactional.license_renewal_application.models import LicenseApplication
