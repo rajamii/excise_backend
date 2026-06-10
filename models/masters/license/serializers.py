@@ -164,6 +164,7 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
     license_sub_category = serializers.CharField(source='license_sub_category.description', read_only=True)
     establishment_name = serializers.SerializerMethodField()
     site_district = serializers.CharField(source='excise_district.district', read_only=True)
+    salesman_barman_role = serializers.SerializerMethodField()
 
     def get_is_license_fee_paid(self, obj):
         src = getattr(obj, "source_application", None)
@@ -184,6 +185,13 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
         if src is not None and getattr(src, "establishment_name", None):
             return str(getattr(src, "establishment_name") or "")
         return str(getattr(obj, "license_id", "") or "")
+
+    def get_salesman_barman_role(self, obj):
+        if obj.source_type == 'salesman_barman':
+            src = getattr(obj, "source_application", None)
+            if src is not None and getattr(src, "role", None):
+                return str(src.role).strip()
+        return None
 
     def _get_timer_days(self, code: str, default_days: int) -> int:
         cfg = (
@@ -348,4 +356,5 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
             'site_district',
             'renewal_count',
             'renewal_details',
+            'salesman_barman_role',
         ]
