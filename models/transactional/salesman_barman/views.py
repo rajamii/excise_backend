@@ -719,8 +719,21 @@ def final_license_detail(request, application_id):
     license_number = license_obj.license_id if license_obj else application.application_id
     district = getattr(getattr(application, "excise_district", None), "district", "") or ""
 
+    renewal_application_id = None
+    try:
+        from models.transactional.license_renewal_application.models import LicenseApplication
+
+        ct = ContentType.objects.get_for_model(application)
+        renewal = LicenseApplication.objects.filter(source_content_type=ct, source_object_id=application.pk).order_by('-created_at').first()
+        if renewal:
+            renewal_application_id = renewal.application_id
+    except Exception:
+        pass
+
     response = {
         "applicationId": application.application_id,
+        "renewalApplicationId": renewal_application_id,
+        "renewal_application_id": renewal_application_id,
         "certificateType": "salesman-barman",
         "licenseNumber": license_number,
         "licenseTitle": f"{role_label} Registration Certificate",

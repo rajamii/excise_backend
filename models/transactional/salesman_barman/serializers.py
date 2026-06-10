@@ -50,6 +50,7 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
     application_fee_payment_status_display = serializers.SerializerMethodField()
     valid_up_to = serializers.SerializerMethodField()
     license_id = serializers.SerializerMethodField()
+    renewal_application_id = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesmanBarmanModel
@@ -102,6 +103,19 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
             )
             if license_obj:
                 return license_obj.license_id
+        except Exception:
+            pass
+        return None
+
+    def get_renewal_application_id(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.transactional.license_renewal_application.models import LicenseApplication
+            
+            ct = ContentType.objects.get_for_model(obj)
+            renewal = LicenseApplication.objects.filter(source_content_type=ct, source_object_id=obj.pk).order_by('-created_at').first()
+            if renewal:
+                return renewal.application_id
         except Exception:
             pass
         return None

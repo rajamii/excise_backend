@@ -864,8 +864,21 @@ def final_license_detail(request, application_id):
                 validation_code = signed_code
                 validation_url = full_url
 
+    renewal_application_id = None
+    try:
+        from models.transactional.license_renewal_application.models import LicenseApplication
+
+        if license_obj:
+            renewal = LicenseApplication.objects.filter(old_license_id=license_obj.license_id).order_by('-created_at').first()
+            if renewal:
+                renewal_application_id = renewal.application_id
+    except Exception:
+        pass
+
     response = {
         "applicationId": application.application_id,
+        "renewalApplicationId": renewal_application_id,
+        "renewal_application_id": renewal_application_id,
         "licenseNumber": (license_obj.license_id if license_obj else application.application_id),
         "licenseTitle": "",
         "validationCode": validation_code,

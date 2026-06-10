@@ -151,6 +151,7 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     security_fee_amount = serializers.SerializerMethodField()
     valid_up_to = serializers.SerializerMethodField()
     issued_license_id = serializers.SerializerMethodField()
+    renewal_application_id = serializers.SerializerMethodField()
 
     class Meta:
         model = NewLicenseApplication
@@ -346,6 +347,22 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
             license_obj = License.objects.filter(source_content_type=ct, source_object_id=obj.pk).first()
             if license_obj:
                 return license_obj.license_id
+        except Exception:
+            pass
+        return None
+
+    def get_renewal_application_id(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            from models.transactional.license_renewal_application.models import LicenseApplication
+            
+            ct = ContentType.objects.get_for_model(obj)
+            license_obj = License.objects.filter(source_content_type=ct, source_object_id=obj.pk).first()
+            if license_obj:
+                renewal = LicenseApplication.objects.filter(old_license_id=license_obj.license_id).order_by('-created_at').first()
+                if renewal:
+                    return renewal.application_id
         except Exception:
             pass
         return None
