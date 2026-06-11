@@ -1256,6 +1256,27 @@ def _get_additional_charge_total(application: NewLicenseApplication) -> Decimal:
     return total
 
 
+def _check_pending_salesman_barman_new_flow(application, lic):
+    from models.transactional.salesman_barman.models import SalesmanBarmanModel
+    
+    pending_sb = SalesmanBarmanModel.objects.filter(
+        new_license_application=application,
+        is_print_fee_paid=False
+    ).first()
+    if pending_sb:
+        return f"Pay the salesman/barman registration fee first for {pending_sb.application_id}, then only you can pay for the new license application."
+        
+    if lic:
+        pending_sb_lic = SalesmanBarmanModel.objects.filter(
+            license=lic,
+            is_print_fee_paid=False
+        ).first()
+        if pending_sb_lic:
+            return f"Pay the salesman/barman registration fee first for {pending_sb_lic.application_id}, then only you can pay for the new license application."
+            
+    return None
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 @parser_classes([JSONParser, FormParser, MultiPartParser])
@@ -1268,6 +1289,10 @@ def pay_license_fee_wallet(request, application_id):
     lic = _resolve_na_license_for_application(application)
     if not lic:
         return Response({"detail": "License not issued yet."}, status=status.HTTP_400_BAD_REQUEST)
+
+    err = _check_pending_salesman_barman_new_flow(application, lic)
+    if err:
+        return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
     fee = _resolve_license_fee_row(application)
     if not fee:
@@ -1315,6 +1340,10 @@ def pay_security_fee_wallet(request, application_id):
     lic = _resolve_na_license_for_application(application)
     if not lic:
         return Response({"detail": "License not issued yet."}, status=status.HTTP_400_BAD_REQUEST)
+
+    err = _check_pending_salesman_barman_new_flow(application, lic)
+    if err:
+        return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
     fee = _resolve_license_fee_row(application)
     if not fee:

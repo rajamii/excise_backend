@@ -390,45 +390,7 @@ def pay_registration_fee_wallet(request, application_id):
     if application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    nli_app = getattr(application, "new_license_application", None)
-    if nli_app and not nli_app.is_license_fee_paid:
-        return Response(
-            {"detail": "Pay the license fee first, then only you can pay for salesman/barman application."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
 
-    main_license = getattr(application, "license", None)
-    if not main_license and nli_app:
-        from django.contrib.contenttypes.models import ContentType
-        from models.masters.license.models import License
-        from models.transactional.new_license_application.models import NewLicenseApplication
-        nli_ct = ContentType.objects.get_for_model(NewLicenseApplication)
-        main_license = License.objects.filter(
-            source_type="new_license_application",
-            source_content_type=nli_ct,
-            source_object_id=str(nli_app.pk)
-        ).first()
-
-    if main_license:
-        from django.utils.timezone import now
-        from models.transactional.license_renewal_application.models import LicenseApplication
-        
-        renewal_apps = LicenseApplication.objects.filter(old_license_id=main_license.license_id)
-        if renewal_apps.exists():
-            latest_renewal = renewal_apps.order_by("-created_at").first()
-            if latest_renewal and not latest_renewal.is_license_fee_paid:
-                return Response(
-                    {"detail": "Pay the license fee first, then only you can pay for salesman/barman application."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-        
-        if main_license.valid_up_to and main_license.valid_up_to < now():
-            has_paid_renewal = renewal_apps.filter(is_license_fee_paid=True).exists()
-            if not has_paid_renewal:
-                return Response(
-                    {"detail": "Pay the license fee first, then only you can pay for salesman/barman application."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
 
     # Only allow payment once the application is routed to awaiting_payment.
     try:

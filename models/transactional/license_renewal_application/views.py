@@ -644,6 +644,40 @@ def _pick_renewal_target_stage(application, mode: str) -> WorkflowStage | None:
     return transitions[0].to_stage
 
 
+def _check_pending_salesman_barman_for_shop_renewal(shop_license):
+    if not shop_license or getattr(shop_license, "source_type", None) == "salesman_barman":
+        return None
+
+    from models.transactional.salesman_barman.models import SalesmanBarmanModel
+    from models.transactional.license_renewal_application.models import LicenseApplication
+    from django.contrib.contenttypes.models import ContentType
+    from models.masters.license.models import License
+
+    # 1. Check for new salesman/barman applications pending payment
+    pending_sb = SalesmanBarmanModel.objects.filter(
+        license=shop_license,
+        is_print_fee_paid=False
+    ).first()
+    if pending_sb:
+        return f"Pay the salesman/barman registration fee first for {pending_sb.application_id}, then only you can pay for the license renewal application."
+
+    # 2. Check for renewed salesman/barman applications pending payment
+    sb_apps = SalesmanBarmanModel.objects.filter(license=shop_license)
+    sb_ct = ContentType.objects.get_for_model(SalesmanBarmanModel)
+    sb_licenses = License.objects.filter(
+        source_content_type=sb_ct,
+        source_object_id__in=sb_apps.values_list('application_id', flat=True)
+    )
+    pending_sb_renewals = LicenseApplication.objects.filter(
+        old_license_id__in=sb_licenses.values_list('license_id', flat=True),
+        is_license_fee_paid=False
+    ).first()
+    if pending_sb_renewals:
+        return f"Pay the salesman/barman renewal fee first for {pending_sb_renewals.application_id}, then only you can pay for the license renewal application."
+
+    return None
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 @parser_classes([JSONParser, FormParser, MultiPartParser])
@@ -665,48 +699,9 @@ def pay_license_fee_wallet(request, application_id):
 
     old_license = get_object_or_404(License, license_id=str(app.old_license_id))
 
-    if getattr(old_license, "source_type", None) == "salesman_barman":
-        sb_app = getattr(old_license, "source_application", None)
-        if sb_app:
-            nli_app = getattr(sb_app, "new_license_application", None)
-            if nli_app and not nli_app.is_license_fee_paid:
-                return Response(
-                    {"detail": "Pay the license fee first, then only you can pay for salesman/barman application."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            main_license = getattr(sb_app, "license", None)
-            if not main_license and nli_app:
-                from django.contrib.contenttypes.models import ContentType as CT
-                from models.masters.license.models import License as Lic
-                from models.transactional.new_license_application.models import NewLicenseApplication as NLI
-                nli_ct = CT.objects.get_for_model(NLI)
-                main_license = Lic.objects.filter(
-                    source_type="new_license_application",
-                    source_content_type=nli_ct,
-                    source_object_id=str(nli_app.pk)
-                ).first()
-
-            if main_license:
-                from django.utils.timezone import now
-                from models.transactional.license_renewal_application.models import LicenseApplication as LA
-                
-                renewal_apps = LA.objects.filter(old_license_id=main_license.license_id)
-                if renewal_apps.exists():
-                    latest_renewal = renewal_apps.order_by("-created_at").first()
-                    if latest_renewal and not latest_renewal.is_license_fee_paid:
-                        return Response(
-                            {"detail": "Pay the license fee first, then only you can pay for salesman/barman application."},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-                
-                if main_license.valid_up_to and main_license.valid_up_to < now():
-                    has_paid_renewal = renewal_apps.filter(is_license_fee_paid=True).exists()
-                    if not has_paid_renewal:
-                        return Response(
-                            {"detail": "Pay the license fee first, then only you can pay for salesman/barman application."},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
+    err = _check_pending_salesman_barman_for_shop_renewal(old_license)
+    if err:
+        return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
     # Resolve fee from underlying application when available.
     amount = None
@@ -820,6 +815,10 @@ def pay_security_fee_wallet(request, application_id):
         return Response({"detail": "Payment is not allowed at the current stage."}, status=status.HTTP_400_BAD_REQUEST)
 
     old_license = get_object_or_404(License, license_id=str(app.old_license_id))
+
+    err = _check_pending_salesman_barman_for_shop_renewal(old_license)
+    if err:
+        return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
 
     amount = None
     src_app = _resolve_new_license_application_from_license(old_license)
