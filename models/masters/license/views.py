@@ -176,28 +176,35 @@ def active_licensees(request):
     license_category = request.query_params.get('license_category', None)
     mode = request.query_params.get('mode', None)
     
-    licensees = License.objects.filter(
-        is_active=True,
-        valid_up_to__gte=now()
-        ).select_related(
-        'excise_district',
-        'license_category',
-        'source_content_type'
-    )
-
-    # Filter by logged-in licensee user's own licenses if they have a 'Licensee' role
+    is_licensee_role = False
     if request.user.is_authenticated and not request.user.is_superuser:
         role_name = getattr(getattr(request.user, 'role', None), 'name', '').lower()
         if role_name == 'licensee':
-            new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
-            user_app_ids = NewLicenseApplication.objects.filter(
-                applicant=request.user
-            ).values_list('application_id', flat=True)
-            
-            licensees = licensees.filter(
-                Q(applicant=request.user) | 
-                Q(source_content_type=new_app_ct, source_object_id__in=user_app_ids)
-            )
+            is_licensee_role = True
+
+    if is_licensee_role:
+        new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
+        user_app_ids = NewLicenseApplication.objects.filter(
+            applicant=request.user
+        ).values_list('application_id', flat=True)
+        
+        licensees = License.objects.filter(
+            Q(applicant=request.user) | 
+            Q(source_content_type=new_app_ct, source_object_id__in=user_app_ids)
+        ).select_related(
+            'excise_district',
+            'license_category',
+            'source_content_type'
+        )
+    else:
+        licensees = License.objects.filter(
+            is_active=True,
+            valid_up_to__gte=now()
+        ).select_related(
+            'excise_district',
+            'license_category',
+            'source_content_type'
+        )
 
     if district_code:
         licensees = licensees.filter(excise_district__district_code=district_code)
@@ -227,6 +234,12 @@ def active_licensees(request):
             if mode and mode_of_operation == "N/A":
                 continue
 
+        status_str = "Active"
+        if (license.valid_up_to and license.valid_up_to < now()) or not license.is_active:
+            status_str = "Expired"
+            if "expired" not in establishment_name.lower():
+                establishment_name = f"{establishment_name} (Expired)"
+
         data.append({
             "licenseeId": license.license_id,
             "id": license.license_id,
@@ -236,7 +249,7 @@ def active_licensees(request):
             "district_code": license.excise_district.district_code,
             "valid_up_to": license.valid_up_to.isoformat() if getattr(license, "valid_up_to", None) else "",
             "mode_of_operation": mode_of_operation,
-            "status": "Active"
+            "status": status_str
         })
     return Response(data, status=status.HTTP_200_OK)
 
