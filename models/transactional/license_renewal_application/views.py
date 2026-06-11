@@ -65,9 +65,26 @@ def initiate_renewal(request, license_id):
     # Flip fee-paid flags on source application to False when renewal starts, so they must pay again.
     src_app = _resolve_new_license_application_from_license(old_license)
     if src_app is not None:
+        update_fields = ["is_license_fee_paid", "is_security_fee_paid"]
+        
+        pachwai = request.data.get("pachwai")
+        if pachwai is not None:
+            src_app.pachwai = bool(pachwai)
+            update_fields.append("pachwai")
+            
+        draught_beer = request.data.get("draught_beer")
+        if draught_beer is not None:
+            src_app.draught_beer = bool(draught_beer)
+            update_fields.append("draught_beer")
+            
+        mode_of_operation = request.data.get("mode_of_operation")
+        if mode_of_operation is not None and mode_of_operation in ["Self", "Salesman", "Barman"]:
+            src_app.mode_of_operation = str(mode_of_operation)
+            update_fields.append("mode_of_operation")
+
         src_app.is_license_fee_paid = False
         src_app.is_security_fee_paid = False
-        src_app.save(update_fields=["is_license_fee_paid", "is_security_fee_paid"])
+        src_app.save(update_fields=update_fields)
 
     # Renewal window opens only within the reminder window (or after expiry).
     if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
