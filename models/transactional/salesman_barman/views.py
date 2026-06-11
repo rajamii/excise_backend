@@ -592,7 +592,6 @@ def initiate_renewal(request, license_id):
 
     # SOP: Require main license renewal first
     from django.contrib.contenttypes.models import ContentType
-    from models.masters.license.models import License
     from models.transactional.license_renewal_application.models import LicenseApplication
 
     sb_ct = ContentType.objects.get_for_model(SalesmanBarmanModel)
