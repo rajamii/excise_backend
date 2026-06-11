@@ -590,6 +590,30 @@ def initiate_renewal(request, license_id):
     now_dt = timezone.now()
     reminder_days = get_timer_days("LICENSE_RENEWAL_REMINDER_TIMER", 90)
 
+    # SOP: Require main license renewal first
+    from django.contrib.contenttypes.models import ContentType
+    from models.masters.license.models import License
+    from models.transactional.license_renewal_application.models import LicenseApplication
+
+    sb_ct = ContentType.objects.get_for_model(SalesmanBarmanModel)
+    main_licenses = License.objects.filter(
+        applicant=request.user,
+        source_type__in=['new_license_application', 'license_application']
+    )
+
+    for main_lic in main_licenses:
+        main_reminder_days = get_timer_days("LICENSE_RENEWAL_REMINDER_TIMER", 90)
+        if main_lic.valid_up_to and main_lic.valid_up_to <= now_dt + timedelta(days=main_reminder_days):
+            main_renewal_exists = LicenseApplication.objects.filter(
+                old_license_id=main_lic.license_id,
+            ).exclude(source_content_type=sb_ct).exists()
+
+            if not main_renewal_exists:
+                return Response(
+                    {"detail": f"Please renew your new license ({main_lic.license_id}) first before renewing Salesman/Barman application."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
     # Best-effort: keep license status consistent once it crosses expiry.
     if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to < now_dt and getattr(old_license, "is_active", True):
         old_license.is_active = False
