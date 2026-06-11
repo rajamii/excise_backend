@@ -551,7 +551,10 @@ def _serialize_renewal_application(obj: LicenseApplication):
                 from models.transactional.new_license_application.serializers import NewLicenseApplicationSerializer
                 source_data = dict(NewLicenseApplicationSerializer(source_app).data)
 
+            orig_security_paid = source_data.get("is_security_fee_paid", False)
             source_data.update(data)
+            if model_name != "salesmanbarmanmodel":
+                source_data["is_security_fee_paid"] = orig_security_paid or data.get("is_security_fee_paid", False)
             data = source_data
         except Exception:
             pass
@@ -810,80 +813,12 @@ def pay_license_fee_wallet(request, application_id):
 @permission_classes([IsAuthenticated])
 @parser_classes([JSONParser, FormParser, MultiPartParser])
 def pay_security_fee_wallet(request, application_id):
-    """
-    Renewal payment: security fee. After success:
-    - source NewLicenseApplication.is_security_fee_paid=True (when applicable)
-    """
-    app = get_object_or_404(LicenseApplication, application_id=str(application_id))
-    _require_licensee_user(request)
-    if app.applicant_id != request.user.id:
-        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+    return Response(
+        {"detail": "Security deposit is paid only once during the initial new license application. You do not need to pay it again for renewal."},
+        status=status.HTTP_400_BAD_REQUEST
+    )
 
-    stage_name = str(getattr(getattr(app, "current_stage", None), "name", "") or "").strip().lower()
-    if stage_name and "awaiting payment" not in stage_name and "payment" not in stage_name:
-        return Response({"detail": "Payment is not allowed at the current stage."}, status=status.HTTP_400_BAD_REQUEST)
 
-    old_license = get_object_or_404(License, license_id=str(app.old_license_id))
-
-    err = _check_pending_salesman_barman_for_shop_renewal(old_license)
-    if err:
-        return Response({"detail": err}, status=status.HTTP_400_BAD_REQUEST)
-
-    amount = None
-    src_app = _resolve_new_license_application_from_license(old_license)
-    if src_app is not None:
-        try:
-            from models.transactional.new_license_application.views import _resolve_license_fee_row, _get_additional_charge_total
-
-            fee = _resolve_license_fee_row(src_app)
-            if fee and getattr(fee, "security_amount", None) is not None:
-                amount = getattr(fee, "security_amount")
-                amount = amount + _get_additional_charge_total(src_app)
-        except Exception:
-            amount = None
-
-    if amount is None:
-        return Response({"detail": "Security fee structure not configured for this renewal."}, status=status.HTTP_400_BAD_REQUEST)
-
-    security_deposit_hoa = _resolve_hoa_code(module_type="other", wallet_type="security_deposit")
-    txn_id = secrets.token_hex(12).upper()
-    try:
-        debit_wallet_balance(
-            transaction_id=txn_id,
-            licensee_id=str(old_license.license_id),
-            wallet_type="security_deposit",
-            head_of_account=security_deposit_hoa,
-            amount=Decimal(str(amount)),
-            user_id=str(getattr(request.user, "username", "") or "").strip(),
-            remarks=f"Renewal security fee paid for {app.application_id}",
-            reference_no=app.application_id,
-        )
-    except Exception as exc:
-        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-    # Mark fee as paid on the renewal tracking application itself
-    app.is_security_fee_paid = True
-    app.save(update_fields=["is_security_fee_paid"])
-
-    if src_app is not None and not getattr(src_app, "is_security_fee_paid", False):
-        try:
-            src_app.is_security_fee_paid = True
-            src_app.save(update_fields=["is_security_fee_paid"])
-        except Exception:
-            pass
-
-    # If both renewal payments are complete, activate license (validity may have been extended already).
-    try:
-        _sync_license_active_from_renewal_payment(old_license, app)
-    except Exception:
-        pass
-
-    try:
-        _sync_renewal_payment_status(app)
-    except Exception:
-        pass
-
-    return Response({"success": True, "transaction_id": txn_id, "license_id": old_license.license_id})
 
 
 @api_view(["POST"])

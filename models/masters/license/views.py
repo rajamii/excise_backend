@@ -397,11 +397,8 @@ def deactivate_all_expired_licenses():
                     if getattr(src, "is_license_fee_paid", None) is True:
                         src.is_license_fee_paid = False
                         changed = True
-                    if getattr(src, "is_security_fee_paid", None) is True:
-                        src.is_security_fee_paid = False
-                        changed = True
                     if changed:
-                        src.save(update_fields=["is_license_fee_paid", "is_security_fee_paid"])
+                        src.save(update_fields=["is_license_fee_paid"])
             except Exception:
                 pass
 
