@@ -79,6 +79,22 @@ def initiate_renewal(request, license_id):
             
         mode_of_operation = request.data.get("mode_of_operation")
         if mode_of_operation is not None and mode_of_operation in ["Self", "Salesman", "Barman"]:
+            if mode_of_operation in ["Salesman", "Barman"]:
+                from models.transactional.salesman_barman.models import SalesmanBarmanModel
+                from django.db.models import Q
+                
+                has_sbm = SalesmanBarmanModel.objects.filter(
+                    Q(new_license_application=src_app) | Q(license=old_license) | Q(renewal_of=old_license),
+                    applicant=request.user,
+                    role__iexact=mode_of_operation
+                ).exists()
+                
+                if not has_sbm:
+                    return Response(
+                        {"detail": f"Please register/fill the {mode_of_operation.lower()} application first to opt for {mode_of_operation.lower()}."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
             src_app.mode_of_operation = str(mode_of_operation)
             update_fields.append("mode_of_operation")
             
