@@ -81,6 +81,43 @@ def initiate_renewal(request, license_id):
         if mode_of_operation is not None and mode_of_operation in ["Self", "Salesman", "Barman"]:
             src_app.mode_of_operation = str(mode_of_operation)
             update_fields.append("mode_of_operation")
+            
+            if mode_of_operation == "Self":
+                from models.transactional.salesman_barman.models import SalesmanBarmanModel
+                from auth.workflow.models import Transaction, Rejection
+                from django.contrib.contenttypes.models import ContentType
+                from django.db.models import Q
+                
+                # Query and terminate any active salesman/barman applications associated with this license
+                sbm_apps = SalesmanBarmanModel.objects.filter(
+                    Q(new_license_application=src_app) | Q(license=old_license) | Q(renewal_of=old_license),
+                    applicant=request.user
+                ).exclude(current_stage__name__iexact="rejected")
+                
+                for sbm_app in sbm_apps:
+                    rejected_stage = sbm_app.workflow.stages.filter(name__iexact="rejected").order_by("id").first()
+                    if rejected_stage:
+                        sbm_app.current_stage = rejected_stage
+                        sbm_app.is_approved = False
+                        sbm_app.save(update_fields=["current_stage", "is_approved"])
+                        
+                        Rejection.objects.create(
+                            content_type=ContentType.objects.get_for_model(sbm_app),
+                            object_id=str(sbm_app.pk),
+                            remarks="Rejected by user of salesman barman registration",
+                            rejected_by=request.user,
+                            stage=rejected_stage,
+                        )
+                        
+                        Transaction.objects.create(
+                            content_type=ContentType.objects.get_for_model(sbm_app),
+                            object_id=str(sbm_app.pk),
+                            performed_by=request.user,
+                            forwarded_by=getattr(request.user, "role", None),
+                            forwarded_to=None,
+                            stage=rejected_stage,
+                            remarks="Rejected by user of salesman barman registration",
+                        )
 
         src_app.is_license_fee_paid = False
         src_app.is_security_fee_paid = False
