@@ -327,6 +327,7 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
         fields = [
             'license_id',
             'source_object_id',
+            'is_active',
             'is_license_fee_paid',
             'is_security_fee_paid',
             'issue_date',

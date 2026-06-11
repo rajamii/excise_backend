@@ -442,10 +442,18 @@ class MyLicensesListView(generics.ListAPIView):
                     lic.is_active = True
                     lic.save(update_fields=["is_active"])
 
-            # Non new-license sources: validity implies active.
-            other_qs = eligible_qs.exclude(source_content_type=new_app_ct)
+            # Non new-license and non salesman-barman sources: validity implies active.
+            other_qs = eligible_qs.exclude(source_content_type=new_app_ct).exclude(source_type="salesman_barman")
             if other_qs.exists():
                 other_qs.update(is_active=True)
+
+            # Salesman/Barman sources: only reactivate if the underlying SBM application is approved and not rejected.
+            sbm_qs = eligible_qs.filter(source_type="salesman_barman")
+            for lic in sbm_qs:
+                sbm_app = getattr(lic, "source_application", None)
+                if sbm_app and getattr(sbm_app, "is_approved", False) and str(getattr(getattr(sbm_app, "current_stage", None), "name", "")).lower() != "rejected":
+                    lic.is_active = True
+                    lic.save(update_fields=["is_active"])
         except Exception:
             pass
 

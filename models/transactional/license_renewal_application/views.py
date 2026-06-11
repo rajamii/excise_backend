@@ -101,6 +101,17 @@ def initiate_renewal(request, license_id):
                         sbm_app.is_approved = False
                         sbm_app.save(update_fields=["current_stage", "is_approved"])
                         
+                        # Deactivate the associated License record(s)
+                        License.objects.filter(
+                            source_type="salesman_barman",
+                            source_object_id=str(sbm_app.pk)
+                        ).update(is_active=False)
+                        
+                        if getattr(sbm_app, "renewal_of", None):
+                            License.objects.filter(
+                                license_id=sbm_app.renewal_of.license_id
+                            ).update(is_active=False)
+                        
                         Rejection.objects.create(
                             content_type=ContentType.objects.get_for_model(sbm_app),
                             object_id=str(sbm_app.pk),
