@@ -1258,13 +1258,18 @@ def _get_additional_charge_total(application: NewLicenseApplication) -> Decimal:
 
 def _check_pending_salesman_barman_new_flow(application, lic):
     from models.transactional.salesman_barman.models import SalesmanBarmanModel
+    from models.transactional.salesman_barman.payment_status import get_awaiting_payment_stage
     
     pending_sb = SalesmanBarmanModel.objects.filter(
         new_license_application=application,
         is_print_fee_paid=False
     ).first()
     if pending_sb:
-        return f"Pay the salesman/barman registration fee first for {pending_sb.application_id}, then only you can pay for the new license application."
+        awaiting_stage = get_awaiting_payment_stage(pending_sb)
+        if awaiting_stage and pending_sb.current_stage_id == awaiting_stage.id:
+            return f"Please pay the salesman/barman registration fee first for {pending_sb.application_id}, then only you can pay for the new license application."
+        else:
+            return f"Please wait for the approval of the salesman/barman application {pending_sb.application_id} and pay its registration fee first, then only you can pay for the new license application."
         
     if lic:
         pending_sb_lic = SalesmanBarmanModel.objects.filter(
@@ -1272,7 +1277,11 @@ def _check_pending_salesman_barman_new_flow(application, lic):
             is_print_fee_paid=False
         ).first()
         if pending_sb_lic:
-            return f"Pay the salesman/barman registration fee first for {pending_sb_lic.application_id}, then only you can pay for the new license application."
+            awaiting_stage = get_awaiting_payment_stage(pending_sb_lic)
+            if awaiting_stage and pending_sb_lic.current_stage_id == awaiting_stage.id:
+                return f"Please pay the salesman/barman registration fee first for {pending_sb_lic.application_id}, then only you can pay for the new license application."
+            else:
+                return f"Please wait for the approval of the salesman/barman application {pending_sb_lic.application_id} and pay its registration fee first, then only you can pay for the new license application."
             
     return None
 

@@ -652,6 +652,7 @@ def _check_pending_salesman_barman_for_shop_renewal(shop_license):
     from models.transactional.license_renewal_application.models import LicenseApplication
     from django.contrib.contenttypes.models import ContentType
     from models.masters.license.models import License
+    from models.transactional.salesman_barman.payment_status import get_awaiting_payment_stage
 
     # 1. Check for new salesman/barman applications pending payment
     pending_sb = SalesmanBarmanModel.objects.filter(
@@ -659,7 +660,11 @@ def _check_pending_salesman_barman_for_shop_renewal(shop_license):
         is_print_fee_paid=False
     ).first()
     if pending_sb:
-        return f"Pay the salesman/barman registration fee first for {pending_sb.application_id}, then only you can pay for the license renewal application."
+        awaiting_stage = get_awaiting_payment_stage(pending_sb)
+        if awaiting_stage and pending_sb.current_stage_id == awaiting_stage.id:
+            return f"Please pay the salesman/barman registration fee first for {pending_sb.application_id}, then only you can pay for the license renewal application."
+        else:
+            return f"Please wait for the approval of the salesman/barman application {pending_sb.application_id} and pay its registration fee first, then only you can pay for the license renewal application."
 
     # 2. Check for renewed salesman/barman applications pending payment
     sb_apps = SalesmanBarmanModel.objects.filter(license=shop_license)
@@ -673,7 +678,11 @@ def _check_pending_salesman_barman_for_shop_renewal(shop_license):
         is_license_fee_paid=False
     ).first()
     if pending_sb_renewals:
-        return f"Pay the salesman/barman renewal fee first for {pending_sb_renewals.application_id}, then only you can pay for the license renewal application."
+        awaiting_stage = _renewal_awaiting_payment_stage(pending_sb_renewals)
+        if awaiting_stage and pending_sb_renewals.current_stage_id == awaiting_stage.id:
+            return f"Please pay the salesman/barman renewal fee first for {pending_sb_renewals.application_id}, then only you can pay for the license renewal application."
+        else:
+            return f"Please wait for the approval of the salesman/barman renewal application {pending_sb_renewals.application_id} and pay its renewal fee first, then only you can pay for the license renewal application."
 
     return None
 
