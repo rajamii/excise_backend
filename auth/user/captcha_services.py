@@ -33,20 +33,20 @@ def generate_redis_captcha():
 def verify_redis_captcha(hashkey: str, response: str) -> bool:
     """Verifies the CAPTCHA against Redis and deletes it ONLY on match success."""
     if not hashkey or not response:
-        print("DEBUG CAPTCHA: Missing hashkey or response string payload.")
+        # print("DEBUG CAPTCHA: Missing hashkey or response string payload.")
         return False
         
     cache_key = f"captcha_{hashkey}"
     cached_text = cache.get(cache_key)
     
-    print(f"DEBUG CAPTCHA: Received Response='{response}' | Found Cached Text='{cached_text}'")
+    # print(f"DEBUG CAPTCHA: Received Response='{response}' | Found Cached Text='{cached_text}'")
     
     if not cached_text:
-        print("DEBUG CAPTCHA: Cache key was empty or has already expired.")
+        # print("DEBUG CAPTCHA: Cache key was empty or has already expired.")
         return False  
         
     is_valid = cached_text.lower() == response.strip().lower()
-    print(f"DEBUG CAPTCHA: Final validation evaluation match result = {is_valid}")
+    # print(f"DEBUG CAPTCHA: Final validation evaluation match result = {is_valid}")
     
     # FIX: ONLY delete the key if it matches perfectly to prevent early deletion by middleware
     if is_valid:

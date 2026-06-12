@@ -232,8 +232,6 @@ def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str
     else:
         client_ip = request.META.get('REMOTE_ADDR', '127.0.0.1')
 
-    print(f"Client IP determined for BillDesk order creation: {client_ip}") # Debug log to verify IP extraction
-
     order_date = timezone.localtime(timezone.now()).strftime("%Y-%m-%dT%H:%M:%S+05:30")
     
     payload = {
@@ -1604,160 +1602,31 @@ def billdesk_response(request):
     return HttpResponse(dynamic_html, content_type="text/html")
 
 
-# @csrf_exempt
-# def billdesk_mock_process(request):
-#     """
-#     Localhost testing helper.
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def sbi_epay_mock_process(request):
+    """
+    Simulates the SBI ePay payment processing.
+    In a real scenario, this would generate an encrypted payload and redirect to SBI.
+    For this test kit, we will mock a successful transaction response directly.
+    """
+    data = request.data
+    amount = data.get("amount")
+    transaction_id = data.get("transaction_id")
+    head_of_account = data.get("head_of_account")
 
-#     The Angular app auto-POSTs `msg=<request_msg>` to the BillDesk gateway URL.
-#     When BILLDESK_USE_MOCK=1, our initiate endpoint returns this mock URL instead.
+    if not amount or not transaction_id:
+        return Response(
+            {"detail": "Amount and Transaction ID are required."}, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
-#     This endpoint simulates BillDesk's ProcessPayment by generating a response `msg`
-#     (with checksum) and auto-POSTing it to our `/billdesk/response/` handler.
-#     """
-#     if request.method != "POST":
-#         return HttpResponseBadRequest("Invalid method")
 
-#     incoming = str(request.POST.get("msg") or request.POST.get("MSG") or "").strip()
-#     if not incoming:
-#         return HttpResponseBadRequest("Missing msg")
-
-#     if getattr(settings, "BILLDESK_MOCK_SIMULATE_PENDING", False):
-#         return HttpResponse(
-#             """
-#             <html>
-#               <head><title>BillDesk Mock - Pending</title></head>
-#               <body style="font-family: Arial, sans-serif; padding: 24px;">
-#                 <h3>BillDesk Mock</h3>
-#                 <p><strong>Simulating a stuck/pending payment:</strong> no callback will be sent to the server.</p>
-#                 <p>You can close this page and check wallet history status as <code>Pending</code>.</p>
-#               </body>
-#             </html>
-#             """
-#         )
-
-#     req_parts = incoming.split("|")
-#     if len(req_parts) < 5:
-#         return HttpResponseBadRequest("Invalid request msg format")
-
-#     merchant_id = req_parts[0].strip()
-#     txn_ref = req_parts[1].strip()
-#     amount = req_parts[3].strip()
-
-#     gateway = (
-#         PaymentGatewayParameters.objects.filter(is_active=True, payment_gateway_name__iexact="Billdesk")
-#         .order_by("sl_no")
-#         .first()
-#     )
-#     encryption_key = str(getattr(gateway, "encryption_key", "") or "").strip()
-#     if not encryption_key:
-#         return HttpResponseBadRequest("Missing encryption key")
-
-#     auth_status = str(getattr(settings, "BILLDESK_MOCK_AUTH_STATUS", "0300") or "0300").strip()
-#     error_status = "NA" if auth_status == "0300" else "ERR"
-#     error_desc = "NA" if auth_status == "0300" else "MOCK_FAILED"
-
-#     # Build a realistic BillDesk response string (checksum appended at end).
-#     # MerchantID|CustomerID|TxnReferenceNo|BankReferenceNo|TxnAmount|BankID|BankMerchantID|TxnType|CurrencyName|ItemCode|
-#     # SecurityType|SecurityID|SecurityPassword|TxnDate|AuthStatus|SettlementType|AdditionalInfo1..7|ErrorStatus|ErrorDescription|Checksum
-#     customer_id = "NA"
-#     bank_ref = f"MOCK{timezone.now().strftime('%Y%m%d%H%M%S')}"
-#     bank_id = "NA"
-#     bank_merchant_id = "NA"
-#     txn_type = "NA"
-#     currency = "INR"
-#     item_code = "NA"
-#     security_type = "NA"
-#     security_id = str(getattr(gateway, "securityid", "") or "").strip() or "NA"
-#     security_password = "NA"
-#     txn_date = timezone.now().strftime("%Y-%m-%d %H:%M:%S")
-#     settlement_type = "NA"
-
-#     # Try to echo back additional info from our stored request (if present).
-#     tx = PaymentBilldeskTransaction.objects.filter(utr=txn_ref).first()
-#     add = [
-#         str(getattr(tx, "request_additionalinfo1", "") or "NA"),
-#         str(getattr(tx, "request_additionalinfo2", "") or "NA"),
-#         str(getattr(tx, "request_additionalinfo3", "") or "NA"),
-#         str(getattr(tx, "request_additionalinfo4", "") or "NA"),
-#         str(getattr(tx, "request_additionalinfo5", "") or "NA"),
-#         str(getattr(tx, "request_additionalinfo6", "") or "NA"),
-#         str(getattr(tx, "request_additionalinfo7", "") or "NA"),
-#     ]
-
-#     resp_without_checksum = (
-#         f"{merchant_id}|{customer_id}|{txn_ref}|{bank_ref}|{amount}|{bank_id}|{bank_merchant_id}|{txn_type}|"
-#         f"{currency}|{item_code}|{security_type}|{security_id}|{security_password}|{txn_date}|{auth_status}|"
-#         f"{settlement_type}|{add[0]}|{add[1]}|{add[2]}|{add[3]}|{add[4]}|{add[5]}|{add[6]}|{error_status}|{error_desc}"
-#     )
-#     resp_checksum = _billdesk_hmac_sha256(resp_without_checksum, encryption_key)
-#     response_msg = f"{resp_without_checksum}|{resp_checksum}"
-
-#     fail_auth_status = "0399"
-#     fail_error_status = "ERR"
-#     fail_error_desc = "MOCK_FAILED"
-#     resp_without_checksum_fail = (
-#         f"{merchant_id}|{customer_id}|{txn_ref}|{bank_ref}|{amount}|{bank_id}|{bank_merchant_id}|{txn_type}|"
-#         f"{currency}|{item_code}|{security_type}|{security_id}|{security_password}|{txn_date}|{fail_auth_status}|"
-#         f"{settlement_type}|{add[0]}|{add[1]}|{add[2]}|{add[3]}|{add[4]}|{add[5]}|{add[6]}|{fail_error_status}|{fail_error_desc}"
-#     )
-#     resp_checksum_fail = _billdesk_hmac_sha256(resp_without_checksum_fail, encryption_key)
-#     response_msg_fail = f"{resp_without_checksum_fail}|{resp_checksum_fail}"
-
-#     callback_url = reverse("payment_gateway:billdesk-response")
-
-#     escaped_msg = html.escape(response_msg, quote=True)
-#     escaped_msg_fail = html.escape(response_msg_fail, quote=True)
-#     escaped_txn = html.escape(txn_ref, quote=True)
-#     escaped_amount = html.escape(amount, quote=True)
-#     escaped_status = html.escape(auth_status, quote=True)
-
-#     # Show a simple BillDesk-like page so testers can actually "see" the payment step.
-#     page = f"""
-# <!doctype html>
-# <html>
-#   <head>
-#     <meta charset="utf-8">
-#     <title>BillDesk Mock Payment</title>
-#     <meta name="viewport" content="width=device-width, initial-scale=1">
-#     <style>
-#       body {{ font-family: Arial, sans-serif; margin: 24px; background: #f6f7fb; }}
-#       .card {{ max-width: 720px; margin: 0 auto; background: #fff; border: 1px solid #e6e8f0; border-radius: 10px; padding: 18px 18px 14px; }}
-#       .hdr {{ font-size: 18px; font-weight: 700; margin-bottom: 8px; }}
-#       .sub {{ color: #556; margin-bottom: 18px; }}
-#       .row {{ display: flex; gap: 12px; margin: 8px 0; }}
-#       .k {{ width: 220px; color: #334; font-weight: 600; }}
-#       .v {{ flex: 1; color: #111; word-break: break-all; }}
-#       .btns {{ display: flex; gap: 10px; margin-top: 18px; }}
-#       button {{ border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; font-weight: 700; }}
-#       .pay {{ background: #16a34a; color: #fff; }}
-#       .fail {{ background: #dc2626; color: #fff; }}
-#       .note {{ margin-top: 14px; color: #667; font-size: 12px; }}
-#     </style>
-#   </head>
-#   <body>
-#     <div class="card">
-#       <div class="hdr">BillDesk Mock Payment Page</div>
-#       <div class="sub">This page is shown only when <code>BILLDESK_USE_MOCK=1</code> for localhost testing.</div>
-
-#       <div class="row"><div class="k">Transaction</div><div class="v">{escaped_txn}</div></div>
-#       <div class="row"><div class="k">Amount</div><div class="v">{escaped_amount}</div></div>
-#       <div class="row"><div class="k">AuthStatus (mock)</div><div class="v">{escaped_status}</div></div>
-
-#       <div class="btns">
-#         <form method="POST" action="{callback_url}">
-#           <input type="hidden" name="msg" value="{escaped_msg}">
-#           <button type="submit" class="pay">Pay (Post Response)</button>
-#         </form>
-#         <form method="POST" action="{callback_url}">
-#           <input type="hidden" name="msg" value="{escaped_msg_fail}">
-#           <button type="submit" class="fail">Fail</button>
-#         </form>
-#       </div>
-
-#       <div class="note">Tip: set <code>BILLDESK_MOCK_AUTH_STATUS</code> to control the default success status (0300).</div>
-#     </div>
-#   </body>
-# </html>
-# """.strip()
-#     return HttpResponse(page, content_type="text/html")
+    return Response({
+        "success": True,
+        "message": "SBI ePay mock payment processed successfully!",
+        "transaction_id": transaction_id,
+        "amount": amount,
+        "head_of_account": head_of_account,
+        "status": "S"
+    }, status=status.HTTP_200_OK)
