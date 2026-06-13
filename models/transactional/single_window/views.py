@@ -439,19 +439,44 @@ def single_window_new_app_detail(request, application_id):
         except Exception:
             pass
 
-    # Find issued license for this applicant
+    # Find issued license directly linked to this application (Main License)
     issued_license = None
+    main_lic = License.objects.filter(source_type='new_license_application', source_object_id=app.application_id).first()
+    
+    # If not found directly, check if applicant has any license starting with NA/ or NLI/ or NLA/ (main license prefixes)
+    if not main_lic and app.applicant:
+        main_lic = License.objects.filter(
+            applicant=app.applicant
+        ).filter(
+            Q(license_id__startswith="NA/") | Q(license_id__startswith="NLI/") | Q(license_id__startswith="NLA/")
+        ).order_by("-issue_date").first()
+        
+    if main_lic:
+        issued_license = {
+            "license_id": main_lic.license_id,
+            "license_category": main_lic.license_category.license_category if main_lic.license_category else "N/A",
+            "license_sub_category": main_lic.license_sub_category.description if main_lic.license_sub_category else "N/A",
+            "issue_date": main_lic.issue_date.strftime("%Y-%m-%d") if main_lic.issue_date else "N/A",
+            "valid_up_to": main_lic.valid_up_to.strftime("%Y-%m-%d") if main_lic.valid_up_to else "N/A",
+            "is_active": main_lic.is_active,
+        }
+
+    # Find additional licenses (like salesman/barman SB/) belonging to the applicant
+    additional_licenses = []
     if app.applicant:
-        lic = License.objects.filter(applicant=app.applicant).order_by("-issue_date").first()
-        if lic:
-            issued_license = {
+        other_lics = License.objects.filter(applicant=app.applicant).order_by("-issue_date")
+        for lic in other_lics:
+            # Skip the main license to avoid duplication
+            if main_lic and lic.license_id == main_lic.license_id:
+                continue
+            additional_licenses.append({
                 "license_id": lic.license_id,
                 "license_category": lic.license_category.license_category if lic.license_category else "N/A",
                 "license_sub_category": lic.license_sub_category.description if lic.license_sub_category else "N/A",
                 "issue_date": lic.issue_date.strftime("%Y-%m-%d") if lic.issue_date else "N/A",
                 "valid_up_to": lic.valid_up_to.strftime("%Y-%m-%d") if lic.valid_up_to else "N/A",
                 "is_active": lic.is_active,
-            }
+            })
 
     # Find renewal applications for this applicant
     renewal_list = []
@@ -531,6 +556,7 @@ def single_window_new_app_detail(request, application_id):
         "phone_number": app.mobile_number or "N/A",
         # Related records
         "issued_license": issued_license,
+        "additional_licenses": additional_licenses,
         "renewal_applications": renewal_list,
         "salesman_barman_applications": sbm_list,
         # Workflow
