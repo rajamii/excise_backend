@@ -127,14 +127,20 @@ def _get_dynamic_renewal_date():
 
 def get_license_valid_up_to(issue_date: date) -> datetime:
     """
-    Returns the FY end as an aware datetime (end-of-day).
+    Returns the FY end as an aware datetime (end-of-day) from RenewalApplicationConfig.
 
     Accepts either a `date` or `datetime` input.
     """
     from zoneinfo import ZoneInfo
+    from models.masters.core.models import RenewalApplicationConfig
+    
     issue_day = issue_date.date() if isinstance(issue_date, datetime) else issue_date
     year = issue_day.year
-    r_month, r_day, r_time = _get_dynamic_renewal_date()
+    
+    config = RenewalApplicationConfig.objects.first()
+    r_month = config.renewal_month if config else 3
+    r_day = config.renewal_day if config else 31
+    r_time = config.renewal_time if config else time(23, 59, 59)
     
     if issue_day.month > r_month or (issue_day.month == r_month and issue_day.day >= r_day):
         end_year = year + 1
@@ -250,17 +256,31 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
         y = d.year
         from models.masters.core.models import RenewalApplicationConfig
         config = RenewalApplicationConfig.objects.first()
-        r_month, r_day = (config.renewal_month, config.renewal_day) if config else (3, 31)
-        r_time = config.renewal_time if config else time.max.replace(microsecond=0)
+        r_month = config.renewal_month if config else 3
+        r_day = config.renewal_day if config else 31
+        r_time = config.renewal_time if config else time(23, 59, 59)
         
         if d.month > r_month or (d.month == r_month and d.day >= r_day):
             return date(y + 1, r_month, r_day), r_time
         else:
             return date(y, r_month, r_day), r_time
 
+    from models.masters.core.models import RenewalApplicationConfig
+    config = RenewalApplicationConfig.objects.first()
+    r_month = config.renewal_month if config else 3
+    r_day = config.renewal_day if config else 31
+    r_time = config.renewal_time if config else time(23, 59, 59)
+
     if is_renewal:
-        fy_end, valid_time = get_current_fy_end(issue_day)
-        valid_day = fy_end.replace(year=fy_end.year + 1)
+        old_lic_valid = application.renewal_of.valid_up_to
+        if old_lic_valid:
+            from zoneinfo import ZoneInfo
+            local_old_val = timezone.localtime(old_lic_valid, ZoneInfo("Asia/Kolkata"))
+            valid_day = date(local_old_val.year + 1, r_month, r_day)
+            valid_time = r_time
+        else:
+            fy_end, valid_time = get_current_fy_end(issue_day)
+            valid_day = fy_end.replace(year=fy_end.year + 1)
     else:
         valid_day, valid_time = get_current_fy_end(issue_day)
 

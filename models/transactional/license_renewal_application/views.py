@@ -307,17 +307,12 @@ def _extend_license_validity(lic: License) -> License:
         
     next_valid_day = date(next_year, r_month, r_day)
     
-    if isinstance(r_time, str):
-        try:
-            t_parts = r_time.split(":")
-            r_time = dt_time(int(t_parts[0]), int(t_parts[1]), int(t_parts[2] if len(t_parts) > 2 else 0))
-        except:
-            r_time = dt_time(23, 59, 59)
-            
     next_valid_dt = datetime.combine(next_valid_day, r_time)
     lic.valid_up_to = timezone.make_aware(next_valid_dt, local_tz) if timezone.is_naive(next_valid_dt) else next_valid_dt
     lic.save(update_fields=["valid_up_to"])
     return lic
+
+
 
 
 def _sync_license_active_from_renewal_payment(lic: License, application: LicenseApplication) -> None:
