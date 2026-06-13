@@ -14,13 +14,38 @@ from models.transactional.license_renewal_application.models import LicenseAppli
 from models.transactional.salesman_barman.models import SalesmanBarmanModel
 
 
+def get_current_run_start_time(content_type, object_id):
+    try:
+        from auth.workflow.models import Transaction
+        txs = Transaction.objects.filter(content_type=content_type, object_id=str(object_id)).order_by("timestamp")
+        start_time = None
+        for tx in txs:
+            stage_name = tx.stage.name.lower() if tx.stage else ""
+            remarks = (tx.remarks or "").lower()
+            if "applied" in stage_name or "submitted" in remarks:
+                start_time = tx.timestamp
+        return start_time
+    except Exception:
+        return None
+
+
 def serialize_workflow_history(obj):
     hist = []
     try:
         from django.contrib.contenttypes.models import ContentType
         from auth.workflow.models import Transaction
         ct = ContentType.objects.get_for_model(obj)
-        txs = Transaction.objects.filter(content_type=ct, object_id=str(obj.pk)).order_by("timestamp")
+        txs = list(Transaction.objects.filter(content_type=ct, object_id=str(obj.pk)).order_by("timestamp"))
+        
+        # Find index of latest Applied transaction to show only current run's flow
+        start_idx = 0
+        for i, tx in enumerate(txs):
+            stage_name = tx.stage.name.lower() if tx.stage else ""
+            remarks = (tx.remarks or "").lower()
+            if "applied" in stage_name or "submitted" in remarks:
+                start_idx = i
+        
+        txs = txs[start_idx:]
         for tx in txs:
             stage_name = tx.stage.name if tx.stage else "N/A"
             performed_by = tx.performed_by
@@ -46,7 +71,12 @@ def serialize_objections(obj):
         from django.contrib.contenttypes.models import ContentType
         from auth.workflow.models import Objection
         ct = ContentType.objects.get_for_model(obj)
-        objections = Objection.objects.filter(content_type=ct, object_id=str(obj.pk)).order_by("-raised_on")
+        
+        start_time = get_current_run_start_time(ct, obj.pk)
+        objections = Objection.objects.filter(content_type=ct, object_id=str(obj.pk))
+        if start_time:
+            objections = objections.filter(raised_on__gte=start_time)
+        objections = objections.order_by("-raised_on")
         for ob in objections:
             raised_by = ob.raised_by
             objs.append({
