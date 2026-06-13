@@ -17,7 +17,10 @@ from models.transactional.salesman_barman.models import SalesmanBarmanModel
 def serialize_workflow_history(obj):
     hist = []
     try:
-        txs = obj.transactions.all().order_by("timestamp")
+        from django.contrib.contenttypes.models import ContentType
+        from auth.workflow.models import Transaction
+        ct = ContentType.objects.get_for_model(obj)
+        txs = Transaction.objects.filter(content_type=ct, object_id=str(obj.pk)).order_by("timestamp")
         for tx in txs:
             stage_name = tx.stage.name if tx.stage else "N/A"
             performed_by = tx.performed_by
@@ -40,21 +43,25 @@ def serialize_workflow_history(obj):
 def serialize_objections(obj):
     objs = []
     try:
-        objections = obj.objections.all().order_by("-created_at")
+        from django.contrib.contenttypes.models import ContentType
+        from auth.workflow.models import Objection
+        ct = ContentType.objects.get_for_model(obj)
+        objections = Objection.objects.filter(content_type=ct, object_id=str(obj.pk)).order_by("-raised_on")
         for ob in objections:
-            objection_by = ob.objection_by if hasattr(ob, 'objection_by') else None
+            raised_by = ob.raised_by
             objs.append({
-                "objection_remarks": getattr(ob, 'objection_remarks', '') or "",
-                "objection_by": objection_by.username if objection_by else "System",
-                "objection_by_name": f"{objection_by.first_name} {objection_by.last_name}".strip() if objection_by else "System",
-                "stage": ob.stage.name if hasattr(ob, 'stage') and ob.stage else "N/A",
-                "reply_remarks": getattr(ob, 'reply_remarks', None) or "No reply submitted yet.",
-                "is_resolved": getattr(ob, 'is_resolved', False),
-                "created_at": ob.created_at.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ob, 'created_at') and ob.created_at else "N/A"
+                "objection_remarks": ob.remarks or "",
+                "objection_by": raised_by.username if raised_by else "System",
+                "objection_by_name": f"{raised_by.first_name} {raised_by.last_name}".strip() if raised_by else "System",
+                "stage": ob.stage.name if ob.stage else "N/A",
+                "reply_remarks": ob.after_content or "No reply submitted yet.",
+                "is_resolved": ob.is_resolved,
+                "created_at": ob.raised_on.strftime("%Y-%m-%d %H:%M:%S") if ob.raised_on else "N/A"
             })
-    except Exception:
+    except Exception as e:
         pass
     return objs
+
 
 
 @api_view(["GET"])
@@ -470,6 +477,8 @@ def single_window_new_app_detail(request, application_id):
                 "is_security_fee_paid": r.is_security_fee_paid,
                 "pending_at_role": r_pending,
                 "created_at": r.created_at.strftime("%Y-%m-%d") if r.created_at else "N/A",
+                "history": serialize_workflow_history(r),
+                "objections": serialize_objections(r),
             })
 
     # Find salesman/barman applications for this applicant
@@ -495,6 +504,9 @@ def single_window_new_app_detail(request, application_id):
                 "is_print_fee_paid": s.is_print_fee_paid,
                 "pending_at_role": s_pending,
                 "created_at": s.created_at.strftime("%Y-%m-%d") if s.created_at else "N/A",
+                "license_id": s.license.license_id if s.license else (issued_license["license_id"] if issued_license else "N/A"),
+                "history": serialize_workflow_history(s),
+                "objections": serialize_objections(s),
             })
 
     data = {
