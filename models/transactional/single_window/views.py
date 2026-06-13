@@ -624,8 +624,8 @@ def single_window_salesman_barman_detail(request, application_id):
 @renderer_classes([JSONRenderer, BrowsableAPIRenderer])
 @permission_classes([IsAuthenticated])
 def single_window_latest_created(request):
-    # 1. Fetch latest users (Admin/Users)
-    users = CustomUser.objects.all().order_by("-date_joined")[:50]
+    # 1. Fetch latest users (Admin Users only, excluding licensees)
+    users = CustomUser.objects.exclude(role__name='Licensee').order_by("-date_joined")[:50]
     users_list = []
     for u in users:
         users_list.append({
