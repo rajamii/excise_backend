@@ -68,73 +68,190 @@ def single_window_search(request):
     # Query expansion suffix (e.g. if NA/1101/2026-27/0014 -> 1101/2026-27/0014)
     suffix = query
     prefixes = ['NLA', 'NLI', 'LRA', 'LA', 'SBM', 'SB', 'NA']
+    
+    # Check if query starts with a prefix and slash
+    upper_query = query.upper()
+    matched_prefix = None
+    has_specific_prefix = False
     for p in prefixes:
-        if query.upper().startswith(p + "/"):
+        if upper_query.startswith(p + "/"):
             suffix = query[len(p)+1:]
+            matched_prefix = p
+            has_specific_prefix = True
             break
 
     results = []
 
+    # Helper function to get linked NLA ID for different objects
+    def get_linked_nla_id(obj):
+        if isinstance(obj, License):
+            if obj.source_application and isinstance(obj.source_application, NewLicenseApplication):
+                return obj.source_application.application_id
+            if obj.applicant:
+                nla = NewLicenseApplication.objects.filter(applicant=obj.applicant).first()
+                if nla:
+                    return nla.application_id
+        elif isinstance(obj, RenewalApplication):
+            if obj.old_license_id:
+                lic = License.objects.filter(license_id=obj.old_license_id).first()
+                if lic and lic.source_application and isinstance(lic.source_application, NewLicenseApplication):
+                    return lic.source_application.application_id
+            if obj.applicant:
+                nla = NewLicenseApplication.objects.filter(applicant=obj.applicant).first()
+                if nla:
+                    return nla.application_id
+        elif isinstance(obj, SalesmanBarmanModel):
+            if obj.new_license_application:
+                return obj.new_license_application.application_id
+            if obj.license:
+                if obj.license.source_application and isinstance(obj.license.source_application, NewLicenseApplication):
+                    return obj.license.source_application.application_id
+            if obj.applicant:
+                nla = NewLicenseApplication.objects.filter(applicant=obj.applicant).first()
+                if nla:
+                    return nla.application_id
+        return None
+
+    # Determine what to search based on prefix category
+    search_users = True
+    search_licenses = True
+    search_new_apps = True
+    search_renewals = True
+    search_sbm = True
+
+    if has_specific_prefix:
+        if matched_prefix in ['SBM', 'SB']:
+            search_users = False
+            search_renewals = False
+            search_new_apps = False  # Linked NLA will be found via linked_nla_ids
+            search_licenses = True
+        elif matched_prefix in ['LRA', 'LA']:
+            search_users = False
+            search_licenses = False
+            search_new_apps = False
+            search_sbm = False
+        elif matched_prefix in ['NLA', 'NLI', 'NA']:
+            search_users = False
+            search_renewals = False
+            search_sbm = False
+            search_licenses = True
+
     # 1. Search Users (Licensees)
-    users = CustomUser.objects.annotate(
-        full_name=Concat(Coalesce('first_name', Value('')), Value(' '), Coalesce('last_name', Value('')))
-    ).filter(
-        Q(username__icontains=query) |
-        Q(email__icontains=query) |
-        Q(phone_number__icontains=query) |
-        Q(full_name__icontains=query)
-    )[:15]
-    for u in users:
-        results.append({
-            "type": "licensee",
-            "id": u.id,
-            "title": f"{u.first_name} {u.last_name} ({u.username})",
-            "subtitle": f"Email: {u.email} | Phone: {u.phone_number} | Username: {u.username}",
-            "status": "Active" if u.is_active else "Inactive",
-            "meta": {
-                "user_id": u.id,
-                "email": u.email,
-                "username": u.username
-            }
-        })
+    if search_users:
+        users = CustomUser.objects.annotate(
+            full_name=Concat(Coalesce('first_name', Value('')), Value(' '), Coalesce('last_name', Value('')))
+        ).filter(
+            Q(username__icontains=query) |
+            Q(email__icontains=query) |
+            Q(phone_number__icontains=query) |
+            Q(full_name__icontains=query)
+        )[:15]
+        for u in users:
+            results.append({
+                "type": "licensee",
+                "id": u.id,
+                "title": f"{u.first_name} {u.last_name} ({u.username})",
+                "subtitle": f"Email: {u.email} | Phone: {u.phone_number} | Username: {u.username}",
+                "status": "Active" if u.is_active else "Inactive",
+                "meta": {
+                    "user_id": u.id,
+                    "email": u.email,
+                    "username": u.username
+                }
+            })
+    else:
+        users = []
 
     # 2. Search Licenses
-    licenses = License.objects.annotate(
-        full_name=Concat(Coalesce('applicant__first_name', Value('')), Value(' '), Coalesce('applicant__last_name', Value('')))
-    ).filter(
-        Q(license_id__icontains=query) |
-        Q(license_id__icontains=suffix) |
-        Q(applicant__username__icontains=query) |
-        Q(applicant__phone_number__icontains=query) |
-        Q(full_name__icontains=query)
-    ).order_by("-issue_date")[:15]
-    for lic in licenses:
-        applicant_name = f"{lic.applicant.first_name} {lic.applicant.last_name}" if lic.applicant else "Unknown"
-        results.append({
-            "type": "license",
-            "id": lic.license_id,
-            "title": f"License: {lic.license_id}",
-            "subtitle": f"Applicant: {applicant_name} | Category: {lic.license_category.license_category if lic.license_category else 'N/A'}",
-            "status": "Active" if lic.is_active else "Expired/Inactive",
-            "meta": {
-                "license_id": lic.license_id,
-                "valid_up_to": lic.valid_up_to.strftime("%Y-%m-%d") if lic.valid_up_to else "N/A",
-                "applicant_id": lic.applicant.id if lic.applicant else None
-            }
-        })
+    if search_licenses:
+        if has_specific_prefix and matched_prefix in ['SBM', 'SB']:
+            lic_filter = Q(license_id__icontains=query) | (Q(license_id__icontains=suffix) & (Q(license_id__startswith="SB/") | Q(license_id__startswith="SBM/")))
+        elif has_specific_prefix and matched_prefix in ['NLA', 'NLI', 'NA']:
+            lic_filter = Q(license_id__icontains=query) | (Q(license_id__icontains=suffix) & (Q(license_id__startswith="NA/") | Q(license_id__startswith="NLI/") | Q(license_id__startswith="NLA/")))
+        else:
+            lic_filter = Q(license_id__icontains=query) | Q(license_id__icontains=suffix)
 
-    # 3. Search New License Applications
+        licenses = License.objects.annotate(
+            full_name=Concat(Coalesce('applicant__first_name', Value('')), Value(' '), Coalesce('applicant__last_name', Value('')))
+        ).filter(
+            lic_filter |
+            Q(applicant__username__icontains=query) |
+            Q(applicant__phone_number__icontains=query) |
+            Q(full_name__icontains=query)
+        ).order_by("-issue_date")[:15]
+    else:
+        licenses = []
+
+    # 3. Search Renewal Applications
+    if search_renewals:
+        renewal_apps = RenewalApplication.objects.annotate(
+            full_name=Concat(Coalesce('applicant__first_name', Value('')), Value(' '), Coalesce('applicant__last_name', Value('')))
+        ).filter(
+            Q(application_id__icontains=query) |
+            Q(application_id__icontains=suffix) |
+            Q(old_license_id__icontains=query) |
+            Q(old_license_id__icontains=suffix) |
+            Q(applicant__username__icontains=query) |
+            Q(applicant__phone_number__icontains=query) |
+            Q(full_name__icontains=query)
+        ).order_by("-created_at")[:15]
+    else:
+        renewal_apps = []
+
+    # 4. Search Salesman/Barman Applications
+    if search_sbm:
+        sbm_apps = SalesmanBarmanModel.objects.annotate(
+            full_name=Concat(Coalesce('firstName', Value('')), Value(' '), Coalesce('lastName', Value(''))),
+            applicant_full_name=Concat(Coalesce('applicant__first_name', Value('')), Value(' '), Coalesce('applicant__last_name', Value('')))
+        ).filter(
+            Q(application_id__icontains=query) |
+            Q(application_id__icontains=suffix) |
+            Q(firstName__icontains=query) |
+            Q(lastName__icontains=query) |
+            Q(mobileNumber__icontains=query) |
+            Q(emailId__icontains=query) |
+            Q(applicant__username__icontains=query) |
+            Q(applicant__phone_number__icontains=query) |
+            Q(full_name__icontains=query) |
+            Q(applicant_full_name__icontains=query)
+        ).order_by("-created_at")[:15]
+    else:
+        sbm_apps = []
+
+    # Collect linked NLA IDs
+    linked_nla_ids = set()
+    for lic in licenses:
+        nid = get_linked_nla_id(lic)
+        if nid:
+            linked_nla_ids.add(nid)
+    for r in renewal_apps:
+        nid = get_linked_nla_id(r)
+        if nid:
+            linked_nla_ids.add(nid)
+    for s in sbm_apps:
+        nid = get_linked_nla_id(s)
+        if nid:
+            linked_nla_ids.add(nid)
+
+    # 5. Search New License Applications (matching directly or linked to any matched sub-records)
+    nla_filter = Q(application_id__in=linked_nla_ids)
+    if search_new_apps:
+        nla_filter |= (
+            Q(application_id__icontains=query) |
+            Q(application_id__icontains=suffix) |
+            Q(applicant__username__icontains=query) |
+            Q(applicant__phone_number__icontains=query) |
+            Q(establishment_name__icontains=query) |
+            Q(mobile_number__icontains=query) |
+            Q(full_name__icontains=query)
+        )
+
     new_apps = NewLicenseApplication.objects.annotate(
         full_name=Concat(Coalesce('applicant__first_name', Value('')), Value(' '), Coalesce('applicant__last_name', Value('')))
     ).filter(
-        Q(application_id__icontains=query) |
-        Q(application_id__icontains=suffix) |
-        Q(applicant__username__icontains=query) |
-        Q(applicant__phone_number__icontains=query) |
-        Q(establishment_name__icontains=query) |
-        Q(mobile_number__icontains=query) |
-        Q(full_name__icontains=query)
+        nla_filter
     ).order_by("-created_at")[:15]
+
     for app in new_apps:
         applicant_name = f"{app.applicant.first_name} {app.applicant.last_name}" if app.applicant else "Unknown"
         results.append({
@@ -150,59 +267,58 @@ def single_window_search(request):
             }
         })
 
-    # 4. Search Renewal Applications
-    renewal_apps = RenewalApplication.objects.annotate(
-        full_name=Concat(Coalesce('applicant__first_name', Value('')), Value(' '), Coalesce('applicant__last_name', Value('')))
-    ).filter(
-        Q(application_id__icontains=query) |
-        Q(application_id__icontains=suffix) |
-        Q(old_license_id__icontains=query) |
-        Q(old_license_id__icontains=suffix) |
-        Q(applicant__username__icontains=query) |
-        Q(applicant__phone_number__icontains=query) |
-        Q(full_name__icontains=query)
-    ).order_by("-created_at")[:15]
+    # Add License results
+    for lic in licenses:
+        applicant_name = f"{lic.applicant.first_name} {lic.applicant.last_name}" if lic.applicant else "Unknown"
+        nla_id = get_linked_nla_id(lic)
+        nla_suffix = f" | Linked NLA: {nla_id}" if nla_id else ""
+        results.append({
+            "type": "license",
+            "id": lic.license_id,
+            "title": f"License: {lic.license_id}",
+            "subtitle": f"Applicant: {applicant_name} | Category: {lic.license_category.license_category if lic.license_category else 'N/A'}{nla_suffix}",
+            "status": "Active" if lic.is_active else "Expired/Inactive",
+            "meta": {
+                "license_id": lic.license_id,
+                "valid_up_to": lic.valid_up_to.strftime("%Y-%m-%d") if lic.valid_up_to else "N/A",
+                "applicant_id": lic.applicant.id if lic.applicant else None,
+                "application_id": nla_id
+            }
+        })
+
+    # Add Renewal Application results
     for app in renewal_apps:
         applicant_name = f"{app.applicant.first_name} {app.applicant.last_name}" if app.applicant else "Unknown"
+        nla_id = get_linked_nla_id(app)
+        nla_suffix = f" | Linked NLA: {nla_id}" if nla_id else ""
         results.append({
             "type": "renewal_app",
             "id": app.application_id,
             "title": f"Renewal App: {app.application_id}",
-            "subtitle": f"Old License: {app.old_license_id or 'N/A'} | Applicant: {applicant_name}",
+            "subtitle": f"Old License: {app.old_license_id or 'N/A'}{nla_suffix} | Applicant: {applicant_name}",
             "status": app.current_stage.name if app.current_stage else "Draft",
             "meta": {
-                "application_id": app.application_id,
+                "application_id": nla_id,
+                "renewal_app_id": app.application_id,
                 "is_approved": app.is_approved,
                 "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A"
             }
         })
 
-    # 5. Search Salesman/Barman Applications
-    sbm_apps = SalesmanBarmanModel.objects.annotate(
-        full_name=Concat(Coalesce('firstName', Value('')), Value(' '), Coalesce('lastName', Value(''))),
-        applicant_full_name=Concat(Coalesce('applicant__first_name', Value('')), Value(' '), Coalesce('applicant__last_name', Value('')))
-    ).filter(
-        Q(application_id__icontains=query) |
-        Q(application_id__icontains=suffix) |
-        Q(firstName__icontains=query) |
-        Q(lastName__icontains=query) |
-        Q(mobileNumber__icontains=query) |
-        Q(emailId__icontains=query) |
-        Q(applicant__username__icontains=query) |
-        Q(applicant__phone_number__icontains=query) |
-        Q(full_name__icontains=query) |
-        Q(applicant_full_name__icontains=query)
-    ).order_by("-created_at")[:15]
+    # Add Salesman/Barman Application results
     for app in sbm_apps:
         applicant_name = f"{app.firstName} {app.lastName}"
+        nla_id = get_linked_nla_id(app)
+        nla_suffix = f" | Linked NLA: {nla_id}" if nla_id else ""
         results.append({
             "type": "salesman_barman_app",
             "id": app.application_id,
             "title": f"Salesman/Barman App: {app.application_id}",
-            "subtitle": f"Name: {applicant_name} | Role: {app.role or 'N/A'} | Mobile: {app.mobileNumber or 'N/A'}",
+            "subtitle": f"Name: {applicant_name} | Role: {app.role or 'N/A'}{nla_suffix} | Mobile: {app.mobileNumber or 'N/A'}",
             "status": app.current_stage.name if app.current_stage else "Draft",
             "meta": {
-                "application_id": app.application_id,
+                "application_id": nla_id,
+                "sbm_app_id": app.application_id,
                 "is_approved": app.is_approved,
                 "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A"
             }
