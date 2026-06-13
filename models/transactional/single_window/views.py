@@ -689,7 +689,25 @@ def single_window_latest_created(request):
             }
         })
 
+    # 3. Fetch Deactivated Users
+    deactivated = CustomUser.objects.filter(is_active=False).order_by("-date_joined")[:50]
+    deactivated_list = []
+    for u in deactivated:
+        deactivated_list.append({
+            "id": u.id,
+            "username": u.username,
+            "email": u.email,
+            "first_name": u.first_name,
+            "last_name": u.last_name,
+            "phone_number": u.phone_number,
+            "role_name": u.role.name if u.role else "Licensee",
+            "is_active": u.is_active,
+            "date_joined": u.date_joined.strftime("%Y-%m-%d %H:%M:%S") if u.date_joined else "N/A"
+        })
+
     return Response({
         "users": users_list,
-        "records": records
+        "records": records,
+        "deactivated_users": deactivated_list
     })
+
