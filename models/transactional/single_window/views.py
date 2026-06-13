@@ -93,6 +93,68 @@ def serialize_objections(obj):
     return objs
 
 
+def serialize_payment_transactions(app_id):
+    payments = []
+    if not app_id:
+        return payments
+        
+    try:
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+        from models.transactional.wallet.models import WalletTransaction
+        
+        # 1. Query Billdesk Transactions
+        bd_txs = PaymentBilldeskTransaction.objects.filter(payer_id__iexact=app_id).order_by("-transaction_date")
+        for tx in bd_txs:
+            status_map = {"S": "Success", "F": "Failed", "P": "Pending"}
+            status = status_map.get(tx.payment_status, "Pending")
+            
+            purpose = "Application Fee"
+            if tx.payment_module_code == "002":
+                purpose = "Renewal Fee"
+            elif tx.payment_module_code == "999":
+                purpose = "Wallet Recharge"
+            
+            desc = tx.response_errordescription or f"BillDesk payment for {purpose}"
+            if tx.response_errorstatus:
+                desc = f"BillDesk payment for {purpose} - Failed (Error: {tx.response_errordescription or tx.response_errorstatus})"
+            elif status == "Success":
+                desc = f"BillDesk payment for {purpose} - Successful"
+                
+            payments.append({
+                "transaction_id": tx.utr or tx.transaction_id_no_hoa or "N/A",
+                "amount": str(tx.transaction_amount),
+                "payment_type": "BillDesk Gateway",
+                "payment_status": status,
+                "created_at": tx.transaction_date.strftime("%Y-%m-%d %H:%M:%S") if tx.transaction_date else "N/A",
+                "remarks": desc
+            })
+            
+        # 2. Query Wallet Transactions
+        wallet_txs = WalletTransaction.objects.filter(reference_no__iexact=app_id).order_by("-created_at")
+        for tx in wallet_txs:
+            status = "Success"
+            if tx.payment_status.lower() == "failed":
+                status = "Failed"
+            elif tx.payment_status.lower() in ("pending", "p"):
+                status = "Pending"
+                
+            payments.append({
+                "transaction_id": tx.transaction_id or "N/A",
+                "amount": str(tx.amount),
+                "payment_type": "Wallet Balance",
+                "payment_status": status,
+                "created_at": tx.created_at.strftime("%Y-%m-%d %H:%M:%S") if tx.created_at else "N/A",
+                "remarks": tx.remarks or f"Wallet {tx.transaction_type} ({tx.entry_type})"
+            })
+            
+    except Exception as e:
+        pass
+        
+    payments.sort(key=lambda x: x["created_at"], reverse=True)
+    return payments
+
+
+
 
 @api_view(["GET"])
 @renderer_classes([JSONRenderer, BrowsableAPIRenderer])
@@ -534,6 +596,7 @@ def single_window_new_app_detail(request, application_id):
                 "created_at": r.created_at.strftime("%Y-%m-%d") if r.created_at else "N/A",
                 "history": serialize_workflow_history(r),
                 "objections": serialize_objections(r),
+                "payments": serialize_payment_transactions(r.application_id),
             })
 
     # Find salesman/barman applications for this applicant
@@ -562,6 +625,7 @@ def single_window_new_app_detail(request, application_id):
                 "license_id": s.license.license_id if s.license else (issued_license["license_id"] if issued_license else "N/A"),
                 "history": serialize_workflow_history(s),
                 "objections": serialize_objections(s),
+                "payments": serialize_payment_transactions(s.application_id),
             })
 
     data = {
@@ -591,7 +655,8 @@ def single_window_new_app_detail(request, application_id):
         "salesman_barman_applications": sbm_list,
         # Workflow
         "history": serialize_workflow_history(app),
-        "objections": serialize_objections(app)
+        "objections": serialize_objections(app),
+        "payments": serialize_payment_transactions(app.application_id)
     }
     return Response(data)
 
@@ -617,7 +682,8 @@ def single_window_renewal_app_detail(request, application_id):
         "created_at": app.created_at.strftime("%Y-%m-%d %H:%M:%S") if app.created_at else "N/A",
         "updated_at": app.updated_at.strftime("%Y-%m-%d %H:%M:%S") if app.updated_at else "N/A",
         "history": serialize_workflow_history(app),
-        "objections": serialize_objections(app)
+        "objections": serialize_objections(app),
+        "payments": serialize_payment_transactions(app.application_id)
     }
     return Response(data)
 
@@ -671,7 +737,8 @@ def single_window_salesman_barman_detail(request, application_id):
         "created_at": app.created_at.strftime("%Y-%m-%d %H:%M:%S") if app.created_at else "N/A",
         "updated_at": app.updated_at.strftime("%Y-%m-%d %H:%M:%S") if app.updated_at else "N/A",
         "history": serialize_workflow_history(app),
-        "objections": serialize_objections(app)
+        "objections": serialize_objections(app),
+        "payments": serialize_payment_transactions(app.application_id)
     }
     return Response(data)
 
