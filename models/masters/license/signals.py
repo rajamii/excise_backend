@@ -78,29 +78,56 @@ def _stage_is_awaiting_license_fee_payment(stage, *, application_model: str) -> 
     return False
 
 
-def _stage_should_issue_license(stage, *, application_model: str) -> bool:
+def _stage_should_issue_license(instance, *, application_model: str) -> bool:
     """
     Decide when a new Transaction should create a License (NA/... / LA/... / SB/...) and wallet rows.
 
-    New license applications: issue license_id (NA/...) and seed wallet_balances (0 balance) when
-    the workflow reaches commissioner approval and/or "Awaiting License Fee Payment" (`awaiting_payment`).
+    For new licensee and salesman barman applications, the license row is created
+    only when the Commissioner approves the application (transitioning out of the Commissioner stage).
 
     Other application types keep the legacy rule: exact stage name "approved".
     """
+    from auth.workflow.models import WorkflowStage
+    if isinstance(instance, WorkflowStage):
+        stage = instance
+        txn = None
+    else:
+        stage = getattr(instance, "stage", None)
+        txn = instance
+
     if not stage:
         return False
     name_lower = str(getattr(stage, "name", "") or "").strip().lower()
-    if not name_lower:
-        return False
-    if "reject" in name_lower:
+    if not name_lower or "reject" in name_lower or "objection" in name_lower:
         return False
 
     app = (application_model or "").lower()
-    if app == "newlicenseapplication":
-        # New license applications:
-        # Seed NA/... license + wallets at the explicit "Awaiting License Fee Payment" gate (stage id 23).
-        # The license row is created as inactive until both license fee + security fee payments complete.
-        return bool(_stage_is_awaiting_license_fee_payment(stage, application_model=application_model))
+    if app in {"newlicenseapplication", "salesmanbarmanmodel"}:
+        if txn is None:
+            return bool(
+                _stage_is_commissioner_approval(stage)
+                or (getattr(stage, "is_final", False) and "reject" not in name_lower)
+                or name_lower == "approved"
+            )
+        
+        # Exclude stages that represent resubmission/backward steps or objections
+        invalid_targets = {"applied", "district", "enquiry", "joint", "commissioner", "commisioner", "objection", "reject"}
+        if any(t in name_lower for t in invalid_targets):
+            return False
+
+        if not txn.content_type_id or not txn.object_id:
+            return False
+        previous_txn = Transaction.objects.filter(
+            content_type_id=txn.content_type_id,
+            object_id=txn.object_id,
+            id__lt=txn.id
+        ).order_by('-id').first()
+        if not previous_txn:
+            return False
+        prev_stage_name = str(getattr(previous_txn.stage, "name", "") or "").strip().lower()
+        if "joint" in prev_stage_name:
+            return False
+        return prev_stage_name in {"commissioner", "commisioner"}
 
     # Other application types: deployments often use commissioner final stage naming instead of "approved".
     return bool(
@@ -108,6 +135,7 @@ def _stage_should_issue_license(stage, *, application_model: str) -> bool:
         or (getattr(stage, "is_final", False) and "reject" not in name_lower)
         or name_lower == "approved"
     )
+
 
 
 def _new_license_payments_complete(application) -> bool:
@@ -168,7 +196,7 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
         return
 
     application_model = str(getattr(instance.content_type, "model", "") or "").lower()
-    if not _stage_should_issue_license(instance.stage, application_model=application_model):
+    if not _stage_should_issue_license(instance, application_model=application_model):
         return
 
     try:
