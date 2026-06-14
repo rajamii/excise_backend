@@ -166,6 +166,36 @@ def single_window_search(request):
 
     search_type = request.query_params.get("search_type", "registry").strip().lower()
 
+    # Extract optional advanced filters
+    day = request.query_params.get("day", "").strip()
+    month = request.query_params.get("month", "").strip()
+    year = request.query_params.get("year", "").strip()
+    category = request.query_params.get("category", "").strip()
+    role = request.query_params.get("role", "").strip()
+
+    day_val = int(day) if day.isdigit() else None
+    month_val = int(month) if month.isdigit() else None
+    year_val = int(year) if year.isdigit() else None
+
+    def apply_date_filters(qs, date_field):
+        if day_val:
+            qs = qs.filter(**{f"{date_field}__day": day_val})
+        if month_val:
+            qs = qs.filter(**{f"{date_field}__month": month_val})
+        if year_val:
+            qs = qs.filter(**{f"{date_field}__year": year_val})
+        return qs
+
+    def apply_category_filter(qs, cat_field):
+        if category:
+            return qs.filter(**{f"{cat_field}__icontains": category})
+        return qs
+
+    def apply_role_filter(qs, role_field):
+        if role:
+            return qs.filter(**{f"{role_field}__icontains": role})
+        return qs
+
     if search_type == "payment":
         from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
         from models.transactional.wallet.models import WalletTransaction
@@ -218,12 +248,16 @@ def single_window_search(request):
             bd_q |= bd_date_q
 
         try:
-            bd_txs = PaymentBilldeskTransaction.objects.filter(bd_q).order_by("-transaction_date")[:30]
+            bd_txs = PaymentBilldeskTransaction.objects.filter(bd_q)
+            bd_txs = apply_date_filters(bd_txs, "transaction_date")
+            bd_txs = bd_txs.order_by("-transaction_date")[:30]
         except Exception:
             bd_q_safe = Q(utr__icontains=query) | Q(transaction_id_no_hoa__icontains=query) | Q(payer_id__icontains=query)
             if amount_query is not None:
                 bd_q_safe |= Q(transaction_amount=amount_query)
-            bd_txs = PaymentBilldeskTransaction.objects.filter(bd_q_safe).order_by("-transaction_date")[:30]
+            bd_txs = PaymentBilldeskTransaction.objects.filter(bd_q_safe)
+            bd_txs = apply_date_filters(bd_txs, "transaction_date")
+            bd_txs = bd_txs.order_by("-transaction_date")[:30]
 
         for tx in bd_txs:
             status_map = {"S": "Success", "F": "Failed", "P": "Pending"}
@@ -257,12 +291,16 @@ def single_window_search(request):
             w_q |= w_date_q
 
         try:
-            w_txs = WalletTransaction.objects.filter(w_q).order_by("-created_at")[:30]
+            w_txs = WalletTransaction.objects.filter(w_q)
+            w_txs = apply_date_filters(w_txs, "created_at")
+            w_txs = w_txs.order_by("-created_at")[:30]
         except Exception:
             w_q_safe = Q(transaction_id__icontains=query) | Q(reference_no__icontains=query) | Q(licensee_id__icontains=query)
             if amount_query is not None:
                 w_q_safe |= Q(amount=amount_query)
-            w_txs = WalletTransaction.objects.filter(w_q_safe).order_by("-created_at")[:30]
+            w_txs = WalletTransaction.objects.filter(w_q_safe)
+            w_txs = apply_date_filters(w_txs, "created_at")
+            w_txs = w_txs.order_by("-created_at")[:30]
 
         for tx in w_txs:
             status = "Success"
@@ -424,7 +462,11 @@ def single_window_search(request):
             Q(email__icontains=query) |
             Q(phone_number__icontains=query) |
             Q(full_name__icontains=query)
-        )[:15]
+        )
+        users = apply_date_filters(users, "date_joined")
+        users = apply_role_filter(users, "role__name")
+        users = users[:15]
+
         for u in users:
             meta = {
                 "user_id": u.id,
@@ -467,7 +509,10 @@ def single_window_search(request):
             Q(applicant__username__icontains=query) |
             Q(applicant__phone_number__icontains=query) |
             Q(full_name__icontains=query)
-        ).order_by("-issue_date")[:15]
+        )
+        licenses = apply_date_filters(licenses, "issue_date")
+        licenses = apply_category_filter(licenses, "license_category__license_category")
+        licenses = licenses.order_by("-issue_date")[:15]
     else:
         licenses = []
 
@@ -484,7 +529,10 @@ def single_window_search(request):
             Q(applicant__username__icontains=query) |
             Q(applicant__phone_number__icontains=query) |
             Q(full_name__icontains=query)
-        ).order_by("-created_at")[:15]
+        )
+        renewal_apps = apply_date_filters(renewal_apps, "created_at")
+        renewal_apps = apply_category_filter(renewal_apps, "license_category__license_category")
+        renewal_apps = renewal_apps.order_by("-created_at")[:15]
     else:
         renewal_apps = []
 
@@ -505,7 +553,10 @@ def single_window_search(request):
             Q(applicant__phone_number__icontains=query) |
             Q(full_name__icontains=query) |
             Q(applicant_full_name__icontains=query)
-        ).order_by("-created_at")[:15]
+        )
+        sbm_apps = apply_date_filters(sbm_apps, "created_at")
+        sbm_apps = apply_role_filter(sbm_apps, "role")
+        sbm_apps = sbm_apps.order_by("-created_at")[:15]
     else:
         sbm_apps = []
 
@@ -543,7 +594,10 @@ def single_window_search(request):
         full_name=Concat(Coalesce('applicant__first_name', Value('')), Value(' '), Coalesce('applicant__last_name', Value('')))
     ).filter(
         nla_filter
-    ).order_by("-created_at")[:15]
+    )
+    new_apps = apply_date_filters(new_apps, "created_at")
+    new_apps = apply_category_filter(new_apps, "license_category__license_category")
+    new_apps = new_apps.order_by("-created_at")[:15]
 
     for app in new_apps:
         applicant_name = f"{app.applicant.first_name} {app.applicant.last_name}" if app.applicant else "Unknown"
