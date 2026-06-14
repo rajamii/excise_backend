@@ -164,6 +164,131 @@ def single_window_search(request):
     if not query:
         return Response({"results": []})
 
+    search_type = request.query_params.get("search_type", "registry").strip().lower()
+
+    if search_type == "payment":
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+        from models.transactional.wallet.models import WalletTransaction
+        import datetime
+        import re
+        
+        results = []
+        amount_query = None
+        try:
+            amount_query = float(query)
+        except ValueError:
+            pass
+            
+        date_query = None
+        for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d", "%d/%m/%Y"):
+            try:
+                date_query = datetime.datetime.strptime(query, fmt).date()
+                break
+            except ValueError:
+                pass
+
+        # Parse partial date queries database-agnostically
+        year_match = re.match(r'^(\d{4})$', query)
+        month_year_match = re.match(r'^(\d{4})[-/](\d{1,2})$', query) or re.match(r'^(\d{1,2})[-/](\d{4})$', query)
+        
+        bd_date_q = Q()
+        w_date_q = Q()
+        
+        if date_query:
+            bd_date_q = Q(transaction_date__date=date_query)
+            w_date_q = Q(created_at__date=date_query)
+        elif year_match:
+            y = int(year_match.group(1))
+            bd_date_q = Q(transaction_date__year=y)
+            w_date_q = Q(created_at__year=y)
+        elif month_year_match:
+            g1, g2 = month_year_match.groups()
+            if len(g1) == 4:
+                y, m = int(g1), int(g2)
+            else:
+                y, m = int(g2), int(g1)
+            if 1 <= m <= 12:
+                bd_date_q = Q(transaction_date__year=y, transaction_date__month=m)
+                w_date_q = Q(created_at__year=y, created_at__month=m)
+
+        bd_q = Q(utr__icontains=query) | Q(transaction_id_no_hoa__icontains=query) | Q(payer_id__icontains=query)
+        if amount_query is not None:
+            bd_q |= Q(transaction_amount=amount_query)
+        if date_query or year_match or month_year_match:
+            bd_q |= bd_date_q
+
+        try:
+            bd_txs = PaymentBilldeskTransaction.objects.filter(bd_q).order_by("-transaction_date")[:30]
+        except Exception:
+            bd_q_safe = Q(utr__icontains=query) | Q(transaction_id_no_hoa__icontains=query) | Q(payer_id__icontains=query)
+            if amount_query is not None:
+                bd_q_safe |= Q(transaction_amount=amount_query)
+            bd_txs = PaymentBilldeskTransaction.objects.filter(bd_q_safe).order_by("-transaction_date")[:30]
+
+        for tx in bd_txs:
+            status_map = {"S": "Success", "F": "Failed", "P": "Pending"}
+            status = status_map.get(tx.payment_status, "Pending")
+            
+            purpose = "Application Fee"
+            if tx.payment_module_code == "002":
+                purpose = "Renewal Fee"
+            elif tx.payment_module_code == "999":
+                purpose = "Wallet Recharge"
+            
+            results.append({
+                "type": "payment",
+                "id": tx.utr or tx.transaction_id_no_hoa or "N/A",
+                "title": f"BillDesk: {tx.utr or tx.transaction_id_no_hoa or 'N/A'}",
+                "subtitle": f"Amount: ₹{tx.transaction_amount} | Module: {purpose} | App ID: {tx.payer_id}",
+                "status": status,
+                "meta": {
+                    "transaction_id": tx.utr or tx.transaction_id_no_hoa or "N/A",
+                    "amount": str(tx.transaction_amount),
+                    "payment_type": "BillDesk Gateway",
+                    "created_at": tx.transaction_date.strftime("%Y-%m-%d %H:%M:%S") if tx.transaction_date else "N/A",
+                    "application_id": tx.payer_id
+                }
+            })
+
+        w_q = Q(transaction_id__icontains=query) | Q(reference_no__icontains=query) | Q(licensee_id__icontains=query)
+        if amount_query is not None:
+            w_q |= Q(amount=amount_query)
+        if date_query or year_match or month_year_match:
+            w_q |= w_date_q
+
+        try:
+            w_txs = WalletTransaction.objects.filter(w_q).order_by("-created_at")[:30]
+        except Exception:
+            w_q_safe = Q(transaction_id__icontains=query) | Q(reference_no__icontains=query) | Q(licensee_id__icontains=query)
+            if amount_query is not None:
+                w_q_safe |= Q(amount=amount_query)
+            w_txs = WalletTransaction.objects.filter(w_q_safe).order_by("-created_at")[:30]
+
+        for tx in w_txs:
+            status = "Success"
+            if tx.payment_status.lower() == "failed":
+                status = "Failed"
+            elif tx.payment_status.lower() in ("pending", "p"):
+                status = "Pending"
+                
+            results.append({
+                "type": "payment",
+                "id": tx.transaction_id or "N/A",
+                "title": f"Wallet: {tx.transaction_id or 'N/A'}",
+                "subtitle": f"Amount: ₹{tx.amount} | Type: {tx.transaction_type} | App/Ref ID: {tx.reference_no or tx.licensee_id}",
+                "status": status,
+                "meta": {
+                    "transaction_id": tx.transaction_id or "N/A",
+                    "amount": str(tx.amount),
+                    "payment_type": f"Wallet {tx.transaction_type}",
+                    "created_at": tx.created_at.strftime("%Y-%m-%d %H:%M:%S") if tx.created_at else "N/A",
+                    "application_id": tx.reference_no
+                }
+            })
+
+        results.sort(key=lambda x: x["meta"]["created_at"], reverse=True)
+        return Response({"results": results})
+
     # Query expansion suffix (e.g. if NA/1101/2026-27/0014 -> 1101/2026-27/0014)
     suffix = query
     prefixes = ['NLA', 'NLI', 'LRA', 'LA', 'SBM', 'SB', 'NA']
@@ -178,6 +303,59 @@ def single_window_search(request):
             matched_prefix = p
             has_specific_prefix = True
             break
+
+    # Look up payment transaction matches in registry mode
+    matched_nla_ids = set()
+    matched_renewal_ids = set()
+    matched_sbm_ids = set()
+    matched_licensee_ids = set()
+    matched_payment_metas = {}
+
+    try:
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+        from models.transactional.wallet.models import WalletTransaction
+        
+        bd_matches = PaymentBilldeskTransaction.objects.filter(
+            Q(utr__icontains=query) | Q(transaction_id_no_hoa__icontains=query)
+        )[:20]
+        for tx in bd_matches:
+            ref = (tx.payer_id or "").strip()
+            if ref:
+                ref_upper = ref.upper()
+                matched_payment_metas[ref_upper] = {
+                    "transaction_id": tx.utr or tx.transaction_id_no_hoa or "N/A",
+                    "payment_type": "BillDesk Gateway"
+                }
+                if ref_upper.startswith(("NLA/", "NA/", "NLI/")):
+                    matched_nla_ids.add(ref)
+                elif ref_upper.startswith(("LRA/", "LA/")):
+                    matched_renewal_ids.add(ref)
+                elif ref_upper.startswith(("SBM/", "SB/", "RSBM/")):
+                    matched_sbm_ids.add(ref)
+                else:
+                    matched_licensee_ids.add(ref)
+                
+        w_matches = WalletTransaction.objects.filter(
+            Q(transaction_id__icontains=query)
+        )[:20]
+        for tx in w_matches:
+            ref = (tx.reference_no or "").strip()
+            if ref:
+                ref_upper = ref.upper()
+                matched_payment_metas[ref_upper] = {
+                    "transaction_id": tx.transaction_id or "N/A",
+                    "payment_type": f"Wallet {tx.transaction_type}"
+                }
+                if ref_upper.startswith(("NLA/", "NA/", "NLI/")):
+                    matched_nla_ids.add(ref)
+                elif ref_upper.startswith(("LRA/", "LA/")):
+                    matched_renewal_ids.add(ref)
+                elif ref_upper.startswith(("SBM/", "SB/", "RSBM/")):
+                    matched_sbm_ids.add(ref)
+                else:
+                    matched_licensee_ids.add(ref)
+    except Exception:
+        pass
 
     results = []
 
@@ -240,23 +418,35 @@ def single_window_search(request):
         users = CustomUser.objects.annotate(
             full_name=Concat(Coalesce('first_name', Value('')), Value(' '), Coalesce('last_name', Value('')))
         ).filter(
+            Q(id__in=matched_licensee_ids) |
+            Q(username__in=matched_licensee_ids) |
             Q(username__icontains=query) |
             Q(email__icontains=query) |
             Q(phone_number__icontains=query) |
             Q(full_name__icontains=query)
         )[:15]
         for u in users:
+            meta = {
+                "user_id": u.id,
+                "email": u.email,
+                "username": u.username
+            }
+            u_id_str = str(u.id)
+            u_user_upper = u.username.upper().strip() if u.username else ""
+            if u_id_str in matched_payment_metas:
+                meta["transaction_id"] = matched_payment_metas[u_id_str]["transaction_id"]
+                meta["payment_type"] = matched_payment_metas[u_id_str]["payment_type"]
+            elif u_user_upper in matched_payment_metas:
+                meta["transaction_id"] = matched_payment_metas[u_user_upper]["transaction_id"]
+                meta["payment_type"] = matched_payment_metas[u_user_upper]["payment_type"]
+                
             results.append({
                 "type": "licensee",
                 "id": u.id,
                 "title": f"{u.first_name} {u.last_name} ({u.username})",
                 "subtitle": f"Email: {u.email} | Phone: {u.phone_number} | Username: {u.username}",
                 "status": "Active" if u.is_active else "Inactive",
-                "meta": {
-                    "user_id": u.id,
-                    "email": u.email,
-                    "username": u.username
-                }
+                "meta": meta
             })
     else:
         users = []
@@ -286,6 +476,7 @@ def single_window_search(request):
         renewal_apps = RenewalApplication.objects.annotate(
             full_name=Concat(Coalesce('applicant__first_name', Value('')), Value(' '), Coalesce('applicant__last_name', Value('')))
         ).filter(
+            Q(application_id__in=matched_renewal_ids) |
             Q(application_id__icontains=query) |
             Q(application_id__icontains=suffix) |
             Q(old_license_id__icontains=query) |
@@ -303,6 +494,7 @@ def single_window_search(request):
             full_name=Concat(Coalesce('firstName', Value('')), Value(' '), Coalesce('lastName', Value(''))),
             applicant_full_name=Concat(Coalesce('applicant__first_name', Value('')), Value(' '), Coalesce('applicant__last_name', Value('')))
         ).filter(
+            Q(application_id__in=matched_sbm_ids) |
             Q(application_id__icontains=query) |
             Q(application_id__icontains=suffix) |
             Q(firstName__icontains=query) |
@@ -331,11 +523,13 @@ def single_window_search(request):
         nid = get_linked_nla_id(s)
         if nid:
             linked_nla_ids.add(nid)
+    linked_nla_ids.update(matched_nla_ids)
 
     # 5. Search New License Applications (matching directly or linked to any matched sub-records)
     nla_filter = Q(application_id__in=linked_nla_ids)
     if search_new_apps:
         nla_filter |= (
+            Q(application_id__in=matched_nla_ids) |
             Q(application_id__icontains=query) |
             Q(application_id__icontains=suffix) |
             Q(applicant__username__icontains=query) |
@@ -353,17 +547,24 @@ def single_window_search(request):
 
     for app in new_apps:
         applicant_name = f"{app.applicant.first_name} {app.applicant.last_name}" if app.applicant else "Unknown"
+        meta = {
+            "application_id": app.application_id,
+            "is_approved": app.is_approved,
+            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A"
+        }
+        
+        app_id_upper = app.application_id.upper().strip()
+        if app_id_upper in matched_payment_metas:
+            meta["transaction_id"] = matched_payment_metas[app_id_upper]["transaction_id"]
+            meta["payment_type"] = matched_payment_metas[app_id_upper]["payment_type"]
+            
         results.append({
             "type": "new_license_app",
             "id": app.application_id,
             "title": f"New App: {app.application_id}",
             "subtitle": f"Establishment: {app.establishment_name or 'N/A'} | Applicant: {applicant_name}",
             "status": app.current_stage.name if app.current_stage else "Draft",
-            "meta": {
-                "application_id": app.application_id,
-                "is_approved": app.is_approved,
-                "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A"
-            }
+            "meta": meta
         })
 
     # Add License results
@@ -390,18 +591,25 @@ def single_window_search(request):
         applicant_name = f"{app.applicant.first_name} {app.applicant.last_name}" if app.applicant else "Unknown"
         nla_id = get_linked_nla_id(app)
         nla_suffix = f" | Linked NLA: {nla_id}" if nla_id else ""
+        meta = {
+            "application_id": nla_id,
+            "renewal_app_id": app.application_id,
+            "is_approved": app.is_approved,
+            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A"
+        }
+        
+        app_id_upper = app.application_id.upper().strip()
+        if app_id_upper in matched_payment_metas:
+            meta["transaction_id"] = matched_payment_metas[app_id_upper]["transaction_id"]
+            meta["payment_type"] = matched_payment_metas[app_id_upper]["payment_type"]
+            
         results.append({
             "type": "renewal_app",
             "id": app.application_id,
             "title": f"Renewal App: {app.application_id}",
             "subtitle": f"Old License: {app.old_license_id or 'N/A'}{nla_suffix} | Applicant: {applicant_name}",
             "status": app.current_stage.name if app.current_stage else "Draft",
-            "meta": {
-                "application_id": nla_id,
-                "renewal_app_id": app.application_id,
-                "is_approved": app.is_approved,
-                "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A"
-            }
+            "meta": meta
         })
 
     # Add Salesman/Barman Application results
@@ -409,18 +617,25 @@ def single_window_search(request):
         applicant_name = f"{app.firstName} {app.lastName}"
         nla_id = get_linked_nla_id(app)
         nla_suffix = f" | Linked NLA: {nla_id}" if nla_id else ""
+        meta = {
+            "application_id": nla_id,
+            "sbm_app_id": app.application_id,
+            "is_approved": app.is_approved,
+            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A"
+        }
+        
+        app_id_upper = app.application_id.upper().strip()
+        if app_id_upper in matched_payment_metas:
+            meta["transaction_id"] = matched_payment_metas[app_id_upper]["transaction_id"]
+            meta["payment_type"] = matched_payment_metas[app_id_upper]["payment_type"]
+            
         results.append({
             "type": "salesman_barman_app",
             "id": app.application_id,
             "title": f"Salesman/Barman App: {app.application_id}",
             "subtitle": f"Name: {applicant_name} | Role: {app.role or 'N/A'}{nla_suffix} | Mobile: {app.mobileNumber or 'N/A'}",
             "status": app.current_stage.name if app.current_stage else "Draft",
-            "meta": {
-                "application_id": nla_id,
-                "sbm_app_id": app.application_id,
-                "is_approved": app.is_approved,
-                "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A"
-            }
+            "meta": meta
         })
 
     return Response({"results": results})
