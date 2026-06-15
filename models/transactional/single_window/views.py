@@ -196,6 +196,42 @@ def single_window_search(request):
             return qs.filter(**{f"{role_field}__icontains": role})
         return qs
 
+    def get_user_display_name(user):
+        if not user:
+            return "N/A"
+        name = f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
+        return name or getattr(user, "username", None) or "N/A"
+
+    def resolve_applicant_name(reference):
+        ref = str(reference or "").strip()
+        if not ref:
+            return "N/A"
+
+        try:
+            app = NewLicenseApplication.objects.select_related("applicant").filter(application_id__iexact=ref).first()
+            if app:
+                return get_user_display_name(app.applicant)
+
+            renewal = RenewalApplication.objects.select_related("applicant").filter(application_id__iexact=ref).first()
+            if renewal:
+                return get_user_display_name(renewal.applicant)
+
+            staff = SalesmanBarmanModel.objects.filter(application_id__iexact=ref).first()
+            if staff:
+                return f"{staff.firstName or ''} {staff.lastName or ''}".strip() or get_user_display_name(staff.applicant)
+
+            license_obj = License.objects.select_related("applicant").filter(license_id__iexact=ref).first()
+            if license_obj:
+                return get_user_display_name(license_obj.applicant)
+
+            user_filter = Q(username__iexact=ref)
+            if ref.isdigit():
+                user_filter |= Q(id=int(ref))
+            user = CustomUser.objects.filter(user_filter).first()
+            return get_user_display_name(user) if user else "N/A"
+        except Exception:
+            return "N/A"
+
     if search_type == "payment":
         from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
         from models.transactional.wallet.models import WalletTransaction
@@ -268,6 +304,9 @@ def single_window_search(request):
                 purpose = "Renewal Fee"
             elif tx.payment_module_code == "999":
                 purpose = "Wallet Recharge"
+
+            applicant_name = resolve_applicant_name(tx.payer_id)
+            applicant_suffix = f" | Applicant: {applicant_name}" if applicant_name != "N/A" else ""
             
             results.append({
                 "type": "payment",
@@ -280,9 +319,12 @@ def single_window_search(request):
                     "amount": str(tx.transaction_amount),
                     "payment_type": "BillDesk Gateway",
                     "created_at": tx.transaction_date.strftime("%Y-%m-%d %H:%M:%S") if tx.transaction_date else "N/A",
-                    "application_id": tx.payer_id
+                    "application_id": tx.payer_id,
+                    "applicant_name": applicant_name
                 }
             })
+            if applicant_suffix:
+                results[-1]["subtitle"] = f"{results[-1]['subtitle']}{applicant_suffix}"
 
         w_q = Q(transaction_id__icontains=query) | Q(reference_no__icontains=query) | Q(licensee_id__icontains=query)
         if amount_query is not None:
@@ -308,6 +350,10 @@ def single_window_search(request):
                 status = "Failed"
             elif tx.payment_status.lower() in ("pending", "p"):
                 status = "Pending"
+
+            reference = tx.reference_no or tx.licensee_id
+            applicant_name = resolve_applicant_name(reference)
+            applicant_suffix = f" | Applicant: {applicant_name}" if applicant_name != "N/A" else ""
                 
             results.append({
                 "type": "payment",
@@ -320,9 +366,12 @@ def single_window_search(request):
                     "amount": str(tx.amount),
                     "payment_type": f"Wallet {tx.transaction_type}",
                     "created_at": tx.created_at.strftime("%Y-%m-%d %H:%M:%S") if tx.created_at else "N/A",
-                    "application_id": tx.reference_no
+                    "application_id": tx.reference_no,
+                    "applicant_name": applicant_name
                 }
             })
+            if applicant_suffix:
+                results[-1]["subtitle"] = f"{results[-1]['subtitle']}{applicant_suffix}"
 
         results.sort(key=lambda x: x["meta"]["created_at"], reverse=True)
         return Response({"results": results})
@@ -468,10 +517,12 @@ def single_window_search(request):
         users = users[:15]
 
         for u in users:
+            applicant_name = get_user_display_name(u)
             meta = {
                 "user_id": u.id,
                 "email": u.email,
-                "username": u.username
+                "username": u.username,
+                "applicant_name": applicant_name
             }
             u_id_str = str(u.id)
             u_user_upper = u.username.upper().strip() if u.username else ""
@@ -600,11 +651,12 @@ def single_window_search(request):
     new_apps = new_apps.order_by("-created_at")[:15]
 
     for app in new_apps:
-        applicant_name = f"{app.applicant.first_name} {app.applicant.last_name}" if app.applicant else "Unknown"
+        applicant_name = get_user_display_name(app.applicant) if app.applicant else "Unknown"
         meta = {
             "application_id": app.application_id,
             "is_approved": app.is_approved,
-            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A"
+            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
+            "applicant_name": applicant_name
         }
         
         app_id_upper = app.application_id.upper().strip()
@@ -623,7 +675,7 @@ def single_window_search(request):
 
     # Add License results
     for lic in licenses:
-        applicant_name = f"{lic.applicant.first_name} {lic.applicant.last_name}" if lic.applicant else "Unknown"
+        applicant_name = get_user_display_name(lic.applicant) if lic.applicant else "Unknown"
         nla_id = get_linked_nla_id(lic)
         nla_suffix = f" | Linked NLA: {nla_id}" if nla_id else ""
         results.append({
@@ -636,20 +688,22 @@ def single_window_search(request):
                 "license_id": lic.license_id,
                 "valid_up_to": lic.valid_up_to.strftime("%Y-%m-%d") if lic.valid_up_to else "N/A",
                 "applicant_id": lic.applicant.id if lic.applicant else None,
-                "application_id": nla_id
+                "application_id": nla_id,
+                "applicant_name": applicant_name
             }
         })
 
     # Add Renewal Application results
     for app in renewal_apps:
-        applicant_name = f"{app.applicant.first_name} {app.applicant.last_name}" if app.applicant else "Unknown"
+        applicant_name = get_user_display_name(app.applicant) if app.applicant else "Unknown"
         nla_id = get_linked_nla_id(app)
         nla_suffix = f" | Linked NLA: {nla_id}" if nla_id else ""
         meta = {
             "application_id": nla_id,
             "renewal_app_id": app.application_id,
             "is_approved": app.is_approved,
-            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A"
+            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
+            "applicant_name": applicant_name
         }
         
         app_id_upper = app.application_id.upper().strip()
@@ -675,7 +729,8 @@ def single_window_search(request):
             "application_id": nla_id,
             "sbm_app_id": app.application_id,
             "is_approved": app.is_approved,
-            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A"
+            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
+            "applicant_name": applicant_name
         }
         
         app_id_upper = app.application_id.upper().strip()
