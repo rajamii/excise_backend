@@ -1622,11 +1622,286 @@ def sbi_epay_mock_process(request):
         )
 
 
+#     incoming = str(request.POST.get("msg") or request.POST.get("MSG") or "").strip()
+#     if not incoming:
+#         return HttpResponseBadRequest("Missing msg")
+
+#     if getattr(settings, "BILLDESK_MOCK_SIMULATE_PENDING", False):
+#         return HttpResponse(
+#             """
+#             <html>
+#               <head><title>BillDesk Mock - Pending</title></head>
+#               <body style="font-family: Arial, sans-serif; padding: 24px;">
+#                 <h3>BillDesk Mock</h3>
+#                 <p><strong>Simulating a stuck/pending payment:</strong> no callback will be sent to the server.</p>
+#                 <p>You can close this page and check wallet history status as <code>Pending</code>.</p>
+#               </body>
+#             </html>
+#             """
+#         )
+
+#     req_parts = incoming.split("|")
+#     if len(req_parts) < 5:
+#         return HttpResponseBadRequest("Invalid request msg format")
+
+#     merchant_id = req_parts[0].strip()
+#     txn_ref = req_parts[1].strip()
+#     amount = req_parts[3].strip()
+
+#     gateway = (
+#         PaymentGatewayParameters.objects.filter(is_active=True, payment_gateway_name__iexact="Billdesk")
+#         .order_by("sl_no")
+#         .first()
+#     )
+#     encryption_key = str(getattr(gateway, "encryption_key", "") or "").strip()
+#     if not encryption_key:
+#         return HttpResponseBadRequest("Missing encryption key")
+
+#     auth_status = str(getattr(settings, "BILLDESK_MOCK_AUTH_STATUS", "0300") or "0300").strip()
+#     error_status = "NA" if auth_status == "0300" else "ERR"
+#     error_desc = "NA" if auth_status == "0300" else "MOCK_FAILED"
+
+#     # Build a realistic BillDesk response string (checksum appended at end).
+#     # MerchantID|CustomerID|TxnReferenceNo|BankReferenceNo|TxnAmount|BankID|BankMerchantID|TxnType|CurrencyName|ItemCode|
+#     # SecurityType|SecurityID|SecurityPassword|TxnDate|AuthStatus|SettlementType|AdditionalInfo1..7|ErrorStatus|ErrorDescription|Checksum
+#     customer_id = "NA"
+#     bank_ref = f"MOCK{timezone.now().strftime('%Y%m%d%H%M%S')}"
+#     bank_id = "NA"
+#     bank_merchant_id = "NA"
+#     txn_type = "NA"
+#     currency = "INR"
+#     item_code = "NA"
+#     security_type = "NA"
+#     security_id = str(getattr(gateway, "securityid", "") or "").strip() or "NA"
+#     security_password = "NA"
+#     txn_date = timezone.now().strftime("%Y-%m-%d %H:%M:%S")
+#     settlement_type = "NA"
+
+#     # Try to echo back additional info from our stored request (if present).
+#     tx = PaymentBilldeskTransaction.objects.filter(utr=txn_ref).first()
+#     add = [
+#         str(getattr(tx, "request_additionalinfo1", "") or "NA"),
+#         str(getattr(tx, "request_additionalinfo2", "") or "NA"),
+#         str(getattr(tx, "request_additionalinfo3", "") or "NA"),
+#         str(getattr(tx, "request_additionalinfo4", "") or "NA"),
+#         str(getattr(tx, "request_additionalinfo5", "") or "NA"),
+#         str(getattr(tx, "request_additionalinfo6", "") or "NA"),
+#         str(getattr(tx, "request_additionalinfo7", "") or "NA"),
+#     ]
+
+#     resp_without_checksum = (
+#         f"{merchant_id}|{customer_id}|{txn_ref}|{bank_ref}|{amount}|{bank_id}|{bank_merchant_id}|{txn_type}|"
+#         f"{currency}|{item_code}|{security_type}|{security_id}|{security_password}|{txn_date}|{auth_status}|"
+#         f"{settlement_type}|{add[0]}|{add[1]}|{add[2]}|{add[3]}|{add[4]}|{add[5]}|{add[6]}|{error_status}|{error_desc}"
+#     )
+#     resp_checksum = _billdesk_hmac_sha256(resp_without_checksum, encryption_key)
+#     response_msg = f"{resp_without_checksum}|{resp_checksum}"
+
+#     fail_auth_status = "0399"
+#     fail_error_status = "ERR"
+#     fail_error_desc = "MOCK_FAILED"
+#     resp_without_checksum_fail = (
+#         f"{merchant_id}|{customer_id}|{txn_ref}|{bank_ref}|{amount}|{bank_id}|{bank_merchant_id}|{txn_type}|"
+#         f"{currency}|{item_code}|{security_type}|{security_id}|{security_password}|{txn_date}|{fail_auth_status}|"
+#         f"{settlement_type}|{add[0]}|{add[1]}|{add[2]}|{add[3]}|{add[4]}|{add[5]}|{add[6]}|{fail_error_status}|{fail_error_desc}"
+#     )
+#     resp_checksum_fail = _billdesk_hmac_sha256(resp_without_checksum_fail, encryption_key)
+#     response_msg_fail = f"{resp_without_checksum_fail}|{resp_checksum_fail}"
+
+#     callback_url = reverse("payment_gateway:billdesk-response")
+
+#     escaped_msg = html.escape(response_msg, quote=True)
+#     escaped_msg_fail = html.escape(response_msg_fail, quote=True)
+#     escaped_txn = html.escape(txn_ref, quote=True)
+#     escaped_amount = html.escape(amount, quote=True)
+#     escaped_status = html.escape(auth_status, quote=True)
+
+#     # Show a simple BillDesk-like page so testers can actually "see" the payment step.
+#     page = f"""
+# <!doctype html>
+# <html>
+#   <head>
+#     <meta charset="utf-8">
+#     <title>BillDesk Mock Payment</title>
+#     <meta name="viewport" content="width=device-width, initial-scale=1">
+#     <style>
+#       body {{ font-family: Arial, sans-serif; margin: 24px; background: #f6f7fb; }}
+#       .card {{ max-width: 720px; margin: 0 auto; background: #fff; border: 1px solid #e6e8f0; border-radius: 10px; padding: 18px 18px 14px; }}
+#       .hdr {{ font-size: 18px; font-weight: 700; margin-bottom: 8px; }}
+#       .sub {{ color: #556; margin-bottom: 18px; }}
+#       .row {{ display: flex; gap: 12px; margin: 8px 0; }}
+#       .k {{ width: 220px; color: #334; font-weight: 600; }}
+#       .v {{ flex: 1; color: #111; word-break: break-all; }}
+#       .btns {{ display: flex; gap: 10px; margin-top: 18px; }}
+#       button {{ border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; font-weight: 700; }}
+#       .pay {{ background: #16a34a; color: #fff; }}
+#       .fail {{ background: #dc2626; color: #fff; }}
+#       .note {{ margin-top: 14px; color: #667; font-size: 12px; }}
+#     </style>
+#   </head>
+#   <body>
+#     <div class="card">
+#       <div class="hdr">BillDesk Mock Payment Page</div>
+#       <div class="sub">This page is shown only when <code>BILLDESK_USE_MOCK=1</code> for localhost testing.</div>
+
+#       <div class="row"><div class="k">Transaction</div><div class="v">{escaped_txn}</div></div>
+#       <div class="row"><div class="k">Amount</div><div class="v">{escaped_amount}</div></div>
+#       <div class="row"><div class="k">AuthStatus (mock)</div><div class="v">{escaped_status}</div></div>
+
+#       <div class="btns">
+#         <form method="POST" action="{callback_url}">
+#           <input type="hidden" name="msg" value="{escaped_msg}">
+#           <button type="submit" class="pay">Pay (Post Response)</button>
+#         </form>
+#         <form method="POST" action="{callback_url}">
+#           <input type="hidden" name="msg" value="{escaped_msg_fail}">
+#           <button type="submit" class="fail">Fail</button>
+#         </form>
+#       </div>
+
+#       <div class="note">Tip: set <code>BILLDESK_MOCK_AUTH_STATUS</code> to control the default success status (0300).</div>
+#     </div>
+#   </body>
+# </html>
+# """.strip()
+#     return HttpResponse(page, content_type="text/html")
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_billdesk_transactions(request):
+    from django.db.models import Q
+    
+    # Authorization check: only allow roleId 1 (Site Admin) or roleId 3 (Single Window)
+    role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+    if role_id not in (1, 3):
+        return Response({"detail": "Permission denied. Admin/Single Window only."}, status=status.HTTP_403_FORBIDDEN)
+
+    queryset = PaymentBilldeskTransaction.objects.all()
+
+    # Filters
+    query = request.query_params.get("query", "").strip()
+    status_filter = request.query_params.get("status", "").strip()
+    
+    if status_filter:
+        queryset = queryset.filter(payment_status__iexact=status_filter)
+
+    if query:
+        # Check if amount query
+        amount_query = None
+        try:
+            amount_query = float(query)
+        except ValueError:
+            pass
+
+        q_obj = Q(utr__icontains=query) | Q(transaction_id_no_hoa__icontains=query) | Q(payer_id__icontains=query) | Q(user_id__icontains=query)
+        if amount_query is not None:
+            q_obj |= Q(transaction_amount=amount_query)
+        queryset = queryset.filter(q_obj)
+
+    queryset = queryset.order_by('-transaction_date')
+
+    # Pagination parameters
+    try:
+        page = int(request.query_params.get("page", 1))
+        page_size = int(request.query_params.get("page_size", 10))
+    except (ValueError, TypeError):
+        page = 1
+        page_size = 10
+
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+
+    total_count = queryset.count()
+    offset = (page - 1) * page_size
+    items = queryset[offset: offset + page_size]
+
+    # Resolve applicant names helper
+    def get_user_display_name(u):
+        if not u:
+            return "N/A"
+        name = f"{getattr(u, 'first_name', '') or ''} {getattr(u, 'last_name', '') or ''}".strip()
+        return name or getattr(u, "username", None) or "N/A"
+
+    def resolve_name(reference):
+        ref = str(reference or "").strip()
+        if not ref:
+            return "N/A"
+        try:
+            # Try NewLicenseApplication
+            app = NewLicenseApplication.objects.select_related("applicant").filter(application_id__iexact=ref).first()
+            if app:
+                return get_user_display_name(app.applicant)
+
+            # Try RenewalApplication
+            from models.transactional.license_renewal_application.models import LicenseApplication as RenewalApplication
+            renewal = RenewalApplication.objects.select_related("applicant").filter(application_id__iexact=ref).first()
+            if renewal:
+                return get_user_display_name(renewal.applicant)
+
+            # Try SalesmanBarmanModel
+            from models.transactional.salesman_barman.models import SalesmanBarmanModel
+            staff = SalesmanBarmanModel.objects.filter(application_id__iexact=ref).first()
+            if staff:
+                return f"{staff.firstName or ''} {staff.lastName or ''}".strip() or get_user_display_name(staff.applicant)
+
+            # Try License
+            from models.masters.license.models import License
+            license_obj = License.objects.select_related("applicant").filter(license_id__iexact=ref).first()
+            if license_obj:
+                return get_user_display_name(license_obj.applicant)
+
+            # Try direct user match
+            user_filter = Q(username__iexact=ref)
+            if ref.isdigit():
+                user_filter |= Q(id=int(ref))
+            user = CustomUser.objects.filter(user_filter).first()
+            return get_user_display_name(user) if user else "N/A"
+        except Exception:
+            return "N/A"
+
+    serialized_data = []
+    for tx in items:
+        # Resolve module code description
+        purpose = "Application Fee"
+        if tx.payment_module_code == "002":
+            purpose = "Renewal Fee"
+        elif tx.payment_module_code == "999":
+            purpose = "Wallet Recharge"
+        else:
+            try:
+                mod = MasterPaymentModule.objects.filter(module_code=tx.payment_module_code).first()
+                if mod and mod.module_desc:
+                    purpose = mod.module_desc
+            except Exception:
+                pass
+
+        # Resolve applicant name
+        applicant_name = resolve_name(tx.payer_id)
+        if applicant_name == "N/A" and tx.user_id:
+            applicant_name = resolve_name(tx.user_id)
+
+        serialized_data.append({
+            "utr": tx.utr,
+            "transaction_date": tx.transaction_date.isoformat() if tx.transaction_date else None,
+            "transaction_id_no_hoa": tx.transaction_id_no_hoa,
+            "payer_id": tx.payer_id,
+            "payment_module_code": tx.payment_module_code,
+            "purpose": purpose,
+            "transaction_amount": str(tx.transaction_amount),
+            "payment_status": tx.payment_status,
+            "user_id": tx.user_id,
+            "applicant_name": applicant_name,
+            "response_bankreferenceno": tx.response_bankreferenceno,
+            "response_txndate": tx.response_txndate.isoformat() if tx.response_txndate else None,
+            "response_errordescription": tx.response_errordescription,
+            "response_authstatus": tx.response_authstatus,
+        })
+
     return Response({
-        "success": True,
-        "message": "SBI ePay mock payment processed successfully!",
-        "transaction_id": transaction_id,
-        "amount": amount,
-        "head_of_account": head_of_account,
-        "status": "S"
-    }, status=status.HTTP_200_OK)
+        'count': total_count,
+        'page': page,
+        'page_size': page_size,
+        'total_pages': (total_count + page_size - 1) // page_size,
+        'results': serialized_data,
+    })
