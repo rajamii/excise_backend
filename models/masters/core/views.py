@@ -35,6 +35,7 @@ from .serializers.locationcategory_serializer import LocationCategorySerializer
 from .serializers.locationsubcategory_serializer import LocationSubcategorySerializer
 from .serializers.ward_serializer import WardSerializer
 from .serializers.renewalapplicationconfig_serializer import RenewalApplicationConfigSerializer
+from .serializers.supplychaintimerconfig_serializer import SupplyChainTimerConfigSerializer
 
 # NOTE: LicenseeProfile views have been moved to auth.user.views.
 # Endpoints are now served under /api/users/licensee-profiles/
@@ -1086,3 +1087,27 @@ def renewal_application_config_update(request):
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
+
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PUT'])
+def timer_config_update(request):
+    """Update a timer configuration by code."""
+    code = request.data.get('code')
+    if not code:
+        return Response({'detail': 'code is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    cfg = masters_model.SupplyChainTimerConfig.objects.filter(code=code).first()
+    if not cfg:
+        return Response({'detail': f'Timer config with code {code} not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = SupplyChainTimerConfigSerializer(
+        instance=cfg, 
+        data=request.data, 
+        partial=True, 
+        context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+

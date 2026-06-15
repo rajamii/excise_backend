@@ -45,6 +45,12 @@ class LegacyLicenseCodeResolverTests(TestCase):
         self.assertEqual((resolved_cat2, resolved_scat2), (999, 888))
 
 
+from django.contrib.contenttypes.models import ContentType
+from auth.workflow.models import Transaction
+from models.transactional.new_license_application.models import NewLicenseApplication
+from models.transactional.salesman_barman.models import SalesmanBarmanModel
+from models.masters.core.models import District, LicenseType, State
+
 class LicenseIssuanceStageRulesTests(TestCase):
     def test_commissioner_final_stage_issues_license_for_license_application(self):
         wf = Workflow.objects.create(name="WF1")
@@ -55,3 +61,39 @@ class LicenseIssuanceStageRulesTests(TestCase):
         wf = Workflow.objects.create(name="WF2")
         stage = WorkflowStage.objects.create(workflow=wf, name="Commissioner Approval", is_final=False)
         self.assertTrue(_stage_should_issue_license(stage, application_model="licenseapplication"))
+
+    def test_transition_from_commissioner_issues_license_for_new_license_and_sbm(self):
+        # Setup workflow and stages
+        wf = Workflow.objects.create(name="License Approval")
+        jc_stage = WorkflowStage.objects.create(workflow=wf, name="Joint Commissioner", is_final=False)
+        comm_stage = WorkflowStage.objects.create(workflow=wf, name="Commissioner", is_final=False)
+        payment_stage = WorkflowStage.objects.create(workflow=wf, name="Awaiting Payment", is_final=False)
+
+        # Setup dummy object_id and get content type
+        app_id = "NLA/1101/2026-27/9999"
+        ct = ContentType.objects.get_for_model(NewLicenseApplication)
+
+        # Transaction 1: Forward from JC to Commissioner stage. (This transitions TO Commissioner stage, not FROM it).
+        txn1 = Transaction.objects.create(
+            content_type=ct,
+            object_id=app_id,
+            stage=comm_stage
+        )
+        self.assertFalse(_stage_should_issue_license(txn1, application_model="newlicenseapplication"))
+
+        # Transaction 2: Forward from Commissioner stage to Awaiting Payment stage. (This transitions FROM Commissioner).
+        txn2 = Transaction.objects.create(
+            content_type=ct,
+            object_id=app_id,
+            stage=payment_stage
+        )
+        self.assertTrue(_stage_should_issue_license(txn2, application_model="newlicenseapplication"))
+
+        # Transaction 3: Resubmitted from Commissioner back to Applicant Applied stage.
+        txn3 = Transaction.objects.create(
+            content_type=ct,
+            object_id=app_id,
+            stage=jc_stage  # jc_stage is a non-approval stage
+        )
+        self.assertFalse(_stage_should_issue_license(txn3, application_model="newlicenseapplication"))
+

@@ -141,6 +141,7 @@ renewal_application_config_patterns = [
 
 urlpatterns = [
     path('timer-config/',          views.timer_config,          name='timer-config'),
+    path('timer-config/update/',   views.timer_config_update,   name='timer-config-update'),
     path('license-categories/',     include(license_category_patterns)),
     path('license-types/',          include(license_type_patterns)),
     path('states/',                 include(state_patterns)),

@@ -351,7 +351,33 @@ def wallet_recharge_credit(request, licensee_id):
     if not wallet_txn:
         return Response({"detail": "Unable to record wallet recharge."}, status=status.HTTP_400_BAD_REQUEST)
 
+    if wallet_type == "security_deposit":
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            from models.transactional.new_license_application.models import NewLicenseApplication
+            from models.transactional.new_license_application.payment_status import sync_new_license_payment_status
+            from models.transactional.new_license_application.views import (
+                _resolve_license_fee_row,
+                _get_additional_charge_total,
+            )
+            from models.transactional.wallet.wallet_service import debit_wallet_balance
+
+            candidates = _wallet_candidates_for_request(request, licensee_id)
+            lic = License.objects.filter(license_id__in=candidates).order_by("-issue_date", "-license_id").first()
+            if lic and lic.source_type == "new_license_application":
+                application = NewLicenseApplication.objects.filter(application_id=lic.source_object_id).first()
+                if application and not application.is_security_fee_paid:
+                    application.is_security_fee_paid = True
+                    application.save(update_fields=["is_security_fee_paid"])
+                    sync_new_license_payment_status(application)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error("Auto security fee payment failed: %s", str(e), exc_info=True)
+
     return Response(
         {"status": "ok", "already_processed": already_processed, "wallet_transaction": WalletTransactionSerializer(wallet_txn).data},
         status=status.HTTP_200_OK,
     )
+

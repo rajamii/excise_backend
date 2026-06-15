@@ -78,29 +78,56 @@ def _stage_is_awaiting_license_fee_payment(stage, *, application_model: str) -> 
     return False
 
 
-def _stage_should_issue_license(stage, *, application_model: str) -> bool:
+def _stage_should_issue_license(instance, *, application_model: str) -> bool:
     """
     Decide when a new Transaction should create a License (NA/... / LA/... / SB/...) and wallet rows.
 
-    New license applications: issue license_id (NA/...) and seed wallet_balances (0 balance) when
-    the workflow reaches commissioner approval and/or "Awaiting License Fee Payment" (`awaiting_payment`).
+    For new licensee and salesman barman applications, the license row is created
+    only when the Commissioner approves the application (transitioning out of the Commissioner stage).
 
     Other application types keep the legacy rule: exact stage name "approved".
     """
+    from auth.workflow.models import WorkflowStage
+    if isinstance(instance, WorkflowStage):
+        stage = instance
+        txn = None
+    else:
+        stage = getattr(instance, "stage", None)
+        txn = instance
+
     if not stage:
         return False
     name_lower = str(getattr(stage, "name", "") or "").strip().lower()
-    if not name_lower:
-        return False
-    if "reject" in name_lower:
+    if not name_lower or "reject" in name_lower or "objection" in name_lower:
         return False
 
     app = (application_model or "").lower()
-    if app == "newlicenseapplication":
-        # New license applications:
-        # Seed NA/... license + wallets at the explicit "Awaiting License Fee Payment" gate (stage id 23).
-        # The license row is created as inactive until both license fee + security fee payments complete.
-        return bool(_stage_is_awaiting_license_fee_payment(stage, application_model=application_model))
+    if app in {"newlicenseapplication", "salesmanbarmanmodel"}:
+        if txn is None:
+            return bool(
+                _stage_is_commissioner_approval(stage)
+                or (getattr(stage, "is_final", False) and "reject" not in name_lower)
+                or name_lower == "approved"
+            )
+        
+        # Exclude stages that represent resubmission/backward steps or objections
+        invalid_targets = {"applied", "district", "enquiry", "joint", "commissioner", "commisioner", "objection", "reject"}
+        if any(t in name_lower for t in invalid_targets):
+            return False
+
+        if not txn.content_type_id or not txn.object_id:
+            return False
+        previous_txn = Transaction.objects.filter(
+            content_type_id=txn.content_type_id,
+            object_id=txn.object_id,
+            id__lt=txn.id
+        ).order_by('-id').first()
+        if not previous_txn:
+            return False
+        prev_stage_name = str(getattr(previous_txn.stage, "name", "") or "").strip().lower()
+        if "joint" in prev_stage_name:
+            return False
+        return prev_stage_name in {"commissioner", "commisioner"}
 
     # Other application types: deployments often use commissioner final stage naming instead of "approved".
     return bool(
@@ -108,6 +135,7 @@ def _stage_should_issue_license(stage, *, application_model: str) -> bool:
         or (getattr(stage, "is_final", False) and "reject" not in name_lower)
         or name_lower == "approved"
     )
+
 
 
 def _new_license_payments_complete(application) -> bool:
@@ -127,14 +155,20 @@ def _get_dynamic_renewal_date():
 
 def get_license_valid_up_to(issue_date: date) -> datetime:
     """
-    Returns the FY end as an aware datetime (end-of-day).
+    Returns the FY end as an aware datetime (end-of-day) from RenewalApplicationConfig.
 
     Accepts either a `date` or `datetime` input.
     """
     from zoneinfo import ZoneInfo
+    from models.masters.core.models import RenewalApplicationConfig
+    
     issue_day = issue_date.date() if isinstance(issue_date, datetime) else issue_date
     year = issue_day.year
-    r_month, r_day, r_time = _get_dynamic_renewal_date()
+    
+    config = RenewalApplicationConfig.objects.first()
+    r_month = config.renewal_month if config else 3
+    r_day = config.renewal_day if config else 31
+    r_time = config.renewal_time if config else time(23, 59, 59)
     
     if issue_day.month > r_month or (issue_day.month == r_month and issue_day.day >= r_day):
         end_year = year + 1
@@ -162,7 +196,7 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
         return
 
     application_model = str(getattr(instance.content_type, "model", "") or "").lower()
-    if not _stage_should_issue_license(instance.stage, application_model=application_model):
+    if not _stage_should_issue_license(instance, application_model=application_model):
         return
 
     try:
@@ -250,17 +284,31 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
         y = d.year
         from models.masters.core.models import RenewalApplicationConfig
         config = RenewalApplicationConfig.objects.first()
-        r_month, r_day = (config.renewal_month, config.renewal_day) if config else (3, 31)
-        r_time = config.renewal_time if config else time.max.replace(microsecond=0)
+        r_month = config.renewal_month if config else 3
+        r_day = config.renewal_day if config else 31
+        r_time = config.renewal_time if config else time(23, 59, 59)
         
         if d.month > r_month or (d.month == r_month and d.day >= r_day):
             return date(y + 1, r_month, r_day), r_time
         else:
             return date(y, r_month, r_day), r_time
 
+    from models.masters.core.models import RenewalApplicationConfig
+    config = RenewalApplicationConfig.objects.first()
+    r_month = config.renewal_month if config else 3
+    r_day = config.renewal_day if config else 31
+    r_time = config.renewal_time if config else time(23, 59, 59)
+
     if is_renewal:
-        fy_end, valid_time = get_current_fy_end(issue_day)
-        valid_day = fy_end.replace(year=fy_end.year + 1)
+        old_lic_valid = application.renewal_of.valid_up_to
+        if old_lic_valid:
+            from zoneinfo import ZoneInfo
+            local_old_val = timezone.localtime(old_lic_valid, ZoneInfo("Asia/Kolkata"))
+            valid_day = date(local_old_val.year + 1, r_month, r_day)
+            valid_time = r_time
+        else:
+            fy_end, valid_time = get_current_fy_end(issue_day)
+            valid_day = fy_end.replace(year=fy_end.year + 1)
     else:
         valid_day, valid_time = get_current_fy_end(issue_day)
 
