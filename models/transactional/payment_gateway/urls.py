@@ -12,5 +12,6 @@ urlpatterns = [
     path("billdesk/initiate/new-license-application-fee/", views.billdesk_initiate_new_license_application_fee, name="billdesk-initiate-new-license-application-fee"),
     path("billdesk/response/", views.billdesk_response, name="billdesk-response"),
     path("billdesk/webhook/", views.billdesk_webhook, name="billdesk-webhook"),
+    path("billdesk/transactions/", views.list_billdesk_transactions, name="billdesk-transactions-list"),
     # path("billdesk/mock/process/", views.billdesk_mock_process, name="billdesk-mock-process"),
 ]

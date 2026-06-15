@@ -1761,3 +1761,143 @@ def billdesk_response(request):
 # </html>
 # """.strip()
 #     return HttpResponse(page, content_type="text/html")
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def list_billdesk_transactions(request):
+    from django.db.models import Q
+    
+    # Authorization check: only allow roleId 1 (Site Admin) or roleId 3 (Single Window)
+    role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+    if role_id not in (1, 3):
+        return Response({"detail": "Permission denied. Admin/Single Window only."}, status=status.HTTP_403_FORBIDDEN)
+
+    queryset = PaymentBilldeskTransaction.objects.all()
+
+    # Filters
+    query = request.query_params.get("query", "").strip()
+    status_filter = request.query_params.get("status", "").strip()
+    
+    if status_filter:
+        queryset = queryset.filter(payment_status__iexact=status_filter)
+
+    if query:
+        # Check if amount query
+        amount_query = None
+        try:
+            amount_query = float(query)
+        except ValueError:
+            pass
+
+        q_obj = Q(utr__icontains=query) | Q(transaction_id_no_hoa__icontains=query) | Q(payer_id__icontains=query) | Q(user_id__icontains=query)
+        if amount_query is not None:
+            q_obj |= Q(transaction_amount=amount_query)
+        queryset = queryset.filter(q_obj)
+
+    queryset = queryset.order_by('-transaction_date')
+
+    # Pagination parameters
+    try:
+        page = int(request.query_params.get("page", 1))
+        page_size = int(request.query_params.get("page_size", 10))
+    except (ValueError, TypeError):
+        page = 1
+        page_size = 10
+
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+
+    total_count = queryset.count()
+    offset = (page - 1) * page_size
+    items = queryset[offset: offset + page_size]
+
+    # Resolve applicant names helper
+    def get_user_display_name(u):
+        if not u:
+            return "N/A"
+        name = f"{getattr(u, 'first_name', '') or ''} {getattr(u, 'last_name', '') or ''}".strip()
+        return name or getattr(u, "username", None) or "N/A"
+
+    def resolve_name(reference):
+        ref = str(reference or "").strip()
+        if not ref:
+            return "N/A"
+        try:
+            # Try NewLicenseApplication
+            app = NewLicenseApplication.objects.select_related("applicant").filter(application_id__iexact=ref).first()
+            if app:
+                return get_user_display_name(app.applicant)
+
+            # Try RenewalApplication
+            from models.transactional.license_renewal_application.models import LicenseApplication as RenewalApplication
+            renewal = RenewalApplication.objects.select_related("applicant").filter(application_id__iexact=ref).first()
+            if renewal:
+                return get_user_display_name(renewal.applicant)
+
+            # Try SalesmanBarmanModel
+            from models.transactional.salesman_barman.models import SalesmanBarmanModel
+            staff = SalesmanBarmanModel.objects.filter(application_id__iexact=ref).first()
+            if staff:
+                return f"{staff.firstName or ''} {staff.lastName or ''}".strip() or get_user_display_name(staff.applicant)
+
+            # Try License
+            from models.masters.license.models import License
+            license_obj = License.objects.select_related("applicant").filter(license_id__iexact=ref).first()
+            if license_obj:
+                return get_user_display_name(license_obj.applicant)
+
+            # Try direct user match
+            user_filter = Q(username__iexact=ref)
+            if ref.isdigit():
+                user_filter |= Q(id=int(ref))
+            user = CustomUser.objects.filter(user_filter).first()
+            return get_user_display_name(user) if user else "N/A"
+        except Exception:
+            return "N/A"
+
+    serialized_data = []
+    for tx in items:
+        # Resolve module code description
+        purpose = "Application Fee"
+        if tx.payment_module_code == "002":
+            purpose = "Renewal Fee"
+        elif tx.payment_module_code == "999":
+            purpose = "Wallet Recharge"
+        else:
+            try:
+                mod = MasterPaymentModule.objects.filter(module_code=tx.payment_module_code).first()
+                if mod and mod.module_desc:
+                    purpose = mod.module_desc
+            except Exception:
+                pass
+
+        # Resolve applicant name
+        applicant_name = resolve_name(tx.payer_id)
+        if applicant_name == "N/A" and tx.user_id:
+            applicant_name = resolve_name(tx.user_id)
+
+        serialized_data.append({
+            "utr": tx.utr,
+            "transaction_date": tx.transaction_date.isoformat() if tx.transaction_date else None,
+            "transaction_id_no_hoa": tx.transaction_id_no_hoa,
+            "payer_id": tx.payer_id,
+            "payment_module_code": tx.payment_module_code,
+            "purpose": purpose,
+            "transaction_amount": str(tx.transaction_amount),
+            "payment_status": tx.payment_status,
+            "user_id": tx.user_id,
+            "applicant_name": applicant_name,
+            "response_bankreferenceno": tx.response_bankreferenceno,
+            "response_txndate": tx.response_txndate.isoformat() if tx.response_txndate else None,
+            "response_errordescription": tx.response_errordescription,
+            "response_authstatus": tx.response_authstatus,
+        })
+
+    return Response({
+        'count': total_count,
+        'page': page,
+        'page_size': page_size,
+        'total_pages': (total_count + page_size - 1) // page_size,
+        'results': serialized_data,
+    })
