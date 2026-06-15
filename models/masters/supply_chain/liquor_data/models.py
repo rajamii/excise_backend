@@ -138,6 +138,15 @@ class MasterFactoryList(models.Model):
     def __str__(self):
         return str(self.factory_name or '').strip()
 
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if self.source_object_id:
+            from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
+            BrandWarehouse.objects.filter(
+                license_id=self.source_object_id,
+                factory__isnull=True
+            ).update(factory=self)
+
 
 class LiquorData(models.Model):
     sl_no = models.IntegerField(blank=True, null=True, db_column='sl_no')
