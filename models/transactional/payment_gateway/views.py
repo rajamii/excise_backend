@@ -1460,7 +1460,6 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                         if credit_wallet_type == "security_deposit":
                             try:
                                 from models.masters.license.models import License
-                                from models.transactional.new_license_application.models import NewLicenseApplication
                                 from models.transactional.new_license_application.payment_status import sync_new_license_payment_status
                                 from models.transactional.wallet.views import _wallet_license_candidates
 
