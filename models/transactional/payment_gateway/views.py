@@ -1457,18 +1457,51 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                         # Auto security fee payment logic for new license applications upon security deposit wallet recharge
                         if credit_wallet_type == "security_deposit":
                             try:
+                                from django.db.models import Q
                                 from models.masters.license.models import License
                                 from models.transactional.new_license_application.payment_status import sync_new_license_payment_status
                                 from models.transactional.wallet.views import _wallet_license_candidates
 
                                 candidates = _wallet_license_candidates(credit_licensee_id)
                                 lic = License.objects.filter(license_id__in=candidates).order_by("-issue_date", "-license_id").first()
+                                application = None
                                 if lic and lic.source_type == "new_license_application":
                                     application = NewLicenseApplication.objects.filter(application_id=lic.source_object_id).first()
-                                    if application and not application.is_security_fee_paid:
-                                        application.is_security_fee_paid = True
-                                        application.save(update_fields=["is_security_fee_paid"])
-                                        sync_new_license_payment_status(application)
+
+                                # Fallback logic: if the resolved application is None, already approved, or already marked as paid,
+                                # check if there is a pending, unapproved NewLicenseApplication for this user.
+                                if not application or getattr(application, "is_approved", False) or getattr(application, "is_security_fee_paid", False):
+                                    username = str(tx.user_id or "").strip()
+                                    user = None
+                                    if username:
+                                        user = CustomUser.objects.filter(username__iexact=username).first()
+                                    if not user and lic:
+                                        user = getattr(lic, "applicant", None)
+
+                                    if user:
+                                        pending_app = NewLicenseApplication.objects.filter(
+                                            applicant=user,
+                                            is_approved=False,
+                                            is_security_fee_paid=False
+                                        ).filter(
+                                            Q(current_stage__name__icontains="payment") |
+                                            Q(current_stage__name__icontains="awaiting")
+                                        ).first()
+
+                                        if not pending_app:
+                                            pending_app = NewLicenseApplication.objects.filter(
+                                                applicant=user,
+                                                is_approved=False,
+                                                is_security_fee_paid=False
+                                            ).first()
+
+                                        if pending_app:
+                                            application = pending_app
+
+                                if application and not application.is_security_fee_paid:
+                                    application.is_security_fee_paid = True
+                                    application.save(update_fields=["is_security_fee_paid"])
+                                    sync_new_license_payment_status(application)
                             except Exception as auto_pay_error:
                                 logger.error("Auto security fee payment in Billdesk callback failed: %s", str(auto_pay_error), exc_info=True)
                 except Exception as exc:
