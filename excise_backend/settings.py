@@ -158,8 +158,8 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'sems_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'sameer123',  # Your PostgreSQL password
-        'HOST': 'localhost',        
+        'PASSWORD': 'postgres',  # Your PostgreSQL password
+        'HOST': '10.182.154.196',        
         'PORT': '5432',             # Default PostgreSQL port
         'CONN_MAX_AGE': 300,          # Don't reuse connections — avoids aborted transaction state
     }
