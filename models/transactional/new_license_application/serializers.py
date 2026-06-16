@@ -17,6 +17,38 @@ from models.masters.core.models import (
 from utils.fields import CodeRelatedField
 from . import helpers
 
+from decimal import Decimal
+
+
+PACHWAI_MODULE_CODE = "NLI_ADD_PACHWAI"
+DRAUGHT_BEER_MODULE_CODE = "NLI_ADD_DRAUGHT_BEER"
+
+
+def _get_additional_charge_total(obj: NewLicenseApplication) -> Decimal:
+    """
+    Additional charges are configurable in `sems_master_payment_module` (MasterPaymentModule.license_fee).
+    They are added to both license fee and security fee when selected by the applicant.
+    """
+    total = Decimal("0.00")
+    try:
+        from models.transactional.payment_gateway.models import MasterPaymentModule
+
+        module_fees = {
+            m["module_code"]: (m["license_fee"] if m["license_fee"] is not None else Decimal("0.00"))
+            for m in MasterPaymentModule.objects.filter(
+                module_code__in=[PACHWAI_MODULE_CODE, DRAUGHT_BEER_MODULE_CODE],
+                visibility_status=True,
+            ).values("module_code", "license_fee")
+        }
+        if getattr(obj, "pachwai", False):
+            total += module_fees.get(PACHWAI_MODULE_CODE, Decimal("0.00"))
+        if getattr(obj, "draught_beer", False):
+            total += module_fees.get(DRAUGHT_BEER_MODULE_CODE, Decimal("0.00"))
+    except Exception:
+        # Non-blocking: if the master table isn't configured in a deployment, fall back to 0.
+        pass
+    return total
+
 
 class UserShortSerializer(serializers.ModelSerializer):
     role_id = serializers.IntegerField(source='role.id', read_only=True)
@@ -109,10 +141,17 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     application_fee_payment_date = serializers.DateTimeField(read_only=True, allow_null=True)
     application_fee_error = serializers.CharField(read_only=True, allow_blank=True, allow_null=True)
 
+    # Site enquiry revert badge (annotated in views).
+    site_enquiry_is_reverted = serializers.BooleanField(read_only=True, default=False)
+    site_enquiry_reverted_remarks = serializers.CharField(read_only=True, allow_blank=True, allow_null=True)
+
     # Backward-compatible fee field used across multiple frontend screens.
     yearly_license_fee = serializers.SerializerMethodField()
     license_fee_amount = serializers.SerializerMethodField()
     security_fee_amount = serializers.SerializerMethodField()
+    valid_up_to = serializers.SerializerMethodField()
+    issued_license_id = serializers.SerializerMethodField()
+    renewal_application_id = serializers.SerializerMethodField()
 
     class Meta:
         model = NewLicenseApplication
@@ -215,22 +254,36 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         if not fee:
             return ""
         try:
-            return str(fee.license_fee)
+            base = getattr(fee, "license_fee", None)
+            if base is None:
+                return ""
+            return str(base + _get_additional_charge_total(obj))
         except Exception:
             return ""
 
     def get_license_fee_amount(self, obj):
         fee = self._resolve_license_fee(obj)
-        return getattr(fee, "license_fee", None) if fee else None
+        base = getattr(fee, "license_fee", None) if fee else None
+        if base is None:
+            return None
+        return base + _get_additional_charge_total(obj)
 
     def get_security_fee_amount(self, obj):
         fee = self._resolve_license_fee(obj)
-        return getattr(fee, "security_amount", None) if fee else None
+        base = getattr(fee, "security_amount", None) if fee else None
+        if base is None:
+            return None
+        return base + _get_additional_charge_total(obj)
 
     def validate(self, data):
-        helpers.validate_mobile_number(data['mobile_number'])
-        helpers.validate_email_field(data['email'])
-        helpers.validate_pan_number(data['pan'])
+        # Resolve-objection updates are partial payloads, so only validate fields that
+        # are actually being updated in this request.
+        if 'mobile_number' in data:
+            helpers.validate_mobile_number(data['mobile_number'])
+        if 'email' in data:
+            helpers.validate_email_field(data['email'])
+        if 'pan' in data:
+            helpers.validate_pan_number(data['pan'])
         if data.get('company_pan'):
             helpers.validate_pan_number(data['company_pan'])
         if data.get('company_email'):
@@ -239,7 +292,8 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
             helpers.validate_mobile_number(data['company_phone_number'])
         if data.get('company_cin'):
             helpers.validate_cin_number(data['company_cin'])
-        helpers.validate_pin_code(data['pin_code'])
+        if 'pin_code' in data:
+            helpers.validate_pin_code(data['pin_code'])
         return data
 
     def create(self, validated_data):
@@ -272,3 +326,43 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         application._member_payload = member_payload
 
         return application
+
+    def get_valid_up_to(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            ct = ContentType.objects.get_for_model(obj)
+            license_obj = License.objects.filter(source_content_type=ct, source_object_id=obj.pk).first()
+            if license_obj and license_obj.valid_up_to:
+                return license_obj.valid_up_to.isoformat()
+        except Exception:
+            pass
+        return None
+
+    def get_issued_license_id(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            ct = ContentType.objects.get_for_model(obj)
+            license_obj = License.objects.filter(source_content_type=ct, source_object_id=obj.pk).first()
+            if license_obj:
+                return license_obj.license_id
+        except Exception:
+            pass
+        return None
+
+    def get_renewal_application_id(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            from models.transactional.license_renewal_application.models import LicenseApplication
+            
+            ct = ContentType.objects.get_for_model(obj)
+            license_obj = License.objects.filter(source_content_type=ct, source_object_id=obj.pk).first()
+            if license_obj:
+                renewal = LicenseApplication.objects.filter(old_license_id=license_obj.license_id).order_by('-created_at').first()
+                if renewal:
+                    return renewal.application_id
+        except Exception:
+            pass
+        return None

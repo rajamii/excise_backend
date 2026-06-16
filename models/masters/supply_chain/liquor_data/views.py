@@ -2,14 +2,14 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.db.models import Q, Max, Count
 import logging
 from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
 from auth.roles.permissions import HasAppPermission  # type: ignore
 from .models import (
     MasterLiquorType,
-    MasterLiquorCategory,
+    MasterLiquorCapacity,
     MasterBottleType,
     MasterBrandList,
     MasterFactoryList,
@@ -17,7 +17,7 @@ from .models import (
 )
 from .serializers import (
     MasterLiquorTypeSerializer,
-    MasterLiquorCategorySerializer,
+    MasterLiquorCapacitySerializer,
     MasterBottleTypeSerializer,
     MasterBrandListSerializer,
     MasterFactoryListSerializer,
@@ -62,6 +62,47 @@ class MasterLiquorTypeListView(APIView):
             row['brand_count'] = count_map.get(liquor_type_id, 0)
 
         return Response({'success': True, 'data': data, 'total': len(data)})
+
+    def post(self, request):
+        """Create a new liquor type."""
+        serializer = MasterLiquorTypeSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        obj = serializer.save()
+        return Response(MasterLiquorTypeSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+
+class MasterLiquorTypeDetailView(APIView):
+    """Retrieve, update or delete a single liquor type by pk."""
+
+    def _get_object(self, pk):
+        try:
+            return MasterLiquorType.objects.get(pk=pk)
+        except MasterLiquorType.DoesNotExist:
+            return None
+
+    def get(self, request, pk):
+        obj = self._get_object(pk)
+        if obj is None:
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(MasterLiquorTypeSerializer(obj).data)
+
+    def patch(self, request, pk):
+        obj = self._get_object(pk)
+        if obj is None:
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = MasterLiquorTypeSerializer(obj, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        obj = serializer.save()
+        return Response(MasterLiquorTypeSerializer(obj).data)
+
+    def delete(self, request, pk):
+        obj = self._get_object(pk)
+        if obj is None:
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        obj.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class BrandSizeListView(APIView):
@@ -229,7 +270,7 @@ class LiquorRatesView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-class MasterLiquorCategoryListView(APIView):
+class MasterLiquorCapacityListView(APIView):
     """
     Master table endpoint for pack sizes (ml).
 
@@ -240,11 +281,11 @@ class MasterLiquorCategoryListView(APIView):
     def get(self, request):
         include_zero = str(request.query_params.get('include_zero') or '').strip().lower() in {'1', 'true', 'yes'}
 
-        qs = MasterLiquorCategory.objects.all()
+        qs = MasterLiquorCapacity.objects.all()
         if not include_zero:
             qs = qs.filter(size_ml__gt=0)
 
-        data = MasterLiquorCategorySerializer(qs, many=True).data
+        data = MasterLiquorCapacitySerializer(qs, many=True).data
         return Response({'success': True, 'data': data, 'total': len(data)})
 
 
@@ -295,6 +336,16 @@ class MasterBottleTypeDetailView(APIView):
 
     GET/PATCH/DELETE by id.
     """
+
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            # Use the public GET endpoint `master_bottle_type_detail` for unauthenticated reads.
+            return [IsAuthenticated()]
+        if self.request.method == 'PATCH':
+            return [HasAppPermission('masters', 'update')]
+        if self.request.method == 'DELETE':
+            return [HasAppPermission('masters', 'delete')]
+        return [IsAuthenticated()]
 
     def get_object(self, pk: int):
         try:

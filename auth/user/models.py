@@ -8,8 +8,6 @@ from models.masters.core.models import District, Subdivision
 from models.masters.core.helper import GENDER_CHOICES, MARITAL_STATUS_CHOICES, RESIDENTIAL_STATUS_CHOICES
 from django.utils import timezone
 import uuid
-import random
-
 
 class CustomUserManager(BaseUserManager):
     def create_user(self, email, first_name, last_name, phone_number,
@@ -30,9 +28,7 @@ class CustomUserManager(BaseUserManager):
         username = self.generate_unique_username(
             first_name=first_name,
             last_name=last_name,
-            phone_number=phone_number,
             district=district,
-            subdivision=subdivision
         )
 
         user = self.model(
@@ -88,17 +84,27 @@ class CustomUserManager(BaseUserManager):
         user.save(using=self._db)
         return user
 
-    def generate_unique_username(self, first_name, last_name, phone_number, district, subdivision):
+    def generate_unique_username(self, first_name, last_name, district):
+        # 1. Initials (2 characters)
         initials = f"{first_name[0].upper()}{last_name[0].upper()}"
-        district_code = district.district_code
-        subdivision_code = subdivision.subdivision_code
-        base = f"{initials}{phone_number[-4:]}{district_code}{subdivision_code}"
-        username = base[:10]
-
-        while self.model.objects.filter(username=username).exists():
-            username = f"{base[:7]}{random.randint(100, 999)}"
-        return username
-
+        
+        # 2. District Code (Last 2 digits)
+        district_code = str(district.district_code).zfill(2)[-2:]
+        
+        while True:
+            # 3. Unique Hex (3 characters)
+            unique_hex = uuid.uuid4().hex[:3].upper()
+            
+            # Base is exactly 7 characters
+            base = f"{initials}{district_code}{unique_hex}"
+            
+            # 4. Incrementing Number (3 characters, from 001 to 999)
+            for i in range(1, 1000):
+                increment_str = str(i).zfill(3)
+                username = f"{base}{increment_str}"
+                
+                if not self.model.objects.filter(username=username).exists():
+                    return username
 
 class CustomUser(AbstractBaseUser):
     email = models.EmailField(
@@ -118,7 +124,6 @@ class CustomUser(AbstractBaseUser):
     )
     middle_name = models.CharField(
         max_length=50,
-        validators=[validate_name],
         blank=True
     )
     last_name = models.CharField(
@@ -187,18 +192,26 @@ class CustomUser(AbstractBaseUser):
 class OTP(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     phone_number = models.CharField(max_length=15)
-    otp = models.CharField(max_length=6)
+    otp = models.CharField(max_length=128)
     created_at = models.DateTimeField(auto_now_add=True)
     used = models.BooleanField(default=False)
 
-    def is_expired(self):
-        return (timezone.now() - self.created_at).total_seconds() > 600  # 10 minutes
+    @property
+    def _expiry_seconds(self):
+        return getattr(settings, 'OTP_EXPIRY_SECONDS', 600)
 
-    @staticmethod
-    def clean_expired_otps():
-        OTP.objects.filter(
+    def is_expired(self):
+        return (timezone.now() - self.created_at).total_seconds() > self._expiry_seconds
+
+    @classmethod
+    def clean_expired_otps(cls):
+
+        expiry_seconds = getattr(settings, 'OTP_EXPIRY_SECONDS', 600)
+        expiration_threshold = timezone.now() - timezone.timedelta(seconds=expiry_seconds)
+        
+        cls.objects.filter(
             used=False,
-            created_at__lt=timezone.now() - timezone.timedelta(minutes=10)
+            created_at__lt=expiration_threshold
         ).delete()
 
     def __str__(self):

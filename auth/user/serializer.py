@@ -3,8 +3,8 @@ from django.utils import timezone
 from django.db.utils import DatabaseError, ProgrammingError
 from auth.user.models import CustomUser, LicenseeProfile, OICOfficerAssignment
 from auth.roles.models import Role
+from auth.user.captcha_services import verify_redis_captcha
 from models.masters.core.models import District, Subdivision
-from captcha.models import CaptchaStore
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
@@ -46,7 +46,9 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_role(self, obj):
         role = obj.role
-        return {'id': role.id} if role else None
+        if not role:
+            return None
+        return {'id': role.id, 'name': role.name}
 
     def get_created_by(self, obj):
         return obj.created_by.role.id if obj.created_by and obj.created_by.role else None
@@ -60,11 +62,25 @@ class UserSerializer(serializers.ModelSerializer):
         return {'name': subdivision.subdivision, 'code': subdivision.subdivision_code} if subdivision else None
 
     def get_hasActiveLicense(self, obj):
-        if obj.license_applications.filter(current_stage__name='approved').exists():
-            return True
-        if obj.new_license_applications.filter(current_stage__name='approved').exists():
-            return True
-        return False
+        annotated = getattr(obj, 'has_active_license_annotated', None)
+        if annotated is not None:
+            return annotated
+
+        def has_approved(reverse_manager):
+            if not reverse_manager:
+                return False
+            try:
+                return reverse_manager.filter(current_stage__name='approved').exists()
+            except Exception:
+                return False
+
+        # Backwards/forwards compatible: different apps used different reverse accessor names.
+        # Evaluate all known accessors without failing if one is missing.
+        candidates = (
+            getattr(obj, 'license_applications', None),
+            getattr(obj, 'new_license_applications', None),
+        )
+        return any(has_approved(mgr) for mgr in candidates)
 
     def get_panNumber(self, obj):
         try:
@@ -221,19 +237,10 @@ class LoginSerializer(serializers.Serializer):
         if not user:
             raise serializers.ValidationError("Invalid login credentials.")
 
-        try:
-            captcha_store = CaptchaStore.objects.get(hashkey=hashkey)
-            if captcha_store.response.strip().lower() != response.strip().lower():
-                raise serializers.ValidationError("Invalid captcha.")
-            captcha_store.delete()
-        except CaptchaStore.DoesNotExist:
-            raise serializers.ValidationError("Invalid captcha.")
-
-        refresh = RefreshToken.for_user(user)
+        # Return authenticated user and data back cleanly without cache side-effects
         return {
+            'user': user,
             'username': user.username,
-            'access': str(refresh.access_token),
-            'refresh': str(refresh),
         }
 
 

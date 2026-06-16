@@ -3,13 +3,14 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework import status
 from auth.roles.permissions import HasAppPermission
+from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.core.exceptions import ValidationError, SuspiciousOperation
 from django.contrib.contenttypes.models import ContentType
 from .models import SiteEnquiryReport
 from .serializers import SiteEnquiryReportSerializer
 from auth.workflow.permissions import HasStagePermission
-from models.transactional.license_application.models import LicenseApplication
+from models.transactional.license_renewal_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
 from auth.workflow.models import WorkflowStage
 from auth.workflow.services import WorkflowService
@@ -63,6 +64,7 @@ def _resolve_license_id_for_report(request, application):
 
 @api_view(['GET', 'POST'])
 @permission_classes([HasStagePermission])
+@parser_classes([MultiPartParser, FormParser])
 def site_enquiry_detail(request, application_id):
     
     application = None
@@ -87,19 +89,24 @@ def site_enquiry_detail(request, application_id):
             return Response({"detail": "Site enquiry not submitted yet"}, status=404)
 
     elif request.method == 'POST':
-        # Prevent duplicate
-        if SiteEnquiryReport.objects.filter(content_type=ct, object_id=application.application_id).exists():
+        # Create OR (when reverted) allow updating existing report
+        existing = SiteEnquiryReport.objects.filter(content_type=ct, object_id=application.application_id).first()
+        if existing and not getattr(existing, "is_reverted", False):
             return Response({"detail": "Site enquiry already submitted"}, status=400)
 
         try:
-            serializer = SiteEnquiryReportSerializer(data=request.data)
+            serializer = SiteEnquiryReportSerializer(instance=existing, data=request.data, partial=bool(existing))
             if serializer.is_valid():
-                serializer.save(
+                saved = serializer.save(
                     content_type=ct,
                     object_id=application.application_id,
-                    license_id=_resolve_license_id_for_report(request, application) or None,
+                    license_id=getattr(existing, "license_id", None) or _resolve_license_id_for_report(request, application) or None,
                 )
-                return Response(serializer.data, status=201)
+                # Clear revert flag on resubmission (keeps reverted_remarks for audit)
+                if getattr(saved, "is_reverted", False):
+                    saved.is_reverted = False
+                    saved.save(update_fields=["is_reverted", "updated_at"])
+                return Response(SiteEnquiryReportSerializer(saved).data, status=201)
             return Response(serializer.errors, status=400)
         except SuspiciousOperation as exc:
             return Response({"detail": f"Invalid upload data: {str(exc)}"}, status=400)
@@ -134,3 +141,76 @@ def level2_site_enquiry(request, application_id):
             except ValidationError as e:
                  return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(SiteEnquiryReportSerializer(report).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@permission_classes([HasStagePermission])
+def site_enquiry_revert(request, application_id):
+    """
+    Joint Commissioner action: revert Site Enquiry Report back to Site Enquiry Officer.
+
+    - Moves workflow stage Joint Commissioner -> Site Enquiry Officer using the DB transition condition
+      `{"is_reverted": true}` (workflow_workflowtransition).
+    - Stores remarks on `site_enquiry_report.reverted_remarks` so Site Enquiry Officer can see it while editing.
+    """
+    application = None
+    for model in [LicenseApplication, NewLicenseApplication]:
+        try:
+            application = model.objects.get(application_id=application_id)
+            break
+        except model.DoesNotExist:
+            continue
+
+    if not application:
+        return Response({"detail": "Application not found"}, status=404)
+
+    from_stage_name = str(getattr(getattr(application, "current_stage", None), "name", "") or "").strip().lower()
+    if "joint commissioner" not in from_stage_name and "jointcommissioner" not in from_stage_name.replace(" ", ""):
+        return Response({"detail": "Revert is only allowed from Joint Commissioner stage."}, status=400)
+
+    ct = ContentType.objects.get_for_model(application)
+    report = SiteEnquiryReport.objects.filter(content_type=ct, object_id=application.application_id).first()
+    if not report:
+        return Response({"detail": "Site enquiry report not found."}, status=404)
+
+    remarks = _first_non_empty(
+        request.data.get("remarks"),
+        request.data.get("reverted_remarks"),
+        request.data.get("revertedRemarks"),
+    )
+    if not remarks:
+        return Response({"detail": "Remarks are required to revert the site enquiry report."}, status=400)
+
+    # Stage lookup within the same workflow graph
+    target_stage = (
+        WorkflowStage.objects.filter(workflow=application.workflow, name__iexact="Site Enquiry Officer").first()
+        or WorkflowStage.objects.filter(workflow=application.workflow, name__icontains="site enquiry").first()
+    )
+    if not target_stage:
+        return Response({"detail": "Workflow misconfigured: Site Enquiry Officer stage not found."}, status=400)
+
+    try:
+        # Mark report as reverted + persist remarks for editing
+        report.is_reverted = True
+        report.reverted_remarks = remarks
+        report.reverted_at = timezone.now()
+        report.save(update_fields=["is_reverted", "reverted_remarks", "reverted_at", "updated_at"])
+
+        WorkflowService.advance_stage(
+            application=application,
+            user=request.user,
+            target_stage=target_stage,
+            context={"is_reverted": True},
+            remarks=remarks,
+        )
+    except ValidationError as e:
+        return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response(
+        {
+            "detail": "Site enquiry report reverted back to Site Enquiry Officer.",
+            "current_stage": getattr(getattr(application, "current_stage", None), "id", None),
+            "current_stage_name": getattr(getattr(application, "current_stage", None), "name", None),
+        },
+        status=200,
+    )

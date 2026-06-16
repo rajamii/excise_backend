@@ -9,8 +9,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from django.shortcuts import get_object_or_404
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
-from captcha.helpers import captcha_image_url
-from captcha.models import CaptchaStore
+from django.db.models import Prefetch, Exists, OuterRef
 from auth.roles.permissions import HasAppPermission, make_permission
 from auth.roles.models import Role
 from auth.user.models import CustomUser, LicenseeProfile, OICOfficerAssignment
@@ -44,6 +43,7 @@ from captcha.models import CaptchaStore
 from rest_framework_simplejwt.views import TokenRefreshView
 from ..roles.permissions import HasAppPermission
 from auth.roles.models import Role
+from models.transactional.license_renewal_application.models import LicenseApplication
 from models.transactional.logs.models import UserActivity
 from models.transactional.logs.signals import get_client_ip
 from models.transactional.new_license_application.models import NewLicenseApplication
@@ -61,6 +61,10 @@ from django.utils.encoding import force_bytes, force_str
 from django.core.mail import send_mail
 from django.conf import settings
 import binascii
+from django.core.validators import validate_ipv46_address
+from django.core.exceptions import ValidationError as DjangoValidationError
+from auth.user.services import create_oic_officer_service
+from auth.user.captcha_services import generate_redis_captcha, verify_redis_captcha
 
 User = get_user_model()
 
@@ -69,6 +73,28 @@ def _normalize_phone_number(raw_phone: str | None) -> str:
     if len(normalized) == 12 and normalized.startswith('91'):
         normalized = normalized[2:]
     return normalized
+
+def _safe_ip_address(request):
+    """
+    Return a valid IPv4/IPv6 string or None.
+    Some proxies include ports or malformed values which would break GenericIPAddressField validation.
+    """
+    try:
+        raw = get_client_ip(request)
+        if not raw:
+            return None
+        ip = str(raw).strip().split(',')[0].strip()
+        # Strip :port for IPv4 like "10.0.0.1:1234" while keeping IPv6 intact.
+        if ip.count(':') == 1 and '.' in ip and ip.split(':', 1)[0].replace('.', '').isdigit():
+            ip = ip.split(':', 1)[0].strip()
+        validate_ipv46_address(ip)
+        return ip
+    except (DjangoValidationError, Exception):
+        return None
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OTP endpoints
+# ─────────────────────────────────────────────────────────────────────────────
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -124,17 +150,12 @@ def licensee_register_after_verification(request):
     clear_phone_verified(phone_number)
 
     # Validate CAPTCHA
-    try:
-        captcha_store = CaptchaStore.objects.get(hashkey=request.data['hashkey'])
-        if captcha_store.response.strip().lower() != request.data['response'].strip().lower():
-            return Response(
-                {'success': False, 'errors': {'captcha': ['Invalid CAPTCHA.']}},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        captcha_store.delete()
-    except CaptchaStore.DoesNotExist:
+    hashkey = request.data.get('hashkey')
+    response_input = request.data.get('response')
+    
+    if not verify_redis_captcha(hashkey, response_input):
         return Response(
-            {'success': False, 'errors': {'captcha': ['Invalid CAPTCHA key.']}},
+            {'success': False, 'errors': {'captcha': ['Invalid or expired CAPTCHA.']}},
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -284,6 +305,16 @@ def oic_approved_establishments(request):
     _ensure_site_admin_or_commissioner(request)
 
     content_type = ContentType.objects.get_for_model(NewLicenseApplication)
+    
+    application_prefetch = Prefetch(
+        'source_application',
+        queryset=NewLicenseApplication.objects.select_related(
+            'site_district', 
+            'site_subdivision'
+        )
+    )
+
+    
     licenses = (
         License.objects.filter(
             source_type='new_license_application',
@@ -291,6 +322,7 @@ def oic_approved_establishments(request):
             is_active=True,
         )
         .select_related('applicant')
+        .prefetch_related(application_prefetch)
         .order_by('-issue_date')
     )
 
@@ -298,7 +330,9 @@ def oic_approved_establishments(request):
     seen_applications = set()
 
     for license_obj in licenses:
-        application = license_obj.source_application
+        
+        application = license_obj.source_application 
+        
         if not isinstance(application, NewLicenseApplication):
             continue
         if application.application_id in seen_applications:
@@ -306,7 +340,9 @@ def oic_approved_establishments(request):
         seen_applications.add(application.application_id)
 
         licensee_id = _derive_licensee_id(application, license_obj)
+        
         district_code = str(getattr(application.site_district, 'district_code', '') or '')
+
         subdivision_code = str(getattr(application.site_subdivision, 'subdivision_code', '') or '')
 
         rows.append({
@@ -342,90 +378,31 @@ def oic_officer_list(request):
 def oic_officer_create(request):
     _ensure_site_admin(request)
 
+    # 1. Validate HTTP request body using serializers
     serializer = OICOfficerCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     payload = serializer.validated_data
 
-    application = get_object_or_404(
-        NewLicenseApplication,
-        application_id=payload['approved_application_id']
-    )
-    content_type = ContentType.objects.get_for_model(NewLicenseApplication)
-    license_obj = (
-        License.objects.filter(
-            source_type='new_license_application',
-            source_content_type=content_type,
-            source_object_id=str(application.application_id),
-            is_active=True,
+    # 2. Delegate to the Service Layer
+    try:
+        officer, assignment, password = create_oic_officer_service(
+            payload=payload, 
+            created_by_user=request.user
         )
-        .order_by('-issue_date')
-        .first()
-    )
-    if not license_obj:
+    except DjangoValidationError as e:
+        # Handle business logic violations gracefully
         return Response(
-            {'detail': 'No active license found for selected approved application.'},
+            {'detail': str(e.message) if hasattr(e, 'message') else str(e)},
             status=status.HTTP_400_BAD_REQUEST,
         )
-
-    oic_role = (
-        Role.objects.filter(name__iexact='officer_in_charge').first()
-        or Role.objects.filter(id=7).first()
-        or Role.objects.filter(name__icontains='officer').first()
-    )
-    if not oic_role:
+    except Exception as e:
+        # Catch unexpected errors (optional but good practice)
         return Response(
-            {'detail': 'Officer In Charge role not configured.'},
+            {'detail': 'An unexpected error occurred during officer creation.'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
-    first_name, last_name = _split_full_name(payload['name'])
-    password = _generate_temp_password()
-    address = (
-        str(getattr(application, 'business_address', '') or '').strip()
-        or str(getattr(application, 'present_address', '') or '').strip()
-        or 'N/A'
-    )
-    licensee_id = _derive_licensee_id(application, license_obj)
-    license_type_name = (
-        str(getattr(getattr(application, 'license_type', None), 'license_type', '') or '').strip()
-        or None
-    )
-
-    with transaction.atomic():
-        officer = CustomUser.objects.create_user(
-            email=payload['email'],
-            first_name=first_name,
-            middle_name='',
-            last_name=last_name,
-            phone_number=payload['phone_number'],
-            district=application.site_district,
-            subdivision=application.site_subdivision,
-            address=address,
-            password=password,
-            role=oic_role,
-            created_by=request.user,
-            is_oic_managed=True,
-        )
-
-        assignment = OICOfficerAssignment.objects.create(
-            officer=officer,
-            approved_application=application,
-            license=license_obj,
-            licensee_id=licensee_id,
-            establishment_name=application.establishment_name,
-            created_by=request.user,
-        )
-
-        UserManufacturingUnit.objects.update_or_create(
-            user=officer,
-            licensee_id=licensee_id,
-            defaults={
-                'manufacturing_unit_name': application.establishment_name,
-                'license_type': license_type_name,
-                'address': address,
-            }
-        )
-
+    # 3. Format and return HTTP response
     assignment_serializer = OICOfficerAssignmentSerializer(assignment)
     return Response(
         {
@@ -438,7 +415,6 @@ def oic_officer_create(request):
         },
         status=status.HTTP_201_CREATED,
     )
-
 
 @api_view(['PUT', 'PATCH'])
 @permission_classes([IsAuthenticated])
@@ -633,12 +609,27 @@ def licensee_signup(request):
 
 
 class UserListView(generics.ListAPIView):
-    """
-    Lists all users. Requires 'user.view' permission.
-    """
-    queryset = CustomUser.objects.filter(is_oic_managed=False, is_active=True)
     serializer_class = UserSerializer
     permission_classes = [make_permission('user', 'view')]
+
+    def get_queryset(self):
+        # Create subqueries to check for approved applications
+        has_new_app = NewLicenseApplication.objects.filter(
+            applicant=OuterRef('pk'), 
+            current_stage__name='approved'
+        )
+        
+        has_old_app = LicenseApplication.objects.filter(applicant=OuterRef('pk'), current_stage__name='approved')
+
+        return CustomUser.objects.filter(is_oic_managed=False).select_related(
+            'role', 
+            'district', 
+            'subdivision', 
+            'created_by__role'
+        ).annotate(
+            has_active_license_annotated=Exists(has_new_app) | Exists(has_old_app)
+            # has_active_license_annotated=Exists(has_new_app) 
+        ).order_by('-is_active', 'first_name')
 
 
 class UserDetailView(generics.RetrieveAPIView):
@@ -698,29 +689,6 @@ class UserDeleteView(generics.DestroyAPIView):
     serializer_class = UserSerializer
     permission_classes = [make_permission('user', 'delete')]
 
-    def _soft_delete_user(self, instance: CustomUser) -> None:
-        timestamp_token = timezone.now().strftime('%Y%m%d%H%M%S')
-        unique_suffix = str(instance.pk)
-
-        instance.is_active = False
-
-        if instance.email:
-            local_part, _, domain_part = instance.email.partition('@')
-            sanitized_local = local_part[:20] if local_part else 'deleted'
-            domain_value = domain_part or 'deleted.local'
-            instance.email = f"{sanitized_local}.deleted.{timestamp_token}.{unique_suffix}@{domain_value}"
-
-        if instance.username:
-            instance.username = f"deleted_{timestamp_token}_{unique_suffix}"[:30]
-
-        # Keep phone unique after soft delete to allow reuse for new user creation.
-        replacement_phone = f"9{str(instance.pk).zfill(9)[-9:]}"
-        if CustomUser.objects.exclude(pk=instance.pk).filter(phone_number=replacement_phone).exists():
-            replacement_phone = f"8{timestamp_token[-9:]}"
-        instance.phone_number = replacement_phone
-
-        instance.save(update_fields=['is_active', 'email', 'username', 'phone_number'])
-
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
 
@@ -731,13 +699,47 @@ class UserDeleteView(generics.DestroyAPIView):
             ip_address=get_client_ip(request),
             user_agent=request.META.get('HTTP_USER_AGENT'),
             metadata={
-                'deleted_username': instance.username,
-                'deleted_user_id': str(instance.id),
+                'deactivated_username': instance.username,
+                'deactivated_user_id': str(instance.id),
             }
         )
 
-        self._soft_delete_user(instance)
-        return Response({'message': 'User deleted successfully'}, status=status.HTTP_204_NO_CONTENT)
+        # Soft-deactivate: preserve all user data, only set is_active=False
+        instance.is_active = False
+        instance.save(update_fields=['is_active'])
+
+        return Response({'message': 'User deactivated successfully'}, status=status.HTTP_200_OK)
+
+
+class UserToggleActiveView(generics.UpdateAPIView):
+    """Toggle a user's is_active status (activate / deactivate)."""
+    queryset = CustomUser.objects.all()
+    serializer_class = UserSerializer
+    permission_classes = [make_permission('user', 'update')]
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        new_status = not instance.is_active
+        instance.is_active = new_status
+        instance.save(update_fields=['is_active'])
+
+        UserActivity.objects.create(
+            user=request.user,
+            activity_type=UserActivity.ActivityType.USER_UPDATE,
+            target_user=instance,
+            ip_address=get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT'),
+            metadata={
+                'toggled_username': instance.username,
+                'is_active': new_status,
+            }
+        )
+
+        action = 'activated' if new_status else 'deactivated'
+        return Response(
+            {'message': f'User {action} successfully', 'is_active': new_status},
+            status=status.HTTP_200_OK
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -836,20 +838,51 @@ class MyLicenseeProfileView(APIView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class LoginAPI(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
     serializer_class = LoginSerializer
 
     def post(self, request):
+        # Handle fallback for CamelCase transformations automatically
+        hashkey = request.data.get('hashkey') or request.data.get('hash_key')
+        response_input = request.data.get('response')
+
+        if not verify_redis_captcha(hashkey, response_input):
+            return Response({
+                'success': False,
+                'status_code': status.HTTP_400_BAD_REQUEST,
+                'non_field_errors': ['Invalid or expired captcha.']
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
         validated_data = serializer.validated_data
+
+        try:
+            user = validated_data.get('user') or None
+            if user:
+                UserActivity.objects.create(
+                    user=user,
+                    activity_type=UserActivity.ActivityType.LOGIN,
+                    ip_address=_safe_ip_address(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT'),
+                    metadata={"auth_method": "jwt"},
+                )
+        except Exception:
+            pass
+
+        # ─── FIX: GENERATE TOKENS HERE IN THE VIEW ───
+        user = validated_data['user']
+        refresh = RefreshToken.for_user(user)
+
         return Response({
             'success': True,
             'status_code': status.HTTP_200_OK,
             'message': 'User logged in successfully',
             'authenticated_user': {
                 'username': validated_data['username'],
-                'access':   validated_data['access'],
-                'refresh':  validated_data['refresh'],
+                'access':   str(refresh.access_token), # Convert to string
+                'refresh':  str(refresh),              # Convert to string
             },
         })
 
@@ -866,17 +899,46 @@ class LogoutAPI(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             RefreshToken(refresh_token).blacklist()
+            try:
+                # JWT logout does not trigger Django's `user_logged_out` signal.
+                UserActivity.objects.create(
+                    user=request.user,
+                    activity_type=UserActivity.ActivityType.LOGOUT,
+                    ip_address=_safe_ip_address(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT'),
+                    metadata={
+                        "logout_method": "jwt_blacklist",
+                    },
+                )
+            except Exception:
+                pass
             return Response({"message": "User logged out successfully"})
         except TokenError:
+            # Token might already be blacklisted; still record logout attempt for auditing.
+            try:
+                UserActivity.objects.create(
+                    user=request.user,
+                    activity_type=UserActivity.ActivityType.LOGOUT,
+                    ip_address=_safe_ip_address(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT'),
+                    metadata={
+                        "logout_method": "jwt_blacklist",
+                        "note": "Token already blacklisted or invalid",
+                    },
+                )
+            except Exception:
+                pass
             return Response({"message": "Token already blacklisted or invalid"})
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['GET'])
+@permission_classes([AllowAny])
 def get_captcha(request):
-    hashkey = CaptchaStore.generate_key()
-    return Response({'key': hashkey, 'image_url': captcha_image_url(hashkey)})
+    # Generates image and stores text in Redis
+    captcha_data = generate_redis_captcha()
+    return Response(captcha_data)
 
 
 class TokenRefreshAPI(TokenRefreshView):
@@ -986,6 +1048,22 @@ def verify_otp_api(request):
             )
 
         refresh = RefreshToken.for_user(user)
+
+        # OTP/JWT login does not trigger Django's `user_logged_in` signal.
+        # Track login explicitly for OTP-based login too.
+        try:
+            UserActivity.objects.create(
+                user=user,
+                activity_type=UserActivity.ActivityType.LOGIN,
+                ip_address=_safe_ip_address(request),
+                user_agent=request.META.get('HTTP_USER_AGENT'),
+                metadata={
+                    "auth_method": "otp",
+                },
+            )
+        except Exception:
+            pass
+
         return Response({
             'success': True,
             'statusCode': status.HTTP_200_OK,

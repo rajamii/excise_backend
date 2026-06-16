@@ -170,18 +170,41 @@ def license_detail(request, license_id):
 @api_view(['GET'])
 def active_licensees(request):
 
+    from django.db.models import Q
+
     district_code = request.query_params.get('district_code', None)
     license_category = request.query_params.get('license_category', None)
     mode = request.query_params.get('mode', None)
     
-    licensees = License.objects.filter(
-        is_active=True,
-        valid_up_to__gte=now().date()
+    is_licensee_role = False
+    if request.user.is_authenticated and not request.user.is_superuser:
+        role_name = getattr(getattr(request.user, 'role', None), 'name', '').lower()
+        if role_name == 'licensee':
+            is_licensee_role = True
+
+    if is_licensee_role:
+        new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
+        user_app_ids = NewLicenseApplication.objects.filter(
+            applicant=request.user
+        ).values_list('application_id', flat=True)
+        
+        licensees = License.objects.filter(
+            Q(applicant=request.user) | 
+            Q(source_content_type=new_app_ct, source_object_id__in=user_app_ids)
         ).select_related(
-        'excise_district',
-        'license_category',
-        'source_content_type'
-    )
+            'excise_district',
+            'license_category',
+            'source_content_type'
+        )
+    else:
+        licensees = License.objects.filter(
+            is_active=True,
+            valid_up_to__gte=now()
+        ).select_related(
+            'excise_district',
+            'license_category',
+            'source_content_type'
+        )
 
     if district_code:
         licensees = licensees.filter(excise_district__district_code=district_code)
@@ -193,13 +216,15 @@ def active_licensees(request):
 
     for license in licensees:
         source_app = license.source_application
+        establishment_name = str(getattr(license, "license_id", "") or "")
+        mode_of_operation = "N/A"
 
         if source_app:
             if hasattr(source_app, 'establishment_name'):
-                establishment_name = source_app.establishment_name
+                establishment_name = source_app.establishment_name or establishment_name
 
             if hasattr(source_app, 'mode_of_operation'):
-                mode_of_operation = source_app.mode_of_operation
+                mode_of_operation = source_app.mode_of_operation or mode_of_operation
 
             if mode:
                 mode_formatted = mode.capitalize()
@@ -209,6 +234,12 @@ def active_licensees(request):
             if mode and mode_of_operation == "N/A":
                 continue
 
+        status_str = "Active"
+        if (license.valid_up_to and license.valid_up_to < now()) or not license.is_active:
+            status_str = "Expired"
+            if "expired" not in establishment_name.lower():
+                establishment_name = f"{establishment_name} (Expired)"
+
         data.append({
             "licenseeId": license.license_id,
             "id": license.license_id,
@@ -216,9 +247,9 @@ def active_licensees(request):
             "license_category": license.license_category.license_category,
             "district": license.excise_district.district,
             "district_code": license.excise_district.district_code,
-            "valid_up_to": license.valid_up_to.strftime("%Y-%m-%d"),
+            "valid_up_to": license.valid_up_to.isoformat() if getattr(license, "valid_up_to", None) else "",
             "mode_of_operation": mode_of_operation,
-            "status": "Active"
+            "status": status_str
         })
     return Response(data, status=status.HTTP_200_OK)
 
@@ -342,12 +373,100 @@ def master_license_form_terms_update(request):
         status=status.HTTP_200_OK,
     )
 
+def deactivate_all_expired_licenses():
+    try:
+        from django.utils import timezone
+        from django.contrib.contenttypes.models import ContentType
+        from models.transactional.new_license_application.models import NewLicenseApplication
+        from .models import License
+
+        now_dt = timezone.now()
+        # Find all expired active licenses globally
+        all_expired_qs = License.objects.filter(valid_up_to__lt=now_dt)
+        active_expired_qs = all_expired_qs.filter(is_active=True)
+        if active_expired_qs.exists():
+            active_expired_qs.update(is_active=False)
+
+        # For new-license sourced licenses, also flip payment flags back to False on expiry
+        new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
+        for lic in all_expired_qs.filter(source_content_type=new_app_ct):
+            try:
+                src = getattr(lic, "source_application", None)
+                if src is not None:
+                    changed = False
+                    if getattr(src, "is_license_fee_paid", None) is True:
+                        src.is_license_fee_paid = False
+                        changed = True
+                    if changed:
+                        src.save(update_fields=["is_license_fee_paid"])
+            except Exception:
+                pass
+
+        # For salesman-barman sourced licenses, also flip is_print_fee_paid back to False on expiry
+        from models.transactional.salesman_barman.models import SalesmanBarmanModel
+        sb_app_ct = ContentType.objects.get_for_model(SalesmanBarmanModel)
+        for lic in all_expired_qs.filter(source_content_type=sb_app_ct):
+            try:
+                src = getattr(lic, "source_application", None)
+                if src is not None:
+                    if getattr(src, "is_print_fee_paid", None) is True:
+                        src.is_print_fee_paid = False
+                        src.save(update_fields=["is_print_fee_paid"])
+            except Exception:
+                pass
+
+        # Also flip is_print_fee_paid on the License itself for all expired licenses
+        expired_print_fee_qs = all_expired_qs.filter(is_print_fee_paid=True)
+        if expired_print_fee_qs.exists():
+            expired_print_fee_qs.update(is_print_fee_paid=False)
+    except Exception:
+        pass
+
+
 class MyLicensesListView(generics.ListAPIView):
    
     serializer_class = MyLicenseDetailsSerializer
     permission_classes = [IsAuthenticated]
 
     def list(self, request, *args, **kwargs):
+        # Best-effort: keep license status consistent (expired -> inactive, paid+valid -> active).
+        deactivate_all_expired_licenses()
+
+        try:
+            from django.utils import timezone
+            from django.contrib.contenttypes.models import ContentType
+            from models.transactional.new_license_application.models import NewLicenseApplication
+
+            now_dt = timezone.now()
+            base_qs = self.get_queryset()
+            new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
+
+            # 2) If admin extends valid_up_to, reactivate eligible licenses.
+            # For new-license source, only reactivate if both fees are marked paid.
+            eligible_qs = base_qs.filter(is_active=False, valid_up_to__gte=now_dt)
+
+            new_source_qs = eligible_qs.filter(source_content_type=new_app_ct)
+            for lic in new_source_qs.select_related("source_content_type"):
+                src = getattr(lic, "source_application", None)
+                if src and getattr(src, "is_license_fee_paid", False) and getattr(src, "is_security_fee_paid", False):
+                    lic.is_active = True
+                    lic.save(update_fields=["is_active"])
+
+            # Non new-license and non salesman-barman sources: validity implies active.
+            other_qs = eligible_qs.exclude(source_content_type=new_app_ct).exclude(source_type="salesman_barman")
+            if other_qs.exists():
+                other_qs.update(is_active=True)
+
+            # Salesman/Barman sources: only reactivate if the underlying SBM application is approved and not rejected.
+            sbm_qs = eligible_qs.filter(source_type="salesman_barman")
+            for lic in sbm_qs:
+                sbm_app = getattr(lic, "source_application", None)
+                if sbm_app and getattr(sbm_app, "is_approved", False) and str(getattr(getattr(sbm_app, "current_stage", None), "name", "")).lower() != "rejected":
+                    lic.is_active = True
+                    lic.save(update_fields=["is_active"])
+        except Exception:
+            pass
+
         # Ensure wallet rows exist for the licensee before returning /me/ payload.
         # This is idempotent and helps recover from missed workflow signals.
         try:
@@ -369,17 +488,11 @@ class MyLicensesListView(generics.ListAPIView):
             applicant=user
         ).values_list('application_id', flat=True)
 
-        # Primary match: direct applicant linkage on License.
-        qs_by_applicant = License.objects.filter(
-            applicant=user,
-            source_content_type=new_app_ct
-        )
+        # Primary match: any issued license for this applicant (covers renewals too).
+        qs_by_applicant = License.objects.filter(applicant=user)
 
         # Compatibility fallback: match by source_object_id from user's applications.
-        qs_by_source_object = License.objects.filter(
-            source_content_type=new_app_ct,
-            source_object_id__in=user_app_ids
-        )
+        qs_by_source_object = License.objects.filter(source_content_type=new_app_ct, source_object_id__in=user_app_ids)
 
         return (qs_by_applicant | qs_by_source_object).distinct().select_related(
             'license_category',

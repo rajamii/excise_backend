@@ -133,8 +133,15 @@ ward_patterns = [
     path('<int:pk>/delete/', views.ward_delete, name='ward-delete'),
 ]
 
+# Renewal Application Config URLs
+renewal_application_config_patterns = [
+    path('', views.renewal_application_config_detail, name='renewal-application-config-detail'),
+    path('update/', views.renewal_application_config_update, name='renewal-application-config-update'),
+]
+
 urlpatterns = [
     path('timer-config/',          views.timer_config,          name='timer-config'),
+    path('timer-config/update/',   views.timer_config_update,   name='timer-config-update'),
     path('license-categories/',     include(license_category_patterns)),
     path('license-types/',          include(license_type_patterns)),
     path('states/',                 include(state_patterns)),
@@ -149,4 +156,5 @@ urlpatterns = [
     path('location-categories/',    include(locationcategory_patterns)),
     path('location-subcategories/', include(locationsubcategory_patterns)),
     path('wards/',                  include(ward_patterns)),
+    path('renewal-application-config/', include(renewal_application_config_patterns)),
 ]

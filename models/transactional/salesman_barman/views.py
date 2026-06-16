@@ -1,25 +1,36 @@
 from django.db import transaction
 from django.shortcuts import get_object_or_404
+from django.http import FileResponse, HttpResponse
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
 from rest_framework import status
+from django.utils import timezone
 from auth.roles.permissions import HasAppPermission
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.models import Workflow, WorkflowStage, WorkflowTransition
+from auth.workflow.models import Transaction as WorkflowTransaction
 from auth.workflow.constants import WORKFLOW_IDS
 from auth.workflow.services import WorkflowService
-from models.masters.license.models import License
+from models.masters.license.models import License, LicenseValidationToken
+from models.masters.core.models import SupplyChainTimerConfig
 from .models import SalesmanBarmanModel
 from .serializers import SalesmanBarmanSerializer
 import re
 import secrets
-
+import base64
+import hashlib
+import mimetypes
+from io import BytesIO
+from urllib.parse import quote
+from django.core import signing
+from PIL import Image
+from utils.qrcodegen import QrCode
+from models.transactional.wallet.wallet_initializer import _resolve_hoa_code
 from rest_framework.permissions import IsAuthenticated
 from django.core.exceptions import PermissionDenied
 from django.contrib.contenttypes.models import ContentType
 from models.transactional.payment_gateway.models import MasterPaymentModule
-from models.transactional.wallet.wallet_initializer import COMMON_LICENSE_FEE_HOA
 from models.transactional.wallet.wallet_service import debit_wallet_balance
 
 
@@ -216,6 +227,146 @@ def _resolve_sb_license_for_application(application: SalesmanBarmanModel) -> Lic
         return None
 
 
+def _fmt_dt(value) -> str:
+    if not value:
+        return ""
+    if hasattr(value, "date") and not hasattr(value, "strftime"):
+        value = value.date()
+    if hasattr(value, "date") and hasattr(value, "hour"):
+        value = value.date()
+    return value.strftime("%d/%m/%Y") if hasattr(value, "strftime") else ""
+
+
+def _fmt_dt_time(value) -> str:
+    if not value:
+        return ""
+    return timezone.localtime(value).strftime("%d/%m/%Y %I:%M %p") if hasattr(value, "tzinfo") else _fmt_dt(value)
+
+
+def _full_name(application: SalesmanBarmanModel) -> str:
+    return " ".join(
+        p for p in [
+            str(getattr(application, "firstName", "") or "").strip(),
+            str(getattr(application, "middleName", "") or "").strip(),
+            str(getattr(application, "lastName", "") or "").strip(),
+        ] if p
+    )
+
+
+def _build_sb_address(application: SalesmanBarmanModel) -> str:
+    parts = []
+    if getattr(application, "address", None):
+        parts.append(str(application.address).strip())
+    license_obj = getattr(application, "license", None)
+    source_app = getattr(license_obj, "source_application", None) if license_obj else None
+    if source_app:
+        for attr in ("location_name", "business_address"):
+            value = getattr(source_app, attr, None)
+            if value:
+                parts.append(str(value).strip())
+        if getattr(source_app, "police_station", None) and getattr(source_app.police_station, "police_station", None):
+            parts.append(f"P.S - {source_app.police_station.police_station}")
+        if getattr(source_app, "ward_name", None):
+            parts.append(f"Ward: {source_app.ward_name}")
+    return ", ".join(dict.fromkeys([p for p in parts if p]))
+
+
+def _sb_kind_of_shop(application: SalesmanBarmanModel, issued_license: License | None = None) -> str:
+    source_license = issued_license or getattr(application, "license", None)
+    category = (
+        getattr(getattr(source_license, "license_category", None), "license_category", None)
+        or getattr(getattr(application, "license_category", None), "license_category", None)
+        or ""
+    )
+    subcategory = (
+        getattr(getattr(source_license, "license_sub_category", None), "description", None)
+        or getattr(getattr(getattr(application, "license", None), "license_sub_category", None), "description", None)
+        or ""
+    )
+    parts = [str(category).strip(), str(subcategory).strip()]
+    return " - ".join(dict.fromkeys([p for p in parts if p]))
+
+
+def _make_qr_data_url(payload: str) -> str:
+    qr = QrCode.encode_text(str(payload or ""), QrCode.Ecc.MEDIUM)
+    size = qr.get_size()
+    border = 2
+    scale = 4
+    img_size = (size + border * 2) * scale
+    img = Image.new("RGB", (img_size, img_size), "white")
+    pixels = img.load()
+    for y in range(size):
+        for x in range(size):
+            if qr.get_module(x, y):
+                for dy in range(scale):
+                    for dx in range(scale):
+                        pixels[(x + border) * scale + dx, (y + border) * scale + dy] = (0, 0, 0)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+
+
+def _ensure_sb_validation_nonce(license_obj: License | None) -> str:
+    if not license_obj:
+        return ""
+    latest = LicenseValidationToken.objects.filter(license=license_obj).order_by("-created_at").first()
+    if latest and latest.nonce:
+        if str(getattr(license_obj, "validation_nonce", "") or "").strip() != latest.nonce:
+            license_obj.validation_nonce = latest.nonce
+            license_obj.validation_nonce_updated_at = timezone.now()
+            license_obj.save(update_fields=["validation_nonce", "validation_nonce_updated_at"])
+        return latest.nonce
+    nonce = secrets.token_hex(16)
+    license_obj.validation_nonce = nonce
+    license_obj.validation_nonce_updated_at = timezone.now()
+    license_obj.save(update_fields=["validation_nonce", "validation_nonce_updated_at"])
+    return nonce
+
+
+def _build_sb_validation_link(request, *, application_id: str, nonce: str) -> tuple[str, str, str]:
+    signed_code = signing.dumps(
+        {"applicationId": application_id, "source": "salesman_barman", "nonce": nonce},
+        salt="final-license",
+    )
+    validation_url = request.build_absolute_uri(f"/v/{quote(signed_code, safe=':')}/")
+    verification_id = hashlib.sha256(signed_code.encode("utf-8")).hexdigest()[:12]
+    return signed_code, validation_url, verification_id
+
+
+def _get_sb_validation_payload(request, application: SalesmanBarmanModel, license_obj: License | None):
+    if not license_obj:
+        return "", "", ""
+    latest = LicenseValidationToken.objects.filter(license=license_obj).order_by("-created_at").first()
+    if latest and getattr(latest, "signed_code", "") and getattr(latest, "validation_url", ""):
+        return str(latest.signed_code), str(latest.validation_url), str(latest.verification_id or "")
+    nonce = _ensure_sb_validation_nonce(license_obj)
+    signed_code, validation_url, verification_id = _build_sb_validation_link(
+        request, application_id=application.application_id, nonce=nonce
+    )
+    LicenseValidationToken.objects.update_or_create(
+        license=license_obj,
+        nonce=nonce,
+        defaults={
+            "signed_code": signed_code,
+            "validation_url": validation_url,
+            "verification_id": verification_id,
+        },
+    )
+    return signed_code, validation_url, verification_id
+
+
+def _passport_data_url(passport_file) -> str:
+    try:
+        if not passport_file or not getattr(passport_file, "name", None) or not passport_file.storage.exists(passport_file.name):
+            return ""
+        with passport_file.open("rb") as f:
+            raw = f.read()
+        mime = mimetypes.guess_type(passport_file.name)[0] or "application/octet-stream"
+        return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+    except Exception:
+        return ""
+
+
 def _get_salesman_barman_registration_fee() -> float | None:
     module = MasterPaymentModule.objects.filter(module_code="012").only("license_fee").first()
     if not module:
@@ -239,6 +390,8 @@ def pay_registration_fee_wallet(request, application_id):
     if application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
+
+
     # Only allow payment once the application is routed to awaiting_payment.
     try:
         from models.transactional.salesman_barman.payment_status import get_awaiting_payment_stage
@@ -251,10 +404,6 @@ def pay_registration_fee_wallet(request, application_id):
             )
     except Exception:
         pass
-
-    lic = _resolve_sb_license_for_application(application)
-    if not lic:
-        return Response({"detail": "License not issued yet."}, status=status.HTTP_400_BAD_REQUEST)
 
     amount = _get_salesman_barman_registration_fee()
     if amount is None or amount <= 0:
@@ -290,6 +439,7 @@ def pay_registration_fee_wallet(request, application_id):
             pass
 
     wallet_licensee_id = nli_license_id or str(getattr(request.user, "username", "") or "").strip()
+    license_fee_hoa = _resolve_hoa_code(module_type="other", wallet_type="license_fee")
 
     txn_id = secrets.token_hex(12).upper()
     try:
@@ -297,10 +447,11 @@ def pay_registration_fee_wallet(request, application_id):
             transaction_id=txn_id,
             licensee_id=wallet_licensee_id,
             wallet_type="license_fee",
-            head_of_account=COMMON_LICENSE_FEE_HOA,
+            head_of_account=license_fee_hoa,
             amount=amount,
             user_id=str(getattr(request.user, "username", "") or "").strip(),
             remarks=f"Salesman/Barman registration fee paid for {application.application_id}",
+            reference_no=application.application_id,
         )
     except Exception as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -356,80 +507,173 @@ def initiate_renewal(request, license_id):
     if old_app.applicant != request.user:
         return Response({"detail": "You can only renew your own license."}, status=status.HTTP_403_FORBIDDEN)
 
-    # Optional early renewal restriction (adjust or remove as needed)
-    from datetime import date, timedelta
-    today = date.today()
-    if old_license.valid_up_to > today + timedelta(days=90):  # More than 90 days left
+    def get_timer_days(code: str, default_days: int) -> int:
+        cfg = (
+            SupplyChainTimerConfig.objects.filter(code=code, is_active=True)
+            .order_by("-updated_at", "-id")
+            .first()
+        )
+        if not cfg:
+            return int(default_days)
+
+        unit = str(getattr(cfg, "delay_unit", "") or "").lower().strip()
+        value = getattr(cfg, "delay_value", None)
+        try:
+            value_int = max(0, int(value or 0))
+        except (TypeError, ValueError):
+            value_int = 0
+
+        # Prefer configured unit/value (so changing delay_value/unit takes effect immediately),
+        # fallback to validity_period_days if unit/value are missing or not meaningful.
+        if value_int > 0 and unit:
+            if unit.endswith("s"):
+                unit = unit[:-1]
+            if unit == "day":
+                return value_int
+            if unit in ("week", "wk"):
+                return value_int * 7
+            if unit in ("month", "mon", "mo"):
+                return value_int * 30
+            if unit in ("year", "yr"):
+                return value_int * 365
+            if unit in ("hour", "hr"):
+                return max(0, value_int // 24)
+
+        days = getattr(cfg, "validity_period_days", None)
+        if days is not None:
+            try:
+                return max(0, int(days))
+            except (TypeError, ValueError):
+                return int(default_days)
+
+        return int(default_days)
+
+    from datetime import timedelta
+    now_dt = timezone.now()
+    reminder_days = get_timer_days("LICENSE_RENEWAL_REMINDER_TIMER", 90)
+
+    # SOP: Require main license renewal first
+    from django.contrib.contenttypes.models import ContentType
+    from models.transactional.license_renewal_application.models import LicenseApplication
+
+    sb_ct = ContentType.objects.get_for_model(SalesmanBarmanModel)
+    main_licenses = License.objects.filter(
+        applicant=request.user,
+        source_type__in=['new_license_application', 'license_application']
+    )
+
+    for main_lic in main_licenses:
+        main_reminder_days = get_timer_days("LICENSE_RENEWAL_REMINDER_TIMER", 90)
+        if main_lic.valid_up_to and main_lic.valid_up_to <= now_dt + timedelta(days=main_reminder_days):
+            main_renewal_exists = LicenseApplication.objects.filter(
+                old_license_id=main_lic.license_id,
+            ).exclude(source_content_type=sb_ct).exists()
+
+            if not main_renewal_exists:
+                return Response(
+                    {"detail": f"Please renew your new license ({main_lic.license_id}) first before renewing Salesman/Barman application."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+    # Best-effort: keep license status consistent once it crosses expiry.
+    if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to < now_dt and getattr(old_license, "is_active", True):
+        old_license.is_active = False
+        old_license.save(update_fields=["is_active"])
+
+    if old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
+        window_start = old_license.valid_up_to - timedelta(days=reminder_days)
+        window_end = old_license.valid_up_to
         return Response({
-            "detail": f"Renewal not allowed yet. License valid until {old_license.valid_up_to.strftime('%d/%m/%Y')}. "
-                     "You can renew within the last 90 days or after expiry."
+            "detail": (
+                "Renewal not allowed yet. "
+                f"You can renew from {window_start.strftime('%d/%m/%Y')} "
+                f"to {window_end.strftime('%d/%m/%Y')}."
+            ),
+            "renewal_window_starts_on": window_start.isoformat(),
+            "renewal_window_ends_on": window_end.isoformat(),
+            "license_valid_up_to": old_license.valid_up_to.isoformat(),
+            "reminder_window_days": reminder_days,
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    # Build pre-filled data
-    new_data = {
-        'role': old_app.role,
-        'firstName': old_app.firstName,
-        'middleName': old_app.middleName or '',
-        'lastName': old_app.lastName,
-        'fatherHusbandName': old_app.fatherHusbandName,
-        'gender': old_app.gender,
-        'dob': old_app.dob.strftime('%Y-%m-%d'),
-        'nationality': old_app.nationality,
-        'address': old_app.address,
-        'pan': old_app.pan,
-        'aadhaar': old_app.aadhaar,
-        'mobileNumber': old_app.mobileNumber,
-        'emailId': old_app.emailId or '',
-        'sikkimSubject': old_app.sikkimSubject,
-        'excise_district': old_app.excise_district,
-        'license_category': old_app.license_category,
-        'license': old_app.license,
-    }
-
-    # Generate application_id manually
+    # Generate application_id manually using RSBM prefix
     district_code = str(old_app.excise_district.district_code)
-    fin_year = SalesmanBarmanModel.generate_fin_year()
-    prefix = f"SBM/{district_code}/{fin_year}"
+    from models.transactional.license_renewal_application.models import LicenseApplication
+    fin_year = LicenseApplication.generate_fin_year()
+    prefix = f"RSBM/{district_code}/{fin_year}"
 
     with transaction.atomic():
-        last_app = SalesmanBarmanModel.objects.filter(
-            application_id__startswith=prefix
-        ).select_for_update().order_by('-application_id').first()
-
-        last_number = int(last_app.application_id.split('/')[-1]) if last_app else 0
+        last = (
+            LicenseApplication.objects.filter(
+                application_id__startswith=prefix + "/"
+            ).select_for_update().order_by('-application_id').first()
+        )
+        last_number = 0
+        if last and "/" in last.application_id:
+            try:
+                last_number = int(last.application_id.split("/")[-1])
+            except Exception:
+                last_number = 0
         new_number = str(last_number + 1).zfill(4)
         new_application_id = f"{prefix}/{new_number}"
 
-        # Get workflow and initial stage
-        workflow = get_object_or_404(Workflow, id=WORKFLOW_IDS['SALESMAN_BARMAN'])
-        initial_stage = workflow.stages.get(is_initial=True)
+        # Get workflow and initial stage for renewal
+        from models.transactional.license_renewal_application.views import _get_renewal_workflow
+        wf = _get_renewal_workflow()
+        if not wf:
+            return Response({"detail": "Renewal workflow is not configured."}, status=status.HTTP_400_BAD_REQUEST)
+        initial_stage = wf.stages.filter(is_initial=True).order_by("id").first()
+        if not initial_stage:
+            return Response({"detail": "Renewal workflow has no initial stage."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Create the application instance directly
-        new_application = SalesmanBarmanModel.objects.create(
+        # Check for active renewal
+        from models.transactional.helpers import _get_stage_sets
+        stage_sets = _get_stage_sets(wf.id)
+        final_stages = set(stage_sets["approved"]) | set(stage_sets["rejected"])
+        active_renewal = (
+            LicenseApplication.objects.filter(
+                applicant=request.user,
+                old_license_id=old_license.license_id,
+                workflow=wf,
+            )
+            .exclude(current_stage__name__in=final_stages)
+            .order_by("-created_at")
+            .first()
+        )
+        if active_renewal:
+            return Response(
+                {
+                    "detail": "A renewal application is already submitted for this license.",
+                    "application_id": active_renewal.application_id,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from django.contrib.contenttypes.models import ContentType
+        new_application = LicenseApplication.objects.create(
             application_id=new_application_id,
-            workflow=workflow,
-            current_stage=initial_stage,
+            is_approved=False,
+            old_license_id=old_license.license_id,
             applicant=request.user,
-            renewal_of=old_license,
-            **new_data,
-            passPhoto=old_app.passPhoto,
-            aadhaarCard=old_app.aadhaarCard,
-            residentialCertificate=old_app.residentialCertificate,
-            dateofBirthProof=old_app.dateofBirthProof,
+            license_category=old_license.license_category,
+            license_sub_category=old_license.license_sub_category,
+            workflow=wf,
+            current_stage=initial_stage,
+            source_content_type=ContentType.objects.get_for_model(SalesmanBarmanModel),
+            source_object_id=old_app.pk,
         )
 
     # Log submission transaction
     WorkflowService.submit_application(
         application=new_application,
         user=request.user,
-        remarks="Renewal application auto-submitted (pre-filled from previous license)"
+        remarks="Renewal application initiated and submitted successfully (Salesman/Barman)"
     )
 
-    # Return fresh serialized data
-    serializer = SalesmanBarmanSerializer(new_application)
+    # Return serialized renewal application data
+    from models.transactional.license_renewal_application.views import _serialize_renewal_application
     return Response({
         "detail": "Renewal application initiated and submitted successfully.",
-        "application": serializer.data
+        "application": _serialize_renewal_application(new_application)
     }, status=status.HTTP_201_CREATED)
 
 
@@ -438,7 +682,7 @@ def initiate_renewal(request, license_id):
 def list_salesman_barman(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
 
-    if role in ["single_window","site_admin"]:
+    if role in ["site_admin"]:
         applications = SalesmanBarmanModel.objects.all()
     elif role == "licensee":
         applications = SalesmanBarmanModel.objects.filter(applicant=request.user)
@@ -457,13 +701,144 @@ def list_salesman_barman(request):
 def salesman_barman_detail(request, application_id):
     app = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
     serializer = SalesmanBarmanSerializer(app)
-    return Response(serializer.data)
+    response = Response(serializer.data)
+    response["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
+    return response
+
+
+@permission_classes([HasAppPermission('salesman_barman_registration', 'view')])
+@api_view(['GET'])
+def final_license_detail(request, application_id):
+    raw_id = str(application_id or "").strip()
+    token = raw_id
+    low = token.lower()
+    if low.startswith("val:") or low.startswith("val-") or low.startswith("val "):
+        token = token[4:].strip()
+
+    resolved_application_id = raw_id
+    validated_via_code = False
+    try:
+        payload = signing.loads(token, salt="final-license")
+        if isinstance(payload, dict) and payload.get("source") == "salesman_barman" and payload.get("applicationId"):
+            resolved_application_id = str(payload["applicationId"])
+            validated_via_code = True
+    except Exception:
+        resolved_application_id = raw_id
+
+    application = get_object_or_404(SalesmanBarmanModel, application_id=resolved_application_id)
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role == "licensee" and application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    license_obj = _resolve_sb_license_for_application(application)
+    validation_code, validation_url, _verification_id = _get_sb_validation_payload(request, application, license_obj)
+    passport_file = getattr(application, "passPhoto", None)
+    passport_exists = False
+    passport_url = ""
+    try:
+        passport_exists = bool(passport_file and getattr(passport_file, "name", None) and passport_file.storage.exists(passport_file.name))
+        if passport_exists and hasattr(passport_file, "url"):
+            passport_url = request.build_absolute_uri(passport_file.url)
+    except Exception:
+        passport_exists = False
+
+    role_label = str(getattr(application, "role", "") or "Salesman").strip().title()
+    license_number = license_obj.license_id if license_obj else application.application_id
+    district = getattr(getattr(application, "excise_district", None), "district", "") or ""
+
+    renewal_application_id = None
+    try:
+        from models.transactional.license_renewal_application.models import LicenseApplication
+
+        ct = ContentType.objects.get_for_model(application)
+        renewal = LicenseApplication.objects.filter(source_content_type=ct, source_object_id=application.pk).order_by('-created_at').first()
+        if renewal:
+            renewal_application_id = renewal.application_id
+    except Exception:
+        pass
+
+    response = {
+        "applicationId": application.application_id,
+        "renewalApplicationId": renewal_application_id,
+        "renewal_application_id": renewal_application_id,
+        "certificateType": "salesman-barman",
+        "licenseNumber": license_number,
+        "licenseTitle": f"{role_label} Registration Certificate",
+        "validationCode": validation_code,
+        "validationPdfUrl": validation_url,
+        "validatedViaCode": validated_via_code,
+        "print_count": int(getattr(license_obj, "print_count", 0) or getattr(application, "print_count", 0) or 0),
+        "is_print_fee_paid": bool(getattr(license_obj, "is_print_fee_paid", False) or getattr(application, "is_print_fee_paid", False)),
+        "terms": [],
+        "licenseeName": _full_name(application),
+        "fatherOrHusbandName": str(getattr(application, "fatherHusbandName", "") or ""),
+        "kindOfShop": _sb_kind_of_shop(application, license_obj),
+        "addressOfBusiness": _build_sb_address(application),
+        "district": district,
+        "modeOfOperation": role_label,
+        "passportPhotoUrl": passport_url,
+        "passportPhotoExists": passport_exists,
+        "passportPhotoDataUrl": _passport_data_url(passport_file),
+        "licenseFee": "",
+        "transactionRef": "",
+        "transactionDate": "",
+        "validFrom": _fmt_dt(getattr(license_obj, "issue_date", None)),
+        "validTo": _fmt_dt(getattr(license_obj, "valid_up_to", None)),
+        "generatedOn": _fmt_dt(timezone.now().date()),
+        "applicationDateTime": _fmt_dt_time(getattr(application, "created_at", None)),
+        "qrCodeDataUrl": _make_qr_data_url(validation_url),
+    }
+
+    return Response(response, status=status.HTTP_200_OK)
+
+
+@permission_classes([HasAppPermission('salesman_barman_registration', 'view')])
+@api_view(['GET'])
+def final_license_passport_photo(request, application_id):
+    application = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role == "licensee" and application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    passport_file = getattr(application, "passPhoto", None)
+    try:
+        if not passport_file or not getattr(passport_file, "name", None) or not passport_file.storage.exists(passport_file.name):
+            return Response({"detail": "Photo not available."}, status=status.HTTP_404_NOT_FOUND)
+        f = passport_file.open("rb")
+    except Exception:
+        return Response({"detail": "Photo not available."}, status=status.HTTP_404_NOT_FOUND)
+
+    mime = mimetypes.guess_type(passport_file.name)[0] or "application/octet-stream"
+    return FileResponse(f, content_type=mime)
+
+
+@permission_classes([HasAppPermission('salesman_barman_registration', 'view')])
+@api_view(['GET'])
+def final_license_qr_code(request, application_id):
+    application = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role == "licensee" and application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    license_obj = _resolve_sb_license_for_application(application)
+    _validation_code, validation_url, _verification_id = _get_sb_validation_payload(request, application, license_obj)
+
+    data_url = _make_qr_data_url(validation_url)
+    b64 = data_url.split(",", 1)[1] if "," in data_url else ""
+    return HttpResponse(base64.b64decode(b64), content_type="image/png")
 
 
 # Dashboard Counts
 @permission_classes([HasAppPermission('salesman_barman_registration', 'view'), HasStagePermission])
 @api_view(['GET'])
 def dashboard_counts(request):
+    try:
+        from models.masters.license.views import deactivate_all_expired_licenses
+        deactivate_all_expired_licenses()
+    except Exception:
+        pass
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['SALESMAN_BARMAN']
     stage_sets = _get_stage_sets(workflow_id)
@@ -472,17 +847,21 @@ def dashboard_counts(request):
     if role == 'licensee':
         base_qs = SalesmanBarmanModel.objects.filter(applicant=request.user)
         applied_stages = set(stage_sets['initial'])
-        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
+        objection_stages = set(stage_sets['objection'])
+        payment_stages = set(stage_sets['payment'])
+        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages - objection_stages - payment_stages
         # The licensee UI does not surface an "Applied" tile; treat initial-stage apps as pending.
         pending_for_ui = pending_stages | applied_stages
         return Response({
             "applied": base_qs.filter(current_stage__name__in=applied_stages).count(),
             "pending": base_qs.filter(current_stage__name__in=pending_for_ui).count(),
+            "objection": base_qs.filter(current_stage__name__in=objection_stages).count(),
             "approved": base_qs.filter(current_stage__name__in=stage_sets['approved']).count(),
             "rejected": base_qs.filter(current_stage__name__in=stage_sets['rejected']).count(),
+            "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
         })
 
-    if role in ['site_admin', 'single_window']:
+    if role in ['site_admin']:
         applied_stages = set(stage_sets['initial'])
         pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
         pending_for_ui = pending_stages | applied_stages
@@ -493,15 +872,58 @@ def dashboard_counts(request):
             "rejected": all_qs.filter(current_stage__name__in=stage_sets['rejected']).count(),
         })
 
-    buckets = _build_role_transition_buckets(request.user, workflow_id, stage_sets)
-    if not buckets:
-        return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
+    role_stage_names = _get_role_stage_names(request.user, workflow_id)
+    if not role_stage_names:
+        return Response({
+            "pending": 0,
+            "approved": 0,
+            "rejected": 0,
+            "objection": 0,
+        })
+
+    from django.db.models import OuterRef, Exists, Q
+
+    content_type = ContentType.objects.get_for_model(SalesmanBarmanModel)
+    role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+    
+    acted_by_role = Exists(
+        WorkflowTransaction.objects.filter(
+            content_type=content_type, 
+            object_id=OuterRef('application_id'),
+            performed_by__role_id=role_id
+        )
+    )
+
+    role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+    pending_stages = set(role_stage_names)
+    rejected_stages = set(stage_sets['rejected'])
+    objection_stages = set(stage_sets['objection'])
+
+    pending_count = all_qs.filter(current_stage__name__in=pending_stages).count()
+    approved_count = (
+        all_qs.exclude(current_stage__name__in=pending_stages | rejected_stages | objection_stages)
+        .annotate(_acted_by_role=acted_by_role)
+        .filter(_acted_by_role=True)
+        .count()
+    )
+    rejected_count = (
+        all_qs.filter(current_stage__name__in=rejected_stages)
+        .annotate(_acted_by_role=acted_by_role)
+        .filter(_acted_by_role=True)
+        .count()
+    )
+    objection_count = (
+        all_qs.filter(current_stage__name__in=objection_stages)
+        .annotate(_acted_by_role=acted_by_role)
+        .filter(_acted_by_role=True)
+        .count()
+    )
 
     return Response({
-        "pending": all_qs.filter(current_stage__name__in=buckets['pending']).count(),
-        "approved": all_qs.filter(current_stage__name__in=buckets['approved']).count(),
-        "rejected": all_qs.filter(current_stage__name__in=buckets['rejected']).count(),
-        "objection": all_qs.filter(current_stage__name__in=buckets['objection']).count(),
+        "pending": pending_count,
+        "approved": approved_count,
+        "rejected": rejected_count,
+        "objection": objection_count,
     })
 
 @permission_classes([HasAppPermission('salesman_barman_registration', 'view'), HasStagePermission])
@@ -516,7 +938,8 @@ def application_group(request):
     if role == 'licensee':
         base_qs = SalesmanBarmanModel.objects.filter(applicant=request.user)
         applied_stages = set(stage_sets['initial'])
-        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
+        objection_stages = set(stage_sets['objection'])
+        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages - objection_stages
         result = {
             "applied": SalesmanBarmanSerializer(
                 base_qs.filter(current_stage__name__in=applied_stages),
@@ -524,6 +947,10 @@ def application_group(request):
             ).data,
             "pending": SalesmanBarmanSerializer(
                 base_qs.filter(current_stage__name__in=pending_stages),
+                many=True
+            ).data,
+            "objection": SalesmanBarmanSerializer(
+                base_qs.filter(current_stage__name__in=objection_stages),
                 many=True
             ).data,
             "approved": SalesmanBarmanSerializer(
@@ -537,7 +964,7 @@ def application_group(request):
         }
         return Response(result)
 
-    if role in ['site_admin', 'single_window']:
+    if role in ['site_admin']:
         applied_stages = set(stage_sets['initial'])
         pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
         return Response({
@@ -555,21 +982,55 @@ def application_group(request):
             ).data
         })
 
-    buckets = _build_role_transition_buckets(request.user, workflow_id, stage_sets)
-    if buckets:
+    role_stage_names = _get_role_stage_names(request.user, workflow_id)
+    if role_stage_names:
+        from django.db.models import OuterRef, Exists, Q
+
+        content_type = ContentType.objects.get_for_model(SalesmanBarmanModel)
+        role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+        
+        acted_by_role = Exists(
+            WorkflowTransaction.objects.filter(
+                content_type=content_type, 
+                object_id=OuterRef('application_id'),
+                performed_by__role_id=role_id
+            )
+        )
+
+        role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+        pending_stages = set(role_stage_names)
+        rejected_stages = set(stage_sets['rejected'])
+        objection_stages = set(stage_sets['objection'])
+
+        approved_qs = (
+            all_qs.exclude(current_stage__name__in=pending_stages | rejected_stages | objection_stages)
+            .annotate(_acted_by_role=acted_by_role)
+            .filter(_acted_by_role=True)
+        )
+        rejected_qs = (
+            all_qs.filter(current_stage__name__in=rejected_stages)
+            .annotate(_acted_by_role=acted_by_role)
+            .filter(_acted_by_role=True)
+        )
+        objection_qs = (
+            all_qs.filter(current_stage__name__in=objection_stages)
+            .annotate(_acted_by_role=acted_by_role)
+            .filter(_acted_by_role=True)
+        )
+
         return Response({
             "pending": SalesmanBarmanSerializer(
-                all_qs.filter(current_stage__name__in=buckets['pending']), many=True
+                all_qs.filter(current_stage__name__in=pending_stages), many=True
             ).data,
-            "approved": SalesmanBarmanSerializer(
-                all_qs.filter(current_stage__name__in=buckets['approved']), many=True
-            ).data,
-            "rejected": SalesmanBarmanSerializer(
-                all_qs.filter(current_stage__name__in=buckets['rejected']), many=True
-            ).data,
-            "objection": SalesmanBarmanSerializer(
-                all_qs.filter(current_stage__name__in=buckets['objection']), many=True
-            ).data
+            "approved": SalesmanBarmanSerializer(approved_qs, many=True).data,
+            "rejected": SalesmanBarmanSerializer(rejected_qs, many=True).data,
+            "objection": SalesmanBarmanSerializer(objection_qs, many=True).data,
         })
 
-    return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({
+        "applied": [],
+        "pending": [],
+        "approved": [],
+        "rejected": [],
+        "objection": []
+    })

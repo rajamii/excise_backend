@@ -111,6 +111,7 @@ def _render_otp_message(message_template: str, otp_value: str) -> str:
     except Exception:
         # Avoid crashing OTP API due to bad template braces/placeholders.
         return template.replace("{otp}", str(otp_value))
+from django.contrib.auth.hashers import make_password, check_password
 
 def get_new_otp(phone_number):
 
@@ -134,9 +135,11 @@ def get_new_otp(phone_number):
         used=False
     ).delete()
 
-    otp_value = str(random.randint(1000, 9999))
-    otp_obj = OTP.objects.create(phone_number=phone_number, otp=otp_value)
-    return otp_obj
+    raw_otp_value = str(random.randint(1000, 9999))
+    hashed_otp = make_password(raw_otp_value)
+    otp_obj = OTP.objects.create(phone_number=phone_number, otp=hashed_otp)
+
+    return otp_obj, raw_otp_value
 
 @transaction.atomic
 def verify_otp(otp_id, phone_number, otp_input):
@@ -145,7 +148,7 @@ def verify_otp(otp_id, phone_number, otp_input):
         if otp_obj.is_expired():
             otp_obj.delete()
             return False, "OTP expired."
-        if otp_obj.otp != str(otp_input):
+        if not check_password(str(otp_input), otp_obj.otp):
             return False, "Incorrect OTP."
         
         otp_obj.used = True

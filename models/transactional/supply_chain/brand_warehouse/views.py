@@ -71,7 +71,12 @@ def _expand_license_aliases(license_id: str):
 def _collect_user_license_ids(user):
     """
     Collect all license identifiers that can scope this user in brand_warehouse.
-    Includes profile/history IDs, issued license IDs, and NA/NLI aliases.
+    Includes issued license IDs and NA/NLI aliases.
+
+    IMPORTANT: source_object_id (application ID like NLI/.../0005) is NOT expanded
+    to an NA/ alias because application sequential numbers do NOT necessarily match
+    the issued license sequential numbers. Expanding would create incorrect cross-user
+    aliases (e.g. NLI/.../0005 → NA/.../0005 could belong to a different licensee).
     """
     scoped_ids = []
     seen = set()
@@ -81,6 +86,13 @@ def _collect_user_license_ids(user):
             if alias and alias not in seen:
                 seen.add(alias)
                 scoped_ids.append(alias)
+
+    def _append_raw(value):
+        """Append a value WITHOUT expanding aliases (used for source_object_id)."""
+        normalized = str(value or '').strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            scoped_ids.append(normalized)
 
     assignment = _get_oic_assignment(user)
     _append(getattr(getattr(assignment, 'approved_application', None), 'application_id', ''))
@@ -99,19 +111,23 @@ def _collect_user_license_ids(user):
 
     licenses = getattr(user, 'licenses', None)
     if licenses is not None:
-        today = timezone.now().date()
+        now_dt = timezone.now()
 
+        # Add source_object_id WITHOUT alias expansion — application IDs do NOT
+        # reliably map to issued license IDs via simple prefix swap (NLI→NA).
         for source_object_id in (
-            licenses.filter(source_type='new_license_application', is_active=True, valid_up_to__gte=today)
+            licenses.filter(source_type='new_license_application', is_active=True, valid_up_to__gte=now_dt)
             .exclude(source_object_id__isnull=True)
             .exclude(source_object_id='')
             .order_by('-issue_date')
             .values_list('source_object_id', flat=True)
         ):
-            _append(source_object_id)
+            _append_raw(source_object_id)
 
+        # Issued license IDs ARE expanded via alias (NA↔NLI) since brand_warehouse
+        # entries may be tagged with either form.
         for issued_license_id in (
-            licenses.filter(is_active=True, valid_up_to__gte=today)
+            licenses.filter(is_active=True, valid_up_to__gte=now_dt)
             .exclude(license_id__isnull=True)
             .exclude(license_id='')
             .order_by('-issue_date')
@@ -126,7 +142,7 @@ def _collect_user_license_ids(user):
             .order_by('-issue_date')
             .values_list('source_object_id', flat=True)
         ):
-            _append(source_object_id)
+            _append_raw(source_object_id)
 
         for issued_license_id in (
             licenses.exclude(license_id__isnull=True)
@@ -220,44 +236,10 @@ def _get_active_establishment_name(user, active_license_id: str = '') -> str:
 
 
 def _scope_queryset_by_active_license(queryset, user, field_name: str):
-    def _supports_lookup(model, lookup: str) -> bool:
-        current = model
-        for part in str(lookup or '').split('__'):
-            if not part:
-                return False
-            try:
-                field = current._meta.get_field(part)
-            except Exception:
-                return False
-            if getattr(field, 'is_relation', False):
-                current = getattr(field, 'related_model', None)
-                if current is None:
-                    return False
-        return True
-
     scoped_ids = _collect_user_license_ids(user)
-    establishment_name = _get_active_establishment_name(user)
-
-    if scoped_ids and establishment_name:
-        # Prefer strict license scoping but keep a safe fallback to establishment name.
-        filters = Q(**{f'{field_name}__in': scoped_ids})
-        if _supports_lookup(queryset.model, 'factory__factory_name'):
-            filters |= Q(factory__factory_name__icontains=establishment_name)
-        elif _supports_lookup(queryset.model, 'brand_warehouse__factory__factory_name'):
-            filters |= Q(brand_warehouse__factory__factory_name__icontains=establishment_name)
-        return queryset.filter(filters)
 
     if scoped_ids:
         return queryset.filter(**{f'{field_name}__in': scoped_ids})
-
-    # Fallback: some deployments have license mappings that don't match stored stock rows.
-    # Keep scoped users limited to their establishment name so dashboards don't show empty inventory.
-    if establishment_name:
-        if _supports_lookup(queryset.model, 'factory__factory_name'):
-            return queryset.filter(factory__factory_name__icontains=establishment_name)
-        if _supports_lookup(queryset.model, 'brand_warehouse__factory__factory_name'):
-            return queryset.filter(brand_warehouse__factory__factory_name__icontains=establishment_name)
-        return queryset.none()
 
     return queryset.none()
 
@@ -725,10 +707,13 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
             avg_batch_size=Avg('quantity_produced')
         )
         
-        # Get today's production
+        # Get today's production — check both created_at (for auto-synced hologram entries)
+        # and production_date (for manually entered batches with today's date)
+        today = timezone.now().date()
         today_production = ProductionBatch.objects.filter(
-            brand_warehouse__in=warehouse_queryset,
-            production_date=timezone.now().date()
+            brand_warehouse__in=warehouse_queryset
+        ).filter(
+            Q(created_at__date=today) | Q(production_date=today)
         ).aggregate(
             today_quantity=Sum('quantity_produced'),
             today_batches=Count('id')
@@ -744,11 +729,12 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
             week_batches=Count('id')
         )
         
-        # Get this month's production
+        # Get this month's production — use created_at (sync date) OR production_date
         month_start = timezone.now().date().replace(day=1)
         month_production = ProductionBatch.objects.filter(
-            brand_warehouse__in=warehouse_queryset,
-            production_date__gte=month_start
+            brand_warehouse__in=warehouse_queryset
+        ).filter(
+            Q(created_at__date__gte=month_start) | Q(production_date__gte=month_start)
         ).aggregate(
             month_quantity=Sum('quantity_produced'),
             month_batches=Count('id')
@@ -1004,6 +990,15 @@ class BrandWarehouseUtilizationViewSet(viewsets.ModelViewSet):
         status_filter = self.request.query_params.get('status', None)
         if status_filter:
             queryset = queryset.filter(status=status_filter)
+
+        # Filter by date range (date field on utilization)
+        date_from = self.request.query_params.get('date_from', None)
+        if date_from:
+            queryset = queryset.filter(date__gte=date_from)
+
+        date_to = self.request.query_params.get('date_to', None)
+        if date_to:
+            queryset = queryset.filter(date__lte=date_to)
             
         # Newest first: date desc, then id desc for same-day rows.
         return queryset.order_by('-date', '-id')

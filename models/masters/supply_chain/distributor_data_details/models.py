@@ -1,6 +1,7 @@
 # yourapp/models.py
 from django.db import models
 from django.utils import timezone
+from models.masters.license.models import License
 
 class TransitPermitDistributorData(models.Model):
     """
@@ -10,6 +11,16 @@ class TransitPermitDistributorData(models.Model):
     manufacturing_unit = models.CharField(max_length=255, blank=True, null=True)
     distributor_name = models.CharField(max_length=255, blank=True, null=True)
     depo_address = models.TextField(blank=True, null=True)
+    # Assigned license. When set, non-staff users only see rows matching their license(s).
+    license = models.ForeignKey(
+        License,
+        to_field='license_id',
+        db_column='license_id',
+        on_delete=models.PROTECT,
+        blank=True,
+        null=True,
+        related_name='transit_permit_distributor_data',
+    )
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
     updated_at = models.DateTimeField(auto_now=True, blank=True, null=True)
     

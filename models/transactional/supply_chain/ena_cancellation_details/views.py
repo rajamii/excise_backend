@@ -79,7 +79,25 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             )
             if strength:
                 qs = qs.filter(strength__iexact=strength)
-            row = qs.order_by('sprit_id').first()
+
+            def _expand_aliases(value: str):
+                value = str(value or '').strip()
+                if not value:
+                    return []
+                aliases = [value]
+                if value.startswith('NLI/'):
+                    aliases.append(f"NA/{value[4:]}")
+                elif value.startswith('NA/'):
+                    aliases.append(f"NLI/{value[3:]}")
+                return aliases
+
+            licensee_id = str(getattr(requisition, 'licensee_id', '') or '').strip()
+            if licensee_id:
+                row = qs.filter(license_id__in=_expand_aliases(licensee_id)).order_by('sprit_id').first()
+            else:
+                row = None
+            if row is None:
+                row = qs.order_by('sprit_id').first()
             if row and row.price_bl is not None:
                 amount = Decimal(str(row.price_bl or 0)) * total_bl
                 return amount.quantize(Decimal('0.01'))
@@ -285,7 +303,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         for cid in candidates:
             wallet = (
                 WalletBalance.objects.select_for_update()
-                .filter(wallet_filter, wallet_type__iexact='excise')
+                .filter(wallet_filter, wallet_type__code__iexact='excise')
                 .order_by('wallet_balance_id')
                 .first()
             )
@@ -297,7 +315,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             for cid in candidates:
                 wallet = (
                     WalletBalance.objects.select_for_update()
-                    .filter(wallet_filter, wallet_type__iexact='brewery')
+                    .filter(wallet_filter, wallet_type__code__iexact='brewery')
                     .order_by('wallet_balance_id')
                     .first()
                 )
@@ -348,7 +366,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         return {
             'debited': True,
             'licensee_id': resolved_license_id,
-            'wallet_type': wallet.wallet_type,
+            'wallet_type': wallet.wallet_type.code if wallet.wallet_type else None,
             'amount': str(amount_decimal),
             'balance_before': str(current_balance),
             'balance_after': str(after),
@@ -403,7 +421,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         for cid in candidates:
             wallet = (
                 WalletBalance.objects.select_for_update()
-                .filter(wallet_filter, wallet_type__iexact='excise')
+                .filter(wallet_filter, wallet_type__code__iexact='excise')
                 .order_by('wallet_balance_id')
                 .first()
             )
@@ -415,7 +433,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             for cid in candidates:
                 wallet = (
                     WalletBalance.objects.select_for_update()
-                    .filter(wallet_filter, wallet_type__iexact='brewery')
+                    .filter(wallet_filter, wallet_type__code__iexact='brewery')
                     .order_by('wallet_balance_id')
                     .first()
                 )
@@ -499,7 +517,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             refund_result = {
                 'credited': True,
                 'licensee_id': resolved_license_id,
-                'wallet_type': wallet.wallet_type,
+                'wallet_type': wallet.wallet_type.code if wallet.wallet_type else None,
                 'amount': str(refund_amount),
                 'balance_before': str((after - refund_amount).quantize(Decimal('0.01'))),
                 'balance_after': str(after),
@@ -552,7 +570,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             fee_result = {
                 'debited': True,
                 'licensee_id': resolved_license_id,
-                'wallet_type': wallet.wallet_type,
+                'wallet_type': wallet.wallet_type.code if wallet.wallet_type else None,
                 'amount': str(fee_amount),
                 'balance_before': str((after + fee_amount).quantize(Decimal('0.01'))),
                 'balance_after': str(after),
@@ -570,7 +588,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
         return {
             'licensee_id': resolved_license_id,
-            'wallet_type': wallet.wallet_type,
+            'wallet_type': wallet.wallet_type.code if wallet.wallet_type else None,
             'reference_no': reference_no,
             'balance_before': str(starting_balance),
             'balance_after': str(current_balance),

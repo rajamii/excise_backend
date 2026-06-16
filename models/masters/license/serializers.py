@@ -1,6 +1,9 @@
 from rest_framework import serializers
 from .models import License
 from auth.user.models import CustomUser
+from django.utils import timezone
+from datetime import timedelta
+from models.masters.core.models import SupplyChainTimerConfig
 
 
 class LicenseSerializer(serializers.ModelSerializer):
@@ -33,8 +36,8 @@ class LicenseDetailSerializer(serializers.ModelSerializer):
     license_category_name = serializers.CharField(source='license_category.license_category', read_only=True)
     license_sub_category_name = serializers.CharField(source='license_sub_category.description', read_only=True)
     excise_district_name = serializers.CharField(source='excise_district.district', read_only=True)
-    issue_date = serializers.DateField(format="%d/%m/%Y")
-    valid_up_to = serializers.DateField(format="%d/%m/%Y")
+    issue_date = serializers.DateTimeField(format="%d/%m/%Y %H:%M:%S")
+    valid_up_to = serializers.DateTimeField(format="%d/%m/%Y %H:%M:%S")
 
     source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
     source_application_id = serializers.CharField(source='source_application.application_id', read_only=True)
@@ -131,6 +134,20 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
 
     source_object_id = serializers.CharField(read_only=True)
     is_license_fee_paid = serializers.SerializerMethodField()
+    is_security_fee_paid = serializers.SerializerMethodField()
+    issue_date = serializers.SerializerMethodField()
+    valid_up_to = serializers.SerializerMethodField()
+    issue_date_display = serializers.SerializerMethodField()
+    valid_up_to_display = serializers.SerializerMethodField()
+    is_expired = serializers.SerializerMethodField()
+    is_valid_now = serializers.SerializerMethodField()
+    can_access_supply_chain = serializers.SerializerMethodField()
+    can_renew = serializers.SerializerMethodField()
+    renewal_window_starts_on = serializers.SerializerMethodField()
+    renewal_window_ends_on = serializers.SerializerMethodField()
+    reminder_window_days = serializers.SerializerMethodField()
+    renewal_count = serializers.SerializerMethodField()
+    renewal_details = serializers.SerializerMethodField()
 
     first_name = serializers.CharField(source='source_application.applicant.first_name', read_only=True)
     middle_name = serializers.CharField(source='source_application.applicant.middle_name', read_only=True)
@@ -144,22 +161,186 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
     application_type = serializers.CharField(source='get_source_type_display', read_only=True)
     license_category = serializers.CharField(source='license_category.license_category', read_only=True)
     license_sub_category_id = serializers.IntegerField(read_only=True)
-    license_sub_category = serializers.CharField(source='source_application.license_sub_category.description', read_only=True)
-    establishment_name = serializers.CharField(source='source_application.establishment_name', read_only=True)
+    license_sub_category = serializers.CharField(source='license_sub_category.description', read_only=True)
+    establishment_name = serializers.SerializerMethodField()
     site_district = serializers.CharField(source='excise_district.district', read_only=True)
+    salesman_barman_role = serializers.SerializerMethodField()
 
     def get_is_license_fee_paid(self, obj):
         src = getattr(obj, "source_application", None)
         if src is None:
-            return None
+            # For some issued licenses (especially renewals), source_application may not resolve reliably.
+            # Treat such licenses as "paid" for menu gating since issuance typically implies fees were handled.
+            return True
         return bool(getattr(src, "is_license_fee_paid", False))
+
+    def get_is_security_fee_paid(self, obj):
+        src = getattr(obj, "source_application", None)
+        if src is None:
+            return True
+        return bool(getattr(src, "is_security_fee_paid", False))
+
+    def get_establishment_name(self, obj):
+        src = getattr(obj, "source_application", None)
+        if src is not None and getattr(src, "establishment_name", None):
+            return str(getattr(src, "establishment_name") or "")
+        return str(getattr(obj, "license_id", "") or "")
+
+    def get_salesman_barman_role(self, obj):
+        if obj.source_type == 'salesman_barman':
+            src = getattr(obj, "source_application", None)
+            if src is not None and getattr(src, "role", None):
+                return str(src.role).strip()
+        return None
+
+    def _get_timer_days(self, code: str, default_days: int) -> int:
+        cfg = (
+            SupplyChainTimerConfig.objects.filter(code=code, is_active=True)
+            .order_by("-updated_at", "-id")
+            .first()
+        )
+        if not cfg:
+            return int(default_days)
+
+        unit = str(getattr(cfg, "delay_unit", "") or "").lower().strip()
+        value = getattr(cfg, "delay_value", None)
+        try:
+            value_int = max(0, int(value or 0))
+        except (TypeError, ValueError):
+            value_int = 0
+
+        if value_int > 0 and unit:
+            if unit.endswith("s"):
+                unit = unit[:-1]
+            if unit == "day":
+                return value_int
+            if unit in ("week", "wk"):
+                return value_int * 7
+            if unit in ("month", "mon", "mo"):
+                return value_int * 30
+            if unit in ("year", "yr"):
+                return value_int * 365
+            if unit in ("hour", "hr"):
+                return max(0, value_int // 24)
+
+        days = getattr(cfg, "validity_period_days", None)
+        if days is not None:
+            try:
+                return max(0, int(days))
+            except (TypeError, ValueError):
+                return int(default_days)
+
+        return int(default_days)
+
+    def _license_is_valid_now(self, obj) -> bool:
+        now_dt = timezone.now()
+        if not bool(getattr(obj, "is_active", True)):
+            return False
+        if getattr(obj, "issue_date", None) and obj.issue_date > now_dt:
+            return False
+        if getattr(obj, "valid_up_to", None) and obj.valid_up_to < now_dt:
+            return False
+        return True
+
+    def _license_is_expired(self, obj) -> bool:
+        now_dt = timezone.now()
+        return bool(getattr(obj, "valid_up_to", None) and obj.valid_up_to < now_dt)
+
+    def _renewal_window(self, obj):
+        now_dt = timezone.now()
+        reminder_days = self._get_timer_days("LICENSE_RENEWAL_REMINDER_TIMER", 90)
+        valid_up_to = getattr(obj, "valid_up_to", None)
+        if not valid_up_to:
+            return reminder_days, None, None, False
+        window_start = valid_up_to - timedelta(days=reminder_days)
+        window_end = valid_up_to
+        can_renew = now_dt >= window_start
+        return reminder_days, window_start, window_end, can_renew
+
+    def get_issue_date(self, obj):
+        d = getattr(obj, "issue_date", None)
+        return d.isoformat() if d else None
+
+    def get_valid_up_to(self, obj):
+        d = getattr(obj, "valid_up_to", None)
+        return d.isoformat() if d else None
+
+    def get_issue_date_display(self, obj):
+        d = getattr(obj, "issue_date", None)
+        return d.strftime("%d/%m/%Y") if d else ""
+
+    def get_valid_up_to_display(self, obj):
+        d = getattr(obj, "valid_up_to", None)
+        return d.strftime("%d/%m/%Y") if d else ""
+
+    def get_is_expired(self, obj):
+        return self._license_is_expired(obj)
+
+    def get_is_valid_now(self, obj):
+        return self._license_is_valid_now(obj)
+
+    def get_can_access_supply_chain(self, obj):
+        paid = bool(self.get_is_license_fee_paid(obj) and self.get_is_security_fee_paid(obj))
+        return bool(paid and self._license_is_valid_now(obj))
+
+    def get_can_renew(self, obj):
+        _reminder_days, _start, _end, can_renew = self._renewal_window(obj)
+        return bool(can_renew)
+
+    def get_renewal_window_starts_on(self, obj):
+        _reminder_days, start, _end, _can = self._renewal_window(obj)
+        return start.isoformat() if start else None
+
+    def get_renewal_window_ends_on(self, obj):
+        _reminder_days, _start, end, _can = self._renewal_window(obj)
+        return end.isoformat() if end else None
+
+    def get_reminder_window_days(self, obj):
+        reminder_days, _start, _end, _can = self._renewal_window(obj)
+        return int(reminder_days)
+
+    def get_renewal_count(self, obj):
+        try:
+            from models.transactional.license_renewal_application.models import LicenseApplication
+            return LicenseApplication.objects.filter(old_license_id=obj.license_id, is_approved=True).count()
+        except Exception:
+            return 0
+
+    def get_renewal_details(self, obj):
+        try:
+            from models.transactional.license_renewal_application.models import LicenseApplication
+            qs = LicenseApplication.objects.filter(old_license_id=obj.license_id, is_approved=True).order_by('updated_at')
+            details = []
+            for app in qs:
+                dt = app.updated_at or app.created_at
+                date_str = dt.strftime("%d/%m/%Y") if dt else ""
+                details.append({
+                    "application_id": app.application_id,
+                    "date": date_str
+                })
+            return details
+        except Exception:
+            return []
 
     class Meta:
         model = License
         fields = [
             'license_id',
             'source_object_id',
+            'is_active',
             'is_license_fee_paid',
+            'is_security_fee_paid',
+            'issue_date',
+            'valid_up_to',
+            'issue_date_display',
+            'valid_up_to_display',
+            'is_expired',
+            'is_valid_now',
+            'can_access_supply_chain',
+            'can_renew',
+            'renewal_window_starts_on',
+            'renewal_window_ends_on',
+            'reminder_window_days',
             'first_name',
             'middle_name',
             'last_name',
@@ -174,4 +355,7 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
             'license_sub_category',
             'establishment_name',
             'site_district',
+            'renewal_count',
+            'renewal_details',
+            'salesman_barman_role',
         ]

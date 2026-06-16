@@ -3,7 +3,8 @@ from django.db import transaction
 from rest_framework.response import Response
 from rest_framework.views import PermissionDenied
 from django.apps import apps
-from django.forms import ValidationError
+from django.core.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import status
@@ -14,10 +15,20 @@ from .serializers import WorkflowSerializer, WorkflowStageSerializer, WorkflowTr
 from auth.roles.permissions import HasAppPermission
 from .permissions import HasStagePermission
 from .services import SERIALIZER_MAPPING, WorkflowService
-from models.transactional.license_application.models import LicenseApplication
+from models.transactional.license_renewal_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
 from models.transactional.salesman_barman.models import SalesmanBarmanModel
 import logging
+
+def _normalized_role_token(user):
+    raw = getattr(getattr(user, 'role', None), 'name', '') or ''
+    token = ''.join(ch for ch in str(raw).lower() if ch.isalnum())
+    aliases = {
+        'licenseuser': 'licensee',
+        'licenseeuser': 'licensee',
+        'licencee': 'licensee',
+    }
+    return aliases.get(token, token)
 
 # Workflow views (from previous response)
 @permission_classes([HasAppPermission('workflows', 'view')])
@@ -351,17 +362,45 @@ def resolve_objections(request, application_id):
         return Response({"detail": "Application not found"}, status=404)
 
     try:
+        # Frontend frequently submits multipart FormData where the corrected fields are at the top-level.
+        updated_fields = request.data.get("updated_fields", {})
+        if not updated_fields:
+            reserved = {"objection_ids", "remarks", "updated_fields"}
+            updated_fields = {}
+            for key in request.data.keys():
+                if key in reserved:
+                    continue
+                updated_fields[key] = request.data.get(key)
+
+        objection_ids = request.data.get("objection_ids")
+        if objection_ids is None and hasattr(request.data, "getlist"):
+            ids_list = request.data.getlist("objection_ids")
+            objection_ids = ids_list if ids_list else None
+
         WorkflowService.resolve_objections(
             application=application,
             user=request.user,
-            objection_ids=request.data.get("objection_ids"),
-            updated_fields=request.data.get("updated_fields", {}),
+            objection_ids=objection_ids,
+            updated_fields=updated_fields,
             remarks=request.data.get("remarks")
         )
-    except ValidationError as e:
+    except (ValidationError, DRFValidationError) as e:
+        # Django's ValidationError and DRF's ValidationError have different shapes.
+        details = getattr(e, "detail", None)
+        if details is not None:
+            return Response(details, status=400)
+        message_dict = getattr(e, "message_dict", None)
+        if message_dict is not None:
+            return Response(message_dict, status=400)
+        messages = getattr(e, "messages", None)
+        if messages:
+            return Response({"detail": messages[0]}, status=400)
         return Response({"detail": str(e)}, status=400)
     except PermissionDenied as e:
         return Response({"detail": str(e)}, status=403)
+    except Exception as e:
+        logging.getLogger(__name__).exception("Unexpected error while resolving objections for %s", application_id)
+        return Response({"detail": f"Failed to resolve objections: {str(e)}"}, status=500)
 
     return _serialize_application(application)
 
@@ -428,6 +467,11 @@ def get_rejections(request, application_id):
 @api_view(['GET'])
 @permission_classes([HasStagePermission])
 def dashboard_counts(request):
+    try:
+        from models.masters.license.views import deactivate_all_expired_licenses
+        deactivate_all_expired_licenses()
+    except Exception:
+        pass
     models = [_get_model("license_application", "LicenseApplication"),
               _get_model("new_license_application", "NewLicenseApplication")]
 
@@ -468,7 +512,7 @@ def application_group(request):
     for Model in [m for m in models if m is not None]:
         qs = Model.objects.select_related('current_stage', 'workflow')
 
-        if role_name == "licensee":
+        if _normalized_role_token(request.user) == "licensee":
             result["applied"] = result.get("applied", []) + list(qs.filter(
                 current_stage__name__in=['level_1', 'level_2', 'level_3', 'level_4', 'level_5']
             ))
@@ -483,7 +527,30 @@ def application_group(request):
                 current_stage__name__icontains='rejected'
             ))
 
-        elif role_name.startswith("level_"):
+        else:
+            # Generic admin/officer grouping driven by StagePermission + workflow membership.
+            workflow_ids = list(
+                StagePermission.objects.filter(role=request.user.role).values_list("stage__workflow_id", flat=True).distinct()
+            )
+            # Always expose objection items to admins/officers even if StagePermission rows
+            # are not configured for the role yet (common in existing deployments).
+            result["objection"] += list(qs.filter(current_stage__name__icontains="objection"))
+
+            if not workflow_ids:
+                continue
+
+            scoped = qs.filter(workflow_id__in=workflow_ids)
+            processable_stage_ids = list(
+                StagePermission.objects.filter(role=request.user.role, can_process=True).values_list("stage_id", flat=True)
+            )
+
+            if processable_stage_ids:
+                result["pending"] += list(scoped.filter(current_stage_id__in=processable_stage_ids))
+
+            # Objection is already included above (unscoped), keep buckets stable.
+            result["approved"] += list(scoped.filter(current_stage__name__iexact="approved"))
+            result["rejected"] += list(scoped.filter(current_stage__name__icontains="rejected"))
+            continue
             level_num = role_name.replace("level_", "")  # "level_3" → "3"
 
             pending_stages = [role_name, f"{role_name}_objection"]
@@ -522,6 +589,7 @@ def _get_application_by_id(application_id):
         ("company_registration", "CompanyRegistration"),
         ("company_collaboration", "CompanyCollaboration"),
         ("license_application", "LicenseApplication"),
+        ("license_renewal_application", "LicenseApplication"),
         ("new_license_application", "NewLicenseApplication"),
         ("salesman_barman", "SalesmanBarmanModel"),
     ]
@@ -586,7 +654,7 @@ def pay_license_fee(request, application_id):
     if not request.user.is_authenticated:
         return Response({"error": "Authentication required"}, status=status.HTTP_401_UNAUTHORIZED)
 
-    if getattr(request.user, 'role', None) and request.user.role.name != 'licensee':
+    if _normalized_role_token(request.user) != 'licensee':
         return Response(
             {"error": "Only licensees can pay the license fee."},
             status=status.HTTP_403_FORBIDDEN

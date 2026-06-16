@@ -3,7 +3,8 @@ from . import views
 
 urlpatterns = [
     path('liquor-types/', views.MasterLiquorTypeListView.as_view(), name='master-liquor-type-list'),
-    path('liquor-categories/', views.MasterLiquorCategoryListView.as_view(), name='master-liquor-category-list'),
+    path('liquor-types/<int:pk>/', views.MasterLiquorTypeDetailView.as_view(), name='master-liquor-type-detail'),
+    path('liquor-categories/', views.MasterLiquorCapacityListView.as_view(), name='master-liquor-category-list'),
     path('master-brands/', views.master_brand_list, name='master-brand-list'),
     path('master-brands/create/', views.master_brand_create, name='master-brand-create'),
     path('master-factories/', views.master_factory_list, name='master-factory-list'),

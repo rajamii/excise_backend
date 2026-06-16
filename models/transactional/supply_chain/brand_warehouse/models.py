@@ -91,13 +91,13 @@ class BrandWarehouse(models.Model):
 
     # Capacity Information (normalized via master table)
     capacity_size = models.ForeignKey(
-        'liquor_data.MasterLiquorCategory',
+        'liquor_data.MasterLiquorCapacity',
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
         db_column='capacity_size',
         related_name='brand_warehouses',
-        help_text='Pack size (FK to master_liquor_category.id)'
+        help_text='Pack size (FK to master_liquor_capacity.id)'
     )
 
     # Status
@@ -335,6 +335,15 @@ class BrandWarehouse(models.Model):
         )
         
         return self.current_stock
+
+    def save(self, *args, **kwargs):
+        # Resolve factory using license_id if factory is null
+        if not self.factory_id and self.license_id:
+            from models.masters.supply_chain.liquor_data.models import MasterFactoryList
+            factory_obj = MasterFactoryList.objects.filter(source_object_id=self.license_id).first()
+            if factory_obj:
+                self.factory = factory_obj
+        super().save(*args, **kwargs)
 
     def soft_delete(self, deleted_by=None):
         """

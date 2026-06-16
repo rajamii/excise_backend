@@ -51,9 +51,6 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',
 
-    # captcha
-    'captcha',
-
     # Cross-Origin Resource Sharing
     'corsheaders',
 
@@ -67,6 +64,7 @@ INSTALLED_APPS = [
     'models.masters.core',
     'models.masters.license',
     'models.masters.contact_us',
+    'models.masters.about_us',
     'models.masters.company_collaboration',
 
     'models.masters.supply_chain.bulk_spirit',
@@ -78,13 +76,14 @@ INSTALLED_APPS = [
     'models.masters.supply_chain.profile',
     'models.masters.supply_chain.transit_permit',
     'models.masters.supply_chain.vehicles',
+    'models.masters.supply_chain.hologram_supplier',
     # 'models.masters.supply_chain.status_master',
 
     # transcational models
     'models.transactional',
     'models.transactional.company_registration',
     'models.transactional.company_collaboration',
-    'models.transactional.license_application',
+    'models.transactional.license_renewal_application',
     'models.transactional.site_enquiry',
     'models.transactional.new_license_application',
     'models.transactional.label_registration',
@@ -159,14 +158,14 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'sems_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'postgres',  # Your PostgreSQL password
-        'HOST': 'localhost',        # Default host
-        'PORT': '5433',             # Default PostgreSQL port
-        'CONN_MAX_AGE': 0,          # Don't reuse connections — avoids aborted transaction state
+        'PASSWORD': 'sameer123',  # Your PostgreSQL password
+        'HOST': 'localhost',        
+        'PORT': '5432',             # Default PostgreSQL port
+        'CONN_MAX_AGE': 300,          # Don't reuse connections — avoids aborted transaction state
     }
 }
 
-# Forgot Password Email Settings
+# Forgot Password Email SettingsSS
 # EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # For production, use SMTP:
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
@@ -188,6 +187,15 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 20971520
 
 FILE_UPLOAD_MAX_MEMORY_SIZE = 2621440
 
+# OTP Configuration
+OTP_EXPIRY_SECONDS = 600  # 10 minutes
+
+# Redis cache configuration for CAPTCHA storage
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    }
+}
 
 AUTH_USER_MODEL = 'user.CustomUser'
 
@@ -292,16 +300,16 @@ BILLDESK_GATEWAY_URL = os.getenv(
 # Where Django redirects the user after BillDesk response is validated.
 PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL = os.getenv(
     "PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL",
-    "http://localhost:4200/dashboard/wallet-recharge/success",
+    "https://sems.sikkim.gov.in/dashboard/wallet-recharge/success",
 ).strip()
 PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL = os.getenv(
     "PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL",
-    "http://localhost:4200/dashboard/new-license/application-fee/receipt",
+    "https://sems.sikkim.gov.in/dashboard/new-license/application-fee/receipt",
 ).strip()
 
 # Captcha tuning: keep it readable with only light line noise.
 CAPTCHA_LENGTH = 5
-CAPTCHA_TIMEOUT = 5  # minutes
+CAPTCHA_TIMEOUT = 300  # minutes
 CAPTCHA_FONT_SIZE = 30
 CAPTCHA_IMAGE_SIZE = (130, 42)
 CAPTCHA_LETTER_ROTATION = (-5, 5)

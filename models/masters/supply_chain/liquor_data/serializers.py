@@ -3,7 +3,7 @@ from django.contrib.contenttypes.models import ContentType
 from .models import (
     LiquorData,
     MasterLiquorType,
-    MasterLiquorCategory,
+    MasterLiquorCapacity,
     MasterBottleType,
     MasterBrandList,
     MasterFactoryList,
@@ -24,9 +24,9 @@ class MasterLiquorTypeSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'is_sync']
 
 
-class MasterLiquorCategorySerializer(serializers.ModelSerializer):
+class MasterLiquorCapacitySerializer(serializers.ModelSerializer):
     class Meta:
-        model = MasterLiquorCategory
+        model = MasterLiquorCapacity
         fields = ['id', 'size_ml', 'is_sync']
         read_only_fields = ['id', 'is_sync']
 

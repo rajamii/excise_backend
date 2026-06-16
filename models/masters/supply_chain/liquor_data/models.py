@@ -19,7 +19,7 @@ class MasterLiquorType(models.Model):
         return str(self.liquor_type or '').strip()
 
 
-class MasterLiquorCategory(models.Model):
+class MasterLiquorCapacity(models.Model):
     """
     Master table for bottle/pack capacities (ml).
 
@@ -33,10 +33,10 @@ class MasterLiquorCategory(models.Model):
     updated_at = models.DateTimeField(auto_now=True, blank=True, null=True)
 
     class Meta:
-        db_table = 'master_liquor_category'
+        db_table = 'master_liquor_capacity'
         ordering = ['size_ml']
-        verbose_name = 'Master Liquor Category'
-        verbose_name_plural = 'Master Liquor Categories'
+        verbose_name = 'Master Liquor Capacity'
+        verbose_name_plural = 'Master Liquor Capacities'
 
     def __str__(self):
         return str(int(self.size_ml or 0))
@@ -137,6 +137,15 @@ class MasterFactoryList(models.Model):
 
     def __str__(self):
         return str(self.factory_name or '').strip()
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if self.source_object_id:
+            from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
+            BrandWarehouse.objects.filter(
+                license_id=self.source_object_id,
+                factory__isnull=True
+            ).update(factory=self)
 
 
 class LiquorData(models.Model):

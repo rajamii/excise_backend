@@ -40,12 +40,18 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
     license_category_name = serializers.CharField(source='license_category.license_category', read_only=True)
     renewal_of_license_id = serializers.CharField(source='renewal_of.license_id', read_only=True)
+    license_id_display = serializers.CharField(source='license.license_id', read_only=True, allow_null=True)
+    new_license_application_id = serializers.CharField(source='new_license_application.application_id', read_only=True, allow_null=True)
     applicant_username = serializers.CharField(source='applicant.username', read_only=True)
     applicant_full_name = serializers.SerializerMethodField()
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)
     objections = WorkflowObjectionSerializer(many=True, read_only=True)
     application_fee_payment_status = serializers.SerializerMethodField()
     application_fee_payment_status_display = serializers.SerializerMethodField()
+    valid_up_to = serializers.SerializerMethodField()
+    license_id = serializers.SerializerMethodField()
+    renewal_application_id = serializers.SerializerMethodField()
+    is_parent_license_fee_paid = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesmanBarmanModel
@@ -61,6 +67,89 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
             'applicant',
             'workflow'
             ]
+
+    def get_valid_up_to(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            ct = ContentType.objects.get_for_model(obj)
+            license_obj = (
+                License.objects.filter(
+                    source_type="salesman_barman",
+                    source_content_type=ct,
+                    source_object_id=str(obj.pk),
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if license_obj and license_obj.valid_up_to:
+                return license_obj.valid_up_to.isoformat()
+        except Exception:
+            pass
+        return None
+
+    def get_license_id(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            ct = ContentType.objects.get_for_model(obj)
+            license_obj = (
+                License.objects.filter(
+                    source_type="salesman_barman",
+                    source_content_type=ct,
+                    source_object_id=str(obj.pk),
+                )
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if license_obj:
+                return license_obj.license_id
+        except Exception:
+            pass
+        return None
+
+    def get_renewal_application_id(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.transactional.license_renewal_application.models import LicenseApplication
+            
+            ct = ContentType.objects.get_for_model(obj)
+            renewal = LicenseApplication.objects.filter(source_content_type=ct, source_object_id=obj.pk).order_by('-created_at').first()
+            if renewal:
+                return renewal.application_id
+        except Exception:
+            pass
+        return None
+
+    def get_is_parent_license_fee_paid(self, obj):
+        try:
+            # 1. Check fresh license flow
+            nli_app = getattr(obj, "new_license_application", None)
+            if nli_app:
+                return bool(nli_app.is_license_fee_paid)
+            
+            # 2. Check existing license / renewal flow
+            main_license = getattr(obj, "license", None)
+            if main_license:
+                from django.utils.timezone import now
+                from models.transactional.license_renewal_application.models import LicenseApplication
+                
+                # Check renewal applications
+                renewal_apps = LicenseApplication.objects.filter(old_license_id=main_license.license_id)
+                if renewal_apps.exists():
+                    latest_renewal = renewal_apps.order_by("-created_at").first()
+                    if latest_renewal and not latest_renewal.is_license_fee_paid:
+                        return False
+                
+                # Check expiration
+                if main_license.valid_up_to and main_license.valid_up_to < now():
+                    has_paid_renewal = renewal_apps.filter(is_license_fee_paid=True).exists()
+                    if not has_paid_renewal:
+                        return False
+        except Exception:
+            pass
+        return True
+
 
     def get_applicant_full_name(self, obj):
         applicant = obj.applicant
@@ -129,7 +218,9 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
         linked to `new_license_application`.
         """
         attrs = super().validate(attrs)
-        if not attrs.get("new_license_application"):
+        # Only enforce "required fields" on CREATE. For updates (including objection
+        # resolution) we must allow partial payloads.
+        if self.instance is None and not attrs.get("new_license_application"):
             required = [
                 "role",
                 "firstName",

@@ -33,21 +33,101 @@ class StagePermissionSerializer(serializers.ModelSerializer):
 # shared in workflow/serializers.py
 class WorkflowTransactionSerializer(serializers.ModelSerializer):
     performed_by = UserSerializer(read_only=True)
+    performed_by_name = serializers.SerializerMethodField()
     forwarded_by = RoleSerializer(read_only=True)
+    forwarded_by_name = serializers.SerializerMethodField()
     forwarded_to = RoleSerializer(read_only=True)
+    forwarded_to_name = serializers.SerializerMethodField()
+
     class Meta:
         model = Transaction
         fields = '__all__'
 
+    def get_performed_by_name(self, obj):
+        user = getattr(obj, 'performed_by', None)
+        if not user:
+            return None
+        parts = [
+            str(getattr(user, 'first_name', '') or '').strip(),
+            str(getattr(user, 'middle_name', '') or '').strip(),
+            str(getattr(user, 'last_name', '') or '').strip(),
+        ]
+        name = ' '.join(p for p in parts if p).strip()
+        return name or str(getattr(user, 'username', '') or '').strip() or None
+
+    def get_forwarded_by_name(self, obj):
+        role = getattr(obj, 'forwarded_by', None)
+        if not role:
+            return None
+        return str(getattr(role, 'name', '') or '').strip() or None
+
+    def get_forwarded_to_name(self, obj):
+        role = getattr(obj, 'forwarded_to', None)
+        if not role:
+            return None
+        return str(getattr(role, 'name', '') or '').strip() or None
+
 class WorkflowObjectionSerializer(serializers.ModelSerializer):
+    raisedByName = serializers.SerializerMethodField()
+    resolvedByName = serializers.SerializerMethodField()
+    raisedAt = serializers.DateTimeField(source='raised_on', read_only=True)
+    resolvedAt = serializers.DateTimeField(source='resolved_on', read_only=True)
+    fieldName = serializers.CharField(source='field_name', read_only=True)
+    isResolved = serializers.BooleanField(source='is_resolved', read_only=True)
+    beforeContent = serializers.CharField(source='before_content', read_only=True, allow_null=True)
+    afterContent = serializers.CharField(source='after_content', read_only=True, allow_null=True)
+
+    def get_raisedByName(self, obj):
+        user = getattr(obj, 'raised_by', None)
+        if not user:
+            return None
+        name = f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip()
+        return name or getattr(user, 'username', None)
+
+    def get_resolvedByName(self, obj):
+        user = getattr(obj, 'resolved_by', None)
+        if not user:
+            return None
+        name = f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip()
+        return name or getattr(user, 'username', None)
+
     class Meta:
         model = Objection
-        fields = '__all__'
+        fields = [
+            'id',
+            'content_type',
+            'object_id',
+            'fieldName',
+            'remarks',
+            'beforeContent',
+            'afterContent',
+            'raised_by',
+            'raisedByName',
+            'raisedAt',
+            'stage',
+            'isResolved',
+            'resolvedAt',
+            'resolved_by',
+            'resolvedByName',
+        ]
 
 class WorkflowRejectionSerializer(serializers.ModelSerializer):
     rejected_by = UserSerializer(read_only=True)
+    rejectedByName = serializers.SerializerMethodField()
     stage = WorkflowStageSerializer(read_only=True)
 
     class Meta:
         model = Rejection
-        fields = ['id', 'content_type', 'object_id', 'remarks', 'rejected_by', 'stage', 'rejected_on']
+        fields = ['id', 'content_type', 'object_id', 'remarks', 'rejected_by', 'rejectedByName', 'stage', 'rejected_on']
+
+    def get_rejectedByName(self, obj):
+        user = getattr(obj, "rejected_by", None)
+        if not user:
+            return None
+        parts = [
+            str(getattr(user, "first_name", "") or "").strip(),
+            str(getattr(user, "middle_name", "") or "").strip(),
+            str(getattr(user, "last_name", "") or "").strip(),
+        ]
+        name = " ".join(p for p in parts if p).strip()
+        return name or str(getattr(user, "username", "") or "").strip() or None

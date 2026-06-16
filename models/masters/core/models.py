@@ -1,5 +1,6 @@
 from django.db import models
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator, MaxValueValidator
 from models.masters.core.validators import validate_name, validate_name_extended
 # models.py
 from typing import TYPE_CHECKING
@@ -331,7 +332,7 @@ class Location(models.Model):
         max_length=200,
         null=False,
         blank=False,
-        help_text="Description of the location"
+        help_text="Description of the of the location"
     )
     district_code = models.ForeignKey(
         District,
@@ -472,15 +473,19 @@ class SupplyChainTimerConfig(models.Model):
     TIMER_UNIT_MINUTE = 'minute'
     TIMER_UNIT_HOUR = 'hour'
     TIMER_UNIT_DAY = 'day'
+    TIMER_UNIT_WEEK = 'week'
     # Note: calendar months vary; treated as 30 days where converted to seconds.
     TIMER_UNIT_MONTH = 'month'
+    TIMER_UNIT_YEAR = 'year'
 
     TIMER_UNIT_CHOICES = [
         (TIMER_UNIT_SECOND, 'Second'),
         (TIMER_UNIT_MINUTE, 'Minute'),
         (TIMER_UNIT_HOUR, 'Hour'),
         (TIMER_UNIT_DAY, 'Day'),
+        (TIMER_UNIT_WEEK, 'Week'),
         (TIMER_UNIT_MONTH, 'Month'),
+        (TIMER_UNIT_YEAR, 'Year'),
     ]
 
     code = models.CharField(max_length=100, unique=True)
@@ -499,3 +504,33 @@ class SupplyChainTimerConfig(models.Model):
 
     def __str__(self):
         return f"{self.code}: {self.delay_value} {self.delay_unit}(s)"
+
+
+class RenewalApplicationConfig(models.Model):
+    renewal_month = models.PositiveIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(12)], 
+        help_text="Month of renewal (1-12)", 
+        default=3
+    )
+    renewal_day = models.PositiveIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(31)], 
+        help_text="Day of renewal (1-31)", 
+        default=31
+    )
+    renewal_time = models.TimeField(
+        help_text="Time of day when the license expires",
+        default="23:59:59"
+    )
+
+    class Meta:
+        db_table = 'renewal_application_config'
+        verbose_name = 'License Validity Period'
+        verbose_name_plural = 'License Validity Periods'
+
+    def __str__(self):
+        return f"{self.renewal_day:02d}-{self.renewal_month:02d} at {self.renewal_time}"
+
+    def save(self, *args, **kwargs):
+        if not self.pk and RenewalApplicationConfig.objects.exists():
+            raise ValidationError("There can be only one RenewalApplicationConfig instance")
+        return super().save(*args, **kwargs)

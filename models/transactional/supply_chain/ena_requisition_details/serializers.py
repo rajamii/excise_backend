@@ -60,7 +60,8 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             self._resolve_payment_amount_from_values(
                 total_bl_raw=instance.totalbl,
                 spirit_kind=instance.bulk_spirit_type,
-                strength=instance.strength
+                strength=instance.strength,
+                licensee_id=getattr(instance, 'licensee_id', '') or ''
             )
         )
         data['grain_ena_number'] = str(instance.grain_ena_number) if instance.grain_ena_number else '0'
@@ -979,7 +980,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             end = start + permit_count - 1
             return ','.join(str(num) for num in range(start, end + 1))
 
-    def _resolve_payment_amount_from_values(self, total_bl_raw, spirit_kind, strength='') -> float:
+    def _resolve_payment_amount_from_values(self, total_bl_raw, spirit_kind, strength='', licensee_id='') -> float:
         # Backend computation: selected bulk spirit price_bl * total BL.
         try:
             total_bl = float(total_bl_raw)
@@ -990,17 +991,37 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
 
         spirit_kind = str(spirit_kind or '').strip()
         strength = str(strength or '').strip()
+        licensee_id = str(licensee_id or '').strip()
         if not spirit_kind:
             return 0.0
 
         try:
             from models.masters.supply_chain.bulk_spirit.models import BulkSpiritType
+
+            def _expand_aliases(value: str) -> list[str]:
+                value = str(value or '').strip()
+                if not value:
+                    return []
+                aliases = [value]
+                if value.startswith('NLI/'):
+                    aliases.append(f"NA/{value[4:]}")
+                elif value.startswith('NA/'):
+                    aliases.append(f"NLI/{value[3:]}")
+                return aliases
+
             qs = BulkSpiritType.objects.filter(
                 bulk_spirit_kind_type__iexact=spirit_kind
             )
             if strength:
                 qs = qs.filter(strength__iexact=strength)
-            row = qs.order_by('sprit_id').first()
+
+            # Prefer license-specific bulk spirit pricing when configured.
+            if licensee_id:
+                row = qs.filter(license_id__in=_expand_aliases(licensee_id)).order_by('sprit_id').first()
+            else:
+                row = None
+            if row is None:
+                row = qs.order_by('sprit_id').first()
             if row and row.price_bl is not None:
                 return float(row.price_bl) * total_bl
         except Exception:

@@ -2,8 +2,10 @@ from django.utils import timezone
 from django.db import transaction
 from django.core.exceptions import ValidationError, PermissionDenied
 from django.contrib.contenttypes.models import ContentType
+from django.core.serializers.json import DjangoJSONEncoder
 
 from django.apps import apps
+import json
 from .models import (
     WorkflowTransition, StagePermission,
     Transaction, Objection, Rejection
@@ -145,6 +147,7 @@ SERIALIZER_MAPPING = {
     ('company_registration', 'companyregistration'): 'models.transactional.company_registration.serializers.CompanyRegistrationSerializer',
     ('company_collaboration', 'companycollaboration'): 'models.transactional.company_collaboration.serializers.CompanyCollaborationSerializer',
     ('license_application', 'licenseapplication'): 'models.transactional.license_application.serializers.LicenseApplicationSerializer',
+    ('license_renewal_application', 'licenseapplication'): 'models.transactional.license_renewal_application.serializers.LicenseApplicationSerializer',
     ('new_license_application', 'newlicenseapplication'): 'models.transactional.new_license_application.serializers.NewLicenseApplicationSerializer',
     ('salesman_barman', 'salesmanbarmanmodel'): 'models.transactional.salesman_barman.serializers.SalesmanBarmanSerializer',
     ('company_registration', 'companymodel'): 'models.transactional.company_registration.serializers.CompanySerializer',
@@ -156,8 +159,95 @@ SERIALIZER_MAPPING = {
 class WorkflowService:
 
     @staticmethod
+    def _stringify_for_audit(value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        try:
+            if isinstance(value, (dict, list, tuple)):
+                return json.dumps(value, cls=DjangoJSONEncoder, ensure_ascii=False)
+        except Exception:
+            pass
+        return str(value)
+
+    @staticmethod
+    def _read_application_field_value(application, field_name):
+        """
+        Best-effort: read a value from the application model using a canonicalized field name.
+        Supports simple dotted paths for dict-like values (e.g. "address.line1").
+        """
+        raw = str(field_name or '').strip()
+        canonical = WorkflowService._canonical_field_name(raw)
+
+        # Some models use camelCase python attribute names with snake_case DB columns
+        # (e.g. SalesmanBarmanModel.emailId stored in DB as email_id). Objections may store
+        # either "emailId" or the canonicalized "email_id". Try both directions.
+        def _snake_to_camel(s: str) -> str:
+            parts = [p for p in str(s or '').split('_') if p]
+            if not parts:
+                return ''
+            return parts[0].lower() + ''.join(p[:1].upper() + p[1:] for p in parts[1:])
+
+        def _camel_to_snake(s: str) -> str:
+            s = str(s or '').strip()
+            if not s:
+                return ''
+            out = []
+            for ch in s:
+                if ch.isupper():
+                    out.append('_')
+                    out.append(ch.lower())
+                else:
+                    out.append(ch)
+            return ''.join(out).lstrip('_').lower()
+
+        candidates = []
+        for v in [canonical, raw]:
+            if not v:
+                continue
+            candidates.append(v)
+            # add cross-variant
+            if '_' in v:
+                candidates.append(_snake_to_camel(v))
+            else:
+                candidates.append(_camel_to_snake(v))
+
+        # De-dupe while preserving order.
+        seen = set()
+        candidates = [c for c in candidates if c and not (c in seen or seen.add(c))]
+        for attr in candidates:
+            if not attr:
+                continue
+            if hasattr(application, attr):
+                value = getattr(application, attr)
+                return WorkflowService._stringify_for_audit(value)
+            if '.' in attr:
+                base, *rest = attr.split('.')
+                if not hasattr(application, base):
+                    continue
+                value = getattr(application, base)
+                for key in rest:
+                    if isinstance(value, dict) and key in value:
+                        value = value.get(key)
+                    else:
+                        value = None
+                        break
+                return WorkflowService._stringify_for_audit(value)
+        return None
+
+    @staticmethod
     def _normalize_token(value):
         return ''.join(ch for ch in str(value or '').lower() if ch.isalnum())
+
+    @staticmethod
+    def _canonical_field_name(value):
+        raw = str(value or '').strip()
+        if not raw:
+            return ''
+        if '_' in raw:
+            return raw.lower()
+        return ''.join([f"_{ch.lower()}" if ch.isupper() else ch for ch in raw]).lstrip('_')
 
     @staticmethod
     def _role_token_matches_cond(user_role_token, cond_role_token):
@@ -436,6 +526,26 @@ class WorkflowService:
         is_new_license_application = application.__class__.__name__.lower() == "newlicenseapplication"
         is_salesman_barman_application = application.__class__.__name__.lower() == "salesmanbarmanmodel"
 
+        # Guard: when a Site Enquiry Report is reverted by Joint Commissioner, the
+        # Site Enquiry Officer must re-submit the form before the workflow can move
+        # forward again from the Site Enquiry stage.
+        if is_new_license_application:
+            try:
+                from_name = str(getattr(getattr(application, "current_stage", None), "name", "") or "").strip().lower()
+                action = str((context or {}).get("action") or "").strip().upper()
+                if ("site enquiry" in from_name or "site_enquiry" in from_name or "site-enquiry" in from_name) and action in {"APPROVE", "FORWARD"}:
+                    from models.transactional.site_enquiry.models import SiteEnquiryReport
+
+                    ct = ContentType.objects.get_for_model(application)
+                    report = SiteEnquiryReport.objects.filter(content_type=ct, object_id=str(getattr(application, "application_id", "") or "")).first()
+                    if report and getattr(report, "is_reverted", False):
+                        raise ValidationError("Site enquiry report was reverted. Please re-submit the Site Enquiry Form before proceeding.")
+            except ValidationError:
+                raise
+            except Exception:
+                # Do not block workflow if site enquiry module is unavailable; validation is best-effort.
+                pass
+
         requested_target_stage = target_stage
         sync_new_license_payment_status = None
         sync_salesman_barman_payment_status = None
@@ -612,11 +722,20 @@ class WorkflowService:
         WorkflowService.validate_transition(application, target_stage, {"has_objections": True})
 
         for obj in objections:
+            field_name = obj.get("field") or obj.get("field_name") or obj.get("fieldName")
+            if not field_name:
+                raise ValidationError("Each objection must include 'field' (or 'field_name').")
+            objection_remarks = obj.get("remarks") or obj.get("remark") or obj.get("comment")
+            if not objection_remarks:
+                raise ValidationError("Each objection must include 'remarks'.")
+
+            before_content = WorkflowService._read_application_field_value(application, field_name)
             Objection.objects.create(
                 content_type=ContentType.objects.get_for_model(application),
                 object_id=str(application.pk),
-                field_name=obj["field"],
-                remarks=obj["remarks"],
+                field_name=str(field_name),
+                remarks=str(objection_remarks),
+                before_content=before_content,
                 raised_by=user,
                 stage=target_stage
             )
@@ -641,8 +760,16 @@ class WorkflowService:
     @transaction.atomic
     def resolve_objections(application, user, objection_ids=None, updated_fields=None, remarks=None):
 
-        if user.role.name != "licensee":
+        role_token = WorkflowService._normalize_token(getattr(getattr(user, "role", None), "name", ""))
+        if role_token in {"licenseuser", "licenseeuser", "licencee"}:
+            role_token = "licensee"
+
+        if role_token != "licensee":
             raise PermissionDenied("Only licensee can resolve objections.")
+
+        applicant_id = getattr(application, "applicant_id", None)
+        if applicant_id is not None and getattr(user, "id", None) != applicant_id:
+            raise PermissionDenied("Only the licensee who owns this application can resolve objections.")
 
         updated_fields = updated_fields or {}
         remarks = remarks or "Objections resolved and application returned to previous stage"
@@ -657,15 +784,34 @@ class WorkflowService:
 
         # --- 2. Strict validation: all objected fields must be updated ---
         required_fields = {obj.field_name for obj in unresolved_qs}
-        updated_keys = set(updated_fields.keys())
-        missing = required_fields - updated_keys
+        required_field_map = {
+            WorkflowService._canonical_field_name(field_name): field_name
+            for field_name in required_fields
+        }
+        normalized_updated_fields = {}
+        for key, value in (updated_fields or {}).items():
+            canonical = WorkflowService._canonical_field_name(key)
+            normalized_updated_fields[canonical or key] = {'provided': key, 'value': value}
+
+        updated_keys = set(normalized_updated_fields.keys())
+        missing = [
+            original_name
+            for canonical_name, original_name in required_field_map.items()
+            if canonical_name not in updated_keys
+        ]
         if missing:
             raise ValidationError(
                 f"Please provide updates for the following objected fields: {', '.join(missing)}"
             )
 
         # --- 3. Apply field updates using the correct app-specific serializer ---
-        if updated_fields:
+        pre_update_values = {}
+        for obj in unresolved_qs:
+            canonical = WorkflowService._canonical_field_name(obj.field_name)
+            if canonical:
+                pre_update_values[canonical] = WorkflowService._read_application_field_value(application, canonical)
+
+        if normalized_updated_fields:
             app_label = application._meta.app_label
             model_name = application._meta.model_name.lower()
 
@@ -682,15 +828,65 @@ class WorkflowService:
             except Exception as e:
                 raise ValidationError(f"Failed to load serializer: {str(e)}")
 
-            serializer = AppSerializer(application, data=updated_fields, partial=True)
+            # Map incoming keys (often snake_case) to serializer field names (often camelCase).
+            def _snake_to_camel(s: str) -> str:
+                parts = [p for p in str(s or '').split('_') if p]
+                if not parts:
+                    return ''
+                return parts[0].lower() + ''.join(p[:1].upper() + p[1:] for p in parts[1:])
+
+            def _camel_to_snake(s: str) -> str:
+                s = str(s or '').strip()
+                if not s:
+                    return ''
+                out = []
+                for ch in s:
+                    if ch.isupper():
+                        out.append('_')
+                        out.append(ch.lower())
+                    else:
+                        out.append(ch)
+                return ''.join(out).lstrip('_').lower()
+
+            serializer_field_names = set(getattr(AppSerializer(application), 'fields', {}).keys())
+            serializer_payload = {}
+            for canonical_name, meta in normalized_updated_fields.items():
+                provided_name = str((meta or {}).get('provided') or '').strip()
+                value = (meta or {}).get('value')
+                original_name = str(required_field_map.get(canonical_name) or '').strip()
+
+                candidates = []
+                for name in [original_name, provided_name, canonical_name]:
+                    if not name:
+                        continue
+                    candidates.append(name)
+                    candidates.append(_snake_to_camel(name) if '_' in name else _camel_to_snake(name))
+
+                # pick first candidate that is accepted by the serializer
+                target = next((c for c in candidates if c in serializer_field_names), provided_name or canonical_name)
+                serializer_payload[target] = value
+
+            serializer = AppSerializer(application, data=serializer_payload, partial=True)
             serializer.is_valid(raise_exception=True)
             serializer.save()
 
         # --- 4. Mark objections as resolved ---
+        now = timezone.now()
         qs = application.objections.filter(is_resolved=False)
         if objection_ids:
             qs = qs.filter(id__in=objection_ids)
-        qs.update(is_resolved=True, resolved_on=timezone.now())
+
+        # Set per-row after_content (and backfill before_content if missing)
+        for obj in qs.select_for_update():
+            canonical = WorkflowService._canonical_field_name(obj.field_name)
+            if not obj.before_content and canonical:
+                obj.before_content = pre_update_values.get(canonical)
+            if canonical:
+                obj.after_content = WorkflowService._read_application_field_value(application, canonical)
+            obj.is_resolved = True
+            obj.resolved_on = now
+            obj.resolved_by = user
+            obj.save(update_fields=['before_content', 'after_content', 'is_resolved', 'resolved_on', 'resolved_by'])
 
         # --- 5. Find the transaction that moved INTO the current objection stage ---
         entry_to_objection_txn = application.transactions.filter(
@@ -707,20 +903,48 @@ class WorkflowService:
             else None
         )
 
-        # --- 6. Determine the original non-objection stage to return to ---
-        recent_txns = application.transactions.order_by('-timestamp')[:2]
-        if len(recent_txns) < 2:
-            raise ValidationError("Insufficient transaction history")
-        original_txn = recent_txns[1]
-        if not original_txn:
-            original_txn = application.transactions.exclude(
-                stage__name__contains='_objection'
-            ).order_by('-id').first()
+        # --- 6. Determine the stage to return to ---
+        # Goal: after licensee corrects objected fields, route back to the officer/admin stage
+        # for verification, not to licensee-facing payment gates.
+        def _is_payment_stage(stage):
+            name = str(getattr(stage, "name", "") or "").strip().lower()
+            return name == "awaiting_payment" or ("payment" in name and "reject" not in name)
 
-        if not original_txn:
-            raise ValidationError("Cannot determine original stage")
+        def _is_objection_stage(stage):
+            return "objection" in str(getattr(stage, "name", "") or "").strip().lower()
 
-        application.current_stage = original_txn.stage
+        base_qs = (
+            application.transactions
+            .filter(timestamp__lt=entry_to_objection_txn.timestamp)
+            .order_by("-timestamp")
+        )
+
+        return_txn = None
+
+        # Prefer returning to the last stage acted on by the officer who raised the objection.
+        if forward_to:
+            return_txn = base_qs.filter(performed_by__role=forward_to).first()
+
+        # If that stage is an objection/payment stage, keep searching further back.
+        if return_txn and (_is_objection_stage(return_txn.stage) or _is_payment_stage(return_txn.stage)):
+            return_txn = base_qs.filter(performed_by__role=forward_to).exclude(stage=return_txn.stage).first()
+
+        # Fallback: last non-objection, non-payment stage before objection.
+        if not return_txn:
+            return_txn = base_qs.first()
+            if return_txn and (_is_objection_stage(return_txn.stage) or _is_payment_stage(return_txn.stage)):
+                return_txn = base_qs.exclude(stage__name__icontains="objection").first()
+                if return_txn and _is_payment_stage(return_txn.stage):
+                    # Walk back until we find a non-payment stage.
+                    for candidate in base_qs.exclude(stage__name__icontains="objection"):
+                        if not _is_payment_stage(candidate.stage):
+                            return_txn = candidate
+                            break
+
+        if not return_txn:
+            raise ValidationError("Cannot determine a valid verification stage prior to objection")
+
+        application.current_stage = return_txn.stage
         application.save(update_fields=['current_stage'])
 
         # --- 7. Log the return: forward back to the officer ---
@@ -730,7 +954,7 @@ class WorkflowService:
             performed_by=user,
             forwarded_by=getattr(user, "role", None),
             forwarded_to=forward_to,
-            stage=original_txn.stage,
+            stage=return_txn.stage,
             remarks=remarks
         )
 
@@ -747,7 +971,7 @@ class WorkflowService:
         if not remarks:
             raise ValidationError("A remark is required when rejecting an application.")
 
-        WorkflowService.validate_transition(application, target_stage, {})
+        WorkflowService.validate_transition(application, target_stage, {}, user=user)
 
         # Create the rejection record
         Rejection.objects.create(

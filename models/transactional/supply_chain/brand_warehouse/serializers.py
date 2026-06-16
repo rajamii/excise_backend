@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from .models import BrandWarehouse, BrandWarehouseUtilization, BrandWarehouseArrival, BrandWarehouseTpCancellation
 from .services import BrandWarehouseStockService
-from models.masters.supply_chain.liquor_data.models import MasterLiquorCategory
+from models.masters.supply_chain.liquor_data.models import MasterLiquorCapacity
 
 
 class BrandWarehouseArrivalSerializer(serializers.ModelSerializer):
@@ -314,8 +314,8 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
 
         if master_id is not None:
             try:
-                data['capacity_size'] = MasterLiquorCategory.objects.get(id=int(master_id))
-            except (TypeError, ValueError, MasterLiquorCategory.DoesNotExist):
+                data['capacity_size'] = MasterLiquorCapacity.objects.get(id=int(master_id))
+            except (TypeError, ValueError, MasterLiquorCapacity.DoesNotExist):
                 raise serializers.ValidationError({'capacity_size_master_id': 'Invalid capacity size master id'})
             return data
 
@@ -325,7 +325,7 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
         if int(capacity_size_ml) < 0:
             raise serializers.ValidationError("Capacity size cannot be negative")
 
-        category, _ = MasterLiquorCategory.objects.get_or_create(size_ml=int(capacity_size_ml))
+        category, _ = MasterLiquorCapacity.objects.get_or_create(size_ml=int(capacity_size_ml))
         data['capacity_size'] = category
         return data
 
@@ -403,6 +403,8 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
             'excise_duty_rs_per_case',
             'education_cess_rs_per_case',
             'additional_excise_duty_rs_per_case',
+            'additional_excise_duty_12_5_percent_rs_per_case',
+            'mrp_rs_per_bottle',
             'total_utilized',
             'utilization_percentage',
             'utilization_count',

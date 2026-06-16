@@ -23,8 +23,9 @@ from models.masters.license.master_license_form_terms import MasterLicenseFormTe
 from models.masters.license.legacy_codes import resolve_codes_for_license_form
 from models.masters.license.models import License
 from models.masters.license.models import LicenseValidationToken
-from models.transactional.license_application.models import LicenseApplication
+from models.transactional.license_renewal_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
+from models.transactional.salesman_barman.models import SalesmanBarmanModel
 from utils.simple_pdf import PdfPage, build_text_pdf, build_validation_pdf_multi, paginate_lines
 
 _BRANDING_CACHE: tuple[object|None, object|None] | None = None
@@ -64,6 +65,49 @@ def _build_address_from_application(app) -> str:
     return ', '.join([p for p in parts if p])
 
 
+def _salesman_barman_name(app: SalesmanBarmanModel) -> str:
+    return ' '.join(
+        p for p in [
+            str(getattr(app, 'firstName', '') or '').strip(),
+            str(getattr(app, 'middleName', '') or '').strip(),
+            str(getattr(app, 'lastName', '') or '').strip(),
+        ] if p
+    )
+
+
+def _build_salesman_barman_address(app: SalesmanBarmanModel) -> str:
+    parts: list[str] = []
+    if getattr(app, 'address', None):
+        parts.append(str(app.address).strip())
+    license_obj = getattr(app, 'license', None)
+    source_app = getattr(license_obj, 'source_application', None) if license_obj else None
+    if source_app:
+        if getattr(source_app, 'location_name', None):
+            parts.append(str(source_app.location_name).strip())
+        if getattr(source_app, 'business_address', None):
+            parts.append(str(source_app.business_address).strip())
+        if getattr(source_app, 'police_station', None) and getattr(source_app.police_station, 'police_station', None):
+            parts.append(f"P.S - {source_app.police_station.police_station}")
+        if getattr(source_app, 'ward_name', None):
+            parts.append(f"Ward: {source_app.ward_name}")
+    return ', '.join(dict.fromkeys([p for p in parts if p]))
+
+
+def _salesman_barman_kind_of_shop(app: SalesmanBarmanModel, issued_license: License | None = None) -> str:
+    source_license = issued_license or getattr(app, 'license', None)
+    category = (
+        getattr(getattr(source_license, 'license_category', None), 'license_category', None)
+        or getattr(getattr(app, 'license_category', None), 'license_category', None)
+        or ''
+    )
+    subcategory = (
+        getattr(getattr(source_license, 'license_sub_category', None), 'description', None)
+        or getattr(getattr(getattr(app, 'license', None), 'license_sub_category', None), 'description', None)
+        or ''
+    )
+    return ' - '.join(dict.fromkeys([str(p).strip() for p in [category, subcategory] if str(p).strip()]))
+
+
 def _resolve_license_obj(source: str, application_id: str, model_cls):
     ct = ContentType.objects.get_for_model(model_cls)
     return (
@@ -75,6 +119,27 @@ def _resolve_license_obj(source: str, application_id: str, model_cls):
         .order_by('-issue_date')
         .first()
     )
+
+
+def _license_classification(app, license_obj: License | None = None) -> str:
+    category = (
+        getattr(getattr(license_obj, 'license_category', None), 'license_category', None)
+        or getattr(getattr(app, 'license_category', None), 'license_category', None)
+        or ''
+    )
+    subcategory = (
+        getattr(getattr(license_obj, 'license_sub_category', None), 'description', None)
+        or getattr(getattr(app, 'license_sub_category', None), 'description', None)
+        or ''
+    )
+    return ' - '.join(dict.fromkeys([str(p).strip() for p in [category, subcategory] if str(p).strip()]))
+
+
+def _mode_display_for_license(app, license_obj: License | None = None) -> str:
+    raw_mode = app.get_mode_of_operation_display() if hasattr(app, 'get_mode_of_operation_display') else getattr(app, 'mode_of_operation', '')
+    if str(raw_mode or '').strip().lower() == 'self':
+        return _license_classification(app, license_obj) or str(raw_mode or '')
+    return str(raw_mode or '')
 
 
 def _fetch_title_terms(cat_code: int | None, scat_code: int | None) -> tuple[str, list[str]]:
@@ -285,7 +350,8 @@ def _validate_license_pdf_from_code(request, code: str):
     if not source or not application_id:
         return Response({'detail': 'Invalid validation code.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    now_date = timezone.now().date()
+    now_dt = timezone.now()
+    now_date = now_dt.date()
     # Some production deployments (nginx) proxy only `/masters/...` to Django and serve `/` from Angular (SPA).
     # Expose the validation link under `/masters/v/<code>/` so it works without extra reverse-proxy routes.
     validation_pdf_url = request.build_absolute_uri('/masters/v/' + quote(token, safe=':') + '/')
@@ -314,10 +380,10 @@ def _validate_license_pdf_from_code(request, code: str):
             'licenseTitle': license_title,
             'licenseeName': app.applicant_name,
             'fatherOrHusbandName': app.father_husband_name,
-            'kindOfShop': app.license_type.license_type if getattr(app, 'license_type', None) else '',
+            'kindOfShop': _license_classification(app, license_obj) or (app.license_type.license_type if getattr(app, 'license_type', None) else ''),
             'addressOfBusiness': _build_address_from_application(app),
             'district': app.site_district.district if getattr(app, 'site_district', None) else '',
-            'modeOfOperation': app.get_mode_of_operation_display() if hasattr(app, 'get_mode_of_operation_display') else getattr(app, 'mode_of_operation', ''),
+            'modeOfOperation': _mode_display_for_license(app, license_obj),
             'validFrom': _fmt_dt(license_obj.issue_date) if license_obj else _fmt_dt(getattr(app, 'created_at', None).date() if getattr(app, 'created_at', None) else None),
             'validTo': _fmt_dt(license_obj.valid_up_to) if license_obj else '',
             'generatedOn': _fmt_dt(now_date),
@@ -363,6 +429,34 @@ def _validate_license_pdf_from_code(request, code: str):
             'terms': terms,
         }
 
+    elif source == 'salesman_barman':
+        app = SalesmanBarmanModel.objects.filter(application_id=application_id).first()
+        if not app:
+            return Response({'detail': 'License not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        license_obj = _resolve_license_obj(source, app.application_id, SalesmanBarmanModel)
+        license_number = license_obj.license_id if license_obj else app.application_id
+        role_label = str(getattr(app, 'role', '') or 'Salesman').strip().title()
+
+        response_payload = {
+            'applicationId': app.application_id,
+            'licenseNumber': license_number,
+            'licenseTitle': f'{role_label} Registration Certificate',
+            'licenseeName': _salesman_barman_name(app),
+            'fatherOrHusbandName': str(getattr(app, 'fatherHusbandName', '') or ''),
+            'kindOfShop': _salesman_barman_kind_of_shop(app, license_obj),
+            'addressOfBusiness': _build_salesman_barman_address(app),
+            'district': getattr(getattr(app, 'excise_district', None), 'district', '') or '',
+            'modeOfOperation': role_label,
+            'validFrom': _fmt_dt(license_obj.issue_date) if license_obj else '',
+            'validTo': _fmt_dt(license_obj.valid_up_to) if license_obj else '',
+            'generatedOn': _fmt_dt(now_date),
+            'validationCode': token,
+            'validationPdfUrl': validation_pdf_url,
+            'validatedViaCode': False,
+            'terms': [],
+        }
+
     else:
         return Response({'detail': 'Unsupported license source.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -377,9 +471,9 @@ def _validate_license_pdf_from_code(request, code: str):
             return Response({'detail': 'Unknown validation token (not a recognized printed copy).'}, status=status.HTTP_403_FORBIDDEN)
     if not bool(getattr(license_obj, 'is_active', True)):
         return Response({'detail': 'License is not active.'}, status=status.HTTP_403_FORBIDDEN)
-    if getattr(license_obj, 'issue_date', None) and license_obj.issue_date > now_date:
+    if getattr(license_obj, 'issue_date', None) and license_obj.issue_date > now_dt:
         return Response({'detail': 'License is not valid yet.'}, status=status.HTTP_403_FORBIDDEN)
-    if getattr(license_obj, 'valid_up_to', None) and license_obj.valid_up_to < now_date:
+    if getattr(license_obj, 'valid_up_to', None) and license_obj.valid_up_to < now_dt:
         return Response({'detail': 'License has expired.'}, status=status.HTTP_403_FORBIDDEN)
 
     response_payload['validatedViaCode'] = True
@@ -559,7 +653,8 @@ def _build_validation_page(result: dict) -> str:
 
 def _resolve_validation_result(request, code: str) -> dict:
     token = _normalize_token(code)
-    now_date = timezone.now().date()
+    now_dt = timezone.now()
+    now_date = now_dt.date()
     watermark_data_url = _get_watermark_data_url()
 
     try:
@@ -644,7 +739,7 @@ def _resolve_validation_result(request, code: str) -> dict:
                 'licenseTitle': license_title,
                 'licenseNumber': (license_obj.license_id if license_obj else app.application_id),
                 'licenseeName': getattr(app, 'applicant_name', '') or '',
-                'kindOfShop': app.license_type.license_type if getattr(app, 'license_type', None) else '',
+                'kindOfShop': _license_classification(app, license_obj) or (app.license_type.license_type if getattr(app, 'license_type', None) else ''),
                 'addressOfBusiness': _build_address_from_application(app),
                 'district': app.site_district.district if getattr(app, 'site_district', None) else '',
                 'validFrom': _fmt_dt(license_obj.issue_date) if license_obj else _fmt_dt(getattr(app, 'created_at', None).date() if getattr(app, 'created_at', None) else None),
@@ -684,6 +779,34 @@ def _resolve_validation_result(request, code: str) -> dict:
                 'district': app.excise_district.district if getattr(app, 'excise_district', None) else '',
                 'validFrom': _fmt_dt(license_obj.issue_date) if license_obj else '',
                 'validTo': _fmt_dt(license_obj.valid_up_to) if license_obj else (_fmt_dt(getattr(app, 'valid_up_to', None)) if getattr(app, 'valid_up_to', None) else ''),
+            }
+        )
+    elif source == 'salesman_barman':
+        app = SalesmanBarmanModel.objects.filter(application_id=application_id).first()
+        if not app:
+            return {
+                'status': 'not_found',
+                'message': 'License not found.',
+                'code': token,
+                'signatureVerified': True,
+                'authenticity': 'Digitally signed QR (record not found)',
+                'canDownload': False,
+                'details': details,
+                'verificationId': hashlib.sha256(token.encode('utf-8')).hexdigest()[:12],
+                'watermarkUrl': watermark_data_url,
+            }
+        license_obj = _resolve_license_obj(source, app.application_id, SalesmanBarmanModel)
+        role_label = str(getattr(app, 'role', '') or 'Salesman').strip().title()
+        details.update(
+            {
+                'licenseTitle': f'{role_label} Registration Certificate',
+                'licenseNumber': (license_obj.license_id if license_obj else app.application_id),
+                'licenseeName': _salesman_barman_name(app),
+                'kindOfShop': _salesman_barman_kind_of_shop(app, license_obj),
+                'addressOfBusiness': _build_salesman_barman_address(app),
+                'district': getattr(getattr(app, 'excise_district', None), 'district', '') or '',
+                'validFrom': _fmt_dt(license_obj.issue_date) if license_obj else '',
+                'validTo': _fmt_dt(license_obj.valid_up_to) if license_obj else '',
             }
         )
     else:
@@ -729,13 +852,13 @@ def _resolve_validation_result(request, code: str) -> dict:
             message = 'License is not active.'
         can_download = False
         authenticity = 'Digitally signed QR (license inactive)'
-    elif getattr(license_obj, 'issue_date', None) and license_obj.issue_date > now_date:
+    elif getattr(license_obj, 'issue_date', None) and license_obj.issue_date > now_dt:
         status_code = 'inactive'
         if is_current_copy:
             message = 'License is not valid yet.'
         can_download = False
         authenticity = 'Digitally signed QR (not valid yet)'
-    elif getattr(license_obj, 'valid_up_to', None) and license_obj.valid_up_to < now_date:
+    elif getattr(license_obj, 'valid_up_to', None) and license_obj.valid_up_to < now_dt:
         status_code = 'expired'
         if is_current_copy:
             message = 'License has expired.'

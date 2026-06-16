@@ -1187,7 +1187,25 @@ class PerformRequisitionActionAPIView(APIView):
             )
             if strength:
                 qs = qs.filter(strength__iexact=strength)
-            row = qs.order_by('sprit_id').first()
+
+            def _expand_aliases(value: str):
+                value = str(value or '').strip()
+                if not value:
+                    return []
+                aliases = [value]
+                if value.startswith('NLI/'):
+                    aliases.append(f"NA/{value[4:]}")
+                elif value.startswith('NA/'):
+                    aliases.append(f"NLI/{value[3:]}")
+                return aliases
+
+            licensee_id = str(getattr(requisition, 'licensee_id', '') or '').strip()
+            if licensee_id:
+                row = qs.filter(license_id__in=_expand_aliases(licensee_id)).order_by('sprit_id').first()
+            else:
+                row = None
+            if row is None:
+                row = qs.order_by('sprit_id').first()
             if row and row.price_bl is not None:
                 return Decimal(str(row.price_bl)) * total_bl
         except Exception:
@@ -1240,7 +1258,7 @@ class PerformRequisitionActionAPIView(APIView):
         for cid in candidates:
             wallet = (
                 WalletBalance.objects.select_for_update()
-                .filter(wallet_filter, wallet_type__iexact='excise')
+                .filter(wallet_filter, wallet_type__code__iexact='excise')
                 .order_by('wallet_balance_id')
                 .first()
             )
@@ -1252,7 +1270,7 @@ class PerformRequisitionActionAPIView(APIView):
             for cid in candidates:
                 wallet = (
                     WalletBalance.objects.select_for_update()
-                    .filter(wallet_filter, wallet_type__iexact='brewery')
+                    .filter(wallet_filter, wallet_type__code__iexact='brewery')
                     .order_by('wallet_balance_id')
                     .first()
                 )
@@ -1303,7 +1321,7 @@ class PerformRequisitionActionAPIView(APIView):
         return {
             'debited': True,
             'licensee_id': resolved_licensee_id,
-            'wallet_type': wallet.wallet_type,
+            'wallet_type': wallet.wallet_type.code if wallet.wallet_type else None,
             'amount': str(amount)
         }
 

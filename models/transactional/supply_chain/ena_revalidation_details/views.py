@@ -422,7 +422,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         for cid in candidates:
             wallet = (
                 WalletBalance.objects.select_for_update()
-                .filter(wallet_filter, wallet_type__iexact='excise')
+                .filter(wallet_filter, wallet_type__code__iexact='excise')
                 .order_by('wallet_balance_id')
                 .first()
             )
@@ -434,7 +434,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             for cid in candidates:
                 wallet = (
                     WalletBalance.objects.select_for_update()
-                    .filter(wallet_filter, wallet_type__iexact='brewery')
+                    .filter(wallet_filter, wallet_type__code__iexact='brewery')
                     .order_by('wallet_balance_id')
                     .first()
                 )
@@ -516,7 +516,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         return {
             'debited': True,
             'licensee_id': resolved_licensee_id,
-            'wallet_type': wallet.wallet_type,
+            'wallet_type': wallet.wallet_type.code if wallet.wallet_type else None,
             'amount': str(amount),
             'transaction_id': transaction_id,
             'reference_no': reference_no,

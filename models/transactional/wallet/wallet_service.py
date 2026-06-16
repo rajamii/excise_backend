@@ -1,12 +1,9 @@
 from __future__ import annotations
-
 from decimal import Decimal
 import logging
-
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-
 from .models import WalletBalance, WalletTransaction, _resolve_module_type_from_license_id, _resolve_wallet_row_licensee_id
 
 logger = logging.getLogger(__name__)
@@ -71,29 +68,38 @@ def credit_wallet_balance(
         if existing and not _is_pending_payment_status(getattr(existing, "payment_status", "")):
             return existing, None, True
 
-        wallet = (
-            WalletBalance.objects.select_for_update()
-            .filter(wallet_filter, wallet_type__iexact=wtype, head_of_account=hoa)
-            .order_by("wallet_balance_id")
-            .first()
-        )
+        wallet = WalletBalance.objects.select_for_update().filter(
+            licensee_id__iexact=resolved_licensee_id,
+            wallet_type__code__iexact=wtype,
+            head_of_account=hoa,
+        ).order_by("wallet_balance_id").first()
+        
+        # COMMENTED OUT: Wallet should already exist (created at commissioner approval stage).
+        # Creating a new dummy WalletBalance row here during payment was causing a duplicate/ghost
+        # row in wallet_balances. If the wallet is missing, raise an error instead.
         if not wallet:
-            template = WalletBalance.objects.select_for_update().filter(wallet_filter).order_by("wallet_balance_id").first()
-            wallet = WalletBalance.objects.create(
-                licensee_id=resolved_licensee_id,
-                licensee_name=str(licensee_name or getattr(template, "licensee_name", "") or "").strip(),
-                manufacturing_unit=str(getattr(template, "manufacturing_unit", "") or "").strip() if template else "",
-                user_id=str(user_id or getattr(template, "user_id", "") or "").strip(),
-                module_type=str(getattr(template, "module_type", "") or "").strip() if template else resolved_module_type,
-                wallet_type=wtype,
-                head_of_account=hoa,
-                opening_balance=Decimal("0.00"),
-                total_credit=Decimal("0.00"),
-                total_debit=Decimal("0.00"),
-                current_balance=Decimal("0.00"),
-                last_updated_at=now_ts,
-                created_at=now_ts,
+            raise ValueError(
+                f"Wallet not found for licensee_id={resolved_licensee_id}, wallet_type={wtype}, "
+                f"head_of_account={hoa}. "
+                "Wallet must be initialized at license approval before any payment can be credited."
             )
+        # if not wallet:
+        #     template = WalletBalance.objects.select_for_update().filter(wallet_filter).order_by("wallet_balance_id").first()
+        #     wallet = WalletBalance.objects.create(
+        #         licensee_id=resolved_licensee_id,
+        #         licensee_name=str(licensee_name or getattr(template, "licensee_name", "") or "").strip(),
+        #         manufacturing_unit=str(getattr(template, "manufacturing_unit", "") or "").strip() if template else "",
+        #         user_id=str(user_id or getattr(template, "user_id", "") or "").strip(),
+        #         module_type=str(getattr(template, "module_type", "") or "").strip() if template else resolved_module_type,
+        #         wallet_type=wtype,
+        #         head_of_account=hoa,
+        #         opening_balance=Decimal("0.00"),
+        #         total_credit=Decimal("0.00"),
+        #         total_debit=Decimal("0.00"),
+        #         current_balance=Decimal("0.00"),
+        #         last_updated_at=now_ts,
+        #         created_at=now_ts,
+        #     )
 
         before = Decimal(str(wallet.current_balance or 0)).quantize(Decimal("0.01"))
         after = (before + amt).quantize(Decimal("0.01"))
@@ -109,7 +115,7 @@ def credit_wallet_balance(
             existing.licensee_name = str(wallet.licensee_name or licensee_name or "").strip() or None
             existing.user_id = str(user_id or getattr(wallet, "user_id", "") or "").strip() or None
             existing.module_type = str(wallet.module_type or resolved_module_type).strip()
-            existing.wallet_type = str(wallet.wallet_type or wtype).strip()
+            existing.wallet_type_id = str(getattr(wallet, "wallet_type_id", None) or wtype).strip()
             existing.head_of_account = str(wallet.head_of_account or hoa).strip()
             existing.amount = amt
             existing.balance_before = before
@@ -129,7 +135,7 @@ def credit_wallet_balance(
                 licensee_name=str(wallet.licensee_name or licensee_name or "").strip() or None,
                 user_id=str(user_id or getattr(wallet, "user_id", "") or "").strip() or None,
                 module_type=str(wallet.module_type or resolved_module_type).strip(),
-                wallet_type=str(wallet.wallet_type or wtype).strip(),
+                wallet_type_id=str(getattr(wallet, "wallet_type_id", None) or wtype).strip(),
                 head_of_account=str(wallet.head_of_account or hoa).strip(),
                 entry_type=str(entry_type or "CR").strip(),
                 transaction_type=str(transaction_type or "recharge").strip(),
@@ -206,27 +212,35 @@ def record_wallet_transaction(
 
         wallet = (
             WalletBalance.objects.select_for_update()
-            .filter(wallet_filter, wallet_type__iexact=wtype, head_of_account=hoa)
+            .filter(wallet_filter, wallet_type__code__iexact=wtype, head_of_account=hoa)
             .order_by("wallet_balance_id")
             .first()
         )
+        # COMMENTED OUT: Wallet should already exist (created at commissioner approval stage).
+        # Creating a new dummy WalletBalance row here during payment recording was causing a
+        # duplicate/ghost row in wallet_balances. Raise an error if wallet is missing instead.
         if not wallet:
-            template = WalletBalance.objects.select_for_update().filter(wallet_filter).order_by("wallet_balance_id").first()
-            wallet = WalletBalance.objects.create(
-                licensee_id=resolved_licensee_id,
-                licensee_name=str(licensee_name or getattr(template, "licensee_name", "") or "").strip(),
-                manufacturing_unit=str(getattr(template, "manufacturing_unit", "") or "").strip() if template else "",
-                user_id=str(user_id or getattr(template, "user_id", "") or "").strip(),
-                module_type=str(getattr(template, "module_type", "") or "").strip() if template else resolved_module_type,
-                wallet_type=wtype,
-                head_of_account=hoa,
-                opening_balance=Decimal("0.00"),
-                total_credit=Decimal("0.00"),
-                total_debit=Decimal("0.00"),
-                current_balance=Decimal("0.00"),
-                last_updated_at=now_ts,
-                created_at=now_ts,
+            raise ValueError(
+                f"Wallet not found for licensee_id={resolved_licensee_id}, wallet_type={wtype}, "
+                f"head_of_account={hoa}. Wallet must be initialized at license approval before recording transactions."
             )
+        # if not wallet:
+        #     template = WalletBalance.objects.select_for_update().filter(wallet_filter).order_by("wallet_balance_id").first()
+        #     wallet = WalletBalance.objects.create(
+        #         licensee_id=resolved_licensee_id,
+        #         licensee_name=str(licensee_name or getattr(template, "licensee_name", "") or "").strip(),
+        #         manufacturing_unit=str(getattr(template, "manufacturing_unit", "") or "").strip() if template else "",
+        #         user_id=str(user_id or getattr(template, "user_id", "") or "").strip(),
+        #         module_type=str(getattr(template, "module_type", "") or "").strip() if template else resolved_module_type,
+        #         wallet_type=wtype,
+        #         head_of_account=hoa,
+        #         opening_balance=Decimal("0.00"),
+        #         total_credit=Decimal("0.00"),
+        #         total_debit=Decimal("0.00"),
+        #         current_balance=Decimal("0.00"),
+        #         last_updated_at=now_ts,
+        #         created_at=now_ts,
+        #     )
 
         before = Decimal(str(wallet.current_balance or 0)).quantize(Decimal("0.01"))
         after = before
@@ -238,7 +252,7 @@ def record_wallet_transaction(
             licensee_name=str(wallet.licensee_name or licensee_name or "").strip() or None,
             user_id=str(user_id or getattr(wallet, "user_id", "") or "").strip() or None,
             module_type=str(wallet.module_type or resolved_module_type).strip(),
-            wallet_type=str(wallet.wallet_type or wtype).strip(),
+            wallet_type_id=str(getattr(wallet, "wallet_type_id", None) or wtype).strip(),
             head_of_account=str(wallet.head_of_account or hoa).strip(),
             entry_type=str(entry_type or "CR").strip(),
             transaction_type=str(transaction_type or "recharge").strip(),
@@ -268,6 +282,7 @@ def debit_wallet_balance(
     payment_status: str = "success",
     remarks: str = "",
     transaction_type: str = "payment",
+    reference_no: str = "",
 ) -> tuple[WalletTransaction | None, WalletBalance | None, bool]:
     """
     Debit a wallet balance and create a DR WalletTransaction.
@@ -316,7 +331,7 @@ def debit_wallet_balance(
 
         wallet = (
             WalletBalance.objects.select_for_update()
-            .filter(wallet_filter, wallet_type__iexact=wtype, head_of_account=hoa)
+            .filter(wallet_filter, wallet_type__code__iexact=wtype, head_of_account=hoa)
             .order_by("wallet_balance_id")
             .first()
         )
@@ -340,14 +355,14 @@ def debit_wallet_balance(
             licensee_name=str(wallet.licensee_name or licensee_name or "").strip() or None,
             user_id=str(user_id or getattr(wallet, "user_id", "") or "").strip() or None,
             module_type=str(wallet.module_type or resolved_module_type).strip(),
-            wallet_type=str(wallet.wallet_type or wtype).strip(),
+            wallet_type_id=str(getattr(wallet, "wallet_type_id", None) or wtype).strip(),
             head_of_account=str(wallet.head_of_account or hoa).strip(),
             entry_type="DR",
             transaction_type=str(transaction_type or "payment").strip(),
             amount=amt,
             balance_before=before,
             balance_after=after,
-            reference_no=txn,
+            reference_no=str(reference_no or txn).strip(),
             source_module=str(source_module or "wallet_payment").strip(),
             payment_status=str(payment_status or "success").strip(),
             remarks=str(remarks or "").strip() or None,

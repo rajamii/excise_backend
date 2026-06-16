@@ -37,6 +37,10 @@ class NewLicenseApplication(models.Model):
     # Points to masters.core.LicenseFee.id (kept as an integer for API compatibility).
     licensee_fee_id = models.PositiveBigIntegerField(blank=True, null=True)
 
+    # Additional charges (selected by licensee during application)
+    pachwai = models.BooleanField(default=False)
+    draught_beer = models.BooleanField(default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

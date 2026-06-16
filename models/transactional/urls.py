@@ -3,9 +3,10 @@ from django.urls import path, include
 
 urlpatterns = [
     path('validate/', include(('models.transactional.public_validation.urls', 'public_validation'), namespace='public_validation')),
+    path('logs/', include(('models.transactional.logs.urls', 'logs'), namespace='logs')),
     path('company-registration/', include(('models.transactional.company_registration.urls', 'company_registration'), namespace='company_registration')),
     path('company-collaboration/', include(('models.transactional.company_collaboration.urls', 'company_collaboration'), namespace='company_collaboration')),
-    path('license_application/', include(('models.transactional.license_application.urls', 'license_application'), namespace='license_application')),
+    path('license_renewal_application/', include(('models.transactional.license_renewal_application.urls', 'license_renewal_application'), namespace='license_renewal_application')),
     path('salesman_barman/', include(('models.transactional.salesman_barman.urls', 'salesman_barman'), namespace='salesman_barman')),
     path('payment/', include(('models.transactional.wallet.urls', 'payment'), namespace='payment')),
     path('payment-gateway/', include(('models.transactional.payment_gateway.urls', 'payment_gateway'), namespace='payment_gateway')),
@@ -15,4 +16,5 @@ urlpatterns = [
     path('supply_chain/', include(('models.transactional.supply_chain.urls', 'supply_chain'), namespace='supply_chain')),
     path('site_enquiry/', include(('models.transactional.site_enquiry.urls', 'site_enquiry'), namespace='site_enquiry')),
     path('new_license_application/', include(('models.transactional.new_license_application.urls', 'new_license_application'), namespace='new_license_application')),
+    path('single-window/', include(('models.transactional.single_window.urls', 'single_window'), namespace='single_window')),
 ]

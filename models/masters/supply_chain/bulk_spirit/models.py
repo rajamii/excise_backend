@@ -6,6 +6,7 @@ class BulkSpiritType(models.Model):
     bulk_spirit_kind_type = models.CharField(max_length=100)
     strength = models.CharField(max_length=100)
     price_bl = models.DecimalField(max_digits=10, decimal_places=2)
+    license_id = models.CharField(max_length=50, blank=True, null=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

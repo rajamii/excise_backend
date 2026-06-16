@@ -6,10 +6,12 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.core.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework import status
+from auth.workflow.constants import WORKFLOW_IDS
 from auth.roles.permissions import HasAppPermission
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.models import Workflow, StagePermission, WorkflowStage
 from auth.workflow.services import WorkflowService
+from models.transactional.helpers import _get_stage_sets, _normalize_role, _get_role_stage_names, _collect_reachable_stage_names
 from .models import CompanyRegistration
 from .serializers import CompanyRegistrationSerializer
 
@@ -114,166 +116,168 @@ def company_registration_detail(request, application_id):
     return Response(serializer.data)
 
 
+
 # Dashboard Counts
-@permission_classes([HasAppPermission('company_registration', 'view'), HasStagePermission])
+@permission_classes([HasAppPermission('company_registration', 'view')])
 @api_view(['GET'])
 def dashboard_counts(request):
-    role = request.user.role.name if request.user.role else None
-    counts = {}
+    try:
+        from models.masters.license.views import deactivate_all_expired_licenses
+        deactivate_all_expired_licenses()
+    except Exception:
+        pass
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    workflow_id = WORKFLOW_IDS['COMPANY_REGISTRATION']
+    stage_sets = _get_stage_sets(workflow_id)
+    all_qs = CompanyRegistration.objects.all()
 
-    if role in ['level_1', 'level_2', 'level_3', 'level_4', 'level_5']:
-        stage = WorkflowStage.objects.get(name=role, workflow__name="Company Registration")
-        counts = {
-            "pending": CompanyRegistration.objects.filter(current_stage=stage).count(),
-            "approved": CompanyRegistration.objects.filter(
-                current_stage__name__in=[
-                    f"level_{int(role.split('_')[1]) + 1}", "awaiting_payment", "approved"
-                ]
-            ).count(),
-            "rejected": CompanyRegistration.objects.filter(
-                current_stage__name=f"rejected_by_{role}"
-            ).count() if WorkflowStage.objects.filter(name=f"rejected_by_{role}").exists() else 0,
-        }
-
-    elif role == 'licensee':
+    if role == 'licensee':
         base_qs = CompanyRegistration.objects.filter(applicant=request.user)
-        counts = {
-            "applied": base_qs.filter(
-                current_stage__name__in=['level_1', 'level_2', 'level_3', 'level_4', 'level_5']).count(),
-            "pending": base_qs.filter(
-                current_stage__name__in=[
-                    'level_1_objection',
-                    'level_2_objection',
-                    'level_3_objection',
-                    'level_4_objection',
-                    'level_5_objection',
-                    'awaiting_payment'
-                ]
-            ).count(),
-            "approved": base_qs.filter(
-                current_stage__name='approved', is_approved=True
-            ).count(),
-            "rejected": base_qs.filter(
-                current_stage__name__in=[
-                    'rejected_by_level_1',
-                    'rejected_by_level_2',
-                    'rejected_by_level_3',
-                    'rejected_by_level_4',
-                    'rejected_by_level_5',
-                    'rejected'
-                ]
-            ).count()
-        }
+        applied_stages = set(stage_sets['initial'])
+        objection_stages = set(stage_sets['objection'])
+        approved_stages = set(stage_sets['approved'])
+        rejected_stages = set(stage_sets['rejected'])
+        payment_stages = set(stage_sets['payment'])
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
 
-    elif role in ['site_admin', 'single_window']:
-        counts = {
-            "applied": CompanyRegistration.objects.filter(current_stage__name__in=[
-                'applicant_applied', 'level_1_objection',
-                'level_2_objection', 'level_3_objection',
-                'level_4_objection', 'level_5_objection',
-                'awaiting_payment'
-                ]).count(),
-            "pending": CompanyRegistration.objects.filter(current_stage__name__in=[
-                'level_1','level_2','level_3','level_4','level_5',
-                ]).count(),
-            "approved": CompanyRegistration.objects.filter(
-                current_stage__name='approved', is_approved=True
-            ).count(),
-            "rejected": CompanyRegistration.objects.filter(
-                current_stage__name__in=[
-                    'rejected_by_level_1',
-                    'rejected_by_level_2',
-                    'rejected_by_level_3',
-                    'rejected_by_level_4',
-                    'rejected_by_level_5',
-                    'rejected',
-                ]
-            ).count()
-        }
+        return Response({
+            # Licensee UX: application is considered "Pending" until application-fee payment succeeds.
+            "applied": base_qs.filter(current_stage__name__in=applied_stages).count(),
+            "pending": base_qs.filter(current_stage__name__in=pending_stages).count(),
+            "objection": base_qs.filter(current_stage__name__in=objection_stages).count(),
+            "approved": base_qs.filter(current_stage__name__in=approved_stages).count(),
+            "rejected": base_qs.filter(current_stage__name__in=rejected_stages).count(),
+            "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
+        })
 
-    else:
-        return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
+    if role in ['site_admin', 'single_window']:
+        applied_stages = set(stage_sets['initial'])
+        objection_stages = set(stage_sets['objection'])
+        approved_stages = set(stage_sets['approved'])
+        rejected_stages = set(stage_sets['rejected'])
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
 
-    return Response(counts)
+        return Response({
+            "applied": all_qs.filter(current_stage__name__in=applied_stages).count(),
+            "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
+            "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
+            "approved": all_qs.filter(current_stage__name__in=approved_stages).count(),
+            "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
+        })
+
+    role_stage_names = _get_role_stage_names(request.user, workflow_id)
+    if not role_stage_names:
+        return Response({
+            "pending": 0,
+            "approved": 0,
+            "rejected": 0,
+        })
+
+    role_objection_stages = set(stage_sets['objection'])
+    pending_stages = set(role_stage_names) | role_objection_stages
+
+    reachable_from_role = _collect_reachable_stage_names(workflow_id, set(role_stage_names))
+    role_rejected_stages = set(stage_sets['rejected'])
+    forward_stages = set(reachable_from_role) - pending_stages - role_rejected_stages
+
+    return Response({
+        "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
+        "approved": all_qs.filter(current_stage__name__in=forward_stages).count(),
+        "rejected": all_qs.filter(current_stage__name__in=role_rejected_stages).count(),
+    })
 
 
-@permission_classes([HasAppPermission('company_registration', 'view'), HasStagePermission])
 @api_view(['GET'])
+# @permission_classes([HasAppPermission('company_registration', 'view')])
 @parser_classes([JSONParser])
 def application_group(request):
-    role = request.user.role.name if request.user.role else None
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    workflow_id = WORKFLOW_IDS['COMPANY_REGISTRATION']
+    stage_sets = _get_stage_sets(workflow_id)
+    all_qs = CompanyRegistration.objects.all()
 
-    level_map = {
-        'level_1': {
-            "pending": ['level_1', 'level_1_objection'],
-            "approved": ['level_2'],
-            "rejected": ['rejected_by_level_1'],
-        },
-        'level_2': {
-            "pending": ['level_2', 'level_2_objection'],
-            "approved": ['awaiting_payment', 'level_3'],
-            "rejected": ['rejected_by_level_2'],
-        },
-        'level_3': {
-            "pending": ['level_3', 'level_3_objection'],
-            "approved": ['level_4'],
-            "rejected": ['rejected_by_level_3'],
-        },
-        'level_4': {
-            "pending": ['level_4', 'level_4_objection'],
-            "approved": ['level_5'],
-            "rejected": ['rejected_by_level_4'],
-        },
-        'level_5': {
-            "pending": ['level_5', 'level_5_objection'],
-            "approved": ['approved'],
-            "rejected": ['rejected_by_level_5'],
-        }
-    }
-
-    if role in level_map:
-        result = {}
-        config = level_map[role]
-        for key, stages in config.items():
-            queryset = CompanyRegistration.objects.filter(current_stage__name__in=stages)
-            if key == 'rejected':
-                queryset = queryset.filter(is_approved=False)
-            result[key] = CompanyRegistrationSerializer(queryset, many=True).data
-        return Response(result)
-
-    elif role == 'licensee':
+    if role == 'licensee':
         base_qs = CompanyRegistration.objects.filter(applicant=request.user)
-        result = {
+        applied_stages = set(stage_sets['initial'])
+        objection_stages = set(stage_sets['objection'])
+        approved_stages = set(stage_sets['approved'])
+        rejected_stages = set(stage_sets['rejected'])
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
+
+        return Response({
             "applied": CompanyRegistrationSerializer(
-                base_qs.filter(current_stage__name__in=[
-                    'level_1', 'level_2', 'level_3', 'level_4', 'level_5'
-                    ]),
-                many=True
+                base_qs.filter(current_stage__name__in=applied_stages), many=True
             ).data,
             "pending": CompanyRegistrationSerializer(
-                base_qs.filter(current_stage__name__in=[
-                    'level_1_objection',
-                    'level_2_objection',
-                    'level_3_objection',
-                    'level_4_objection',
-                    'level_5_objection',
-                    'awaiting_payment'
-                ]),
-                many=True
+                base_qs, many=True
+            ).data,
+            "objection": CompanyRegistrationSerializer(
+                base_qs.filter(current_stage__name__in=objection_stages), many=True
             ).data,
             "approved": CompanyRegistrationSerializer(
-                base_qs.filter(current_stage__name='approved'),
-                many=True
+                base_qs.filter(current_stage__name__in=approved_stages), many=True
             ).data,
             "rejected": CompanyRegistrationSerializer(
-                base_qs.filter(current_stage__name__in=[
-                    'rejected_by_level_1', 'rejected_by_level_2',
-                    'rejected_by_level_3', 'rejected_by_level_4',
-                    'rejected_by_level_5', 'rejected'
-                ]),
-                many=True
+                base_qs.filter(current_stage__name__in=rejected_stages), many=True
             ).data
-        }
-        return Response(result)
+        })
 
-    return Response({"detail": "Invalid role"}, status=status.HTTP_400_BAD_REQUEST)
+    if role in ['site_admin', 'single_window']:
+        
+        applied_stages = set(stage_sets['initial'])
+        objection_stages = set(stage_sets['objection'])
+        approved_stages = set(stage_sets['approved'])
+        rejected_stages = set(stage_sets['rejected'])
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
+
+        return Response({
+            "applied": CompanyRegistrationSerializer(
+                all_qs.filter(current_stage__name__in=applied_stages), many=True
+            ).data,
+            "pending": CompanyRegistrationSerializer(
+                all_qs.filter(current_stage__name__in=pending_stages), many=True
+            ).data,
+            "objection": CompanyRegistrationSerializer(
+                all_qs.filter(current_stage__name__in=objection_stages), many=True
+            ).data,
+            "approved": CompanyRegistrationSerializer(
+                all_qs.filter(current_stage__name__in=approved_stages), many=True
+            ).data,
+            "rejected": CompanyRegistrationSerializer(
+                all_qs.filter(current_stage__name__in=rejected_stages), many=True
+            ).data
+        })
+
+    role_stage_names = _get_role_stage_names(request.user, workflow_id)
+    if role_stage_names:
+        
+        role_objection_stages = set(stage_sets['objection'])
+        pending_stages = set(role_stage_names) | role_objection_stages
+        reachable_from_role = _collect_reachable_stage_names(workflow_id, set(role_stage_names))
+        role_rejected_stages = set(stage_sets['rejected'])
+        forward_stages = set(reachable_from_role) - pending_stages - role_rejected_stages
+
+        return Response({
+            "applied": [],
+            "pending": CompanyRegistrationSerializer(
+                all_qs.filter(current_stage__name__in=pending_stages), many=True
+            ).data,
+            "objection": CompanyRegistrationSerializer(
+                all_qs.filter(current_stage__name__in=role_objection_stages), many=True
+            ).data,
+            "approved": CompanyRegistrationSerializer(
+                all_qs.filter(current_stage__name__in=forward_stages), many=True
+            ).data,
+            "rejected": CompanyRegistrationSerializer(
+                all_qs.filter(current_stage__name__in=role_rejected_stages), many=True
+            ).data
+        })
+
+    return Response({
+        "applied": [],
+        "pending": [],
+        "objection": [],
+        "approved": [],
+        "rejected": []
+    })
+
