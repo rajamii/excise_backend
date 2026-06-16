@@ -1455,6 +1455,25 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                             transaction_type="recharge",
                             remarks="BillDesk payment success",
                         )
+
+                        # Auto security fee payment logic for new license applications upon security deposit wallet recharge
+                        if credit_wallet_type == "security_deposit":
+                            try:
+                                from models.masters.license.models import License
+                                from models.transactional.new_license_application.models import NewLicenseApplication
+                                from models.transactional.new_license_application.payment_status import sync_new_license_payment_status
+                                from models.transactional.wallet.views import _wallet_license_candidates
+
+                                candidates = _wallet_license_candidates(credit_licensee_id)
+                                lic = License.objects.filter(license_id__in=candidates).order_by("-issue_date", "-license_id").first()
+                                if lic and lic.source_type == "new_license_application":
+                                    application = NewLicenseApplication.objects.filter(application_id=lic.source_object_id).first()
+                                    if application and not application.is_security_fee_paid:
+                                        application.is_security_fee_paid = True
+                                        application.save(update_fields=["is_security_fee_paid"])
+                                        sync_new_license_payment_status(application)
+                            except Exception as auto_pay_error:
+                                logger.error("Auto security fee payment in Billdesk callback failed: %s", str(auto_pay_error), exc_info=True)
                 except Exception as exc:
                     logger.exception("Failed to credit wallet for txn_ref=%s: %s", txn_ref, exc)
             elif status_code == "F":
