@@ -194,3 +194,161 @@ class WalletSummaryScopeFilteringTests(TestCase):
         wallet_types = {row.get("wallet_type") for row in resp.data.get("results", [])}
         self.assertEqual(wallet_types, {"license_fee", "security_deposit"})
         self.assertEqual(resp.data.get("count"), 2)
+
+
+class WalletRechargeFallbackTests(TestCase):
+    def setUp(self):
+        from decimal import Decimal
+        from models.masters.core.models import PoliceStation, LicenseType
+        from auth.workflow.models import Workflow, WorkflowStage
+        from models.transactional.new_license_application.models import NewLicenseApplication
+        from models.transactional.wallet.models import WalletBalance, MasterWalletType
+
+        self.state = State.objects.create(state="Sikkim", state_code=11, is_active=True)
+        self.district = District.objects.create(
+            district="Gangtok",
+            district_code=225,
+            is_active=True,
+            state_code=self.state,
+        )
+        self.subdivision = Subdivision.objects.create(
+            subdivision="Gangtok Subdivision",
+            subdivision_code=1553,
+            is_active=True,
+            district_code=self.district,
+        )
+        self.police_station = PoliceStation.objects.create(
+            police_station="Gangtok PS",
+            subdivision_code=self.subdivision
+        )
+        self.user = CustomUser.objects.create_user(
+            email="u3@example.com",
+            first_name="Test",
+            last_name="User",
+            phone_number="9999999903",
+            district=self.district,
+            subdivision=self.subdivision,
+            address="Test address",
+            password="pass",
+        )
+        self.user.username = "TH0003"
+        self.user.save(update_fields=["username"])
+
+        self.cat = LicenseCategory.objects.create(license_category="Test Category")
+        self.subcategory = LicenseSubcategory.objects.create(description="FLR Shop", category=self.cat)
+        self.license_type = LicenseType.objects.create(license_type="Retail")
+
+        # Create an existing active license for the user
+        self.license = License.objects.create(
+            license_id="NA/225/2026-27/0010",
+            source_type="new_license_application",
+            applicant=self.user,
+            license_category=self.cat,
+            license_sub_category=self.subcategory,
+            excise_district=self.district,
+            issue_date=date(2026, 4, 1),
+            valid_up_to=date(2027, 3, 31),
+            is_active=True,
+        )
+
+        # Initialize MasterWalletType and the dummy WalletBalance row for the active license
+        wallet_type_obj, _ = MasterWalletType.objects.get_or_create(code="security_deposit", defaults={"description": "Security Deposit"})
+        WalletBalance.objects.create(
+            licensee_id="NA/225/2026-27/0010",
+            licensee_name="Test User",
+            user_id="TH0003",
+            module_type="other",
+            wallet_type=wallet_type_obj,
+            head_of_account="non",
+            current_balance=Decimal("0.00"),
+        )
+
+        self.workflow = Workflow.objects.create(id=2, name='License Approval 2')
+        self.stage = WorkflowStage.objects.create(workflow=self.workflow, name='Awaiting Payment')
+        self.approved_stage = WorkflowStage.objects.create(workflow=self.workflow, name='Approved', is_final=True)
+
+        # Create a pending NewLicenseApplication for this user
+        self.app = NewLicenseApplication.objects.create(
+            application_id="NLI/225/2026-27/0011",
+            workflow=self.workflow,
+            current_stage=self.stage,
+            applicant=self.user,
+            license_type=self.license_type,
+            license_category=self.cat,
+            license_sub_category=self.subcategory,
+            establishment_name="Test Est",
+            site_type="New",
+            applicant_name="Test Applicant",
+            father_husband_name="Test Father",
+            dob="2000-01-01",
+            gender="Male",
+            nationality="Indian",
+            residential_status="Resident",
+            present_address="Present Address",
+            permanent_address="Permanent Address",
+            pan="ABCDE1234F",
+            email="test@example.com",
+            mobile_number="9999999999",
+            mode_of_operation="Self",
+            has_sikkim_certificate="Yes",
+            has_excise_license="No",
+            criminal_conviction="No",
+            site_district=self.district,
+            site_subdivision=self.subdivision,
+            police_station=self.police_station,
+            location_category="Urban",
+            location_name="Gangtok",
+            ward_name="Ward 1",
+            business_address="Business Address",
+            road_name="Road 1",
+            pin_code="737101",
+            construction_type="Permanent",
+            site_owned="Yes",
+            noc_obtained="Yes",
+            is_application_fee_paid=True,
+            is_license_fee_paid=False,
+            is_security_fee_paid=False,
+        )
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_security_deposit_recharge_fallback(self):
+        # We recharge using the active license ID (e.g. NA/225/2026-27/0010)
+        url = reverse("payment:wallet-recharge-credit", kwargs={"licensee_id": self.license.license_id})
+        payload = {
+            "transaction_id": "TXN_TEST_123",
+            "wallet_type": "security_deposit",
+            "head_of_account": "non",
+            "amount": "1000.00",
+            "remarks": "Test recharge"
+        }
+        resp = self.client.post(url, payload, format="json")
+        self.assertEqual(resp.status_code, 200)
+
+        # Refresh from DB to verify that the pending application's security deposit status is updated
+        self.app.refresh_from_db()
+        self.assertTrue(self.app.is_security_fee_paid)
+
+    def test_security_deposit_recharge_fallback_transitions_stage(self):
+        # Pre-mark license fee as paid, so that completing security deposit triggers Approved stage transition
+        self.app.is_license_fee_paid = True
+        self.app.save(update_fields=["is_license_fee_paid"])
+
+        url = reverse("payment:wallet-recharge-credit", kwargs={"licensee_id": self.license.license_id})
+        payload = {
+            "transaction_id": "TXN_TEST_456",
+            "wallet_type": "security_deposit",
+            "head_of_account": "non",
+            "amount": "1000.00",
+            "remarks": "Test recharge"
+        }
+        resp = self.client.post(url, payload, format="json")
+        self.assertEqual(resp.status_code, 200)
+
+        self.app.refresh_from_db()
+        self.assertTrue(self.app.is_security_fee_paid)
+        self.assertTrue(self.app.is_license_fee_paid)
+        # The stage should be transitioned to Approved (final stage)
+        self.assertEqual(self.app.current_stage_id, self.approved_stage.id)
+        self.assertTrue(self.app.is_approved)
