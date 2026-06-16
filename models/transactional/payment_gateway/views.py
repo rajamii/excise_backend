@@ -232,8 +232,6 @@ def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str
     else:
         client_ip = request.META.get('REMOTE_ADDR', '127.0.0.1')
 
-    print(f"Client IP determined for BillDesk order creation: {client_ip}") # Debug log to verify IP extraction
-
     order_date = timezone.localtime(timezone.now()).strftime("%Y-%m-%dT%H:%M:%S+05:30")
     
     payload = {
@@ -1655,19 +1653,25 @@ def billdesk_response(request):
     return HttpResponse(dynamic_html, content_type="text/html")
 
 
-# @csrf_exempt
-# def billdesk_mock_process(request):
-#     """
-#     Localhost testing helper.
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def sbi_epay_mock_process(request):
+    """
+    Simulates the SBI ePay payment processing.
+    In a real scenario, this would generate an encrypted payload and redirect to SBI.
+    For this test kit, we will mock a successful transaction response directly.
+    """
+    data = request.data
+    amount = data.get("amount")
+    transaction_id = data.get("transaction_id")
+    head_of_account = data.get("head_of_account")
 
-#     The Angular app auto-POSTs `msg=<request_msg>` to the BillDesk gateway URL.
-#     When BILLDESK_USE_MOCK=1, our initiate endpoint returns this mock URL instead.
+    if not amount or not transaction_id:
+        return Response(
+            {"detail": "Amount and Transaction ID are required."}, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
-#     This endpoint simulates BillDesk's ProcessPayment by generating a response `msg`
-#     (with checksum) and auto-POSTing it to our `/billdesk/response/` handler.
-#     """
-#     if request.method != "POST":
-#         return HttpResponseBadRequest("Invalid method")
 
 #     incoming = str(request.POST.get("msg") or request.POST.get("MSG") or "").strip()
 #     if not incoming:
