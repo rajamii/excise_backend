@@ -191,6 +191,11 @@ def sync_new_license_payment_status(application):
     if not _is_new_license_application(application):
         return None
 
+    # Refetch the application from the database with select_for_update to get the latest,
+    # committed state and lock the row to prevent concurrent modifications.
+    from models.transactional.new_license_application.models import NewLicenseApplication
+    application = NewLicenseApplication.objects.select_for_update().get(pk=application.pk)
+
     license_obj = resolve_license_for_application(application)
     paid = _is_paid(application)
 
