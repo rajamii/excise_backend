@@ -983,8 +983,8 @@ def send_otp_api(request):
             )
 
     try:
-        otp_obj = get_new_otp(phone_number)
-        sms_sent, sms_message = send_otp_via_sms_gateway(phone_number, otp_obj.otp)
+        otp_obj, raw_otp = get_new_otp(phone_number)
+        sms_sent, sms_message = send_otp_via_sms_gateway(phone_number, raw_otp)
         if not sms_sent:
             return Response(
                 {'error': sms_message or 'Failed to send OTP SMS. Please try again.'},
