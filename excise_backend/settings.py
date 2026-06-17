@@ -53,6 +53,7 @@ INSTALLED_APPS = [
 
     # Cross-Origin Resource Sharing
     'corsheaders',
+    'captcha',
 
     #########################
     # User defined packages #
@@ -237,6 +238,30 @@ USE_TZ = True
 STATIC_URL = 'static/'
 
 CORS_ORIGIN_ALLOW_ALL = True
+
+# OTP SMS gateway configuration (environment-driven)
+OTP_SMS_BASE_URL = os.getenv('OTP_SMS_BASE_URL', 'https://smsgw.sms.gov.in/failsafe/MLink')
+# Keep sensitive values empty by default; prefer DB-backed SMSServiceConfig.
+OTP_SMS_USERNAME = os.getenv('OTP_SMS_USERNAME', '')
+OTP_SMS_PIN = os.getenv('OTP_SMS_PIN', '')
+OTP_SMS_SIGNATURE = os.getenv('OTP_SMS_SIGNATURE', '')
+OTP_SMS_ENTITY_ID = os.getenv('OTP_SMS_ENTITY_ID', '')
+OTP_SMS_TEMPLATE_ID = os.getenv('OTP_SMS_TEMPLATE_ID', '1007722920127309405')
+OTP_SMS_MESSAGE_TEMPLATE = os.getenv(
+    'OTP_SMS_MESSAGE_TEMPLATE',
+    # Must exactly match Excise DLT-approved template text for OTP delivery.
+    'From eAbkari, GoSK :\nYour OTP is {otp}\n Thanks'
+)
+OTP_SMS_VERIFY_SSL = os.getenv('OTP_SMS_VERIFY_SSL', 'false'
+).strip().lower() == 'true'
+# Optional: path to a PEM bundle for environments with custom/root CAs (proxy, enterprise certs).
+# If set, requests will verify the gateway SSL cert using this bundle.
+OTP_SMS_CA_BUNDLE = os.getenv('OTP_SMS_CA_BUNDLE', '').strip()
+OTP_SMS_TIMEOUT_SECONDS = int(os.getenv('OTP_SMS_TIMEOUT_SECONDS', '10'))
+OTP_SMS_FORCE_SEND_IN_DEBUG = os.getenv('OTP_SMS_FORCE_SEND_IN_DEBUG', 'true').strip().lower() == 'true'
+OTP_EXPOSE_IN_RESPONSE = os.getenv('OTP_EXPOSE_IN_RESPONSE', 'false').strip().lower() == 'true'
+OTP_REQUEST_LIMIT = int(os.getenv('OTP_REQUEST_LIMIT', '15'))
+OTP_REQUEST_WINDOW_MINUTES = int(os.getenv('OTP_REQUEST_WINDOW_MINUTES', '15'))
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field

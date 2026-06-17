@@ -12,8 +12,61 @@ from models.transactional.wallet.models import WalletBalance
 from models.transactional.wallet.wallet_initializer import initialize_wallet_balances_for_license, _resolve_module_type
 
 
+def _create_hoa_mappings():
+    from models.transactional.payment_gateway.models import MasterHeadOfAccount, MasterPaymentModule, PaymentModuleHoa
+    from models.transactional.wallet.models import MasterWalletType
+
+    # Create Wallet Types
+    wallet_types = ["excise", "education_cess", "hologram", "security_deposit", "license_fee"]
+    wallet_type_objs = {}
+    for wt in wallet_types:
+        obj, _ = MasterWalletType.objects.get_or_create(
+            code=wt,
+            defaults={"name": wt.replace("_", " ").title(), "is_active": True}
+        )
+        wallet_type_objs[wt] = obj
+
+    # Create Payment Modules
+    module_types = ["distillery", "other"]
+    module_objs = {}
+    for mt in module_types:
+        obj, _ = MasterPaymentModule.objects.get_or_create(
+            module_code=f"PM_{mt.upper()}",
+            defaults={"module_desc": f"Module {mt}", "visibility_status": True}
+        )
+        module_objs[mt] = obj
+
+    # Create Head of Account mappings
+    sl_no = 1
+    for mt in module_types:
+        wts = wallet_types if mt == "distillery" else ["security_deposit", "license_fee"]
+        for wt in wts:
+            hoa_str = f"HOA-{mt}-{wt}"
+            hoa, _ = MasterHeadOfAccount.objects.get_or_create(
+                sl_no=sl_no,
+                defaults={
+                    "head_of_account": hoa_str,
+                    "major_head": "0039",
+                    "minor_head": "105",
+                    "detailed_head": "45",
+                    "detailed_head_driscription": f"Description for {hoa_str}",
+                    "visible_status": True
+                }
+            )
+            sl_no += 1
+            
+            PaymentModuleHoa.objects.get_or_create(
+                module_code=module_objs[mt],
+                wallet_type=wallet_type_objs[wt],
+                head_of_account=hoa,
+                defaults={"is_active": True}
+            )
+
+
+
 class WalletInitializerPrimaryHolderTests(TestCase):
     def setUp(self):
+        _create_hoa_mappings()
         self.state = State.objects.create(state="Sikkim", state_code=11, is_active=True)
         self.district = District.objects.create(
             district="Gangtok",
@@ -133,6 +186,7 @@ class WalletInitializerPrimaryHolderTests(TestCase):
 
 class WalletSummaryScopeFilteringTests(TestCase):
     def setUp(self):
+        _create_hoa_mappings()
         self.state = State.objects.create(state="Sikkim", state_code=11, is_active=True)
         self.district = District.objects.create(
             district="Gangtok",

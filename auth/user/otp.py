@@ -2,24 +2,136 @@ import random
 from datetime import timedelta
 from django.utils import timezone
 from django.db import transaction
-from auth.user.models import OTP
+from django.conf import settings
+from django.db.utils import OperationalError, ProgrammingError
+from auth.user.models import OTP, SMSServiceConfig
 from django.core.cache import cache
+import logging
+import requests
+import re
+import os
+from urllib.parse import quote, urlencode, unquote
+
+logger = logging.getLogger(__name__)
+
+
+def _mask_phone(phone_number: str) -> str:
+    value = str(phone_number or "")
+    if len(value) < 4:
+        return "****"
+    return ("*" * max(0, len(value) - 4)) + value[-4:]
+
+
+def _looks_like_gateway_failure(response_text: str) -> bool:
+    """
+    Basic failure detection for plain-text SMS gateway responses.
+    """
+    normalized = (response_text or "").strip().lower()
+    if not normalized:
+        return True
+
+    failure_terms = (
+        "error",
+        "failed",
+        "invalid",
+        "rejected",
+        "unauthorized",
+        "denied",
+        "mismatch",
+    )
+    return any(term in normalized for term in failure_terms)
+
+
+def _parse_gateway_ack(response_text: str) -> tuple[str | None, str | None]:
+    """
+    Extract gateway request ID and response code from plain text responses like:
+    'Message Accepted for Request ID=...~code=API000 & info=...'
+    """
+    text = response_text or ""
+    req_match = re.search(r"Request\s*ID\s*=\s*([^\s~&]+)", text, flags=re.IGNORECASE)
+    code_match = re.search(r"code\s*=\s*([A-Za-z0-9_]+)", text, flags=re.IGNORECASE)
+    request_id = req_match.group(1).strip() if req_match else None
+    code = code_match.group(1).strip().upper() if code_match else None
+    return request_id, code
+
+
+def _redact_gateway_exception_text(text: str) -> str:
+    """
+    Requests/urllib3 exceptions may contain the full URL including sensitive query params.
+    Redact secrets/PII to avoid leaking into API responses or logs.
+    """
+    value = str(text or "")
+    value = re.sub(r"(pin=)([^&\s]+)", r"\1***", value, flags=re.IGNORECASE)
+    value = re.sub(r"(message=)([^&\s]+)", r"\1***", value, flags=re.IGNORECASE)
+    value = re.sub(r"(mnumber=)([^&\s]+)", r"\1***", value, flags=re.IGNORECASE)
+    return value
+
+
+def _format_gateway_mobile_number(phone_number: str) -> str:
+    digits_only = "".join(ch for ch in str(phone_number or "") if ch.isdigit())
+    if len(digits_only) == 12 and digits_only.startswith("91"):
+        return digits_only
+    if len(digits_only) == 10:
+        return f"91{digits_only}"
+    return digits_only
+
+
+def _normalize_message_for_gateway(message: str) -> str:
+    """
+    Keep legacy behavior close to vbNewLine-based formatting from old code:
+    - Normalize any newline form to CRLF so URL-encoding emits %0D%0A.
+    - Replace '&' with 'and' as done in legacy service code.
+    """
+    normalized = str(message or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalized.replace("\n", "\r\n")
+    return normalized.replace("&", "and")
+
+
+def _render_otp_message(message_template: str, otp_value: str) -> str:
+    """
+    Render an OTP SMS message safely.
+
+    Supports both:
+    - Python format placeholder: {otp}
+    - Common DLT placeholder style used by some gateways: {#var#}, {#var1#}, ...
+
+    Never raises on unexpected placeholders; falls back to a simple replacement.
+    """
+    template = str(message_template or "")
+
+    # Normalize common DLT variable placeholders to our {otp} placeholder.
+    template = re.sub(r"\{#var\d*#\}", "{otp}", template, flags=re.IGNORECASE)
+
+    # Some templates may include the token without braces.
+    if "#var#" in template:
+        template = template.replace("#var#", str(otp_value))
+
+    try:
+        return template.format(otp=str(otp_value))
+    except Exception:
+        # Avoid crashing OTP API due to bad template braces/placeholders.
+        return template.replace("{otp}", str(otp_value))
 from django.contrib.auth.hashers import make_password, check_password
 
 def get_new_otp(phone_number):
 
-    fifteen_minutes_ago = timezone.now() - timedelta(minutes=15)
+    request_limit = int(getattr(settings, "OTP_REQUEST_LIMIT", 15))
+    request_window_minutes = int(getattr(settings, "OTP_REQUEST_WINDOW_MINUTES", 15))
+    window_start = timezone.now() - timedelta(minutes=request_window_minutes)
     recent_otps_count = OTP.objects.filter(
         phone_number=phone_number,
-        created_at__gte=fifteen_minutes_ago
+        created_at__gte=window_start
     ).count()
 
-    if recent_otps_count >= 3:
-        raise ValueError("Too many OTP requests. Please try again after 15 minutes.")
+    if recent_otps_count >= request_limit:
+        raise ValueError(
+            f"OTP request limit reached ({request_limit} attempts). "
+            f"Please try again after {request_window_minutes} minutes."
+        )
     
     OTP.objects.filter(
         phone_number=phone_number,
-        created_at__lt=fifteen_minutes_ago,
+        created_at__lt=window_start,
         used=False
     ).delete()
 
@@ -58,3 +170,163 @@ def is_phone_verified(phone_number: str) -> bool:
 
 def clear_phone_verified(phone_number: str):
     cache.delete(f"phone_verified_{phone_number}")
+
+
+def _get_sms_config_from_db() -> dict | None:
+    try:
+        config = SMSServiceConfig.objects.filter(is_active=True).order_by("-updated_at").first()
+    except (OperationalError, ProgrammingError):
+        # During first deployment/migration window, fall back to settings.
+        return None
+
+    if not config:
+        return None
+
+    return {
+        "id": int(getattr(config, "id", 0) or 0),
+        "name": (config.name or "").strip(),
+        "base_url": (config.base_url or "").strip(),
+        "username": (config.username or "").strip(),
+        "pin": (config.pin or "").strip(),
+        "signature": (config.signature or "").strip(),
+        "entity_id": (config.dlt_entity_id or "").strip(),
+        "template_id": (config.dlt_template_id or "").strip(),
+        "message_template": config.message_template or "",
+        "verify_ssl": bool(config.verify_ssl),
+        "timeout_seconds": int(config.timeout_seconds or 10),
+    }
+
+
+def send_otp_via_sms_gateway(phone_number: str, otp_value: str) -> tuple[bool, str]:
+    """
+    Sends OTP via configured SMS gateway.
+    Returns (success, details).
+    """
+    force_send_in_debug = bool(getattr(settings, "OTP_SMS_FORCE_SEND_IN_DEBUG", False))
+    if getattr(settings, "DEBUG", False) and not force_send_in_debug:
+        logger.warning(
+            "DEBUG mode bypass is enabled and OTP SMS was not sent to %s",
+            _mask_phone(phone_number),
+        )
+        return False, "OTP SMS not sent because DEBUG bypass is active"
+
+    db_config = _get_sms_config_from_db()
+    if db_config:
+        logger.info(
+            "Using DB SMS config id=%s name=%s verify_ssl=%s timeout=%ss",
+            db_config.get("id") or "N/A",
+            db_config.get("name") or "N/A",
+            bool(db_config.get("verify_ssl")),
+            int(db_config.get("timeout_seconds") or 0),
+        )
+        base_url = db_config["base_url"]
+        username = db_config["username"]
+        pin = db_config["pin"]
+        signature = db_config["signature"]
+        entity_id = db_config["entity_id"]
+        template_id = db_config["template_id"]
+        message_template = db_config["message_template"]
+        verify_ssl = db_config["verify_ssl"]
+        timeout_seconds = db_config["timeout_seconds"]
+    else:
+        logger.info(
+            "Using settings SMS config verify_ssl=%s timeout=%ss",
+            bool(getattr(settings, "OTP_SMS_VERIFY_SSL", True)),
+            int(getattr(settings, "OTP_SMS_TIMEOUT_SECONDS", 10)),
+        )
+        base_url = getattr(settings, "OTP_SMS_BASE_URL", "").strip()
+        username = getattr(settings, "OTP_SMS_USERNAME", "").strip()
+        # Old service stored encoded pin (`%23` for `#`). Decode once, then urlencode safely.
+        pin = unquote(getattr(settings, "OTP_SMS_PIN", "").strip())
+        signature = getattr(settings, "OTP_SMS_SIGNATURE", "").strip()
+        entity_id = getattr(settings, "OTP_SMS_ENTITY_ID", "").strip()
+        template_id = getattr(settings, "OTP_SMS_TEMPLATE_ID", "").strip()
+        message_template = getattr(
+            settings,
+            "OTP_SMS_MESSAGE_TEMPLATE",
+            "Your OTP for login is {otp}. Do not share it with anyone."
+        )
+        verify_ssl = bool(getattr(settings, "OTP_SMS_VERIFY_SSL", True))
+        timeout_seconds = int(getattr(settings, "OTP_SMS_TIMEOUT_SECONDS", 10))
+
+    if not all([base_url, username, pin, signature, entity_id, template_id]):
+        logger.error("OTP SMS gateway settings are incomplete")
+        return False, "OTP SMS gateway settings are incomplete"
+
+    message = _normalize_message_for_gateway(_render_otp_message(message_template, otp_value))
+    mnumber = _format_gateway_mobile_number(phone_number)
+
+    params = {
+        "username": username,
+        "pin": pin,
+        "message": message,
+        "mnumber": mnumber,
+        "signature": signature,
+        "dlt_entity_id": entity_id,
+        "dlt_template_id": template_id,
+    }
+    if len(message) > 160:
+        params["concat"] = "1"
+
+    query = urlencode(
+        params,
+        quote_via=quote,
+    )
+    url = f"{base_url}?{query}"
+
+    try:
+        # Support custom CA bundle for environments where default trust store is incomplete
+        # (common on some servers / corporate proxies).
+        ca_bundle = str(getattr(settings, "OTP_SMS_CA_BUNDLE", "") or "").strip()
+        verify_arg: bool | str = bool(verify_ssl)
+        if verify_ssl and ca_bundle:
+            try:
+                if os.path.exists(ca_bundle):
+                    verify_arg = ca_bundle
+            except OSError:
+                # ignore invalid paths and fall back to boolean verify
+                pass
+
+        response = requests.get(url, timeout=timeout_seconds, verify=verify_arg)
+        response.raise_for_status()
+        response_text = (response.text or "").strip()
+        request_id, code = _parse_gateway_ack(response_text)
+
+        # Some gateways return HTTP 200 even for business-level failures.
+        # If a code is present, treat non-API000 as failure.
+        if (code and code != "API000") or _looks_like_gateway_failure(response_text):
+            logger.error(
+                "OTP SMS gateway reported failure for %s: %s",
+                _mask_phone(phone_number),
+                response_text[:300],
+            )
+            if code:
+                return False, f"OTP SMS gateway rejected the request (code={code}, request_id={request_id or 'N/A'})"
+            return False, "OTP SMS gateway rejected the request"
+
+        logger.info(
+            "OTP SMS sent successfully to %s. Gateway response: %s",
+            _mask_phone(phone_number),
+            response_text[:300],
+        )
+        if request_id or code:
+            return True, f"OTP accepted by gateway (code={code or 'N/A'}, request_id={request_id or 'N/A'})"
+        return True, "OTP SMS sent successfully"
+    except requests.RequestException as exc:
+        logger.exception(
+            "Failed to send OTP SMS to %s: %s",
+            _mask_phone(phone_number),
+            _redact_gateway_exception_text(str(exc)),
+        )
+        # Avoid exposing sensitive details in production responses.
+        expose = bool(getattr(settings, "OTP_SMS_EXPOSE_ERRORS", False))
+        if getattr(settings, "DEBUG", False) or expose:
+            hint = ""
+            exc_text = _redact_gateway_exception_text(str(exc))
+            if isinstance(exc, requests.exceptions.SSLError) and "CERTIFICATE_VERIFY_FAILED" in str(exc):
+                hint = (
+                    " (hint: SSL verification failed; install/update CA certificates on the server, "
+                    "or set sms_service_config.verify_ssl=false for local testing only)"
+                )
+            return False, f"Failed to send OTP SMS ({exc_text}){hint}"
+        return False, "Failed to send OTP SMS"

@@ -27,10 +27,22 @@ from auth.user.serializer import (
     PasswordResetRequestSerializer,
     PasswordResetConfirmSerializer,
 )
+from typing import cast
+from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from auth.user.otp import (
-    get_new_otp, verify_otp,
-    mark_phone_as_verified, clear_phone_verified, is_phone_verified,
+    get_new_otp,
+    verify_otp,
+    mark_phone_as_verified,
+    clear_phone_verified,
+    is_phone_verified,
+    send_otp_via_sms_gateway,
 )
+from django.conf import settings
+from captcha.helpers import captcha_image_url
+from captcha.models import CaptchaStore
+from rest_framework_simplejwt.views import TokenRefreshView
+from ..roles.permissions import HasAppPermission
+from auth.roles.models import Role
 from models.transactional.license_renewal_application.models import LicenseApplication
 from models.transactional.logs.models import UserActivity
 from models.transactional.logs.signals import get_client_ip
@@ -40,6 +52,7 @@ from models.masters.license.models import License
 from typing import cast
 import secrets
 import string
+import re
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
@@ -55,6 +68,11 @@ from auth.user.captcha_services import generate_redis_captcha, verify_redis_capt
 
 User = get_user_model()
 
+def _normalize_phone_number(raw_phone: str | None) -> str:
+    normalized = re.sub(r'\D', '', str(raw_phone or ''))
+    if len(normalized) == 12 and normalized.startswith('91'):
+        normalized = normalized[2:]
+    return normalized
 
 def _safe_ip_address(request):
     """
@@ -81,7 +99,7 @@ def _safe_ip_address(request):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def verify_otp_for_registration(request):
-    phone_number = request.data.get('phone_number')
+    phone_number = _normalize_phone_number(request.data.get('phone_number'))
     otp_input = request.data.get('otp')
     otp_id = request.data.get('otp_id')
 
@@ -119,7 +137,7 @@ def licensee_register_after_verification(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    phone_number = request.data['phone_number']
+    phone_number = _normalize_phone_number(request.data['phone_number'])
 
     if not is_phone_verified(phone_number):
         return Response(
@@ -936,15 +954,19 @@ class TokenRefreshAPI(TokenRefreshView):
 
 @api_view(['POST'])
 def send_otp_api(request):
-    phone_number = request.data.get('phone_number')
-    purpose = request.data.get('purpose')
+    phone_number = _normalize_phone_number(request.data.get('phone_number'))
+    purpose = request.data.get('purpose')  # New optional field: 'login' or 'register'
 
     if not phone_number:
         return Response({'error': 'Phone number is required'}, status=status.HTTP_400_BAD_REQUEST)
+    if len(phone_number) != 10 or phone_number[0] not in {'6', '7', '8', '9'}:
+        return Response({'error': 'Invalid phone number format'}, status=status.HTTP_400_BAD_REQUEST)
 
     if purpose != 'register':
         try:
             user = CustomUser.objects.get(phone_number=phone_number)
+            # Always send OTP to the canonical registered phone number from DB.
+            phone_number = _normalize_phone_number(user.phone_number)
         except CustomUser.DoesNotExist:
             return Response({'error': 'User with this phone number does not exist'}, status=status.HTTP_404_NOT_FOUND)
         if not user.is_active:
@@ -962,17 +984,46 @@ def send_otp_api(request):
 
     try:
         otp_obj, raw_otp = get_new_otp(phone_number)
-        return Response({
+        sms_sent, sms_message = send_otp_via_sms_gateway(phone_number, raw_otp)
+        if not sms_sent:
+            return Response(
+                {'error': sms_message or 'Failed to send OTP SMS. Please try again.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        response_data = {
             'otp_id': str(otp_obj.id),
-            'otp': raw_otp  # REMOVE IN PRODUCTION
-        })
+            'message': 'OTP sent successfully to your registered mobile number.',
+            'gateway_message': sms_message,
+        }
+
+        if getattr(settings, 'DEBUG', False):
+            masked = str(phone_number or "")
+            if len(masked) >= 4:
+                masked = ("*" * (len(masked) - 4)) + masked[-4:]
+            response_data['sent_to'] = masked
+
+            try:
+                match_code = re.search(r"code\s*=\s*([A-Za-z0-9_]+)", str(sms_message or ""), flags=re.IGNORECASE)
+                match_req = re.search(r"request_id\s*=\s*([^\s,)]+)", str(sms_message or ""), flags=re.IGNORECASE)
+                if match_code:
+                    response_data['gateway_code'] = match_code.group(1).strip()
+                if match_req:
+                    response_data['gateway_request_id'] = match_req.group(1).strip()
+            except re.error:
+                pass
+
+        if getattr(settings, 'OTP_EXPOSE_IN_RESPONSE', False):
+            response_data['otp'] = otp_obj.otp
+
+        return Response(response_data, status=status.HTTP_200_OK)
     except ValueError as e:
         return Response({'error': str(e)}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
 
 @api_view(['POST'])
 def verify_otp_api(request):
-    phone_number = request.data.get('phone_number')
+    phone_number = _normalize_phone_number(request.data.get('phone_number'))
     otp_input = request.data.get('otp')
     otp_id = request.data.get('otp_id')
 
