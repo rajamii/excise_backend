@@ -127,7 +127,7 @@ def licensee_register_after_verification(request):
     required_fields = [
         'phone_number', 'first_name', 'last_name', 'email',
         'pan_number',
-        'address', 'district', 'subdivision', 'password', 'hashkey', 'response',
+        'address', 'district', 'subdivision', 'password',
     ]
 
     missing = [f for f in required_fields if not request.data.get(f)]
@@ -149,15 +149,15 @@ def licensee_register_after_verification(request):
 
     clear_phone_verified(phone_number)
 
-    # Validate CAPTCHA
-    hashkey = request.data.get('hashkey')
-    response_input = request.data.get('response')
-    
-    if not verify_redis_captcha(hashkey, response_input):
-        return Response(
-            {'success': False, 'errors': {'captcha': ['Invalid or expired CAPTCHA.']}},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+    # Validate CAPTCHA (Commented out for audit)
+    # hashkey = request.data.get('hashkey')
+    # response_input = request.data.get('response')
+    # 
+    # if not verify_redis_captcha(hashkey, response_input):
+    #     return Response(
+    #         {'success': False, 'errors': {'captcha': ['Invalid or expired CAPTCHA.']}},
+    #         status=status.HTTP_400_BAD_REQUEST
+    #     )
 
     registration_data = {
         'email':              request.data['email'],
@@ -843,16 +843,16 @@ class LoginAPI(APIView):
     serializer_class = LoginSerializer
 
     def post(self, request):
-        # Handle fallback for CamelCase transformations automatically
-        hashkey = request.data.get('hashkey') or request.data.get('hash_key')
-        response_input = request.data.get('response')
-
-        if not verify_redis_captcha(hashkey, response_input):
-            return Response({
-                'success': False,
-                'status_code': status.HTTP_400_BAD_REQUEST,
-                'non_field_errors': ['Invalid or expired captcha.']
-            }, status=status.HTTP_400_BAD_REQUEST)
+        # Handle fallback for CamelCase transformations automatically (Commented out for audit)
+        # hashkey = request.data.get('hashkey') or request.data.get('hash_key')
+        # response_input = request.data.get('response')
+        # 
+        # if not verify_redis_captcha(hashkey, response_input):
+        #     return Response({
+        #         'success': False,
+        #         'status_code': status.HTTP_400_BAD_REQUEST,
+        #         'non_field_errors': ['Invalid or expired captcha.']
+        #     }, status=status.HTTP_400_BAD_REQUEST)
 
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
