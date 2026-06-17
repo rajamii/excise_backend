@@ -21,4 +21,6 @@ urlpatterns = [
     
     # Global Callback
     path("sbiepay/response/", helpers.sbiepay_response, name="sbiepay-response"),
+
+    path("billdesk/transactions/", views.list_transactions, name="list-transactions"),
 ]

@@ -270,7 +270,7 @@ def sbiepay_initiate_new_license_application_fee(request):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
-def list_billdesk_transactions(request):
+def list_transactions(request):
     from django.db.models import Q
     
     # Authorization check: only allow roleId 1 (Site Admin) or roleId 3 (Single Window)
@@ -295,12 +295,12 @@ def list_billdesk_transactions(request):
         except ValueError:
             pass
 
-        q_obj = Q(utr__icontains=query) | Q(transaction_id_no_hoa__icontains=query) | Q(payer_id__icontains=query) | Q(user_id__icontains=query)
+        q_obj = Q(order_ref_number__icontains=query) | Q(sbi_order_ref_number__icontains=query) | Q(payer_id__icontains=query) | Q(user_id__icontains=query)
         if amount_query is not None:
             q_obj |= Q(transaction_amount=amount_query)
         queryset = queryset.filter(q_obj)
 
-    queryset = queryset.order_by('-transaction_date')
+    queryset = queryset.order_by('-opr_date')
 
     # Pagination parameters
     try:
@@ -383,9 +383,9 @@ def list_billdesk_transactions(request):
             applicant_name = resolve_name(tx.user_id)
 
         serialized_data.append({
-            "utr": tx.utr,
-            "transaction_date": tx.transaction_date.isoformat() if tx.transaction_date else None,
-            "transaction_id_no_hoa": tx.transaction_id_no_hoa,
+            "utr": tx.order_ref_number,  # Mapped from utr to maintain frontend compatibility
+            "transaction_date": tx.opr_date.isoformat() if tx.opr_date else None,
+            "transaction_id_no_hoa": tx.order_ref_number,
             "payer_id": tx.payer_id,
             "payment_module_code": tx.payment_module_code,
             "purpose": purpose,
@@ -393,10 +393,10 @@ def list_billdesk_transactions(request):
             "payment_status": tx.payment_status,
             "user_id": tx.user_id,
             "applicant_name": applicant_name,
-            "response_bankreferenceno": tx.response_bankreferenceno,
-            "response_txndate": tx.response_txndate.isoformat() if tx.response_txndate else None,
-            "response_errordescription": tx.response_errordescription,
-            "response_authstatus": tx.response_authstatus,
+            "response_bankreferenceno": tx.bank_ref_number,
+            "response_txndate": tx.opr_date.isoformat() if tx.opr_date else None,
+            "response_errordescription": tx.transaction_status,
+            "response_authstatus": tx.payment_status,
         })
 
     return Response({

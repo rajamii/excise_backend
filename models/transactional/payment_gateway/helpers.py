@@ -3,9 +3,11 @@ import json
 import logging
 import secrets
 import urllib.parse
+from django.shortcuts import redirect
 from django.views.decorators.csrf import csrf_exempt
+from django.conf import settings
 from django.db.utils import OperationalError, ProgrammingError
-from django.http import HttpResponse, HttpResponseBadRequest
+from django.http import HttpResponseBadRequest
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -452,6 +454,7 @@ def sbiepay_response(request):
     amount_str = "0"
     wallet_type = ""
     hoa = ""
+    tx = None
 
     if encrypted_data:
         sanitized_data = str(encrypted_data).strip().replace(" ", "+")
@@ -497,6 +500,10 @@ def sbiepay_response(request):
     gateway = PaymentGatewayParameters.objects.filter(is_active=True, payment_gateway_name__iexact="SBIePay").first()
     base_redirect_url = getattr(gateway, "frontend_success_url", "/") or "/"
 
+    # Route to the specific Receipt URL if this was a New License Application Fee
+    if tx and str(tx.payment_module_code or "").strip() == DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE:
+        base_redirect_url = getattr(settings, "PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL", base_redirect_url)
+
     # -----------------------------------------------------------------
     # FIXED: Build explicit query string parameters to forward to Angular
     # -----------------------------------------------------------------
@@ -518,30 +525,5 @@ def sbiepay_response(request):
     
     final_forwarded_url = urllib.parse.urlunparse(url_parts)
 
-    # Use the compiled final URL containing your dynamic text inside your popup handler script
-    dynamic_html = f"""
-    <!DOCTYPE html>
-    <html>
-        <head><title>Processing Payment Response...</title></head>
-        <body>
-            <h3 style="text-align:center; font-family:sans-serif; margin-top:20px;">
-                Payment Processed Successfully. Redirecting...
-            </h3>
-            <script>
-                var targetUrl = "{final_forwarded_url}";
-                try {{
-                    if (window.opener && !window.opener.closed) {{
-                        window.opener.location.href = targetUrl;
-                    }}
-                }} catch (e) {{
-                    console.warn("Parent redirection routing mapping exception:", e);
-                }}
-                window.close();
-                setTimeout(function() {{
-                    if (!window.closed) {{ window.location.href = targetUrl; }}
-                }}, 500);
-            </script>
-        </body>
-    </html>
-    """
-    return HttpResponse(dynamic_html, content_type="text/html")
+    # Perform a direct server-side redirect back to the Angular frontend
+    return redirect(final_forwarded_url)
