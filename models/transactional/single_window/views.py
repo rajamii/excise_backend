@@ -187,6 +187,7 @@ def single_window_search(request):
     year = request.query_params.get("year", "").strip()
     category = request.query_params.get("category", "").strip()
     role = request.query_params.get("role", "").strip()
+    module = request.query_params.get("module", "").strip()
 
     day_val = int(day) if day.isdigit() else None
     month_val = int(month) if month.isdigit() else None
@@ -380,6 +381,11 @@ def single_window_search(request):
         try:
             bd_txs = PaymentBilldeskTransaction.objects.filter(bd_q)
             bd_txs = apply_date_filters(bd_txs, "transaction_date")
+            if module:
+                if module == '001':
+                    bd_txs = bd_txs.exclude(payment_module_code__in=['002', '999'])
+                else:
+                    bd_txs = bd_txs.filter(payment_module_code=module)
             bd_txs = bd_txs.order_by("-transaction_date")[:30]
         except Exception:
             bd_q_safe = Q(utr__icontains=query) | Q(transaction_id_no_hoa__icontains=query) | Q(payer_id__icontains=query)
@@ -387,6 +393,11 @@ def single_window_search(request):
                 bd_q_safe |= Q(transaction_amount=amount_query)
             bd_txs = PaymentBilldeskTransaction.objects.filter(bd_q_safe)
             bd_txs = apply_date_filters(bd_txs, "transaction_date")
+            if module:
+                if module == '001':
+                    bd_txs = bd_txs.exclude(payment_module_code__in=['002', '999'])
+                else:
+                    bd_txs = bd_txs.filter(payment_module_code=module)
             bd_txs = bd_txs.order_by("-transaction_date")[:30]
 
         for tx in bd_txs:
@@ -437,6 +448,13 @@ def single_window_search(request):
         try:
             w_txs = WalletTransaction.objects.filter(w_q)
             w_txs = apply_date_filters(w_txs, "created_at")
+            if module:
+                if module == '999':
+                    w_txs = w_txs.filter(transaction_type__iexact='recharge')
+                elif module == '002':
+                    w_txs = w_txs.filter(Q(reference_no__istartswith='LRA/') | Q(reference_no__istartswith='LA/'))
+                elif module == '001':
+                    w_txs = w_txs.exclude(transaction_type__iexact='recharge').exclude(Q(reference_no__istartswith='LRA/') | Q(reference_no__istartswith='LA/'))
             w_txs = w_txs.order_by("-created_at")[:30]
         except Exception:
             w_q_safe = Q(transaction_id__icontains=query) | Q(reference_no__icontains=query) | Q(licensee_id__icontains=query)
@@ -444,6 +462,13 @@ def single_window_search(request):
                 w_q_safe |= Q(amount=amount_query)
             w_txs = WalletTransaction.objects.filter(w_q_safe)
             w_txs = apply_date_filters(w_txs, "created_at")
+            if module:
+                if module == '999':
+                    w_txs = w_txs.filter(transaction_type__iexact='recharge')
+                elif module == '002':
+                    w_txs = w_txs.filter(Q(reference_no__istartswith='LRA/') | Q(reference_no__istartswith='LA/'))
+                elif module == '001':
+                    w_txs = w_txs.exclude(transaction_type__iexact='recharge').exclude(Q(reference_no__istartswith='LRA/') | Q(reference_no__istartswith='LA/'))
             w_txs = w_txs.order_by("-created_at")[:30]
 
         for tx in w_txs:
