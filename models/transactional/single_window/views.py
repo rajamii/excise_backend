@@ -138,8 +138,23 @@ def serialize_payment_transactions(app_id):
             elif tx.payment_status.lower() in ("pending", "p"):
                 status = "Pending"
                 
+            display_txn_id = tx.transaction_id
+            if display_txn_id and not str(display_txn_id).startswith("BILLDESK") and len(display_txn_id) == 24:
+                from datetime import timedelta
+                time_margin = timedelta(hours=2)
+                candidates = [c for c in [str(tx.user_id).strip(), str(tx.licensee_id).strip()] if c]
+                bd_match = PaymentBilldeskTransaction.objects.filter(
+                    payer_id__in=candidates,
+                    payment_status="S",
+                    transaction_amount=tx.amount,
+                    transaction_date__gte=tx.created_at - time_margin,
+                    transaction_date__lte=tx.created_at + time_margin
+                ).order_by("-transaction_date").first()
+                if bd_match:
+                    display_txn_id = bd_match.utr
+                    
             payments.append({
-                "transaction_id": tx.transaction_id or "N/A",
+                "transaction_id": display_txn_id or "N/A",
                 "amount": str(tx.amount),
                 "payment_type": "Wallet Balance",
                 "payment_status": status,
@@ -232,6 +247,85 @@ def single_window_search(request):
         except Exception:
             return "N/A"
 
+    def resolve_payment_target_info(payer_id_or_ref):
+        ref = str(payer_id_or_ref or "").strip()
+        if not ref:
+            return None, None, None
+
+        ref_upper = ref.upper()
+        try:
+            from auth.user.models import CustomUser
+            from models.masters.license.models import License
+            from models.transactional.new_license_application.models import NewLicenseApplication
+            from models.transactional.license_renewal_application.models import LicenseApplication as RenewalApplication
+            from models.transactional.salesman_barman.models import SalesmanBarmanModel
+
+            # 1. Check if it matches an application prefix
+            if ref_upper.startswith(("NLA/", "NA/", "NLI/")):
+                app = NewLicenseApplication.objects.filter(application_id__iexact=ref).first()
+                if app:
+                    user_id = app.applicant_id if app.applicant else None
+                    return "new_license_app", app.application_id, user_id
+            
+            elif ref_upper.startswith(("LRA/", "LA/")):
+                renewal = RenewalApplication.objects.filter(application_id__iexact=ref).first()
+                if renewal:
+                    user_id = renewal.applicant_id if renewal.applicant else None
+                    return "renewal_app", renewal.application_id, user_id
+
+            elif ref_upper.startswith(("SBM/", "SB/", "RSBM/")):
+                sbm = SalesmanBarmanModel.objects.filter(application_id__iexact=ref).first()
+                if sbm:
+                    user_id = sbm.applicant_id if sbm.applicant else None
+                    return "salesman_barman_app", sbm.application_id, user_id
+
+            # 2. Check if there is a CustomUser matching username or id
+            user_filter = Q(username__iexact=ref)
+            if ref.isdigit():
+                user_filter |= Q(id=int(ref))
+            user = CustomUser.objects.filter(user_filter).first()
+            if user:
+                recent_app = NewLicenseApplication.objects.filter(applicant=user).order_by("-created_at").first()
+                if recent_app:
+                    return "new_license_app", recent_app.application_id, user.id
+                
+                recent_renewal = RenewalApplication.objects.filter(applicant=user).order_by("-created_at").first()
+                if recent_renewal:
+                    return "renewal_app", recent_renewal.application_id, user.id
+
+                recent_sbm = SalesmanBarmanModel.objects.filter(applicant=user).order_by("-created_at").first()
+                if recent_sbm:
+                    return "salesman_barman_app", recent_sbm.application_id, user.id
+
+                return "licensee", user.id, user.id
+
+            # 3. Check if it's a License ID directly
+            license_obj = License.objects.filter(license_id__iexact=ref).first()
+            if license_obj:
+                user_id = license_obj.applicant_id if license_obj.applicant else None
+                if license_obj.source_type == "new_license_application" and license_obj.source_object_id:
+                    app = NewLicenseApplication.objects.filter(application_id__iexact=license_obj.source_object_id).first()
+                    if app:
+                        return "new_license_app", app.application_id, user_id
+                
+                return "license", license_obj.license_id, user_id
+
+            # 4. Fallbacks if no prefix matched but exists in DB
+            app = NewLicenseApplication.objects.filter(application_id__iexact=ref).first()
+            if app:
+                user_id = app.applicant_id if app.applicant else None
+                return "new_license_app", app.application_id, user_id
+
+            renewal = RenewalApplication.objects.filter(application_id__iexact=ref).first()
+            if renewal:
+                user_id = renewal.applicant_id if renewal.applicant else None
+                return "renewal_app", renewal.application_id, user_id
+
+        except Exception:
+            pass
+
+        return None, None, None
+
     if search_type == "payment":
         from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
         from models.transactional.wallet.models import WalletTransaction
@@ -308,6 +402,11 @@ def single_window_search(request):
             applicant_name = resolve_applicant_name(tx.payer_id)
             applicant_suffix = f" | Applicant: {applicant_name}" if applicant_name != "N/A" else ""
             
+            target_type, target_id, user_id = resolve_payment_target_info(tx.payer_id)
+            if not target_type and tx.payer_id and "/" not in str(tx.payer_id):
+                target_type = "licensee"
+                target_id = tx.payer_id
+
             results.append({
                 "type": "payment",
                 "id": tx.utr or tx.transaction_id_no_hoa or "N/A",
@@ -320,7 +419,10 @@ def single_window_search(request):
                     "payment_type": "BillDesk Gateway",
                     "created_at": tx.transaction_date.strftime("%Y-%m-%d %H:%M:%S") if tx.transaction_date else "N/A",
                     "application_id": tx.payer_id,
-                    "applicant_name": applicant_name
+                    "applicant_name": applicant_name,
+                    "target_type": target_type,
+                    "target_id": target_id,
+                    "user_id": user_id
                 }
             })
             if applicant_suffix:
@@ -355,19 +457,44 @@ def single_window_search(request):
             applicant_name = resolve_applicant_name(reference)
             applicant_suffix = f" | Applicant: {applicant_name}" if applicant_name != "N/A" else ""
                 
+            target_type, target_id, user_id = resolve_payment_target_info(reference)
+            if not target_type and tx.licensee_id:
+                target_type, target_id, user_id = resolve_payment_target_info(tx.licensee_id)
+            if not target_type and reference and "/" not in str(reference):
+                target_type = "licensee"
+                target_id = reference
+
+            display_txn_id = tx.transaction_id
+            if display_txn_id and not str(display_txn_id).startswith("BILLDESK") and len(display_txn_id) == 24:
+                from datetime import timedelta
+                time_margin = timedelta(hours=2)
+                candidates = [c for c in [str(tx.user_id).strip(), str(tx.licensee_id).strip()] if c]
+                bd_match = PaymentBilldeskTransaction.objects.filter(
+                    payer_id__in=candidates,
+                    payment_status="S",
+                    transaction_amount=tx.amount,
+                    transaction_date__gte=tx.created_at - time_margin,
+                    transaction_date__lte=tx.created_at + time_margin
+                ).order_by("-transaction_date").first()
+                if bd_match:
+                    display_txn_id = bd_match.utr
+
             results.append({
                 "type": "payment",
-                "id": tx.transaction_id or "N/A",
-                "title": f"Wallet: {tx.transaction_id or 'N/A'}",
+                "id": display_txn_id or "N/A",
+                "title": f"Wallet: {display_txn_id or 'N/A'}",
                 "subtitle": f"Amount: ₹{tx.amount} | Type: {tx.transaction_type} | App/Ref ID: {tx.reference_no or tx.licensee_id}",
                 "status": status,
                 "meta": {
-                    "transaction_id": tx.transaction_id or "N/A",
+                    "transaction_id": display_txn_id or "N/A",
                     "amount": str(tx.amount),
                     "payment_type": f"Wallet {tx.transaction_type}",
                     "created_at": tx.created_at.strftime("%Y-%m-%d %H:%M:%S") if tx.created_at else "N/A",
-                    "application_id": tx.reference_no,
-                    "applicant_name": applicant_name
+                    "application_id": tx.reference_no or tx.licensee_id,
+                    "applicant_name": applicant_name,
+                    "target_type": target_type,
+                    "target_id": target_id,
+                    "user_id": user_id
                 }
             })
             if applicant_suffix:
@@ -754,7 +881,11 @@ def single_window_search(request):
 @renderer_classes([JSONRenderer, BrowsableAPIRenderer])
 @permission_classes([IsAuthenticated])
 def single_window_licensee_detail(request, user_id):
-    u = get_object_or_404(CustomUser, id=user_id)
+    user_id_str = str(user_id).strip()
+    if user_id_str.isdigit():
+        u = get_object_or_404(CustomUser, id=int(user_id_str))
+    else:
+        u = get_object_or_404(CustomUser, username__iexact=user_id_str)
 
     user_data = {
         "id": u.id,

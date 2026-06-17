@@ -1314,7 +1314,50 @@ def pay_license_fee_wallet(request, application_id):
 
     license_fee_hoa = _resolve_hoa_code(module_type="other", wallet_type="license_fee")
     
-    txn_id = secrets.token_hex(12).upper()
+    # Find matching recent successful BillDesk transaction to link UTR
+    txn_id = None
+    try:
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+        from models.transactional.wallet.models import WalletTransaction
+        from datetime import timedelta
+        from django.utils import timezone
+        
+        candidates = [
+            str(request.user.username).strip(),
+            str(lic.license_id).strip(),
+            str(application.application_id).strip()
+        ]
+        time_limit = timezone.now() - timedelta(days=2)
+        
+        # Try with exact amount first
+        recent_txs = PaymentBilldeskTransaction.objects.filter(
+            payer_id__in=candidates,
+            payment_status="S",
+            transaction_amount=amount,
+            transaction_date__gte=time_limit
+        ).order_by("-transaction_date")
+        
+        for tx in recent_txs:
+            if not WalletTransaction.objects.filter(transaction_id=tx.utr, entry_type="DR").exists():
+                txn_id = tx.utr
+                break
+                
+        # If not found, try without amount filter
+        if not txn_id:
+            recent_txs_any = PaymentBilldeskTransaction.objects.filter(
+                payer_id__in=candidates,
+                payment_status="S",
+                transaction_date__gte=time_limit
+            ).order_by("-transaction_date")
+            for tx in recent_txs_any:
+                if not WalletTransaction.objects.filter(transaction_id=tx.utr, entry_type="DR").exists():
+                    txn_id = tx.utr
+                    break
+    except Exception as e:
+        logger.warning("Failed to link BillDesk UTR to wallet payment: %s", e)
+
+    if not txn_id:
+        txn_id = secrets.token_hex(12).upper()
     try:
         debit_wallet_balance(
             transaction_id=txn_id,
@@ -1361,9 +1404,52 @@ def pay_security_fee_wallet(request, application_id):
     amount = getattr(fee, "security_amount", None)
     if amount is None:
         return Response({"detail": "Security fee amount not configured."}, status=status.HTTP_400_BAD_REQUEST)
-    amount = amount + _get_additional_charge_total(application)
     security_deposit_hoa = _resolve_hoa_code(module_type="other", wallet_type="security_deposit")
-    txn_id = secrets.token_hex(12).upper()
+    
+    # Find matching recent successful BillDesk transaction to link UTR
+    txn_id = None
+    try:
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+        from models.transactional.wallet.models import WalletTransaction
+        from datetime import timedelta
+        from django.utils import timezone
+        
+        candidates = [
+            str(request.user.username).strip(),
+            str(lic.license_id).strip(),
+            str(application.application_id).strip()
+        ]
+        time_limit = timezone.now() - timedelta(days=2)
+        
+        # Try with exact amount first
+        recent_txs = PaymentBilldeskTransaction.objects.filter(
+            payer_id__in=candidates,
+            payment_status="S",
+            transaction_amount=amount,
+            transaction_date__gte=time_limit
+        ).order_by("-transaction_date")
+        
+        for tx in recent_txs:
+            if not WalletTransaction.objects.filter(transaction_id=tx.utr, entry_type="DR").exists():
+                txn_id = tx.utr
+                break
+                
+        # If not found, try without amount filter
+        if not txn_id:
+            recent_txs_any = PaymentBilldeskTransaction.objects.filter(
+                payer_id__in=candidates,
+                payment_status="S",
+                transaction_date__gte=time_limit
+            ).order_by("-transaction_date")
+            for tx in recent_txs_any:
+                if not WalletTransaction.objects.filter(transaction_id=tx.utr, entry_type="DR").exists():
+                    txn_id = tx.utr
+                    break
+    except Exception as e:
+        logger.warning("Failed to link BillDesk UTR to wallet payment: %s", e)
+
+    if not txn_id:
+        txn_id = secrets.token_hex(12).upper()
     try:
         debit_wallet_balance(
             transaction_id=txn_id,
