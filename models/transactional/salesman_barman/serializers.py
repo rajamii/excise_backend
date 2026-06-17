@@ -6,7 +6,7 @@ from models.masters.core.models import District
 from auth.user.models import CustomUser
 from utils.fields import CodeRelatedField
 from .helpers import validate_email, validate_pan_number, validate_aadhaar_number, validate_phone_number
-from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+from models.transactional.payment_gateway.models import PaymentSBIePayTransaction
 
 DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE = "001"
 
@@ -179,7 +179,7 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
 
         try:
             tx = (
-                PaymentBilldeskTransaction.objects
+                PaymentSBIePayTransaction.objects
                 .only("payment_status", "transaction_date")
                 .filter(
                     payer_id=str(getattr(app, "application_id", "") or "").strip(),

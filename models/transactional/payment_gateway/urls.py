@@ -1,17 +1,24 @@
 from django.urls import path
-
 from . import views
+from . import helpers
 
 app_name = "payment_gateway"
 
 urlpatterns = [
-    path("modules/<str:module_code>/", views.get_payment_module, name="payment-module-detail"),
-    path("billdesk/initiate/", views.billdesk_initiate_wallet_recharge, name="billdesk-initiate"),
-    path("billdesk/initiate/license-fee/", views.billdesk_initiate_license_fee, name="billdesk-initiate-license-fee"),
-    path("billdesk/initiate/security-deposit/", views.billdesk_initiate_security_deposit, name="billdesk-initiate-security-deposit"),
-    path("billdesk/initiate/new-license-application-fee/", views.billdesk_initiate_new_license_application_fee, name="billdesk-initiate-new-license-application-fee"),
-    path("billdesk/response/", views.billdesk_response, name="billdesk-response"),
-    path("billdesk/webhook/", views.billdesk_webhook, name="billdesk-webhook"),
-    path("billdesk/transactions/", views.list_billdesk_transactions, name="billdesk-transactions-list"),
-    # path("billdesk/mock/process/", views.billdesk_mock_process, name="billdesk-mock-process"),
+    path("modules/<str:module_code>/", helpers.get_payment_module, name="payment-module-detail"),
+    
+    # Wallet Recharge
+    path("sbiepay/initiate/", views.sbiepay_initiate_wallet_recharge, name="sbiepay-initiate"),
+    
+    # License Fee
+    path("sbiepay/initiate/license-fee/", views.sbiepay_initiate_license_fee, name="sbiepay-initiate-license-fee"),
+    
+    # Security Deposit
+    path("sbiepay/initiate/security-deposit/", views.sbiepay_initiate_security_deposit, name="sbiepay-initiate-security-deposit"),
+    
+    # New License App Fee
+    path("sbiepay/initiate/new-license-application-fee/", views.sbiepay_initiate_new_license_application_fee, name="sbiepay-initiate-new-license-application-fee"),
+    
+    # Global Callback
+    path("sbiepay/response/", helpers.sbiepay_response, name="sbiepay-response"),
 ]
