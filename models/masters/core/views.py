@@ -1158,3 +1158,53 @@ def additional_charge_config_delete(request, pk):
     obj.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 
+
+# Master Payment Module Views
+from .serializers.masterpaymentmodule_serializer import MasterPaymentModuleSerializer
+from models.transactional.payment_gateway.models import MasterPaymentModule
+
+@api_view(['GET'])
+@permission_classes([HasAppPermission('masters', 'view')])
+def master_payment_module_list(request):
+    qs = MasterPaymentModule.objects.all()
+    serializer = MasterPaymentModuleSerializer(qs, many=True)
+    return Response(serializer.data)
+
+@api_view(['POST'])
+@permission_classes([HasAppPermission('masters', 'create')])
+def master_payment_module_create(request):
+    serializer = MasterPaymentModuleSerializer(data=request.data)
+    if serializer.is_valid():
+        serializer.save(user_id=request.user.username if request.user else None)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET'])
+@permission_classes([HasAppPermission('masters', 'view')])
+def master_payment_module_detail(request, pk):
+    obj = get_object_or_404(MasterPaymentModule, pk=pk)
+    serializer = MasterPaymentModuleSerializer(obj)
+    return Response(serializer.data)
+
+@api_view(['PUT'])
+@permission_classes([HasAppPermission('masters', 'update')])
+def master_payment_module_update(request, pk):
+    obj = get_object_or_404(MasterPaymentModule, pk=pk)
+    serializer = MasterPaymentModuleSerializer(obj, data=request.data, partial=True)
+    if serializer.is_valid():
+        from django.utils import timezone
+        serializer.save(
+            user_id=request.user.username if request.user else None,
+            modified_date=timezone.now()
+        )
+        return Response(serializer.data)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['DELETE'])
+@permission_classes([HasAppPermission('masters', 'delete')])
+def master_payment_module_delete(request, pk):
+    obj = get_object_or_404(MasterPaymentModule, pk=pk)
+    obj.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
+
+
