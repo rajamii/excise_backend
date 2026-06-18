@@ -36,6 +36,7 @@ from .serializers.locationsubcategory_serializer import LocationSubcategorySeria
 from .serializers.ward_serializer import WardSerializer
 from .serializers.renewalapplicationconfig_serializer import RenewalApplicationConfigSerializer
 from .serializers.supplychaintimerconfig_serializer import SupplyChainTimerConfigSerializer
+from .serializers.additionalchargeconfig_serializer import AdditionalChargeConfigSerializer
 
 # NOTE: LicenseeProfile views have been moved to auth.user.views.
 # Endpoints are now served under /api/users/licensee-profiles/
@@ -1110,4 +1111,50 @@ def timer_config_update(request):
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
+
+
+# Additional Charge Config Views
+
+@api_view(['GET'])
+@permission_classes([HasAppPermission('masters', 'view')])
+def additional_charge_config_list(request):
+    category_id = request.query_params.get('category_id')
+    qs = masters_model.AdditionalChargeConfig.objects.all()
+    if category_id:
+        qs = qs.filter(category_id=category_id)
+    serializer = AdditionalChargeConfigSerializer(qs, many=True)
+    return Response(serializer.data)
+
+@api_view(['POST'])
+@permission_classes([HasAppPermission('masters', 'create')])
+def additional_charge_config_create(request):
+    serializer = AdditionalChargeConfigSerializer(data=request.data)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET'])
+@permission_classes([HasAppPermission('masters', 'view')])
+def additional_charge_config_detail(request, pk):
+    obj = get_object_or_404(masters_model.AdditionalChargeConfig, pk=pk)
+    serializer = AdditionalChargeConfigSerializer(obj)
+    return Response(serializer.data)
+
+@api_view(['PUT'])
+@permission_classes([HasAppPermission('masters', 'update')])
+def additional_charge_config_update(request, pk):
+    obj = get_object_or_404(masters_model.AdditionalChargeConfig, pk=pk)
+    serializer = AdditionalChargeConfigSerializer(obj, data=request.data, partial=True)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['DELETE'])
+@permission_classes([HasAppPermission('masters', 'delete')])
+def additional_charge_config_delete(request, pk):
+    obj = get_object_or_404(masters_model.AdditionalChargeConfig, pk=pk)
+    obj.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
 
