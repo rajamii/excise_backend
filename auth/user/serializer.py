@@ -216,16 +216,14 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 class LoginSerializer(serializers.Serializer):
     username = serializers.CharField(max_length=255)
     password = serializers.CharField(write_only=True)
-    hashkey = serializers.CharField()
-    response = serializers.CharField()
+    hashkey = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    response = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     def validate(self, data):
         username = data.get('username')
         password = data.get('password')
-        hashkey = data.get('hashkey')
-        response = data.get('response')
 
-        if not username or not password or not hashkey or not response:
+        if not username or not password:
             raise serializers.ValidationError("All fields are required.")
 
         existing_user = CustomUser.objects.filter(username=username).first()
