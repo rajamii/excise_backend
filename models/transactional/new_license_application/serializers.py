@@ -26,19 +26,19 @@ DRAUGHT_BEER_MODULE_CODE = "NLI_ADD_DRAUGHT_BEER"
 
 def _get_additional_charge_total(obj: NewLicenseApplication) -> Decimal:
     """
-    Additional charges are configurable in `sems_master_payment_module` (MasterPaymentModule.license_fee).
+    Additional charges are configurable in `masters_fixedfee` (MasterFixedFee.amount).
     They are added to both license fee and security fee when selected by the applicant.
     """
     total = Decimal("0.00")
     try:
-        from models.transactional.payment_gateway.models import MasterPaymentModule
+        from models.masters.core.models import MasterFixedFee
 
         module_fees = {
-            m["module_code"]: (m["license_fee"] if m["license_fee"] is not None else Decimal("0.00"))
-            for m in MasterPaymentModule.objects.filter(
-                module_code__in=[PACHWAI_MODULE_CODE, DRAUGHT_BEER_MODULE_CODE],
-                visibility_status=True,
-            ).values("module_code", "license_fee")
+            m["fee_code"]: (m["amount"] if m["amount"] is not None else Decimal("0.00"))
+            for m in MasterFixedFee.objects.filter(
+                fee_code__in=[PACHWAI_MODULE_CODE, DRAUGHT_BEER_MODULE_CODE],
+                is_active=True,
+            ).values("fee_code", "amount")
         }
         if getattr(obj, "pachwai", False):
             total += module_fees.get(PACHWAI_MODULE_CODE, Decimal("0.00"))

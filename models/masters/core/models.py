@@ -1,4 +1,5 @@
 from django.db import models
+from django.utils import timezone
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator, MaxValueValidator
 from models.masters.core.validators import validate_name, validate_name_extended
@@ -548,4 +549,19 @@ class AdditionalChargeConfig(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.charge_type} ({self.category.license_category}): \u20b9{self.amount}"
+        return f"{self.charge_type} ({self.category.license_category})"
+
+
+class MasterFixedFee(models.Model):
+    fee_code = models.CharField(max_length=50, primary_key=True)
+    fee_desc = models.CharField(max_length=200)
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    is_active = models.BooleanField(default=True)
+    created_date = models.DateTimeField(default=timezone.now)
+    modified_date = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'masters_fixedfee'
+
+    def __str__(self):
+        return f"{self.fee_code} - {self.fee_desc}"

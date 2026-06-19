@@ -148,6 +148,13 @@ additional_charge_config_patterns = [
     path('<int:pk>/delete/', views.additional_charge_config_delete, name='additional-charge-config-delete'),
 ]
 
+# Fixed Fee URLs
+fixed_fee_patterns = [
+    path('',                 views.fixed_fee_list,   name='fixed-fee-list'),
+    path('<str:pk>/',        views.fixed_fee_detail, name='fixed-fee-detail'),
+    path('<str:pk>/update/', views.fixed_fee_update, name='fixed-fee-update'),
+]
+
 urlpatterns = [
     path('timer-config/',          views.timer_config,          name='timer-config'),
     path('timer-config/update/',   views.timer_config_update,   name='timer-config-update'),
@@ -167,6 +174,7 @@ urlpatterns = [
     path('wards/',                  include(ward_patterns)),
     path('renewal-application-config/', include(renewal_application_config_patterns)),
     path('additional-charge-configs/', include(additional_charge_config_patterns)),
+    path('fixed-fees/',             include(fixed_fee_patterns)),
 ]
 
 
