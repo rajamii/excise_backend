@@ -611,8 +611,7 @@ def initiate_renewal(request, license_id):
         'police_station': old_app.police_station,
         'pin_code': old_app.pin_code,
         'company_name': old_app.company_name,
-        'company_pan': old_app.company_pan,
-        'company_cin': old_app.company_cin,
+        'company_gst': old_app.company_gst,
         'company_email': old_app.company_email,
         'company_phone_number': old_app.company_phone_number,
         # Documents (carry forward for renewal)
