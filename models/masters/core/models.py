@@ -534,3 +534,18 @@ class RenewalApplicationConfig(models.Model):
         if not self.pk and RenewalApplicationConfig.objects.exists():
             raise ValidationError("There can be only one RenewalApplicationConfig instance")
         return super().save(*args, **kwargs)
+
+
+class AdditionalChargeConfig(models.Model):
+    category = models.ForeignKey(LicenseCategory, on_delete=models.CASCADE, related_name='additional_charges')
+    charge_type = models.CharField(max_length=50, choices=[('pachwai', 'Pachwai'), ('draught_beer', 'Draught Beer')])
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'masters_additionalchargeconfig'
+        constraints = [
+            models.UniqueConstraint(fields=['category', 'charge_type'], name='unique_category_charge_type')
+        ]
+
+    def __str__(self):
+        return f"{self.charge_type} ({self.category.license_category}): \u20b9{self.amount}"

@@ -284,14 +284,12 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
             helpers.validate_email_field(data['email'])
         if 'pan' in data:
             helpers.validate_pan_number(data['pan'])
-        if data.get('company_pan'):
-            helpers.validate_pan_number(data['company_pan'])
+        if data.get('company_gst'):
+            helpers.validate_gst_number(data['company_gst'])
         if data.get('company_email'):
             helpers.validate_email_field(data['company_email'])
         if data.get('company_phone_number'):
             helpers.validate_mobile_number(data['company_phone_number'])
-        if data.get('company_cin'):
-            helpers.validate_cin_number(data['company_cin'])
         if 'pin_code' in data:
             helpers.validate_pin_code(data['pin_code'])
         return data

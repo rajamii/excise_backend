@@ -73,4 +73,8 @@ def validate_license_type(value):
     return value
 
 
-
+def validate_gst_number(value):
+    pattern = r'^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$'
+    if not re.match(pattern, str(value)):
+        raise ValidationError("Invalid GST format (e.g., 22AAAAA1111A1Z1).")
+    return value

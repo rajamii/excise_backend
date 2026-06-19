@@ -139,6 +139,24 @@ renewal_application_config_patterns = [
     path('update/', views.renewal_application_config_update, name='renewal-application-config-update'),
 ]
 
+# Additional Charge Config URLs
+additional_charge_config_patterns = [
+    path('',                 views.additional_charge_config_list,   name='additional-charge-config-list'),
+    path('create/',          views.additional_charge_config_create, name='additional-charge-config-create'),
+    path('<int:pk>/',        views.additional_charge_config_detail, name='additional-charge-config-detail'),
+    path('<int:pk>/update/', views.additional_charge_config_update, name='additional-charge-config-update'),
+    path('<int:pk>/delete/', views.additional_charge_config_delete, name='additional-charge-config-delete'),
+]
+
+# Master Payment Module URLs
+master_payment_module_patterns = [
+    path('',                 views.master_payment_module_list,   name='master-payment-module-list'),
+    path('create/',          views.master_payment_module_create, name='master-payment-module-create'),
+    path('<str:pk>/',        views.master_payment_module_detail, name='master-payment-module-detail'),
+    path('<str:pk>/update/', views.master_payment_module_update, name='master-payment-module-update'),
+    path('<str:pk>/delete/', views.master_payment_module_delete, name='master-payment-module-delete'),
+]
+
 urlpatterns = [
     path('timer-config/',          views.timer_config,          name='timer-config'),
     path('timer-config/update/',   views.timer_config_update,   name='timer-config-update'),
@@ -157,4 +175,7 @@ urlpatterns = [
     path('location-subcategories/', include(locationsubcategory_patterns)),
     path('wards/',                  include(ward_patterns)),
     path('renewal-application-config/', include(renewal_application_config_patterns)),
+    path('additional-charge-configs/', include(additional_charge_config_patterns)),
+    path('payment-modules/', include(master_payment_module_patterns)),
 ]
+

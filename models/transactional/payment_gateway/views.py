@@ -1833,9 +1833,25 @@ def list_billdesk_transactions(request):
     # Filters
     query = request.query_params.get("query", "").strip()
     status_filter = request.query_params.get("status", "").strip()
+    day = request.query_params.get("day", "").strip()
+    month = request.query_params.get("month", "").strip()
+    year = request.query_params.get("year", "").strip()
+    module = request.query_params.get("module", "").strip()
     
     if status_filter:
         queryset = queryset.filter(payment_status__iexact=status_filter)
+
+    if day.isdigit():
+        queryset = queryset.filter(transaction_date__day=int(day))
+    if month.isdigit():
+        queryset = queryset.filter(transaction_date__month=int(month))
+    if year.isdigit():
+        queryset = queryset.filter(transaction_date__year=int(year))
+    if module:
+        if module == '001':
+            queryset = queryset.exclude(payment_module_code__in=['002', '999'])
+        else:
+            queryset = queryset.filter(payment_module_code=module)
 
     if query:
         # Check if amount query

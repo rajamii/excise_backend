@@ -104,16 +104,14 @@ class NewLicenseApplication(models.Model):
     # === Company Details (Conditional) ===
     company_name = models.CharField(max_length=255, blank=True, null=True)
     company_address = models.TextField(blank=True, null=True)
-    company_pan = models.CharField(max_length=10, blank=True, null=True)
-    company_cin = models.CharField(max_length=21, blank=True, null=True)
-    incorporation_date = models.DateField(blank=True, null=True)
+    company_gst = models.CharField(max_length=15, blank=True, null=True)
     company_phone_number = models.CharField(max_length=10, blank=True, null=True)
     company_email = models.EmailField(blank=True, null=True)
 
     # === Documents ===
     pass_photo = models.FileField(upload_to=upload_document_path)
     pan_card = models.FileField(upload_to=upload_document_path)
-    sikkim_certificate = models.FileField(upload_to=upload_document_path)
+    sikkim_certificate = models.FileField(upload_to=upload_document_path, blank=True, null=True)
     dob_proof = models.FileField(upload_to=upload_document_path)
     noc_landlord = models.FileField(upload_to=upload_document_path, blank=True, null=True)
 
@@ -179,13 +177,11 @@ class NewLicenseApplication(models.Model):
             helpers.validate_email_field(self.company_email)
         
 
-        if self.company_pan:
-            helpers.validate_pan_number(self.company_pan)
+        if self.company_gst:
+            helpers.validate_gst_number(self.company_gst)
         helpers.validate_pan_number(self.pan)
-        if self.company_cin:
-            helpers.validate_cin_number(self.company_cin)
-
         
+
         helpers.validate_gender(self.gender)
         helpers.validate_pin_code(self.pin_code)
 
