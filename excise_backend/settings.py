@@ -193,7 +193,13 @@ OTP_EXPIRY_SECONDS = 600  # 10 minutes
 # Redis cache configuration for CAPTCHA storage
 CACHES = {
     "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": "redis://127.0.0.1:6379/1",
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            "SOCKET_CONNECT_TIMEOUT": 5,  # Give it up to 5 seconds to connect
+            "SOCKET_TIMEOUT": 5,
+        }
     }
 }
 
