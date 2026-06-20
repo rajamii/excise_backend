@@ -113,3 +113,78 @@ class NewLicenseDashboardCountsTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data.get("awaiting_payment"), 0)
         self.assertEqual(resp.data.get("pending"), 1)
+
+
+class NewLicenseCompanyApplicationTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user_model = get_user_model()
+
+        self.state = State.objects.create(state="Sikkim", state_code=11, is_active=True)
+        self.district = District.objects.create(district="Gangtok", district_code=225, is_active=True, state_code=self.state)
+        self.subdivision = Subdivision.objects.create(subdivision="Gangtok Subdivision", subdivision_code=1553, is_active=True, district_code=self.district)
+        self.police_station = PoliceStation.objects.create(police_station="Gangtok PS", subdivision_code=self.subdivision)
+
+        self.category = LicenseCategory.objects.create(license_category="Test Category")
+        self.subcategory = LicenseSubcategory.objects.create(description="FLR Shop", category=self.category)
+        
+        self.individual_type = LicenseType.objects.create(id=1, license_type="Individual")
+        self.company_type = LicenseType.objects.create(id=2, license_type="Company")
+
+        self.licensee_role = Role.objects.create(id=2, name='licensee')
+        self.licensee_user = self.user_model.objects.create_user(
+            password='password123',
+            email='licensee@example.com',
+            role=self.licensee_role,
+            district=self.district,
+            subdivision=self.subdivision,
+            phone_number="9999999901",
+            first_name="Licensee",
+            last_name="User",
+            address="Test address 1"
+        )
+        self.licensee_user.username = 'licensee_user'
+        self.licensee_user.save(update_fields=['username'])
+
+        self.workflow = Workflow.objects.create(id=1, name='License Approval')
+        self.initial_stage = WorkflowStage.objects.create(workflow=self.workflow, name='Applied', is_initial=True)
+        
+        self.client.force_authenticate(user=self.licensee_user)
+
+    def test_create_company_application_with_null_personal_details(self):
+        payload = {
+            "license_type": self.company_type.id,
+            "license_category": self.category.id,
+            "license_sub_category": self.subcategory.id,
+            "establishment_name": "Test Company Est",
+            "site_type": "New",
+            "site_district": self.district.district_code,
+            "site_subdivision": self.subdivision.subdivision_code,
+            "police_station": self.police_station.police_station_code,
+            "location_category": "Urban",
+            "location_name": "Gangtok",
+            "ward_name": "Ward 1",
+            "business_address": "Business Address",
+            "road_name": "Road 1",
+            "pin_code": "737101",
+            "construction_type": "Permanent",
+            "site_owned": "Yes",
+            "noc_obtained": "Yes",
+            "mode_of_operation": "Self",
+            "applicant_name": "",
+            "pan": "",
+            "email": "",
+            "mobile_number": ""
+        }
+
+        url = reverse("new_license_application:new-license-apply")
+        resp = self.client.post(url, payload, format='json')
+        self.assertEqual(resp.status_code, 201)
+        
+        app_id = resp.data.get("application_id")
+        app = NewLicenseApplication.objects.get(application_id=app_id)
+        self.assertIsNone(app.applicant_name)
+        self.assertIsNone(app.pan)
+        self.assertIsNone(app.email)
+        self.assertIsNone(app.mobile_number)
+

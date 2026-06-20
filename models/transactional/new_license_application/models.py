@@ -55,28 +55,28 @@ class NewLicenseApplication(models.Model):
     existing_site_license = models.CharField(max_length=100, blank=True, null=True)
 
     # === Applicant Details ===
-    applicant_name = models.CharField(max_length=150)
-    father_husband_name = models.CharField(max_length=150)
-    dob = models.DateField()
-    gender = models.CharField(max_length=10, choices=[('Male', 'Male'), ('Female', 'Female')])
-    nationality = models.CharField(max_length=50)
-    residential_status = models.CharField(max_length=20, choices=[('Resident', 'Resident'), ('Non-Resident', 'Non-Resident')])
+    applicant_name = models.CharField(max_length=150, blank=True, null=True)
+    father_husband_name = models.CharField(max_length=150, blank=True, null=True)
+    dob = models.DateField(blank=True, null=True)
+    gender = models.CharField(max_length=10, choices=[('Male', 'Male'), ('Female', 'Female')], blank=True, null=True)
+    nationality = models.CharField(max_length=50, blank=True, null=True)
+    residential_status = models.CharField(max_length=20, choices=[('Resident', 'Resident'), ('Non-Resident', 'Non-Resident')], blank=True, null=True)
     marital_status = models.CharField(max_length=20, blank=True, null=True)
-    present_address = models.TextField()
-    permanent_address = models.TextField()
-    pan = models.CharField(max_length=10)
-    email = models.EmailField()
-    mobile_number = models.CharField(max_length=10)
-    mode_of_operation = models.CharField(max_length=20, choices=[('Self', 'Self'), ('Salesman', 'Salesman'), ('Barman', 'Barman')])
+    present_address = models.TextField(blank=True, null=True)
+    permanent_address = models.TextField(blank=True, null=True)
+    pan = models.CharField(max_length=10, blank=True, null=True)
+    email = models.EmailField(blank=True, null=True)
+    mobile_number = models.CharField(max_length=10, blank=True, null=True)
+    mode_of_operation = models.CharField(max_length=20, choices=[('Self', 'Self'), ('Salesman', 'Salesman'), ('Barman', 'Barman')], blank=True, null=True)
     coi_rc_ss = models.CharField(max_length=50, blank=True, null=True)
-    has_sikkim_certificate = models.CharField(max_length=3, choices=[('Yes', 'Yes'), ('No', 'No')])
-    has_excise_license = models.CharField(max_length=3, choices=[('Yes', 'Yes'), ('No', 'No')])
+    has_sikkim_certificate = models.CharField(max_length=3, choices=[('Yes', 'Yes'), ('No', 'No')], blank=True, null=True)
+    has_excise_license = models.CharField(max_length=3, choices=[('Yes', 'Yes'), ('No', 'No')], blank=True, null=True)
     existing_license_category_id = models.PositiveBigIntegerField(blank=True, null=True)
     existing_license_no = models.CharField(max_length=100, blank=True, null=True)
-    family_excise_license = models.CharField(max_length=3, choices=[('Yes', 'Yes'), ('No', 'No')])
+    family_excise_license = models.CharField(max_length=3, choices=[('Yes', 'Yes'), ('No', 'No')], blank=True, null=True)
     family_license_category_id = models.PositiveBigIntegerField(blank=True, null=True)
     family_license_no = models.CharField(max_length=100, blank=True, null=True)
-    criminal_conviction = models.CharField(max_length=3, choices=[('Yes', 'Yes'), ('No', 'No')])
+    criminal_conviction = models.CharField(max_length=3, choices=[('Yes', 'Yes'), ('No', 'No')], blank=True, null=True)
 
     # === Site Details ===
     site_district = models.ForeignKey(District, on_delete=models.PROTECT, related_name='new_license_site_districts')
@@ -109,10 +109,10 @@ class NewLicenseApplication(models.Model):
     company_email = models.EmailField(blank=True, null=True)
 
     # === Documents ===
-    pass_photo = models.FileField(upload_to=upload_document_path)
-    pan_card = models.FileField(upload_to=upload_document_path)
+    pass_photo = models.FileField(upload_to=upload_document_path, blank=True, null=True)
+    pan_card = models.FileField(upload_to=upload_document_path, blank=True, null=True)
     sikkim_certificate = models.FileField(upload_to=upload_document_path, blank=True, null=True)
-    dob_proof = models.FileField(upload_to=upload_document_path)
+    dob_proof = models.FileField(upload_to=upload_document_path, blank=True, null=True)
     noc_landlord = models.FileField(upload_to=upload_document_path, blank=True, null=True)
 
     # Additional uploads used by Apply New License (frontend FormData)
@@ -167,22 +167,28 @@ class NewLicenseApplication(models.Model):
     def clean(self):
         if self.license_type:
             helpers.validate_license_type(self.license_type)
-        helpers.validate_mobile_number(self.mobile_number)
+        
+        is_company = False
+        if self.license_type:
+            is_company = self.license_type.license_type.lower() == 'company' or self.license_type_id == 2
+            
+        if not is_company:
+            helpers.validate_mobile_number(self.mobile_number)
+            helpers.validate_email_field(self.email)
+            helpers.validate_pan_number(self.pan)
+            helpers.validate_gender(self.gender)
+            
         if self.company_phone_number is not None:
             helpers.validate_mobile_number(self.company_phone_number)
         
 
-        helpers.validate_email_field(self.email)
         if self.company_email:
             helpers.validate_email_field(self.company_email)
         
 
         if self.company_gst:
             helpers.validate_gst_number(self.company_gst)
-        helpers.validate_pan_number(self.pan)
         
-
-        helpers.validate_gender(self.gender)
         helpers.validate_pin_code(self.pin_code)
 
     def save(self, *args, **kwargs):
