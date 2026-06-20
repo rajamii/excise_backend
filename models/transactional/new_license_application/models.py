@@ -175,8 +175,10 @@ class NewLicenseApplication(models.Model):
         if not is_company:
             helpers.validate_mobile_number(self.mobile_number)
             helpers.validate_email_field(self.email)
-            helpers.validate_pan_number(self.pan)
             helpers.validate_gender(self.gender)
+            
+        if self.pan:
+            helpers.validate_pan_number(self.pan)
             
         if self.company_phone_number is not None:
             helpers.validate_mobile_number(self.company_phone_number)

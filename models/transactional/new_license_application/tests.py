@@ -172,7 +172,10 @@ class NewLicenseCompanyApplicationTests(TestCase):
             "noc_obtained": "Yes",
             "mode_of_operation": "Self",
             "applicant_name": "",
-            "pan": "",
+            "pan": "ABCDE1234F",
+            "nationality": "Indian",
+            "present_address": "Present Address",
+            "permanent_address": "Permanent Address",
             "email": "",
             "mobile_number": ""
         }
@@ -184,7 +187,10 @@ class NewLicenseCompanyApplicationTests(TestCase):
         app_id = resp.data.get("application_id")
         app = NewLicenseApplication.objects.get(application_id=app_id)
         self.assertIsNone(app.applicant_name)
-        self.assertIsNone(app.pan)
+        self.assertEqual(app.pan, "ABCDE1234F")
+        self.assertEqual(app.nationality, "Indian")
+        self.assertEqual(app.present_address, "Present Address")
+        self.assertEqual(app.permanent_address, "Permanent Address")
         self.assertIsNone(app.email)
         self.assertIsNone(app.mobile_number)
 

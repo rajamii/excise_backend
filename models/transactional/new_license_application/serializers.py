@@ -288,18 +288,20 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
                 helpers.validate_mobile_number(data['mobile_number'])
             if 'email' in data and data['email']:
                 helpers.validate_email_field(data['email'])
-            if 'pan' in data and data['pan']:
-                helpers.validate_pan_number(data['pan'])
-        else:
-            # Set personal details to None/null for Company applications
-            personal_fields = [
-                'applicant_name', 'father_husband_name', 'dob', 'gender', 'nationality',
-                'residential_status', 'marital_status', 'present_address', 'permanent_address',
-                'pan', 'email', 'mobile_number', 'has_sikkim_certificate', 'has_excise_license',
+        
+        if 'pan' in data and data['pan']:
+            helpers.validate_pan_number(data['pan'])
+
+        if is_company:
+            # Set individual-only personal details to None/null for Company applications
+            individual_only_fields = [
+                'applicant_name', 'father_husband_name', 'dob', 'gender',
+                'residential_status', 'marital_status', 'has_sikkim_certificate', 'has_excise_license',
                 'family_excise_license', 'criminal_conviction', 'coi_rc_ss',
-                'pass_photo', 'pan_card', 'dob_proof', 'sikkim_certificate'
+                'pass_photo', 'dob_proof', 'sikkim_certificate',
+                'email', 'mobile_number'
             ]
-            for field in personal_fields:
+            for field in individual_only_fields:
                 if field in data or self.instance is None:
                     data[field] = None
 
