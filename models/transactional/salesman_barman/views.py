@@ -368,11 +368,12 @@ def _passport_data_url(passport_file) -> str:
 
 
 def _get_salesman_barman_registration_fee() -> float | None:
-    module = MasterPaymentModule.objects.filter(module_code="012").only("license_fee").first()
-    if not module:
+    from models.masters.core.models import MasterFixedFee
+    fee_obj = MasterFixedFee.objects.filter(fee_code="012").only("amount").first()
+    if not fee_obj:
         return None
     try:
-        return float(getattr(module, "license_fee", None))
+        return float(getattr(fee_obj, "amount", None))
     except Exception:
         return None
 
