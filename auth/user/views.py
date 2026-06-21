@@ -819,6 +819,35 @@ class MyLicenseeProfileView(APIView):
 # Auth endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def check_username(request):
+    """
+    Lightweight endpoint to check if a username exists before asking for password.
+    Returns 200 if the user exists (active or inactive), 404 if not found.
+    Never reveals password or any sensitive data.
+    """
+    username = str(request.data.get('username') or '').strip()
+    if not username:
+        return Response({'error': 'Username is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = CustomUser.objects.get(username=username)
+    except CustomUser.DoesNotExist:
+        return Response(
+            {'exists': False, 'error': 'No account found with this User ID. Please sign up first.'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    if not user.is_active:
+        return Response(
+            {'exists': True, 'active': False, 'error': 'Your account is inactive. Contact the administrator.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    return Response({'exists': True, 'active': True}, status=status.HTTP_200_OK)
+
+
 class LoginAPI(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
