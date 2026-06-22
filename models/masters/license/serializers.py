@@ -133,6 +133,7 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
     """Includes source application fee flags so the licensee UI can hide supply-chain menus until fee payment."""
 
     source_object_id = serializers.CharField(read_only=True)
+    is_approved = serializers.SerializerMethodField()
     is_license_fee_paid = serializers.SerializerMethodField()
     is_security_fee_paid = serializers.SerializerMethodField()
     issue_date = serializers.SerializerMethodField()
@@ -165,6 +166,16 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
     establishment_name = serializers.SerializerMethodField()
     site_district = serializers.CharField(source='excise_district.district', read_only=True)
     salesman_barman_role = serializers.SerializerMethodField()
+
+    def get_is_approved(self, obj):
+        src = getattr(obj, "source_application", None)
+        if src is None:
+            return True
+        is_app = getattr(src, "is_approved", False)
+        stage_name = ""
+        if hasattr(src, "current_stage") and src.current_stage:
+            stage_name = str(src.current_stage.name).strip().lower()
+        return bool(is_app or stage_name == "approved")
 
     def get_is_license_fee_paid(self, obj):
         src = getattr(obj, "source_application", None)
@@ -328,6 +339,7 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
             'license_id',
             'source_object_id',
             'is_active',
+            'is_approved',
             'is_license_fee_paid',
             'is_security_fee_paid',
             'issue_date',
