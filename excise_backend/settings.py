@@ -160,7 +160,7 @@ DATABASES = {
         'USER': 'postgres',         # Your PostgreSQL username
         'PASSWORD': 'sameer123',  # Your PostgreSQL password
         'HOST': 'localhost',        
-        'PORT': '5432',             # Default PostgreSQL port
+        'PORT': '5433',             # Default PostgreSQL port
         'CONN_MAX_AGE': 300,          # Don't reuse connections — avoids aborted transaction state
     }
 }

@@ -14,7 +14,10 @@ class EverythingConverter:
         return value
 
 
-register_converter(EverythingConverter, 'everything')
+from django.urls.converters import get_converters
+
+if 'everything' not in get_converters():
+    register_converter(EverythingConverter, 'everything')
 
 
 urlpatterns = [

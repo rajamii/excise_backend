@@ -38,6 +38,7 @@ from .serializers.renewalapplicationconfig_serializer import RenewalApplicationC
 from .serializers.supplychaintimerconfig_serializer import SupplyChainTimerConfigSerializer
 from .serializers.additionalchargeconfig_serializer import AdditionalChargeConfigSerializer
 from .serializers.fixedfee_serializer import MasterFixedFeeSerializer
+from .serializers.whatscurrent_serializer import WhatsCurrentSerializer
 
 # NOTE: LicenseeProfile views have been moved to auth.user.views.
 # Endpoints are now served under /api/users/licensee-profiles/
@@ -1185,6 +1186,77 @@ def fixed_fee_update(request, pk):
         serializer.save()
         return Response(serializer.data)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+#################################################
+#           Whats Current                       #
+#################################################
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def whatscurrent_list(request):
+    """List active WhatsCurrent items, optionally filtered by category."""
+    category = request.query_params.get('category', None)
+    show_all = request.query_params.get('all', 'false').lower() == 'true'
+    
+    if show_all:
+        queryset = masters_model.WhatsCurrent.objects.all()
+    else:
+        queryset = masters_model.WhatsCurrent.objects.filter(is_active=True)
+        
+    if category and category != 'all':
+        queryset = queryset.filter(category=category)
+    serializer = WhatsCurrentSerializer(queryset, many=True)
+    return Response(serializer.data)
+
+
+@api_view(['POST'])
+@permission_classes([HasAppPermission('masters', 'create')])
+def whatscurrent_create(request):
+    """Create a new WhatsCurrent item."""
+    data = request.data.copy()
+    if 'isActive' in data:
+        val = data['isActive']
+        data['is_active'] = val.lower() == 'true' if isinstance(val, str) else bool(val)
+        
+    serializer = WhatsCurrentSerializer(data=data)
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def whatscurrent_detail(request, pk):
+    """Retrieve details of a WhatsCurrent item."""
+    obj = get_object_or_404(masters_model.WhatsCurrent, pk=pk)
+    serializer = WhatsCurrentSerializer(obj)
+    return Response(serializer.data)
+
+
+@api_view(['PUT', 'PATCH'])
+@permission_classes([HasAppPermission('masters', 'update')])
+def whatscurrent_update(request, pk):
+    """Update a WhatsCurrent item."""
+    obj = get_object_or_404(masters_model.WhatsCurrent, pk=pk)
+    data = request.data.copy()
+    if 'isActive' in data:
+        val = data['isActive']
+        data['is_active'] = val.lower() == 'true' if isinstance(val, str) else bool(val)
+        
+    serializer = WhatsCurrentSerializer(obj, data=data, partial=request.method == 'PATCH')
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+
+
+@api_view(['DELETE'])
+@permission_classes([HasAppPermission('masters', 'delete')])
+def whatscurrent_delete(request, pk):
+    """Delete a WhatsCurrent item."""
+    obj = get_object_or_404(masters_model.WhatsCurrent, pk=pk)
+    obj.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 

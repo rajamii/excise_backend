@@ -155,6 +155,15 @@ fixed_fee_patterns = [
     path('<str:pk>/update/', views.fixed_fee_update, name='fixed-fee-update'),
 ]
 
+# Whats Current URLs
+whatscurrent_patterns = [
+    path('',                 views.whatscurrent_list,   name='whatscurrent-list'),
+    path('create/',          views.whatscurrent_create, name='whatscurrent-create'),
+    path('<int:pk>/',        views.whatscurrent_detail, name='whatscurrent-detail'),
+    path('<int:pk>/update/', views.whatscurrent_update, name='whatscurrent-update'),
+    path('<int:pk>/delete/', views.whatscurrent_delete, name='whatscurrent-delete'),
+]
+
 urlpatterns = [
     path('timer-config/',          views.timer_config,          name='timer-config'),
     path('timer-config/update/',   views.timer_config_update,   name='timer-config-update'),
@@ -175,6 +184,7 @@ urlpatterns = [
     path('renewal-application-config/', include(renewal_application_config_patterns)),
     path('additional-charge-configs/', include(additional_charge_config_patterns)),
     path('fixed-fees/',             include(fixed_fee_patterns)),
+    path('whats-current/',          include(whatscurrent_patterns)),
 ]
 
 

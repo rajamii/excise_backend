@@ -565,3 +565,29 @@ class MasterFixedFee(models.Model):
 
     def __str__(self):
         return f"{self.fee_code} - {self.fee_desc}"
+
+
+class WhatsCurrent(models.Model):
+    CATEGORY_CHOICES = [
+        ('act', 'Acts'),
+        ('rule', 'Rules'),
+        ('circular', 'Circulars'),
+        ('bullet', 'Bullet Notifications'),
+        ('license', 'License Info'),
+    ]
+
+    title = models.CharField(max_length=500)
+    category = models.CharField(max_length=50, choices=CATEGORY_CHOICES)
+    message = models.TextField(blank=True, null=True)
+    file = models.FileField(upload_to='whats_current/pdfs/', blank=True, null=True)
+    date = models.DateField(default=timezone.now)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'masters_whatscurrent'
+        ordering = ['-date', '-created_at']
+
+    def __str__(self):
+        return f"{self.category} - {self.title}"
