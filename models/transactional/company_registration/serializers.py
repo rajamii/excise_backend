@@ -59,6 +59,22 @@ class CompanyRegistrationSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['application_id', 'current_stage_name', 'is_approved', 'applicant', 'workflow']
 
+    def to_internal_value(self, data):
+        # Create a mutable copy if it's a QueryDict or dict
+        mutable_data = data.copy() if hasattr(data, 'copy') else dict(data)
+        
+        # Map camelCase upload keys from frontend to snake_case backend fields
+        mappings = {
+            'exciseLicense': 'excise_license',
+            'deedOfPartnership': 'deed_of_partnership',
+            'memorandumOfAssociation': 'memorandum_of_association',
+        }
+        for camel, snake in mappings.items():
+            if camel in mutable_data and snake not in mutable_data:
+                mutable_data[snake] = mutable_data[camel]
+                
+        return super().to_internal_value(mutable_data)
+
     def get_latest_transaction(self, obj):
         transaction = obj.transactions.order_by('-timestamp').first()
         return WorkflowTransactionSerializer(transaction).data if transaction else None

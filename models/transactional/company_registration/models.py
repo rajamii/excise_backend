@@ -42,6 +42,9 @@ class CompanyRegistration(models.Model):
     # ===== Document Upload =====
     # Using simple string path instead of function reference
     undertaking = models.FileField(upload_to='company_registration/')
+    excise_license = models.FileField(upload_to='company_registration/', blank=True, null=True)
+    deed_of_partnership = models.FileField(upload_to='company_registration/', blank=True, null=True)
+    memorandum_of_association = models.FileField(upload_to='company_registration/', blank=True, null=True)
 
     # ===== Metadata =====
     created_at = models.DateTimeField(auto_now_add=True)
