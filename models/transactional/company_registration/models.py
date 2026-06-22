@@ -36,8 +36,6 @@ class CompanyRegistration(models.Model):
     member_address = models.TextField()
 
     # ===== Payment Details =====
-    payment_id = models.CharField(max_length=100, blank=True, null=True)
-    payment_date = models.DateField(blank=True, null=True)
     payment_amount = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
     payment_remarks = models.TextField(blank=True, null=True)
 

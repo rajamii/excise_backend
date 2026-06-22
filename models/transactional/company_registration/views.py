@@ -14,6 +14,13 @@ from auth.workflow.services import WorkflowService
 from models.transactional.helpers import _get_stage_sets, _normalize_role, _get_role_stage_names, _collect_reachable_stage_names
 from .models import CompanyRegistration
 from .serializers import CompanyRegistrationSerializer
+from rest_framework.permissions import IsAuthenticated
+from django.utils import timezone
+import secrets
+from models.transactional.wallet.wallet_service import debit_wallet_balance
+from models.transactional.wallet.wallet_initializer import _resolve_hoa_code
+from models.transactional.payment_gateway.models import MasterPaymentModule
+
 
 
 def _create_application(request, workflow_name: str, serializer_cls):
@@ -202,14 +209,15 @@ def application_group(request):
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
         rejected_stages = set(stage_sets['rejected'])
-        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
+        payment_stages = set(stage_sets['payment'])
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
 
         return Response({
             "applied": CompanyRegistrationSerializer(
                 base_qs.filter(current_stage__name__in=applied_stages), many=True
             ).data,
             "pending": CompanyRegistrationSerializer(
-                base_qs, many=True
+                base_qs.filter(current_stage__name__in=pending_stages), many=True
             ).data,
             "objection": CompanyRegistrationSerializer(
                 base_qs.filter(current_stage__name__in=objection_stages), many=True
@@ -219,6 +227,9 @@ def application_group(request):
             ).data,
             "rejected": CompanyRegistrationSerializer(
                 base_qs.filter(current_stage__name__in=rejected_stages), many=True
+            ).data,
+            "awaiting_payment": CompanyRegistrationSerializer(
+                base_qs.filter(current_stage__name__in=payment_stages), many=True
             ).data
         })
 
@@ -280,4 +291,83 @@ def application_group(request):
         "approved": [],
         "rejected": []
     })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def pay_company_registration_fee(request, application_id):
+    """
+    Wallet debit for Company Registration fee (module_code=009).
+    On success, advance workflow from Awaiting Payment -> Approved.
+    """
+    from decimal import Decimal
+    application = get_object_or_404(CompanyRegistration, application_id=application_id)
+    
+    # Verify user is licensee
+    role_name = request.user.role.name if request.user.role else None
+    if _normalize_role(role_name) != 'licensee':
+        return Response({"detail": "Only licensees can pay the registration fee."}, status=status.HTTP_403_FORBIDDEN)
+        
+    if application.applicant != request.user:
+        return Response({"detail": "Not found or not authorized."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Only allow payment once the application is in Awaiting Payment.
+    current_stage_name = application.current_stage.name if application.current_stage else ""
+    if current_stage_name != "Awaiting Payment":
+        return Response(
+            {"detail": f"Application is in '{current_stage_name}', not Awaiting Payment stage."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Get the fee amount for module 009
+    try:
+        module = MasterPaymentModule.objects.filter(module_code='009').first()
+        amount = module.license_fee if module and module.license_fee is not None else 5000.00
+    except Exception:
+        amount = 5000.00
+
+    amount = Decimal(str(amount))
+
+    # Resolve wallet licensee id (username) and HOA
+    wallet_licensee_id = str(getattr(request.user, "username", "") or "").strip()
+    license_fee_hoa = _resolve_hoa_code(module_type="other", wallet_type="license_fee")
+
+    txn_id = secrets.token_hex(12).upper()
+    try:
+        debit_wallet_balance(
+            transaction_id=txn_id,
+            licensee_id=wallet_licensee_id,
+            wallet_type="license_fee",
+            head_of_account=license_fee_hoa,
+            amount=amount,
+            user_id=wallet_licensee_id,
+            remarks=f"Company Registration fee paid for {application.application_id}",
+            reference_no=application.application_id,
+        )
+    except Exception as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Advance to Approved stage
+    try:
+        with transaction.atomic():
+            application.payment_amount = amount
+            application.payment_remarks = f"Paid via license wallet. Trans ID: {txn_id}"
+            application.is_approved = True
+            application.save()
+
+            approved_stage = application.workflow.stages.filter(name__iexact="approved").order_by("id").first()
+            if approved_stage:
+                WorkflowService.advance_stage(
+                    application=application,
+                    user=request.user,
+                    target_stage=approved_stage,
+                    context={"action": "PAY"},
+                    remarks="Company Registration fee paid via wallet",
+                )
+                application.refresh_from_db()
+    except Exception as exc:
+        return Response({"detail": f"Payment succeeded but workflow advance failed: {str(exc)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response({"success": True, "transaction_id": txn_id})
+
 

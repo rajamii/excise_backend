@@ -32,6 +32,9 @@ urlpatterns = [
 
     # List applications filtered by their current status (e.g., pending, approved, etc.) (GET)
     path('list-by-status/', views.application_group, name='applications-by-status'),
+
+    # Pay company registration fee (POST)
+    path('detail/<everything:application_id>/pay-license-fee/', views.pay_company_registration_fee, name='pay-company-registration-fee'),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
