@@ -85,12 +85,6 @@ class CompanyRegistrationSerializer(serializers.ModelSerializer):
     def validate_member_name(self, value):
         return helpers.validate_name(value)
 
-    def validate_pan(self, value):
-        return helpers.validate_pan_number(value)
-
-    def validate_office_address(self, value):
-        return helpers.validate_address(value)
-
     def validate_factory_address(self, value):
         return helpers.validate_address(value)
 

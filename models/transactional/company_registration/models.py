@@ -19,8 +19,6 @@ class CompanyRegistration(models.Model):
     application_year = models.CharField(max_length=9, default='2025-2026')
     
     company_name = models.CharField(max_length=255)
-    pan = models.CharField(max_length=10)
-    office_address = models.TextField()
     country = models.CharField(max_length=100)
     state = models.CharField(max_length=100)
     factory_address = models.TextField()
@@ -75,8 +73,6 @@ class CompanyRegistration(models.Model):
     def clean(self):
         helpers.validate_name(self.company_name)
         helpers.validate_name(self.member_name)
-        helpers.validate_pan_number(self.pan)
-        helpers.validate_address(self.office_address)
         helpers.validate_address(self.factory_address)
         helpers.validate_address(self.member_address)
         helpers.validate_mobile_number(self.company_mobile_number)
@@ -138,7 +134,6 @@ class CompanyRegistration(models.Model):
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['company_name']),
-            models.Index(fields=['pan']),
             models.Index(fields=['application_year']),
             models.Index(fields=['current_stage']),
             models.Index(fields=['applicant']),
