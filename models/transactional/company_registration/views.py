@@ -444,7 +444,7 @@ def final_license_detail(request, application_id):
         "licenseeName": application.company_name,
         "fatherOrHusbandName": "",
         "kindOfShop": application.brand_type,
-        "addressOfBusiness": application.office_address,
+        "addressOfBusiness": application.factory_address,
         "district": application.state,
         "modeOfOperation": "",
         "passportPhotoUrl": "",
