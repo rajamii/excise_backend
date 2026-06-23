@@ -906,6 +906,32 @@ class WorkflowService:
         # --- 6. Determine the stage to return to ---
         # Goal: after licensee corrects objected fields, route back to the officer/admin stage
         # for verification, not to licensee-facing payment gates.
+        return_stage = None
+        if forward_to:
+            from auth.workflow.models import StagePermission
+            sp = StagePermission.objects.filter(
+                stage__workflow=application.workflow,
+                role=forward_to,
+                can_process=True
+            ).select_related('stage').first()
+            if sp:
+                return_stage = sp.stage
+
+        if return_stage:
+            application.current_stage = return_stage
+            application.save(update_fields=['current_stage'])
+
+            Transaction.objects.create(
+                content_type=ContentType.objects.get_for_model(application),
+                object_id=str(application.pk),
+                performed_by=user,
+                forwarded_by=getattr(user, "role", None),
+                forwarded_to=forward_to,
+                stage=return_stage,
+                remarks=remarks
+            )
+            return
+
         def _is_payment_stage(stage):
             name = str(getattr(stage, "name", "") or "").strip().lower()
             return name == "awaiting_payment" or ("payment" in name and "reject" not in name)
