@@ -176,8 +176,46 @@ class WorkflowService:
         """
         Best-effort: read a value from the application model using a canonicalized field name.
         Supports simple dotted paths for dict-like values (e.g. "address.line1").
+        Also supports double colon notation for index-based JSON array items (e.g. "members::0::email").
         """
         raw = str(field_name or '').strip()
+        if '::' in raw:
+            parts = raw.split('::')
+            key = parts[0]
+            try:
+                idx = int(parts[1])
+                val = getattr(application, key, None)
+                if isinstance(val, str):
+                    import json
+                    try:
+                        val = json.loads(val)
+                    except Exception:
+                        val = None
+                if isinstance(val, list) and idx < len(val):
+                    item = val[idx]
+                    if len(parts) >= 3 and isinstance(item, dict):
+                        subfield = parts[2]
+                        aliases = [subfield]
+                        if subfield == 'email':
+                            aliases += ['emailId', 'email_id', 'memberEmailId', 'member_email_id']
+                        elif subfield == 'name':
+                            aliases += ['memberName', 'member_name']
+                        elif subfield == 'designation':
+                            aliases += ['memberDesignation', 'member_designation']
+                        elif subfield == 'mobile':
+                            aliases += ['mobileNumber', 'memberMobileNumber', 'member_mobile_number']
+                        elif subfield == 'address':
+                            aliases += ['memberAddress', 'member_address']
+                        
+                        for a in aliases:
+                            if a in item:
+                                return WorkflowService._stringify_for_audit(item[a])
+                        return WorkflowService._stringify_for_audit(item.get(subfield))
+                    return WorkflowService._stringify_for_audit(item)
+            except Exception:
+                pass
+            return None
+
         canonical = WorkflowService._canonical_field_name(raw)
 
         # Some models use camelCase python attribute names with snake_case DB columns
@@ -245,6 +283,8 @@ class WorkflowService:
         raw = str(value or '').strip()
         if not raw:
             return ''
+        if '::' in raw:
+            return raw
         if '_' in raw:
             return raw.lower()
         return ''.join([f"_{ch.lower()}" if ch.isupper() else ch for ch in raw]).lstrip('_')
@@ -774,6 +814,77 @@ class WorkflowService:
         updated_fields = updated_fields or {}
         remarks = remarks or "Objections resolved and application returned to previous stage"
 
+        # Pre-process index-based array field updates (e.g. members::0::email)
+        array_updates = {}
+        for key in list(updated_fields.keys()):
+            val = updated_fields[key]
+            if '::' in key:
+                parts = key.split('::')
+                if len(parts) >= 3:
+                    arr_name, idx_str, subfield = parts[0], parts[1], parts[2]
+                    try:
+                        idx = int(idx_str)
+                        array_updates.setdefault(arr_name, {})
+                        array_updates[arr_name].setdefault(idx, {})
+                        array_updates[arr_name][idx][subfield] = val
+                    except ValueError:
+                        pass
+
+        for arr_name, idx_dict in array_updates.items():
+            arr_val = getattr(application, arr_name, None)
+            if isinstance(arr_val, str):
+                import json
+                try:
+                    arr_val = json.loads(arr_val)
+                except Exception:
+                    arr_val = []
+            if not isinstance(arr_val, list):
+                arr_val = []
+            
+            for idx, field_dict in idx_dict.items():
+                while len(arr_val) <= idx:
+                    arr_val.append({})
+                
+                item = arr_val[idx]
+                if not isinstance(item, dict):
+                    item = {}
+                    arr_val[idx] = item
+                
+                for subfield, val in field_dict.items():
+                    aliases = [subfield]
+                    if subfield == 'email':
+                        aliases += ['emailId', 'email_id', 'memberEmailId', 'member_email_id']
+                    elif subfield == 'name':
+                        aliases += ['memberName', 'member_name']
+                    elif subfield == 'designation':
+                        aliases += ['memberDesignation', 'member_designation']
+                    elif subfield == 'mobile':
+                        aliases += ['mobileNumber', 'memberMobileNumber', 'member_mobile_number']
+                    elif subfield == 'address':
+                        aliases += ['memberAddress', 'member_address']
+                    
+                    updated_any = False
+                    for alias in aliases:
+                        if alias in item:
+                            item[alias] = val
+                            updated_any = True
+                    if not updated_any:
+                        item[subfield] = val
+                    
+                    if idx == 0 and arr_name == 'members':
+                        if subfield == 'name':
+                            updated_fields['member_name'] = val
+                        elif subfield == 'designation':
+                            updated_fields['member_designation'] = val
+                        elif subfield == 'mobile':
+                            updated_fields['member_mobile_number'] = val
+                        elif subfield == 'email':
+                            updated_fields['member_email_id'] = val
+                        elif subfield == 'address':
+                            updated_fields['member_address'] = val
+            
+            updated_fields[arr_name] = arr_val
+
         # --- 1. Early exit if no unresolved objections ---
         unresolved_qs = application.objections.filter(is_resolved=False)
         if objection_ids:
@@ -851,6 +962,8 @@ class WorkflowService:
             serializer_field_names = set(getattr(AppSerializer(application), 'fields', {}).keys())
             serializer_payload = {}
             for canonical_name, meta in normalized_updated_fields.items():
+                if '::' in canonical_name:
+                    continue
                 provided_name = str((meta or {}).get('provided') or '').strip()
                 value = (meta or {}).get('value')
                 original_name = str(required_field_map.get(canonical_name) or '').strip()
