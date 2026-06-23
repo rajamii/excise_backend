@@ -371,3 +371,143 @@ def pay_company_registration_fee(request, application_id):
     return Response({"success": True, "transaction_id": txn_id})
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def final_license_detail(request, application_id):
+    import base64
+    from io import BytesIO
+    from PIL import Image
+    from django.core import signing
+    from django.http import HttpResponse
+    from django.utils import timezone
+    from urllib.parse import quote
+    from utils.qrcodegen import QrCode
+
+    raw_id = str(application_id or "").strip()
+    token = raw_id
+    low = token.lower()
+    if low.startswith("val:") or low.startswith("val-") or low.startswith("val "):
+        token = token[4:].strip()
+
+    resolved_application_id = raw_id
+    validated_via_code = False
+    try:
+        payload = signing.loads(token, salt="final-license")
+        if isinstance(payload, dict) and payload.get("source") == "company_registration" and payload.get("applicationId"):
+            resolved_application_id = str(payload["applicationId"])
+            validated_via_code = True
+    except Exception:
+        resolved_application_id = raw_id
+
+    application = get_object_or_404(CompanyRegistration, application_id=resolved_application_id)
+    
+    role_name = request.user.role.name if request.user.role else None
+    role_normalized = _normalize_role(role_name)
+    if role_normalized == 'licensee' and application.applicant != request.user:
+        return Response({"detail": "Not found or not authorized."}, status=status.HTTP_404_NOT_FOUND)
+
+    parts = application.application_id.split('/')
+    serial = parts[-1] if parts else '0001'
+    try:
+        numeric_serial = int(serial)
+    except ValueError:
+        numeric_serial = 1
+    company_registration_id = f"CRF/{numeric_serial:08d}"
+
+    signed_code = signing.dumps(
+        {"applicationId": application.application_id, "source": "company_registration"},
+        salt="final-license",
+    )
+    validation_url = request.build_absolute_uri(f"/v/{quote(signed_code, safe=':')}/")
+
+    txn_ref = ""
+    txn_date = ""
+    remarks = str(application.payment_remarks or "")
+    if "Trans ID:" in remarks:
+        txn_ref = remarks.split("Trans ID:")[-1].strip()
+    else:
+        txn_ref = remarks
+    
+    txn_date = application.updated_at.strftime('%d/%m/%Y') if application.updated_at else ""
+
+    response_payload = {
+        "applicationId": application.application_id,
+        "certificateType": "company-registration",
+        "licenseNumber": company_registration_id,
+        "licenseTitle": "Certificate of Company Registration",
+        "validationCode": signed_code,
+        "validationPdfUrl": validation_url,
+        "validatedViaCode": validated_via_code,
+        "print_count": 0,
+        "is_print_fee_paid": True,
+        "terms": [],
+        "licenseeName": application.company_name,
+        "fatherOrHusbandName": "",
+        "kindOfShop": application.brand_type,
+        "addressOfBusiness": application.office_address,
+        "district": application.state,
+        "modeOfOperation": "",
+        "passportPhotoUrl": "",
+        "licenseFee": f"Rs {application.payment_amount:.2f}" if application.payment_amount else "Rs 5000.00",
+        "transactionRef": txn_ref,
+        "transactionDate": txn_date,
+        "validFrom": txn_date,
+        "validTo": "",
+        "generatedOn": application.updated_at.strftime('%d/%m/%Y') if application.updated_at else "",
+        "applicationDateTime": application.created_at.strftime('%d/%m/%Y %H:%M:%S') if application.created_at else "",
+        "qrCodeDataUrl": _make_qr_data_url(validation_url),
+        "applicationYear": application.application_year,
+    }
+
+    return Response(response_payload, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def final_license_qr_code(request, application_id):
+    import base64
+    from django.core import signing
+    from urllib.parse import quote
+
+    application = get_object_or_404(CompanyRegistration, application_id=application_id)
+    
+    role_name = request.user.role.name if request.user.role else None
+    role_normalized = _normalize_role(role_name)
+    if role_normalized == 'licensee' and application.applicant != request.user:
+        return Response({"detail": "Not found or not authorized."}, status=status.HTTP_404_NOT_FOUND)
+
+    signed_code = signing.dumps(
+        {"applicationId": application.application_id, "source": "company_registration"},
+        salt="final-license",
+    )
+    validation_url = request.build_absolute_uri(f"/v/{quote(signed_code, safe=':')}/")
+
+    data_url = _make_qr_data_url(validation_url)
+    b64 = data_url.split(",", 1)[1] if "," in data_url else ""
+    return HttpResponse(base64.b64decode(b64), content_type="image/png")
+
+
+def _make_qr_data_url(payload: str) -> str:
+    import base64
+    from io import BytesIO
+    from PIL import Image
+    from utils.qrcodegen import QrCode
+
+    qr = QrCode.encode_text(str(payload or ""), QrCode.Ecc.MEDIUM)
+    size = qr.get_size()
+    border = 2
+    scale = 4
+    img_size = (size + border * 2) * scale
+    img = Image.new("RGB", (img_size, img_size), "white")
+    pixels = img.load()
+    for y in range(size):
+        for x in range(size):
+            if qr.get_module(x, y):
+                for dy in range(scale):
+                    for dx in range(scale):
+                        pixels[(x + border) * scale + dx, (y + border) * scale + dy] = (0, 0, 0)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+
+

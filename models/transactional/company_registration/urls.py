@@ -33,6 +33,12 @@ urlpatterns = [
     # Pay company registration fee (POST) — MUST be before the greedy detail route
     path('pay-fee/<everything:application_id>/', views.pay_company_registration_fee, name='pay-company-registration-fee'),
 
+    # Final license detail (GET)
+    path('final-license/<everything:application_id>/', views.final_license_detail, name='final-license-detail'),
+
+    # Final license QR code (GET)
+    path('final-license/<everything:application_id>/qr-code/', views.final_license_qr_code, name='final-license-qr-code'),
+
     # Retrieve details of a specific company registration by application ID (GET)
     path('detail/<everything:application_id>/', views.company_registration_detail, name='detail'),
 ]
