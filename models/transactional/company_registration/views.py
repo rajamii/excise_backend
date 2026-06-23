@@ -319,14 +319,14 @@ def pay_company_registration_fee(request, application_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # Get the fee amount for module 009
+    # Get the fee amount dynamically from masters_fixedfee table (admin-updatable)
     try:
-        module = MasterPaymentModule.objects.filter(module_code='009').first()
-        amount = module.license_fee if module and module.license_fee is not None else 5000.00
+        from django.apps import apps
+        FixedFee = apps.get_model('core', 'MasterFixedFee')
+        fee_obj = FixedFee.objects.filter(fee_code='COMP_REG', is_active=True).first()
+        amount = fee_obj.amount if fee_obj else Decimal('5000.00')
     except Exception:
-        amount = 5000.00
-
-    amount = Decimal(str(amount))
+        amount = Decimal('5000.00')
 
     # Resolve wallet licensee id (username) and HOA
     wallet_licensee_id = str(getattr(request.user, "username", "") or "").strip()

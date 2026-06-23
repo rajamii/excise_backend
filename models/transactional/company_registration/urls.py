@@ -12,7 +12,7 @@ class EverythingConverter:
 
     def to_url(self, value):
         return value
-    
+
 register_converter(EverythingConverter, 'everything')
 
 app_name = 'company_registration'
@@ -24,17 +24,17 @@ urlpatterns = [
     # List all company registrations (GET)
     path('list/', views.list_company_registrations, name='list'),
 
-    # Retrieve details of a specific company registration by application ID (GET)
-    path('detail/<everything:application_id>/', views.company_registration_detail, name='detail'),
-
     # Get dashboard statistics/counts (e.g., total applications, approved, pending, etc.) (GET)
     path('dashboard-counts/', views.dashboard_counts, name='dashboard-counts'),
 
     # List applications filtered by their current status (e.g., pending, approved, etc.) (GET)
     path('list-by-status/', views.application_group, name='applications-by-status'),
 
-    # Pay company registration fee (POST)
-    path('detail/<everything:application_id>/pay-license-fee/', views.pay_company_registration_fee, name='pay-company-registration-fee'),
+    # Pay company registration fee (POST) — MUST be before the greedy detail route
+    path('pay-fee/<everything:application_id>/', views.pay_company_registration_fee, name='pay-company-registration-fee'),
+
+    # Retrieve details of a specific company registration by application ID (GET)
+    path('detail/<everything:application_id>/', views.company_registration_detail, name='detail'),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
