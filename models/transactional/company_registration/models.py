@@ -32,6 +32,7 @@ class CompanyRegistration(models.Model):
     member_mobile_number = models.BigIntegerField()
     member_email_id = models.EmailField(blank=True, null=True)
     member_address = models.TextField()
+    members = models.JSONField(default=list, blank=True)
 
     # ===== Payment Details =====
     payment_amount = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
