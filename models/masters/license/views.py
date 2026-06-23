@@ -191,6 +191,8 @@ def active_licensees(request):
         licensees = License.objects.filter(
             Q(applicant=request.user) | 
             Q(source_content_type=new_app_ct, source_object_id__in=user_app_ids)
+        ).exclude(
+            source_type="salesman_barman"  # SB-type licenses must not appear in licensee selection
         ).select_related(
             'excise_district',
             'license_category',
@@ -200,6 +202,8 @@ def active_licensees(request):
         licensees = License.objects.filter(
             is_active=True,
             valid_up_to__gte=now()
+        ).exclude(
+            source_type="salesman_barman"  # SB-type licenses must not appear in licensee selection
         ).select_related(
             'excise_district',
             'license_category',
