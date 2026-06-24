@@ -508,14 +508,14 @@ def initiate_renewal(request, license_id):
     if old_app.applicant != request.user:
         return Response({"detail": "You can only renew your own license."}, status=status.HTTP_403_FORBIDDEN)
 
-    def get_timer_days(code: str, default_days: int) -> int:
+    def get_timer_days(code: str, default_days: int) -> float:
         cfg = (
             SupplyChainTimerConfig.objects.filter(code=code, is_active=True)
             .order_by("-updated_at", "-id")
             .first()
         )
         if not cfg:
-            return int(default_days)
+            return float(default_days)
 
         unit = str(getattr(cfg, "delay_unit", "") or "").lower().strip()
         value = getattr(cfg, "delay_value", None)
@@ -530,24 +530,28 @@ def initiate_renewal(request, license_id):
             if unit.endswith("s"):
                 unit = unit[:-1]
             if unit == "day":
-                return value_int
+                return float(value_int)
             if unit in ("week", "wk"):
-                return value_int * 7
+                return float(value_int * 7)
             if unit in ("month", "mon", "mo"):
-                return value_int * 30
+                return float(value_int * 30)
             if unit in ("year", "yr"):
-                return value_int * 365
+                return float(value_int * 365)
             if unit in ("hour", "hr"):
-                return max(0, value_int // 24)
+                return float(value_int) / 24.0
+            if unit in ("minute", "min"):
+                return float(value_int) / (24.0 * 60.0)
+            if unit in ("second", "sec"):
+                return float(value_int) / (24.0 * 3600.0)
 
         days = getattr(cfg, "validity_period_days", None)
         if days is not None:
             try:
-                return max(0, int(days))
+                return float(max(0, int(days)))
             except (TypeError, ValueError):
-                return int(default_days)
+                return float(default_days)
 
-        return int(default_days)
+        return float(default_days)
 
     from datetime import timedelta
     now_dt = timezone.now()

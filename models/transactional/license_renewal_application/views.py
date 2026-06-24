@@ -150,25 +150,28 @@ def initiate_renewal(request, license_id):
         src_app.is_security_fee_paid = False
         src_app.save(update_fields=update_fields)
 
-    # Renewal window opens only within the reminder window (or after expiry) - bypassed for testing
-    pass
-    # if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
-    #     window_start = old_license.valid_up_to - timedelta(days=reminder_days)
-    #     window_end = old_license.valid_up_to
-    #     return Response(
-    #         {
-    #             "detail": (
-    #                 "Renewal not allowed yet. "
-    #                 f"You can renew from {window_start.strftime('%d/%m/%Y')} "
-    #                 f"to {window_end.strftime('%d/%m/%Y')}."
-    #             ),
-    #             "renewal_window_starts_on": window_start.isoformat(),
-    #             "renewal_window_ends_on": window_end.isoformat(),
-    #             "license_valid_up_to": old_license.valid_up_to.isoformat(),
-    #             "reminder_window_days": reminder_days,
-    #         },
-    #         status=status.HTTP_400_BAD_REQUEST,
-    #     )
+    # Enforce renewal window: block if the license is valid and the renewal period
+    # has not yet opened (i.e. current date is more than reminder_days before valid_up_to).
+    # This applies to all license types including company_registration.
+    if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
+        window_start = old_license.valid_up_to - timedelta(days=reminder_days)
+        window_end = old_license.valid_up_to
+        window_label = _format_days_duration(reminder_days)
+        return Response(
+            {
+                "detail": (
+                    "Renewal not allowed yet. "
+                    f"The renewal window opens on {window_start.strftime('%d/%m/%Y')} "
+                    f"(within {window_label} of expiry on {window_end.strftime('%d/%m/%Y')})."
+                ),
+                "renewal_window_starts_on": window_start.isoformat(),
+                "renewal_window_ends_on": window_end.isoformat(),
+                "license_valid_up_to": old_license.valid_up_to.isoformat(),
+                "reminder_window_days": reminder_days,
+                "window_not_open": True,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     wf = _get_renewal_workflow()
     if not wf:
@@ -243,14 +246,33 @@ def _require_licensee_user(request):
         raise PermissionDenied("Only licensees can pay fees.")
 
 
-def _get_timer_days(code: str, default_days: int) -> int:
+def _format_days_duration(days: float) -> str:
+    if days >= 1.0:
+        if days.is_integer():
+            return f"{int(days)} day(s)"
+        return f"{days:.2f} day(s)"
+    hours = days * 24.0
+    if hours >= 1.0:
+        if hours.is_integer():
+            return f"{int(hours)} hour(s)"
+        return f"{hours:.2f} hour(s)"
+    minutes = hours * 60.0
+    if minutes >= 1.0:
+        if minutes.is_integer():
+            return f"{int(minutes)} minute(s)"
+        return f"{minutes:.2f} minute(s)"
+    seconds = minutes * 60.0
+    return f"{int(seconds)} second(s)"
+
+
+def _get_timer_days(code: str, default_days: int) -> float:
     cfg = (
         SupplyChainTimerConfig.objects.filter(code=code, is_active=True)
         .order_by("-updated_at", "-id")
         .first()
     )
     if not cfg:
-        return int(default_days)
+        return float(default_days)
 
     unit = str(getattr(cfg, "delay_unit", "") or "").lower().strip()
     value = getattr(cfg, "delay_value", None)
@@ -265,24 +287,28 @@ def _get_timer_days(code: str, default_days: int) -> int:
         if unit.endswith("s"):
             unit = unit[:-1]
         if unit == "day":
-            return value_int
+            return float(value_int)
         if unit in ("week", "wk"):
-            return value_int * 7
+            return float(value_int * 7)
         if unit in ("month", "mon", "mo"):
-            return value_int * 30
+            return float(value_int * 30)
         if unit in ("year", "yr"):
-            return value_int * 365
+            return float(value_int * 365)
         if unit in ("hour", "hr"):
-            return max(0, value_int // 24)
+            return float(value_int) / 24.0
+        if unit in ("minute", "min"):
+            return float(value_int) / (24.0 * 60.0)
+        if unit in ("second", "sec"):
+            return float(value_int) / (24.0 * 3600.0)
 
     days = getattr(cfg, "validity_period_days", None)
     if days is not None:
         try:
-            return max(0, int(days))
+            return float(max(0, int(days)))
         except (TypeError, ValueError):
-            return int(default_days)
+            return float(default_days)
 
-    return int(default_days)
+    return float(default_days)
 
 
 def _extend_license_validity(lic: License) -> License:
@@ -533,6 +559,11 @@ def _serialize_renewal_application(obj: LicenseApplication):
     source_app = None
     if old_license is not None:
         source_app = _resolve_new_license_application_from_license(old_license)
+        if source_app is None:
+            try:
+                source_app = old_license.source_application
+            except Exception:
+                source_app = None
     if source_app is None:
         try:
             source_app = obj.source_object
@@ -545,13 +576,16 @@ def _serialize_renewal_application(obj: LicenseApplication):
             if model_name == "salesmanbarmanmodel":
                 from models.transactional.salesman_barman.serializers import SalesmanBarmanSerializer
                 source_data = dict(SalesmanBarmanSerializer(source_app).data)
+            elif model_name == "companyregistration":
+                from models.transactional.company_registration.serializers import CompanyRegistrationSerializer
+                source_data = dict(CompanyRegistrationSerializer(source_app).data)
             else:
                 from models.transactional.new_license_application.serializers import NewLicenseApplicationSerializer
                 source_data = dict(NewLicenseApplicationSerializer(source_app).data)
 
             orig_security_paid = source_data.get("is_security_fee_paid", False)
             source_data.update(data)
-            if model_name != "salesmanbarmanmodel":
+            if model_name != "salesmanbarmanmodel" and model_name != "companyregistration":
                 source_data["is_security_fee_paid"] = orig_security_paid or data.get("is_security_fee_paid", False)
             data = source_data
         except Exception:
@@ -566,6 +600,7 @@ def _serialize_renewal_application(obj: LicenseApplication):
                 "old_license_valid_up_to": old_license.valid_up_to,
                 "valid_up_to": old_license.valid_up_to,
                 "expired_date": old_license.valid_up_to,
+                "old_license_source_type": old_license.source_type,
             }
         )
         if getattr(old_license, "source_type", None) == "salesman_barman":
@@ -580,6 +615,23 @@ def _serialize_renewal_application(obj: LicenseApplication):
                     "licenseFeeAmount": sb_fee,
                     "yearly_license_fee": sb_fee,
                     "yearlyLicenseFee": sb_fee,
+                    "security_fee_amount": 0,
+                    "securityFeeAmount": 0,
+                })
+        elif getattr(old_license, "source_type", None) == "company_registration":
+            try:
+                from django.apps import apps
+                FixedFee = apps.get_model('core', 'MasterFixedFee')
+                fee_obj = FixedFee.objects.filter(fee_code='COMP_REG', is_active=True).first()
+                comp_fee = fee_obj.amount if fee_obj else Decimal('5000.00')
+            except Exception:
+                comp_fee = Decimal('5000.00')
+            if comp_fee is not None:
+                data.update({
+                    "license_fee_amount": float(comp_fee),
+                    "licenseFeeAmount": float(comp_fee),
+                    "yearly_license_fee": float(comp_fee),
+                    "yearlyLicenseFee": float(comp_fee),
                     "security_fee_amount": 0,
                     "securityFeeAmount": 0,
                 })
@@ -846,10 +898,36 @@ def pay_license_fee_wallet(request, application_id):
             pass
 
     _extend_license_validity(old_license)
-    try:
-        _sync_license_active_from_renewal_payment(old_license, app)
-    except Exception:
-        pass
+
+    # For company_registration renewals, the _sync helper may not fire correctly
+    # because there is no src_app (new_license_application). Explicitly activate.
+    if getattr(old_license, "source_type", None) == "company_registration":
+        try:
+            old_license.refresh_from_db()
+            old_license.is_active = True
+            old_license.save(update_fields=["is_active"])
+
+            # Also mark the source CompanyRegistration as approved/paid so the
+            # dashboard card no longer shows EXPIRED and disallows a second renewal.
+            cr_src = None
+            try:
+                cr_src = old_license.source_application
+            except Exception:
+                pass
+            if cr_src is not None:
+                try:
+                    if not getattr(cr_src, "is_approved", False):
+                        cr_src.is_approved = True
+                        cr_src.save(update_fields=["is_approved"])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    else:
+        try:
+            _sync_license_active_from_renewal_payment(old_license, app)
+        except Exception:
+            pass
 
     try:
         _sync_renewal_payment_status(app)
@@ -857,6 +935,7 @@ def pay_license_fee_wallet(request, application_id):
         pass
 
     return Response({"success": True, "transaction_id": txn_id, "license_id": old_license.license_id})
+
 
 
 @api_view(["POST"])

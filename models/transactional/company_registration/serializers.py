@@ -50,14 +50,45 @@ class CompanyRegistrationSerializer(serializers.ModelSerializer):
     workflow = serializers.PrimaryKeyRelatedField(read_only=True)
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
     is_approved = serializers.BooleanField(read_only=True)
-    
+
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)
     objections = WorkflowObjectionSerializer(many=True, read_only=True)
+
+    # License validity fields — read from the associated License record so the
+    # dashboard renewal-warning card uses the correct (post-renewal) expiry date.
+    valid_up_to = serializers.SerializerMethodField()
+    license_id = serializers.SerializerMethodField()
+
+    def _get_license(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            ct = ContentType.objects.get_for_model(obj)
+            return License.objects.filter(
+                source_content_type=ct,
+                source_object_id=str(obj.pk),
+                source_type='company_registration'
+            ).first()
+        except Exception:
+            return None
+
+    def get_valid_up_to(self, obj):
+        lic = self._get_license(obj)
+        if lic and getattr(lic, 'valid_up_to', None):
+            return lic.valid_up_to.isoformat()
+        return None
+
+    def get_license_id(self, obj):
+        lic = self._get_license(obj)
+        if lic:
+            return lic.license_id
+        return None
 
     class Meta:
         model = CompanyRegistration
         fields = '__all__'
         read_only_fields = ['application_id', 'current_stage_name', 'is_approved', 'applicant', 'workflow']
+
 
     def to_internal_value(self, data):
         # Create a mutable copy if it's a QueryDict or dict

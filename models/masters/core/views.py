@@ -131,6 +131,7 @@ def timer_config(request):
             'is_active': cfg.is_active,
             'delay_seconds': seconds,
             'delay_ms': seconds * 1000,
+            'validity_period_days': getattr(cfg, 'validity_period_days', None),
             'source': 'db',
         },
         status=status.HTTP_200_OK,

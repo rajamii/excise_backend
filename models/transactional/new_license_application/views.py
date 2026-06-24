@@ -521,14 +521,32 @@ def initiate_renewal(request, license_id):
     if old_app.applicant != request.user:
         return Response({"detail": "You can only renew your own license."}, status=status.HTTP_403_FORBIDDEN)
 
-    def get_timer_days(code: str, default_days: int) -> int:
+    def _format_days_duration(days: float) -> str:
+        if days >= 1.0:
+            if days.is_integer():
+                return f"{int(days)} day(s)"
+            return f"{days:.2f} day(s)"
+        hours = days * 24.0
+        if hours >= 1.0:
+            if hours.is_integer():
+                return f"{int(hours)} hour(s)"
+            return f"{hours:.2f} hour(s)"
+        minutes = hours * 60.0
+        if minutes >= 1.0:
+            if minutes.is_integer():
+                return f"{int(minutes)} minute(s)"
+            return f"{minutes:.2f} minute(s)"
+        seconds = minutes * 60.0
+        return f"{int(seconds)} second(s)"
+
+    def get_timer_days(code: str, default_days: int) -> float:
         cfg = (
             SupplyChainTimerConfig.objects.filter(code=code, is_active=True)
             .order_by("-updated_at", "-id")
             .first()
         )
         if not cfg:
-            return int(default_days)
+            return float(default_days)
 
         unit = str(getattr(cfg, "delay_unit", "") or "").lower().strip()
         value = getattr(cfg, "delay_value", None)
@@ -543,24 +561,28 @@ def initiate_renewal(request, license_id):
             if unit.endswith("s"):
                 unit = unit[:-1]
             if unit == "day":
-                return value_int
+                return float(value_int)
             if unit in ("week", "wk"):
-                return value_int * 7
+                return float(value_int * 7)
             if unit in ("month", "mon", "mo"):
-                return value_int * 30
+                return float(value_int * 30)
             if unit in ("year", "yr"):
-                return value_int * 365
+                return float(value_int * 365)
             if unit in ("hour", "hr"):
-                return max(0, value_int // 24)
+                return float(value_int) / 24.0
+            if unit in ("minute", "min"):
+                return float(value_int) / (24.0 * 60.0)
+            if unit in ("second", "sec"):
+                return float(value_int) / (24.0 * 3600.0)
 
         days = getattr(cfg, "validity_period_days", None)
         if days is not None:
             try:
-                return max(0, int(days))
+                return float(max(0, int(days)))
             except (TypeError, ValueError):
-                return int(default_days)
+                return float(default_days)
 
-        return int(default_days)
+        return float(default_days)
 
     now_dt = timezone.now()
     reminder_days = get_timer_days("LICENSE_RENEWAL_REMINDER_TIMER", 90)
@@ -573,16 +595,18 @@ def initiate_renewal(request, license_id):
     if old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
         window_start = old_license.valid_up_to - timedelta(days=reminder_days)
         window_end = old_license.valid_up_to
+        window_label = _format_days_duration(reminder_days)
         return Response({
             "detail": (
                 "Renewal not allowed yet. "
                 f"You can renew from {window_start.strftime('%d/%m/%Y')} "
-                f"to {window_end.strftime('%d/%m/%Y')}."
+                f"to {window_end.strftime('%d/%m/%Y')} (within {window_label} of expiry)."
             ),
             "renewal_window_starts_on": window_start.isoformat(),
             "renewal_window_ends_on": window_end.isoformat(),
             "license_valid_up_to": old_license.valid_up_to.isoformat(),
             "reminder_window_days": reminder_days,
+            "window_not_open": True,
         }, status=status.HTTP_400_BAD_REQUEST)
 
     # Build pre-filled data
