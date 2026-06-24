@@ -373,7 +373,7 @@ def _renewal_is_paid(application) -> bool:
     if getattr(application, "old_license_id", None):
         old_license = License.objects.filter(license_id=str(application.old_license_id)).first()
 
-    if old_license and old_license.source_type == "salesman_barman":
+    if old_license and old_license.source_type in ["salesman_barman", "company_registration"]:
         return bool(getattr(application, "is_license_fee_paid", False))
 
     source_app = _renewal_source_application(application)
@@ -730,6 +730,14 @@ def pay_license_fee_wallet(request, application_id):
                 amount = _get_salesman_barman_registration_fee()
             except Exception:
                 amount = None
+        elif getattr(old_license, "source_type", None) == "company_registration":
+            try:
+                from django.apps import apps
+                FixedFee = apps.get_model('core', 'MasterFixedFee')
+                fee_obj = FixedFee.objects.filter(fee_code='COMP_REG', is_active=True).first()
+                amount = fee_obj.amount if fee_obj else Decimal('5000.00')
+            except Exception:
+                amount = Decimal('5000.00')
 
     if amount is None:
         return Response({"detail": "License fee structure not configured for this renewal."}, status=status.HTTP_400_BAD_REQUEST)

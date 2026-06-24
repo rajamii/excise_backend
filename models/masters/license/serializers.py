@@ -183,18 +183,23 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
             # For some issued licenses (especially renewals), source_application may not resolve reliably.
             # Treat such licenses as "paid" for menu gating since issuance typically implies fees were handled.
             return True
+        if obj.source_type == "company_registration":
+            return getattr(src, "payment_amount", None) is not None or getattr(src, "is_approved", False)
         return bool(getattr(src, "is_license_fee_paid", False))
 
     def get_is_security_fee_paid(self, obj):
         src = getattr(obj, "source_application", None)
-        if src is None:
+        if src is None or obj.source_type == "company_registration":
             return True
         return bool(getattr(src, "is_security_fee_paid", False))
 
     def get_establishment_name(self, obj):
         src = getattr(obj, "source_application", None)
-        if src is not None and getattr(src, "establishment_name", None):
-            return str(getattr(src, "establishment_name") or "")
+        if src is not None:
+            if getattr(src, "company_name", None):
+                return str(getattr(src, "company_name") or "")
+            if getattr(src, "establishment_name", None):
+                return str(getattr(src, "establishment_name") or "")
         return str(getattr(obj, "license_id", "") or "")
 
     def get_salesman_barman_role(self, obj):

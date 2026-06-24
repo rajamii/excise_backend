@@ -487,8 +487,14 @@ class MyLicensesListView(generics.ListAPIView):
         user = self.request.user
 
         new_app_ct = ContentType.objects.get_for_model(NewLicenseApplication)
+        from models.transactional.company_registration.models import CompanyRegistration
+        cr_ct = ContentType.objects.get_for_model(CompanyRegistration)
 
         user_app_ids = NewLicenseApplication.objects.filter(
+            applicant=user
+        ).values_list('application_id', flat=True)
+
+        cr_app_ids = CompanyRegistration.objects.filter(
             applicant=user
         ).values_list('application_id', flat=True)
 
@@ -497,8 +503,9 @@ class MyLicensesListView(generics.ListAPIView):
 
         # Compatibility fallback: match by source_object_id from user's applications.
         qs_by_source_object = License.objects.filter(source_content_type=new_app_ct, source_object_id__in=user_app_ids)
+        qs_by_cr_source = License.objects.filter(source_content_type=cr_ct, source_object_id__in=cr_app_ids)
 
-        return (qs_by_applicant | qs_by_source_object).distinct().select_related(
+        return (qs_by_applicant | qs_by_source_object | qs_by_cr_source).distinct().select_related(
             'license_category',
             'license_sub_category',
             'excise_district'

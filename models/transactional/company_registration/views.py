@@ -365,6 +365,22 @@ def pay_company_registration_fee(request, application_id):
                     remarks="Company Registration fee paid via wallet",
                 )
                 application.refresh_from_db()
+                
+                # Fetch and activate the license
+                try:
+                    from django.contrib.contenttypes.models import ContentType
+                    from models.masters.license.models import License
+                    ct = ContentType.objects.get_for_model(application)
+                    lic = License.objects.filter(
+                        source_content_type=ct,
+                        source_object_id=str(application.pk),
+                        source_type="company_registration"
+                    ).first()
+                    if lic:
+                        lic.is_active = True
+                        lic.save(update_fields=["is_active"])
+                except Exception as lic_err:
+                    pass
     except Exception as exc:
         return Response({"detail": f"Payment succeeded but workflow advance failed: {str(exc)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -406,13 +422,25 @@ def final_license_detail(request, application_id):
     if role_normalized == 'licensee' and application.applicant != request.user:
         return Response({"detail": "Not found or not authorized."}, status=status.HTTP_404_NOT_FOUND)
 
+    # Fetch associated License for validTo and license number
+    from django.contrib.contenttypes.models import ContentType
+    from models.masters.license.models import License
+    ct = ContentType.objects.get_for_model(application)
+    license_obj = License.objects.filter(
+        source_content_type=ct,
+        source_object_id=str(application.pk),
+        source_type="company_registration"
+    ).first()
+
     parts = application.application_id.split('/')
     serial = parts[-1] if parts else '0001'
     try:
         numeric_serial = int(serial)
     except ValueError:
         numeric_serial = 1
-    company_registration_id = f"CRF/{numeric_serial:08d}"
+    
+    # Use the generated License ID if available, otherwise fall back to serial formatting
+    company_registration_id = license_obj.license_id if license_obj else f"CRF/{numeric_serial:08d}"
 
     signed_code = signing.dumps(
         {"applicationId": application.application_id, "source": "company_registration"},
@@ -438,8 +466,8 @@ def final_license_detail(request, application_id):
         "validationCode": signed_code,
         "validationPdfUrl": validation_url,
         "validatedViaCode": validated_via_code,
-        "print_count": 0,
-        "is_print_fee_paid": True,
+        "print_count": getattr(license_obj, 'print_count', 0) if license_obj else 0,
+        "is_print_fee_paid": getattr(license_obj, 'is_print_fee_paid', True) if license_obj else True,
         "terms": [],
         "licenseeName": application.company_name,
         "fatherOrHusbandName": "",
@@ -452,7 +480,7 @@ def final_license_detail(request, application_id):
         "transactionRef": txn_ref,
         "transactionDate": txn_date,
         "validFrom": txn_date,
-        "validTo": "",
+        "validTo": license_obj.valid_up_to.strftime('%d/%m/%Y') if license_obj and license_obj.valid_up_to else "",
         "generatedOn": application.updated_at.strftime('%d/%m/%Y') if application.updated_at else "",
         "applicationDateTime": application.created_at.strftime('%d/%m/%Y %H:%M:%S') if application.created_at else "",
         "qrCodeDataUrl": _make_qr_data_url(validation_url),

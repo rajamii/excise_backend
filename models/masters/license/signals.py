@@ -102,7 +102,7 @@ def _stage_should_issue_license(instance, *, application_model: str) -> bool:
         return False
 
     app = (application_model or "").lower()
-    if app in {"newlicenseapplication", "salesmanbarmanmodel"}:
+    if app in {"newlicenseapplication", "salesmanbarmanmodel", "companyregistration"}:
         if txn is None:
             return bool(
                 _stage_is_commissioner_approval(stage)
@@ -232,6 +232,11 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
                 if existing_license.is_print_fee_paid != app_print_paid:
                     existing_license.is_print_fee_paid = app_print_paid
                     existing_license.save(update_fields=["is_print_fee_paid"])
+            elif source_type == "company_registration":
+                should_be_active = getattr(application, "is_approved", False) and getattr(application, "payment_amount", None) is not None
+                if existing_license.is_active != should_be_active:
+                    existing_license.is_active = should_be_active
+                    existing_license.save(update_fields=["is_active"])
 
         # Still ensure wallets exist (and get updated metadata) whenever an approval-stage
         # transaction is logged for the application.
@@ -255,6 +260,7 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
         'newlicenseapplication': 'new_license_application',
         'licenseapplication': 'license_application',
         'salesmanbarmanmodel': 'salesman_barman',
+        'companyregistration': 'company_registration',
     }
 
     source_type = source_type_map.get(model_name)
@@ -269,6 +275,22 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
         excise_district = getattr(application, 'excise_district', None) or getattr(application, 'site_district', None)
         applicant = getattr(application, 'applicant', None)
         
+        # Dynamically resolve category and district for company registrations
+        from models.masters.core.models import LicenseCategory, District
+        if model_name == 'companyregistration':
+            if not license_category:
+                lic_name = getattr(application, 'license', '')
+                if lic_name:
+                    license_category = LicenseCategory.objects.filter(license_category__iexact=lic_name).first()
+                if not license_category:
+                    license_category = LicenseCategory.objects.filter(id=1).first() or LicenseCategory.objects.first()
+            if not excise_district:
+                state_val = getattr(application, 'state', '')
+                if state_val:
+                    excise_district = District.objects.filter(district__iexact=state_val).first()
+                if not excise_district:
+                    excise_district = District.objects.filter(district_code=1101).first() or District.objects.first()
+
         if not license_category or not excise_district:
             logger.warning(f"Application {application.pk} missing license_category or district")
             return
@@ -335,7 +357,12 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
         else:
             fin_year = f"{issue_day.year - 1}-{str(issue_day.year)[2:]}"  # 2025-26
 
-    prefix_map = {'new_license_application': 'NA', 'license_application': 'LA', 'salesman_barman': 'SB'}
+    prefix_map = {
+        'new_license_application': 'NA',
+        'license_application': 'LA',
+        'salesman_barman': 'SB',
+        'company_registration': 'CR'
+    }
     prefix = prefix_map.get(source_type, 'XX')
     base_prefix = f"{prefix}/{district_code}/{fin_year}"
 
@@ -351,8 +378,9 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
 
     try:
         license_is_active = (
-            source_type != "new_license_application"
-            or _new_license_payments_complete(application)
+            source_type not in ["new_license_application", "company_registration"]
+            or (source_type == "new_license_application" and _new_license_payments_complete(application))
+            or (source_type == "company_registration" and getattr(application, "is_approved", False) and getattr(application, "payment_amount", None) is not None)
         )
 
         created_license = License.objects.create(
