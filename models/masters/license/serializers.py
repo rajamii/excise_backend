@@ -166,6 +166,7 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
     establishment_name = serializers.SerializerMethodField()
     site_district = serializers.CharField(source='excise_district.district', read_only=True)
     salesman_barman_role = serializers.SerializerMethodField()
+    yearly_license_fee = serializers.SerializerMethodField()
 
     def get_is_approved(self, obj):
         src = getattr(obj, "source_application", None)
@@ -208,6 +209,18 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
             if src is not None and getattr(src, "role", None):
                 return str(src.role).strip()
         return None
+
+    def get_yearly_license_fee(self, obj):
+        if obj.source_type == "company_registration":
+            try:
+                from django.apps import apps
+                FixedFee = apps.get_model('core', 'MasterFixedFee')
+                fee_obj = FixedFee.objects.filter(fee_code='COMP_REG', is_active=True).first()
+                return float(fee_obj.amount) if fee_obj else 5000.0
+            except Exception:
+                return 5000.0
+        src = getattr(obj, "source_application", None)
+        return float(getattr(src, "yearly_license_fee", 0) or 0)
 
     def _get_timer_days(self, code: str, default_days: int) -> int:
         cfg = (
@@ -375,4 +388,5 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
             'renewal_count',
             'renewal_details',
             'salesman_barman_role',
+            'yearly_license_fee',
         ]

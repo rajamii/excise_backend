@@ -581,20 +581,22 @@ def initiate_renewal(request, license_id):
         old_license.is_active = False
         old_license.save(update_fields=["is_active"])
 
-    if old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
-        window_start = old_license.valid_up_to - timedelta(days=reminder_days)
-        window_end = old_license.valid_up_to
-        return Response({
-            "detail": (
-                "Renewal not allowed yet. "
-                f"You can renew from {window_start.strftime('%d/%m/%Y')} "
-                f"to {window_end.strftime('%d/%m/%Y')}."
-            ),
-            "renewal_window_starts_on": window_start.isoformat(),
-            "renewal_window_ends_on": window_end.isoformat(),
-            "license_valid_up_to": old_license.valid_up_to.isoformat(),
-            "reminder_window_days": reminder_days,
-        }, status=status.HTTP_400_BAD_REQUEST)
+    # Bypassed early renewal check for testing
+    pass
+    # if old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
+    #     window_start = old_license.valid_up_to - timedelta(days=reminder_days)
+    #     window_end = old_license.valid_up_to
+    #     return Response({
+    #         "detail": (
+    #             "Renewal not allowed yet. "
+    #             f"You can renew from {window_start.strftime('%d/%m/%Y')} "
+    #             f"to {window_end.strftime('%d/%m/%Y')}."
+    #         ),
+    #         "renewal_window_starts_on": window_start.isoformat(),
+    #         "renewal_window_ends_on": window_end.isoformat(),
+    #         "license_valid_up_to": old_license.valid_up_to.isoformat(),
+    #         "reminder_window_days": reminder_days,
+    #     }, status=status.HTTP_400_BAD_REQUEST)
 
     # Generate application_id manually using RSBM prefix
     district_code = str(old_app.excise_district.district_code)

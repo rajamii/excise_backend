@@ -42,13 +42,51 @@ def _resolve_license(identifier: str) -> License:
     if not token:
         raise Http404("License not found")
 
+    # Try direct match
     direct = License.objects.filter(license_id=token).first()
     if direct:
         return direct
 
+    # Try matching with replaced dashes (e.g., CR-2026-27-0001 -> CR/2026-27/0001)
+    normalized = token.replace('-', '/')
+    direct_normalized = License.objects.filter(license_id=normalized).first()
+    if direct_normalized:
+        return direct_normalized
+
+    # Try matching by source_object_id
     by_source = License.objects.filter(source_object_id=token).order_by("-printed_on", "-issue_date").first()
     if by_source:
         return by_source
+
+    by_source_normalized = License.objects.filter(source_object_id=normalized).order_by("-printed_on", "-issue_date").first()
+    if by_source_normalized:
+        return by_source_normalized
+
+    # Look up through source application fields
+    from models.transactional.new_license_application.models import NewLicenseApplication
+    from models.transactional.company_registration.models import CompanyRegistration
+    from models.transactional.salesman_barman.models import SalesmanBarmanModel
+
+    # Check new license applications
+    nli = NewLicenseApplication.objects.filter(application_id__in=[token, normalized]).first()
+    if nli:
+        lic = License.objects.filter(source_object_id=nli.pk).first()
+        if lic:
+            return lic
+
+    # Check company registration applications
+    cr = CompanyRegistration.objects.filter(application_id__in=[token, normalized]).first()
+    if cr:
+        lic = License.objects.filter(source_object_id=cr.pk).first()
+        if lic:
+            return lic
+
+    # Check salesman barman applications
+    sbm = SalesmanBarmanModel.objects.filter(application_id__in=[token, normalized]).first()
+    if sbm:
+        lic = License.objects.filter(source_object_id=sbm.pk).first()
+        if lic:
+            return lic
 
     raise Http404("License not found")
 

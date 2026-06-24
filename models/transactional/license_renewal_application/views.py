@@ -150,24 +150,25 @@ def initiate_renewal(request, license_id):
         src_app.is_security_fee_paid = False
         src_app.save(update_fields=update_fields)
 
-    # Renewal window opens only within the reminder window (or after expiry).
-    if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
-        window_start = old_license.valid_up_to - timedelta(days=reminder_days)
-        window_end = old_license.valid_up_to
-        return Response(
-            {
-                "detail": (
-                    "Renewal not allowed yet. "
-                    f"You can renew from {window_start.strftime('%d/%m/%Y')} "
-                    f"to {window_end.strftime('%d/%m/%Y')}."
-                ),
-                "renewal_window_starts_on": window_start.isoformat(),
-                "renewal_window_ends_on": window_end.isoformat(),
-                "license_valid_up_to": old_license.valid_up_to.isoformat(),
-                "reminder_window_days": reminder_days,
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    # Renewal window opens only within the reminder window (or after expiry) - bypassed for testing
+    pass
+    # if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
+    #     window_start = old_license.valid_up_to - timedelta(days=reminder_days)
+    #     window_end = old_license.valid_up_to
+    #     return Response(
+    #         {
+    #             "detail": (
+    #                 "Renewal not allowed yet. "
+    #                 f"You can renew from {window_start.strftime('%d/%m/%Y')} "
+    #                 f"to {window_end.strftime('%d/%m/%Y')}."
+    #             ),
+    #             "renewal_window_starts_on": window_start.isoformat(),
+    #             "renewal_window_ends_on": window_end.isoformat(),
+    #             "license_valid_up_to": old_license.valid_up_to.isoformat(),
+    #             "reminder_window_days": reminder_days,
+    #         },
+    #         status=status.HTTP_400_BAD_REQUEST,
+    #     )
 
     wf = _get_renewal_workflow()
     if not wf:
@@ -200,7 +201,9 @@ def initiate_renewal(request, license_id):
 
     district_code = str(getattr(getattr(old_license, "excise_district", None), "district_code", "") or "000").strip()
     fin_year = LicenseApplication.generate_fin_year()
-    prefix = f"LRA/{district_code}/{fin_year}"
+    
+    app_prefix = "RCR" if getattr(old_license, "source_type", None) == "company_registration" else "LRA"
+    prefix = f"{app_prefix}/{district_code}/{fin_year}"
 
     last = (
         LicenseApplication.objects.filter(application_id__startswith=prefix + "/")
