@@ -154,7 +154,15 @@ def _validate_payment_module_code(module_code: str) -> str:
     except (OperationalError, ProgrammingError):
         pass
 
-    raise ValueError(f"Invalid payment_module_code={code}. Not found in master module table.")
+    # check MasterFixedFee if it exists in the DB.
+    try:
+        from models.masters.core.models import MasterFixedFee
+        if MasterFixedFee.objects.filter(fee_code=code).exists():
+            return code
+    except Exception:
+        pass
+
+    raise ValueError(f"Invalid payment_module_code={code}. Not found in master module table or fixed fee table.")
 
 
 def _get_module_license_fee(module_code: str) -> Decimal | None:
@@ -169,6 +177,12 @@ def _get_module_license_fee(module_code: str) -> Decimal | None:
             .first()
         )
         fee = getattr(module, "license_fee", None) if module else None
+        if fee in (None, ""):
+            # check MasterFixedFee as fallback
+            from models.masters.core.models import MasterFixedFee
+            fixed_fee = MasterFixedFee.objects.filter(fee_code=code).first()
+            fee = getattr(fixed_fee, "amount", None) if fixed_fee else None
+
         if fee in (None, ""):
             return None
         return _normalize_amount(fee)
@@ -185,7 +199,26 @@ def get_payment_module(request, module_code: str):
 
     module = MasterPaymentModule.objects.filter(module_code=code).first()
     if not module:
-        return Response({"detail": f"Module not found for module_code={code}."}, status=status.HTTP_404_NOT_FOUND)
+        # Check MasterFixedFee as fallback or alternative
+        from models.masters.core.models import MasterFixedFee
+        fixed_fee = MasterFixedFee.objects.filter(fee_code=code).first()
+        if not fixed_fee:
+            return Response({"detail": f"Module not found for module_code={code}."}, status=status.HTTP_404_NOT_FOUND)
+        
+        fee = getattr(fixed_fee, "amount", None)
+        try:
+            if fee not in (None, ""):
+                fee = _normalize_amount(fee)
+        except Exception:
+            fee = None
+
+        return Response(
+            {
+                "module_code": str(getattr(fixed_fee, "fee_code", "") or "").strip(),
+                "module_desc": str(getattr(fixed_fee, "fee_desc", "") or "").strip(),
+                "license_fee": float(fee) if fee is not None else None,
+            }
+        )
 
     fee = None
     try:
@@ -1940,6 +1973,12 @@ def list_billdesk_transactions(request):
                 mod = MasterPaymentModule.objects.filter(module_code=tx.payment_module_code).first()
                 if mod and mod.module_desc:
                     purpose = mod.module_desc
+                else:
+                    # fallback to MasterFixedFee
+                    from models.masters.core.models import MasterFixedFee
+                    fixed_fee = MasterFixedFee.objects.filter(fee_code=tx.payment_module_code).first()
+                    if fixed_fee and fixed_fee.fee_desc:
+                        purpose = fixed_fee.fee_desc
             except Exception:
                 pass
 
