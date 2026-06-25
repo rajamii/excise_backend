@@ -408,6 +408,11 @@ def _renewal_is_paid(application) -> bool:
     source_app = _renewal_source_application(application)
     app_license_paid = getattr(application, "is_license_fee_paid", False) or (source_app and getattr(source_app, "is_license_fee_paid", False))
     app_security_paid = getattr(application, "is_security_fee_paid", False) or (source_app and getattr(source_app, "is_security_fee_paid", False))
+    
+    # Fallback/Safety: if renewal fee is paid, do not block approval on the original security fee
+    if getattr(application, "is_license_fee_paid", False):
+        app_security_paid = True
+
     return bool(source_app and app_license_paid and app_security_paid)
 
 
