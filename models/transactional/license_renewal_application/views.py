@@ -65,7 +65,7 @@ def initiate_renewal(request, license_id):
     # Flip fee-paid flags on source application to False when renewal starts, so they must pay again.
     src_app = _resolve_new_license_application_from_license(old_license)
     if src_app is not None:
-        update_fields = ["is_license_fee_paid", "is_security_fee_paid"]
+        update_fields = ["is_license_fee_paid"]
         
         pachwai = request.data.get("pachwai")
         if pachwai is not None:
@@ -147,7 +147,6 @@ def initiate_renewal(request, license_id):
                         )
 
         src_app.is_license_fee_paid = False
-        src_app.is_security_fee_paid = False
         src_app.save(update_fields=update_fields)
 
     # Enforce renewal window: block if the license is valid and the renewal period
@@ -895,10 +894,21 @@ def pay_license_fee_wallet(request, application_id):
     app.save(update_fields=["is_license_fee_paid"])
 
     # Flip fee-paid flags on source application (if it was toggled to False after expiry).
-    if src_app is not None and not getattr(src_app, "is_license_fee_paid", False):
+    if src_app is not None:
         try:
-            src_app.is_license_fee_paid = True
-            src_app.save(update_fields=["is_license_fee_paid"])
+            need_save = False
+            if not getattr(src_app, "is_license_fee_paid", False):
+                src_app.is_license_fee_paid = True
+                need_save = True
+            if not getattr(src_app, "is_security_fee_paid", False):
+                src_app.is_security_fee_paid = True
+                need_save = True
+            if need_save:
+                src_app.save(update_fields=["is_license_fee_paid", "is_security_fee_paid"])
+            
+            # Sync new license payment status so it updates is_approved to True on src_app and is_active on license
+            from models.transactional.new_license_application.payment_status import sync_new_license_payment_status
+            sync_new_license_payment_status(src_app)
         except Exception:
             pass
 
