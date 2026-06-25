@@ -520,3 +520,73 @@ class GetUserEntitiesView(APIView):
                 'success': False,
                 'error': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class UpdateSyncStatusView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        table_name = request.data.get('table_name')
+        record_id = request.data.get('id')
+        record_ids = request.data.get('ids')
+        is_sync = request.data.get('is_sync')
+
+        if not table_name:
+            return Response({
+                'success': False,
+                'message': 'table_name is required.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if is_sync is None or is_sync not in [0, 1, '0', '1']:
+            return Response({
+                'success': False,
+                'message': 'is_sync is required and must be 0 or 1.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Convert is_sync to int
+        is_sync_val = int(is_sync)
+
+        model_mapping = {
+            'master_bottle_type': MasterBottleType,
+            'master_brand_list': MasterBrandList,
+            'master_factory_list': MasterFactoryList,
+            'master_liquor_type': MasterLiquorType,
+            'master_liquor_capacity': MasterLiquorCapacity,
+        }
+
+        model_class = model_mapping.get(table_name)
+        if not model_class:
+            return Response({
+                'success': False,
+                'message': f'Invalid table_name. Must be one of: {", ".join(model_mapping.keys())}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Gather target IDs
+        targets = []
+        if record_id is not None:
+            targets.append(record_id)
+        if record_ids is not None:
+            if isinstance(record_ids, list):
+                targets.extend(record_ids)
+            else:
+                targets.append(record_ids)
+
+        if not targets:
+            return Response({
+                'success': False,
+                'message': 'Either id or ids must be provided.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Perform update
+        try:
+            updated_count = model_class.objects.filter(pk__in=targets).update(is_sync=is_sync_val)
+            return Response({
+                'success': True,
+                'message': f'Successfully updated is_sync to {is_sync_val} for {updated_count} records in {table_name}.',
+                'updated_count': updated_count
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'message': f'Error occurred during update: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

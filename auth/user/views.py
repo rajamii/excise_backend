@@ -18,6 +18,7 @@ from auth.user.serializer import (
     UserCreateSerializer,
     UserUpdateSerializer,
     LoginSerializer,
+    LMSDBLOGINSerializer,
     LicenseeSignupSerializer,
     LicenseeProfileSerializer,
     OICOfficerCreateSerializer,
@@ -865,6 +866,45 @@ class LoginAPI(APIView):
                 'non_field_errors': ['Invalid or expired captcha.']
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validated_data = serializer.validated_data
+
+        try:
+            user = validated_data.get('user') or None
+            if user:
+                UserActivity.objects.create(
+                    user=user,
+                    activity_type=UserActivity.ActivityType.LOGIN,
+                    ip_address=_safe_ip_address(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT'),
+                    metadata={"auth_method": "jwt"},
+                )
+        except Exception:
+            pass
+
+        # ─── FIX: GENERATE TOKENS HERE IN THE VIEW ───
+        user = validated_data['user']
+        refresh = RefreshToken.for_user(user)
+
+        return Response({
+            'success': True,
+            'status_code': status.HTTP_200_OK,
+            'message': 'User logged in successfully',
+            'authenticated_user': {
+                'username': validated_data['username'],
+                'access':   str(refresh.access_token), # Convert to string
+                'refresh':  str(refresh),              # Convert to string
+            },
+        })
+
+
+class LMSDBLOGIN(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    serializer_class = LMSDBLOGINSerializer
+
+    def post(self, request):
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
         validated_data = serializer.validated_data

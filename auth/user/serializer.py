@@ -244,6 +244,33 @@ class LoginSerializer(serializers.Serializer):
         }
 
 
+class LMSDBLOGINSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=255)
+    password = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        username = data.get('username')
+        password = data.get('password')
+
+        if not username or not password:
+            raise serializers.ValidationError("Username and password are required.")
+
+        existing_user = CustomUser.objects.filter(username=username).first()
+        if existing_user and not existing_user.is_active:
+            raise serializers.ValidationError("Your account is inactive. Contact administrator for login.")
+
+        # Authenticate user
+        user = authenticate(username=username, password=password)
+        if not user:
+            raise serializers.ValidationError("Invalid login credentials.")
+
+        # Return authenticated user and data back cleanly
+        return {
+            'user': user,
+            'username': user.username,
+        }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # LicenseeProfile serializers
 # ─────────────────────────────────────────────────────────────────────────────

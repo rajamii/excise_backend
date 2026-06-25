@@ -12,6 +12,7 @@ from .views import (
     TokenRefreshAPI,
     get_captcha,
     LoginAPI,
+    LMSDBLOGIN,
     LogoutAPI,
     send_otp_api,
     verify_otp_for_registration,
@@ -50,6 +51,7 @@ urlpatterns = [
 
     # Auth endpoints
     path('login/',         LoginAPI.as_view(),      name='user-login'),
+    path('login/LMSDB/', LMSDBLOGIN.as_view(), name='lsmbd-login'),
     path('logout/',        LogoutAPI.as_view(),     name='user-logout'),
     path('token/refresh/', TokenRefreshAPI.as_view(), name='token-refresh'),
     path('check-username/', check_username,          name='check-username'),
