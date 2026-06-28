@@ -1,7 +1,8 @@
 from rest_framework import serializers
 from .models import (
     HeadOfOrganisation,
-    ExciseSecretary
+    ExciseSecretary,
+    AboutUs
 )
 
 
@@ -19,3 +20,15 @@ class ExciseSecretarySerializer(serializers.ModelSerializer):
     class Meta:
         model = ExciseSecretary
         fields = '__all__'
+
+
+class AboutUsSerializer(serializers.ModelSerializer):
+    isActive = serializers.BooleanField(source='is_active', required=False)
+
+    class Meta:
+        model = AboutUs
+        fields = ['id', 'title', 'content', 'is_active', 'isActive', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'is_active': {'required': False},
+        }
+

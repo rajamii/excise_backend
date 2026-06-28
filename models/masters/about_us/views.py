@@ -1,7 +1,8 @@
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from .models import HeadOfOrganisation, ExciseSecretary
-from .serializers import HeadOfOrganisationSerializer, ExciseSecretarySerializer
+from .models import HeadOfOrganisation, ExciseSecretary, AboutUs
+from .serializers import HeadOfOrganisationSerializer, ExciseSecretarySerializer, AboutUsSerializer
+
 
 
 # Create HeadOfOrganisation API
@@ -72,4 +73,40 @@ class ExciseSecretaryDeleteAPIView(generics.DestroyAPIView):
     queryset = ExciseSecretary.objects.all()
     serializer_class = ExciseSecretarySerializer
     permission_classes = [IsAuthenticated]
+
+
+# Create AboutUs API
+class AboutUsCreateAPIView(generics.CreateAPIView):
+    queryset = AboutUs.objects.all()
+    serializer_class = AboutUsSerializer
+    permission_classes = [IsAuthenticated]
+
+
+# AboutUs List API
+class AboutUsListAPIView(generics.ListAPIView):
+    queryset = AboutUs.objects.all()
+    serializer_class = AboutUsSerializer
+    permission_classes = [AllowAny]
+
+
+# View AboutUs API
+class AboutUsDetailAPIView(generics.RetrieveAPIView):
+    queryset = AboutUs.objects.all()
+    serializer_class = AboutUsSerializer
+    permission_classes = [AllowAny]
+
+
+# Update AboutUs API
+class AboutUsUpdateAPIView(generics.UpdateAPIView):
+    queryset = AboutUs.objects.all()
+    serializer_class = AboutUsSerializer
+    permission_classes = [IsAuthenticated]
+
+
+# Delete AboutUs API
+class AboutUsDeleteAPIView(generics.DestroyAPIView):
+    queryset = AboutUs.objects.all()
+    serializer_class = AboutUsSerializer
+    permission_classes = [IsAuthenticated]
+
 
