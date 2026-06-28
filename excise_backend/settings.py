@@ -65,6 +65,7 @@ INSTALLED_APPS = [
     'models.masters.license',
     'models.masters.contact_us',
     'models.masters.about_us',
+    'models.masters.preventive_raids',
     'models.masters.company_collaboration',
 
     'models.masters.supply_chain.bulk_spirit',
