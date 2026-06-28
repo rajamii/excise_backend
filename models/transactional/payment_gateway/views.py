@@ -21,7 +21,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from models.transactional.new_license_application.models import NewLicenseApplication
 from auth.user.models import CustomUser
@@ -2011,3 +2011,35 @@ def list_billdesk_transactions(request):
         'total_pages': (total_count + page_size - 1) // page_size,
         'results': serialized_data,
     })
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def revenue_receipts_chart_data(request):
+    from django.db.models import Sum
+    from django.utils import timezone
+    
+    chart_data = []
+    current_year = timezone.now().year
+    
+    for year in range(2020, current_year + 1):
+        fy_label = f"{year}-{year+1}"
+        start_date = f"{year}-04-01 00:00:00"
+        end_date = f"{year+1}-03-31 23:59:59"
+        
+        db_total = PaymentBilldeskTransaction.objects.filter(
+            payment_status='S',
+            transaction_date__range=[start_date, end_date]
+        ).aggregate(total=Sum('transaction_amount'))['total'] or 0
+        
+        revenue_crores = float(db_total) / 10000000.0
+        revenue_crores = round(revenue_crores, 2)
+        
+        if revenue_crores > 0:
+            chart_data.append({
+                "financial_year": fy_label,
+                "revenue": revenue_crores,
+                "source": "database"
+            })
+        
+    return Response(chart_data)
