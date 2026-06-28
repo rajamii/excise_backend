@@ -2020,9 +2020,14 @@ def revenue_receipts_chart_data(request):
     from django.utils import timezone
     
     chart_data = []
-    current_year = timezone.now().year
+    from django.db.models import Max
+    max_db_date = PaymentBilldeskTransaction.objects.aggregate(max_date=Max('transaction_date'))['max_date']
+    if max_db_date:
+        max_year = max(timezone.now().year, max_db_date.year)
+    else:
+        max_year = timezone.now().year
     
-    for year in range(2020, current_year + 1):
+    for year in range(2020, max_year + 1):
         fy_label = f"{year}-{year+1}"
         start_date = f"{year}-04-01 00:00:00"
         end_date = f"{year+1}-03-31 23:59:59"
@@ -2032,13 +2037,10 @@ def revenue_receipts_chart_data(request):
             transaction_date__range=[start_date, end_date]
         ).aggregate(total=Sum('transaction_amount'))['total'] or 0
         
-        revenue_crores = float(db_total) / 10000000.0
-        revenue_crores = round(revenue_crores, 2)
-        
-        if revenue_crores > 0:
+        if db_total > 0:
             chart_data.append({
                 "financial_year": fy_label,
-                "revenue": revenue_crores,
+                "amount": float(db_total),
                 "source": "database"
             })
         
