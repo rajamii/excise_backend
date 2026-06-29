@@ -879,10 +879,27 @@ def dashboard_counts(request):
         applied_stages = set(stage_sets['initial'])
         pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
         pending_for_ui = pending_stages | applied_stages
+        from django.contrib.contenttypes.models import ContentType
+        from django.db.models import Exists, OuterRef, Q
+        from auth.workflow.models import Transaction as WorkflowTransaction
+
+        content_type = ContentType.objects.get_for_model(SalesmanBarmanModel)
+        acted_by_admin = Exists(
+            WorkflowTransaction.objects.filter(
+                content_type=content_type,
+                object_id=OuterRef('application_id')
+            ).exclude(performed_by__role_id=2)
+        )
+        all_qs_annotated = all_qs.annotate(_acted_by_admin=acted_by_admin)
+
+        approved_count = all_qs_annotated.filter(
+            Q(current_stage__name__in=stage_sets['approved']) | Q(_acted_by_admin=True)
+        ).count()
+
         return Response({
             "applied": all_qs.filter(current_stage__name__in=applied_stages).count(),
             "pending": all_qs.filter(current_stage__name__in=pending_for_ui).count(),
-            "approved": all_qs.filter(current_stage__name__in=stage_sets['approved']).count(),
+            "approved": approved_count,
             "rejected": all_qs.filter(current_stage__name__in=stage_sets['rejected']).count(),
         })
 
