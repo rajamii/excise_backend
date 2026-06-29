@@ -1047,6 +1047,13 @@ def dashboard_counts(request):
     stage_sets = _get_stage_sets(wf.id)
     all_qs = LicenseApplication.objects.filter(workflow_id=wf.id)
 
+    month = request.query_params.get('month')
+    year = request.query_params.get('year')
+    if month:
+        all_qs = all_qs.filter(created_at__month=month)
+    if year:
+        all_qs = all_qs.filter(created_at__year=year)
+
     applied_stages = set(stage_sets["initial"])
     objection_stages = set(stage_sets["objection"])
     approved_stages = set(stage_sets["approved"])
@@ -1064,6 +1071,17 @@ def dashboard_counts(request):
                 "approved": base_qs.filter(current_stage__name__in=approved_stages).count(),
                 "rejected": base_qs.filter(current_stage__name__in=rejected_stages).count(),
                 "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
+            }
+        )
+
+    if role in ['site_admin', 'single_window']:
+        return Response(
+            {
+                "applied": all_qs.filter(current_stage__name__in=applied_stages).count(),
+                "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
+                "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
+                "approved": all_qs.filter(current_stage__name__in=approved_stages).count(),
+                "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
             }
         )
 

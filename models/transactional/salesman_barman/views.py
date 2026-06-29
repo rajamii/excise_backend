@@ -851,8 +851,15 @@ def dashboard_counts(request):
     stage_sets = _get_stage_sets(workflow_id)
     all_qs = SalesmanBarmanModel.objects.all()
 
+    month = request.query_params.get('month')
+    year = request.query_params.get('year')
+    if month:
+        all_qs = all_qs.filter(created_at__month=month)
+    if year:
+        all_qs = all_qs.filter(created_at__year=year)
+
     if role == 'licensee':
-        base_qs = SalesmanBarmanModel.objects.filter(applicant=request.user)
+        base_qs = all_qs.filter(applicant=request.user)
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         payment_stages = set(stage_sets['payment'])
@@ -868,7 +875,7 @@ def dashboard_counts(request):
             "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
         })
 
-    if role in ['site_admin']:
+    if role in ['site_admin', 'single_window']:
         applied_stages = set(stage_sets['initial'])
         pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
         pending_for_ui = pending_stages | applied_stages

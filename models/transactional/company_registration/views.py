@@ -138,8 +138,15 @@ def dashboard_counts(request):
     stage_sets = _get_stage_sets(workflow_id)
     all_qs = CompanyRegistration.objects.all()
 
+    month = request.query_params.get('month')
+    year = request.query_params.get('year')
+    if month:
+        all_qs = all_qs.filter(created_at__month=month)
+    if year:
+        all_qs = all_qs.filter(created_at__year=year)
+
     if role == 'licensee':
-        base_qs = CompanyRegistration.objects.filter(applicant=request.user)
+        base_qs = all_qs.filter(applicant=request.user)
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
