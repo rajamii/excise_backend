@@ -1505,6 +1505,10 @@ def dashboard_counts(request):
     except Exception:
         pass
 
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Exists, OuterRef, Q
+    from auth.workflow.models import Transaction as WorkflowTransaction
+
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['LICENSE_APPROVAL']
     stage_sets = _get_stage_sets(workflow_id)
@@ -1545,10 +1549,6 @@ def dashboard_counts(request):
         rejected_stages = set(stage_sets['rejected'])
         pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
 
-        from django.contrib.contenttypes.models import ContentType
-        from django.db.models import Exists, OuterRef, Q
-        from auth.workflow.models import Transaction as WorkflowTransaction
-
         content_type = ContentType.objects.get_for_model(NewLicenseApplication)
         acted_by_admin = Exists(
             WorkflowTransaction.objects.filter(
@@ -1577,9 +1577,6 @@ def dashboard_counts(request):
             "approved": 0,
             "rejected": 0,
         })
-
-    from django.contrib.contenttypes.models import ContentType
-    from django.db.models import OuterRef, Exists, Q
 
     content_type = ContentType.objects.get_for_model(NewLicenseApplication)
     role_id = getattr(getattr(request.user, 'role', None), 'id', None)

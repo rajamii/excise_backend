@@ -846,6 +846,11 @@ def dashboard_counts(request):
         deactivate_all_expired_licenses()
     except Exception:
         pass
+
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Exists, OuterRef, Q
+    from auth.workflow.models import Transaction as WorkflowTransaction
+
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['SALESMAN_BARMAN']
     stage_sets = _get_stage_sets(workflow_id)
@@ -879,9 +884,6 @@ def dashboard_counts(request):
         applied_stages = set(stage_sets['initial'])
         pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
         pending_for_ui = pending_stages | applied_stages
-        from django.contrib.contenttypes.models import ContentType
-        from django.db.models import Exists, OuterRef, Q
-        from auth.workflow.models import Transaction as WorkflowTransaction
 
         content_type = ContentType.objects.get_for_model(SalesmanBarmanModel)
         acted_by_admin = Exists(
@@ -911,8 +913,6 @@ def dashboard_counts(request):
             "rejected": 0,
             "objection": 0,
         })
-
-    from django.db.models import OuterRef, Exists, Q
 
     content_type = ContentType.objects.get_for_model(SalesmanBarmanModel)
     role_id = getattr(getattr(request.user, 'role', None), 'id', None)
