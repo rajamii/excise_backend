@@ -147,6 +147,7 @@ SERIALIZER_MAPPING = {
     ('license_application', 'licenseapplication'): 'models.transactional.license_application.serializers.LicenseApplicationSerializer',
     ('new_license_application', 'newlicenseapplication'): 'models.transactional.new_license_application.serializers.NewLicenseApplicationSerializer',
     ('salesman_barman', 'salesmanbarmanmodel'): 'models.transactional.salesman_barman.serializers.SalesmanBarmanSerializer',
+    ('label_registration', 'labelregistration'): 'models.transactional.label_registration.serializers.LabelRegistrationSerializer',
     ('company_registration', 'companymodel'): 'models.transactional.company_registration.serializers.CompanySerializer',
     ('ena_requisition_details', 'enarequisitiondetail'): 'models.transactional.supply_chain.ena_requisition_details.serializers.EnaRequisitionDetailSerializer',
     ('ena_revalidation_details', 'enarevalidationdetail'): 'models.transactional.supply_chain.ena_revalidation_details.serializers.EnaRevalidationDetailSerializer',
@@ -544,6 +545,10 @@ class WorkflowService:
 
         application.current_stage = target_stage
         update_fields = ['current_stage']
+        target_name = str(getattr(target_stage, "name", "") or "").strip().lower()
+        if hasattr(application, 'is_approved'):
+            application.is_approved = target_name == 'approved'
+            update_fields.append('is_approved')
         if is_new_license_application:
             for f in ("licensee_fee_id", "is_fee_calculated", "is_license_category_updated"):
                 if hasattr(application, f):
