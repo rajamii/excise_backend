@@ -2018,6 +2018,7 @@ def list_billdesk_transactions(request):
 def revenue_receipts_chart_data(request):
     from django.db.models import Sum
     from django.utils import timezone
+    from datetime import datetime
     
     chart_data = []
     from django.db.models import Max
@@ -2029,8 +2030,12 @@ def revenue_receipts_chart_data(request):
     
     for year in range(2020, max_year + 1):
         fy_label = f"{year}-{year+1}"
-        start_date = f"{year}-04-01 00:00:00"
-        end_date = f"{year+1}-03-31 23:59:59"
+        
+        # Create timezone-aware datetime objects to avoid Naive Datetime warnings
+        start_dt = datetime(year, 4, 1, 0, 0, 0)
+        end_dt = datetime(year + 1, 3, 31, 23, 59, 59)
+        start_date = timezone.make_aware(start_dt)
+        end_date = timezone.make_aware(end_dt)
         
         db_total = PaymentBilldeskTransaction.objects.filter(
             payment_status='S',
