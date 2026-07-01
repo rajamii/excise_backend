@@ -3,6 +3,7 @@ from rest_framework import serializers
 from auth.workflow.serializers import WorkflowObjectionSerializer, WorkflowTransactionSerializer
 
 from .models import CompanyCollaboration
+from utils.file_validation import validate_uploaded_file
 
 
 class CompanyCollaborationSerializer(serializers.ModelSerializer):
@@ -94,4 +95,15 @@ class CompanyCollaborationSerializer(serializers.ModelSerializer):
             return []
         if not isinstance(value, list):
             raise serializers.ValidationError('selected_brands must be a list.')
+        return value
+
+    def validate_undertaking(self, value):
+        validate_uploaded_file(
+            value,
+            field_name='undertaking',
+            label='Undertaking',
+            allowed_extensions={'.pdf'},
+            allowed_content_types={'application/pdf'},
+            max_size_mb=10,
+        )
         return value

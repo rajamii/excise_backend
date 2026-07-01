@@ -15,6 +15,7 @@ from models.masters.core.models import (
     Location,
 )
 from utils.fields import CodeRelatedField
+from utils.file_validation import validate_uploaded_file
 from . import helpers
 
 from decimal import Decimal
@@ -294,6 +295,36 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
             helpers.validate_cin_number(data['company_cin'])
         if 'pin_code' in data:
             helpers.validate_pin_code(data['pin_code'])
+
+        validate_uploaded_file(
+            data.get('member_pass_photo'),
+            field_name='member_pass_photo',
+            label='Member passport photo',
+            allowed_extensions={'.jpg', '.jpeg', '.png'},
+            allowed_content_types={'image/jpeg', 'image/png', 'image/jpg'},
+            max_size_mb=5,
+        )
+        for field_name, label in (
+            ('member_aadhaar_card', 'Member Aadhaar card'),
+            ('member_residential_certificate', 'Member residential certificate'),
+            ('member_dob_proof', 'Member date-of-birth proof'),
+            ('pass_photo', 'Passport photo'),
+            ('pan_card', 'PAN card'),
+            ('sikkim_certificate', 'Sikkim certificate'),
+            ('dob_proof', 'Date-of-birth proof'),
+            ('noc_landlord', 'NOC from landlord'),
+            ('parcha', 'Parcha'),
+            ('noc', 'NOC'),
+            ('trade_license', 'Trade license'),
+        ):
+            validate_uploaded_file(
+                data.get(field_name),
+                field_name=field_name,
+                label=label,
+                allowed_extensions={'.pdf', '.jpg', '.jpeg', '.png'},
+                allowed_content_types={'application/pdf', 'image/jpeg', 'image/png', 'image/jpg'},
+                max_size_mb=10,
+            )
         return data
 
     def create(self, validated_data):

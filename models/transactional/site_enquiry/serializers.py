@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from models.transactional.site_enquiry.models import SiteEnquiryReport
+from utils.file_validation import validate_uploaded_file
 
 
 class SiteEnquiryReportSerializer(serializers.ModelSerializer):
@@ -24,3 +25,14 @@ class SiteEnquiryReportSerializer(serializers.ModelSerializer):
             'reverted_remarks',
             'reverted_at',
         ]
+
+    def validate_shop_image_document(self, value):
+        validate_uploaded_file(
+            value,
+            field_name='shop_image_document',
+            label='Shop image document',
+            allowed_extensions={'.pdf', '.jpg', '.jpeg', '.png'},
+            allowed_content_types={'application/pdf', 'image/jpeg', 'image/png', 'image/jpg'},
+            max_size_mb=10,
+        )
+        return value

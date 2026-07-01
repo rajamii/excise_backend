@@ -4,6 +4,7 @@ from auth.user.models import CustomUser
 from auth.roles.models import Role
 from auth.workflow.serializers import WorkflowTransactionSerializer, WorkflowObjectionSerializer
 from . import helpers
+from utils.file_validation import validate_uploaded_file
 
 
 class UserShortSerializer(serializers.ModelSerializer):
@@ -99,3 +100,14 @@ class CompanyRegistrationSerializer(serializers.ModelSerializer):
 
     def validate_pin_code(self, value):
         return helpers.validate_pin_code(value)
+
+    def validate_undertaking(self, value):
+        validate_uploaded_file(
+            value,
+            field_name='undertaking',
+            label='Undertaking',
+            allowed_extensions={'.pdf', '.jpg', '.jpeg', '.png'},
+            allowed_content_types={'application/pdf', 'image/jpeg', 'image/png', 'image/jpg'},
+            max_size_mb=10,
+        )
+        return value
