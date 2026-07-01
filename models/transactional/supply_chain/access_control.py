@@ -210,6 +210,17 @@ def has_workflow_access(user, workflow_id):
 
 
 def scope_by_profile_or_workflow(user, queryset, workflow_id, licensee_field='licensee_id'):
+    role_id = getattr(user, 'role_id', None)
+    role_name = getattr(getattr(user, 'role', None), 'name', '')
+    role_token = ''.join(ch for ch in str(role_name or '').lower() if ch.isalnum())
+    if (
+        getattr(user, 'is_superuser', False)
+        or getattr(user, 'is_staff', False)
+        or (role_id is not None and role_id in {1, 3})
+        or role_token in {'siteadmin', 'singlewindow'}
+    ):
+        return queryset
+
     # Licensee/OIC-style users are scoped by mapped license identifiers.
     scoped_values = set()
 

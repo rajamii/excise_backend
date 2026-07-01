@@ -155,6 +155,10 @@ def _cancellation_requested_permit_numbers_for_requisition(requisition_ref_no: s
 
 
 def _filter_commissioner_visible_requisitions(user, queryset):
+    role_token = _normalize_role_token(getattr(getattr(user, 'role', None), 'name', ''))
+    if role_token in {'siteadmin', 'singlewindow'}:
+        return queryset
+
     if not _is_commissioner_user(user):
         return queryset
 
