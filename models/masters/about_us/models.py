@@ -24,6 +24,8 @@ class ExciseSecretary(models.Model):
     name = models.CharField(max_length=255)
     designation = models.CharField(max_length=255)
     email = models.EmailField()
+    from_date = models.DateField(null=True, blank=True)
+    to_date = models.DateField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.name} - {self.designation}"
