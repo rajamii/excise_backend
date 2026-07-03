@@ -22,10 +22,7 @@ class SubdivisionSerializer(serializers.ModelSerializer):
         ]
         extra_kwargs = {
             'subdivision_code': {
-                'validators': [
-                    MinValueValidator(1000),
-                    MaxValueValidator(9999)
-                ]
+                'validators': []
             }
         }
 
