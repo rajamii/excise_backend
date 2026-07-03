@@ -15,6 +15,7 @@ from auth.workflow.services import WorkflowService
 from auth.workflow.models import Transaction as WorkflowTransaction
 from django.db.models import OuterRef, Exists
 from django.contrib.contenttypes.models import ContentType
+from models.transactional.dashboard_cache import dashboard_counts_cache
 
 from .models import CompanyCollaboration
 from .serializers import CompanyCollaborationSerializer
@@ -458,6 +459,7 @@ def workflow_action(request, application_id):
 
 @api_view(['GET'])
 @permission_classes([HasCompanyCollaborationViewPermission, HasStagePermission])
+@dashboard_counts_cache("company_collaboration")
 def dashboard_counts(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
     base_qs = CompanyCollaboration.objects

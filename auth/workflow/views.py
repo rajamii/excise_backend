@@ -18,6 +18,7 @@ from .services import SERIALIZER_MAPPING, WorkflowService
 from models.transactional.license_renewal_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
 from models.transactional.salesman_barman.models import SalesmanBarmanModel
+from models.transactional.dashboard_cache import dashboard_counts_cache
 import logging
 
 def _normalized_role_token(user):
@@ -466,6 +467,7 @@ def get_rejections(request, application_id):
     return Response(serializer.data)
 @api_view(['GET'])
 @permission_classes([HasStagePermission])
+@dashboard_counts_cache("workflow")
 def dashboard_counts(request):
     try:
         from models.masters.license.views import deactivate_all_expired_licenses

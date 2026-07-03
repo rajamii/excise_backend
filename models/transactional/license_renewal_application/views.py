@@ -13,6 +13,7 @@ from auth.workflow.models import Workflow
 from auth.workflow.services import WorkflowService
 from models.masters.license.models import License
 from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_role_stage_names
+from models.transactional.dashboard_cache import dashboard_counts_cache
 from models.masters.core.models import SupplyChainTimerConfig
 from models.transactional.wallet.wallet_initializer import _resolve_hoa_code
 from models.transactional.wallet.wallet_service import debit_wallet_balance
@@ -1032,6 +1033,7 @@ def license_application_detail(request, pk):
 
 @permission_classes([IsAuthenticated])
 @api_view(["GET"])
+@dashboard_counts_cache("license_renewal_application")
 def dashboard_counts(request):
     try:
         from models.masters.license.views import deactivate_all_expired_licenses
