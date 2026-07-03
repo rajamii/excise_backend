@@ -133,6 +133,24 @@ ward_patterns = [
     path('<int:pk>/delete/', views.ward_delete, name='ward-delete'),
 ]
 
+# Block URLs
+block_patterns = [
+    path('',                 views.block_list,   name='block-list'),
+    path('create/',          views.block_create, name='block-create'),
+    path('<int:pk>/',        views.block_detail, name='block-detail'),
+    path('<int:pk>/update/', views.block_update, name='block-update'),
+    path('<int:pk>/delete/', views.block_delete, name='block-delete'),
+]
+
+# Rural Ward URLs
+rural_ward_patterns = [
+    path('',                 views.rural_ward_list,   name='rural-ward-list'),
+    path('create/',          views.rural_ward_create, name='rural-ward-create'),
+    path('<int:pk>/',        views.rural_ward_detail, name='rural-ward-detail'),
+    path('<int:pk>/update/', views.rural_ward_update, name='rural-ward-update'),
+    path('<int:pk>/delete/', views.rural_ward_delete, name='rural-ward-delete'),
+]
+
 # Renewal Application Config URLs
 renewal_application_config_patterns = [
     path('', views.renewal_application_config_detail, name='renewal-application-config-detail'),
@@ -181,6 +199,8 @@ urlpatterns = [
     path('location-categories/',    include(locationcategory_patterns)),
     path('location-subcategories/', include(locationsubcategory_patterns)),
     path('wards/',                  include(ward_patterns)),
+    path('blocks/',                 include(block_patterns)),
+    path('rural-wards/',            include(rural_ward_patterns)),
     path('renewal-application-config/', include(renewal_application_config_patterns)),
     path('additional-charge-configs/', include(additional_charge_config_patterns)),
     path('fixed-fees/',             include(fixed_fee_patterns)),
