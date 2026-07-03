@@ -131,6 +131,7 @@ class Subdivision(models.Model):
     )
     subdivision_code = models.IntegerField(unique=True, default=1553)
     is_active = models.BooleanField(default=True)
+    is_rural = models.BooleanField(default=False)
     district_code = models.ForeignKey(
         District,
         to_field='district_code',
@@ -295,6 +296,14 @@ class LocationSubcategory(models.Model):
         related_name='subcategories',
         null=False
     )
+    sub_division = models.ForeignKey(
+        Subdivision,
+        on_delete=models.CASCADE,
+        related_name='location_subcategories',
+        null=True,
+        blank=True,
+        db_column='sub_division_id'
+    )
     description = models.TextField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(
@@ -393,9 +402,9 @@ class Ward(models.Model):
     operation_date = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'masters_ward'
-        verbose_name = 'Ward'
-        verbose_name_plural = 'Wards'
+        db_table = 'master_urbanward'
+        verbose_name = 'Urban Ward'
+        verbose_name_plural = 'Urban Wards'
         constraints = [
             models.UniqueConstraint(
                 fields=['location_code', 'ward_number'],
@@ -414,6 +423,83 @@ class Ward(models.Model):
             raise ValidationError("Population cannot be negative")
         if self.area_sq_km is not None and self.area_sq_km <= 0:
             raise ValidationError("Area must be positive")
+
+
+class Block(models.Model):
+    block_name = models.CharField(
+        max_length=100,
+        validators=[validate_name_extended]
+    )
+    subcategory = models.ForeignKey(
+        LocationSubcategory,
+        on_delete=models.CASCADE,
+        related_name='blocks',
+        null=True,
+        blank=True
+    )
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        'user.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_blocks'
+    )
+    operation_date = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'master_block'
+        verbose_name = 'Block'
+        verbose_name_plural = 'Blocks'
+
+    def __str__(self) -> str:
+        return self.block_name
+
+
+class RuralWard(models.Model):
+    ward_name = models.CharField(
+        max_length=100,
+        null=False,
+        blank=False,
+        validators=[validate_name_extended]
+    )
+    ward_number = models.IntegerField(null=False, blank=False)
+    block = models.ForeignKey(
+        Block,
+        on_delete=models.CASCADE,
+        related_name='rural_wards',
+        null=False
+    )
+    population = models.IntegerField(null=True, blank=True)
+    area_sq_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        'user.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_rural_wards'
+    )
+    operation_date = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'master_ruralward'
+        verbose_name = 'Rural Ward'
+        verbose_name_plural = 'Rural Wards'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['block', 'ward_number'],
+                name='unique_rural_ward_number_per_block'
+            )
+        ]
+        ordering = ['block', 'ward_number']
+
+    def __str__(self) -> str:
+        return f"Ward {self.ward_number} - {self.ward_name}"
+
+    def clean(self):
+        if self.ward_number <= 0:
+            raise ValidationError("Ward number must be positive")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

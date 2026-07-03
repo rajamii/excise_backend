@@ -17,7 +17,8 @@ class SubdivisionSerializer(serializers.ModelSerializer):
             'district_code',
             'district',
             'is_active',
-            'status'
+            'status',
+            'is_rural'
         ]
         extra_kwargs = {
             'subdivision_code': {

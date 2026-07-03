@@ -85,6 +85,7 @@ class NewLicenseApplication(models.Model):
     location_category = models.CharField(max_length=100)
     location_subcategory = models.CharField(max_length=100, blank=True, null=True)
     location_name = models.CharField(max_length=100)
+    block_name = models.CharField(max_length=100, blank=True, null=True)
     ward_name = models.CharField(max_length=100)
     business_address = models.TextField()
     road_name = models.CharField(max_length=100)
