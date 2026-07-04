@@ -37,6 +37,7 @@ from urllib.parse import quote
 import secrets
 import hashlib
 from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_role_stage_names
+from models.transactional.dashboard_cache import dashboard_counts_cache
 from models.masters.core.models import LicenseFee, SupplyChainTimerConfig
 from models.transactional.wallet.wallet_service import debit_wallet_balance
 from .payment_status import sync_new_license_payment_status
@@ -1498,6 +1499,7 @@ def pay_security_fee_wallet(request, application_id):
 
 @permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
+@dashboard_counts_cache("new_license_application")
 def dashboard_counts(request):
     try:
         from models.masters.license.views import deactivate_all_expired_licenses

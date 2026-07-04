@@ -12,6 +12,7 @@ from auth.workflow.permissions import HasStagePermission
 from auth.workflow.models import Workflow, StagePermission, WorkflowStage
 from auth.workflow.services import WorkflowService
 from models.transactional.helpers import _get_stage_sets, _normalize_role, _get_role_stage_names, _collect_reachable_stage_names
+from models.transactional.dashboard_cache import dashboard_counts_cache
 from .models import CompanyRegistration
 from .serializers import CompanyRegistrationSerializer
 from rest_framework.permissions import IsAuthenticated
@@ -127,6 +128,7 @@ def company_registration_detail(request, application_id):
 # Dashboard Counts
 @permission_classes([HasAppPermission('company_registration', 'view')])
 @api_view(['GET'])
+@dashboard_counts_cache("company_registration")
 def dashboard_counts(request):
     try:
         from models.masters.license.views import deactivate_all_expired_licenses

@@ -32,6 +32,7 @@ from django.core.exceptions import PermissionDenied
 from django.contrib.contenttypes.models import ContentType
 from models.transactional.payment_gateway.models import MasterPaymentModule
 from models.transactional.wallet.wallet_service import debit_wallet_balance
+from models.transactional.dashboard_cache import dashboard_counts_cache
 
 
 def _normalize_role(role_name):
@@ -840,6 +841,7 @@ def final_license_qr_code(request, application_id):
 # Dashboard Counts
 @permission_classes([HasAppPermission('salesman_barman_registration', 'view'), HasStagePermission])
 @api_view(['GET'])
+@dashboard_counts_cache("salesman_barman")
 def dashboard_counts(request):
     try:
         from models.masters.license.views import deactivate_all_expired_licenses

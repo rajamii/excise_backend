@@ -198,11 +198,13 @@ CACHES = {
         "LOCATION": "redis://127.0.0.1:6379/1",
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
-            "SOCKET_CONNECT_TIMEOUT": 5,  # Give it up to 5 seconds to connect
-            "SOCKET_TIMEOUT": 5,
+            "SOCKET_CONNECT_TIMEOUT": 1,
+            "SOCKET_TIMEOUT": 1,
         }
     }
 }
+DASHBOARD_COUNTS_CACHE_TIMEOUT = int(os.getenv("DASHBOARD_COUNTS_CACHE_TIMEOUT", "600"))
+DASHBOARD_CACHE_FAILURE_COOLDOWN = int(os.getenv("DASHBOARD_CACHE_FAILURE_COOLDOWN", "60"))
 
 AUTH_USER_MODEL = 'user.CustomUser'
 
