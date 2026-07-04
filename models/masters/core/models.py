@@ -131,7 +131,6 @@ class Subdivision(models.Model):
     )
     subdivision_code = models.IntegerField(unique=True, default=1553)
     is_active = models.BooleanField(default=True)
-    is_rural = models.BooleanField(default=False)
     district_code = models.ForeignKey(
         District,
         to_field='district_code',
@@ -264,6 +263,7 @@ class LocationCategory(models.Model):
     )
     description = models.TextField(null=True, blank=True, help_text="Detailed description")
     is_active = models.BooleanField(default=True)
+    is_rural = models.BooleanField(default=False)
     created_by = models.ForeignKey(
         'user.CustomUser',
         on_delete=models.SET_NULL,
