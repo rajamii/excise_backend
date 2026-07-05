@@ -386,8 +386,17 @@ class Ward(models.Model):
         to_field='location_code',
         on_delete=models.CASCADE,
         related_name='wards',
-        null=False,
+        null=True,
+        blank=True,
         db_column='location_code'
+    )
+    subcategory = models.ForeignKey(
+        LocationSubcategory,
+        on_delete=models.SET_NULL,
+        related_name='wards',
+        null=True,
+        blank=True,
+        db_column='subcategory_id'
     )
     population = models.IntegerField(null=True, blank=True)
     area_sq_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
@@ -407,11 +416,11 @@ class Ward(models.Model):
         verbose_name_plural = 'Urban Wards'
         constraints = [
             models.UniqueConstraint(
-                fields=['location_code', 'ward_number'],
-                name='unique_ward_number_per_location'
+                fields=['subcategory', 'ward_number'],
+                name='unique_ward_number_per_subcategory'
             )
         ]
-        ordering = ['location_code', 'ward_number']
+        ordering = ['subcategory', 'ward_number']
 
     def __str__(self) -> str:
         return f"Ward {self.ward_number} - {self.ward_name}"

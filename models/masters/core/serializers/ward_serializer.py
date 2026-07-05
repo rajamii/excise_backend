@@ -10,11 +10,18 @@ class WardSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
     location_description = serializers.CharField(
         source='location_code.location_description',
-        read_only=True
+        read_only=True,
+        default=None
     )
     district_name = serializers.CharField(
         source='location_code.district_code.district',
-        read_only=True
+        read_only=True,
+        default=None
+    )
+    subcategory_name = serializers.CharField(
+        source='subcategory.subcategory_name',
+        read_only=True,
+        default=None
     )
     created_by_username = serializers.CharField(
         source='created_by.username',
@@ -30,6 +37,8 @@ class WardSerializer(serializers.ModelSerializer):
             'location_code',
             'location_description',
             'district_name',
+            'subcategory',
+            'subcategory_name',
             'population',
             'area_sq_km',
             'is_active',
@@ -64,24 +73,24 @@ class WardSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         """
-        Validate that the ward number is unique within its location.
+        Validate that the ward number is unique within its subcategory.
         """
-        location_code = data.get('location_code')
+        subcategory = data.get('subcategory')
         ward_number = data.get('ward_number')
 
-        if location_code and ward_number:
+        if subcategory and ward_number:
             queryset = Ward.objects.filter(
-                location_code=location_code,
+                subcategory=subcategory,
                 ward_number=ward_number
             )
-            
+
             # During updates, exclude current instance
             if self.instance:
                 queryset = queryset.exclude(pk=self.instance.pk)
-            
+
             if queryset.exists():
                 raise serializers.ValidationError({
-                    'ward_number': f'Ward number {ward_number} already exists in this location.'
+                    'ward_number': f'Ward number {ward_number} already exists in this subcategory.'
                 })
 
         return data
