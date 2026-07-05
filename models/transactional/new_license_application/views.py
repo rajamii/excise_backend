@@ -1592,12 +1592,12 @@ def dashboard_counts(request):
     )
 
     role_objection_stages = set(stage_sets['objection'])
-    pending_stages = set(role_stage_names) | role_objection_stages
+    pending_stages = set(role_stage_names) - role_objection_stages
     role_rejected_stages = set(stage_sets['rejected'])
 
     pending_count = all_qs.filter(current_stage__name__in=pending_stages).count()
     approved_count = (
-        all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages)
+        all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
         .annotate(_acted_by_role=acted_by_role)
         .filter(_acted_by_role=True)
         .count()
@@ -1608,11 +1608,18 @@ def dashboard_counts(request):
         .filter(_acted_by_role=True)
         .count()
     )
+    objection_count = (
+        all_qs.filter(current_stage__name__in=role_objection_stages)
+        .annotate(_acted_by_role=acted_by_role)
+        .filter(_acted_by_role=True)
+        .count()
+    )
 
     return Response({
         "pending": pending_count,
         "approved": approved_count,
         "rejected": rejected_count,
+        "objection": objection_count,
     })
 
 # Application Grouping

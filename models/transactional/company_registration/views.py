@@ -207,16 +207,18 @@ def dashboard_counts(request):
         })
 
     role_objection_stages = set(stage_sets['objection'])
-    pending_stages = set(role_stage_names) | role_objection_stages
-
+    pending_stages = set(role_stage_names) - role_objection_stages
+ 
     reachable_from_role = _collect_reachable_stage_names(workflow_id, set(role_stage_names))
     role_rejected_stages = set(stage_sets['rejected'])
-    forward_stages = set(reachable_from_role) - pending_stages - role_rejected_stages
-
+    forward_stages = set(reachable_from_role) - pending_stages - role_rejected_stages - role_objection_stages
+ 
     return Response({
+        "applied": 0,
         "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
         "approved": all_qs.filter(current_stage__name__in=forward_stages).count(),
         "rejected": all_qs.filter(current_stage__name__in=role_rejected_stages).count(),
+        "objection": all_qs.filter(current_stage__name__in=role_objection_stages).count(),
     })
 
 
