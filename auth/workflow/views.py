@@ -204,13 +204,13 @@ def get_next_stages(request, application_id):
     # Without this, non-processing users can still fetch next actions on GET.
     if not request.user.is_superuser:
         if not getattr(request.user, 'role', None):
-            return Response({"detail": "User has no role"}, status=status.HTTP_403_FORBIDDEN)
+            return Response([])
         if not StagePermission.objects.filter(
             stage=application.current_stage,
             role=request.user.role,
             can_process=True
         ).exists():
-            return Response({"detail": "You cannot process this stage."}, status=status.HTTP_403_FORBIDDEN)
+            return Response([])
 
     current_stage = application.current_stage
     transitions = WorkflowTransition.objects.filter(
