@@ -145,6 +145,10 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     site_enquiry_is_reverted = serializers.BooleanField(read_only=True, default=False)
     site_enquiry_reverted_remarks = serializers.CharField(read_only=True, allow_blank=True, allow_null=True)
 
+    # Commissioner revert remarks
+    commissioner_revert_remarks = serializers.SerializerMethodField()
+    is_reverted_by_commissioner = serializers.SerializerMethodField()
+
     # Backward-compatible fee field used across multiple frontend screens.
     yearly_license_fee = serializers.SerializerMethodField()
     license_fee_amount = serializers.SerializerMethodField()
@@ -385,3 +389,15 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         except Exception:
             pass
         return None
+
+    def get_commissioner_revert_remarks(self, obj) -> str | None:
+        try:
+            last_tx = obj.transactions.all().order_by('-timestamp').first()
+            if last_tx and last_tx.stage_id == 4 and last_tx.performed_by and last_tx.performed_by.role_id == 10:
+                return last_tx.remarks
+        except Exception:
+            pass
+        return None
+
+    def get_is_reverted_by_commissioner(self, obj) -> bool:
+        return self.get_commissioner_revert_remarks(obj) is not None
