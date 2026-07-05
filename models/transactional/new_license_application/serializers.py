@@ -148,6 +148,7 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     # Commissioner revert remarks
     commissioner_revert_remarks = serializers.SerializerMethodField()
     is_reverted_by_commissioner = serializers.SerializerMethodField()
+    latest_revert = serializers.SerializerMethodField()
 
     # Backward-compatible fee field used across multiple frontend screens.
     yearly_license_fee = serializers.SerializerMethodField()
@@ -404,3 +405,20 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
 
     def get_is_reverted_by_commissioner(self, obj) -> bool:
         return self.get_commissioner_revert_remarks(obj) is not None
+
+    def get_latest_revert(self, obj) -> dict | None:
+        try:
+            from auth.workflow.models import Revert
+            from django.contrib.contenttypes.models import ContentType
+            ct = ContentType.objects.get_for_model(obj)
+            last_revert = Revert.objects.filter(content_type=ct, object_id=str(obj.pk)).order_by('-reverted_on').first()
+            if last_revert:
+                return {
+                    "remarks": last_revert.remarks,
+                    "reverted_by": f"{last_revert.reverted_by.first_name} {last_revert.reverted_by.last_name}".strip() if last_revert.reverted_by else "Unknown",
+                    "reverted_by_role": last_revert.reverted_by.role.name if last_revert.reverted_by and last_revert.reverted_by.role else "Unknown",
+                    "reverted_on": last_revert.reverted_on.isoformat()
+                }
+        except Exception:
+            pass
+        return None
