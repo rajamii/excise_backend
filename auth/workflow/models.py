@@ -117,3 +117,25 @@ class Rejection(models.Model):
 
     def __str__(self):
         return f"Rejection [{self.object_id}] at {self.stage} on {self.rejected_on:%Y-%m-%d}"
+
+# ---------- POLYMORPHIC REVERT ----------
+class Revert(models.Model):
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.CharField(max_length=36)
+    application = GenericForeignKey('content_type', 'object_id')
+
+    remarks = models.TextField()
+    reverted_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True,
+                                    related_name='workflow_reverts_performed')
+    reverted_to = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True,
+                                    related_name='workflow_reverts_received')
+    stage = models.ForeignKey(WorkflowStage, on_delete=models.SET_NULL, null=True)
+    reverted_on = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-reverted_on']
+        indexes = [models.Index(fields=['content_type', 'object_id'])]
+        db_table = "workflow_reverted"
+
+    def __str__(self):
+        return f"Revert [{self.object_id}] at {self.stage} on {self.reverted_on:%Y-%m-%d}"

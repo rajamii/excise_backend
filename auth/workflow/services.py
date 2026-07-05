@@ -8,7 +8,7 @@ from django.apps import apps
 import json
 from .models import (
     WorkflowTransition, StagePermission,
-    Transaction, Objection, Rejection
+    Transaction, Objection, Rejection, Revert
 )
 
 # UI Configuration for Workflow Actions
@@ -735,6 +735,18 @@ class WorkflowService:
             stage=target_stage,
             remarks=remarks or context.get("remarks", "")
         )
+
+        action = str((context or {}).get("action") or "").strip().upper()
+        is_reverted = (context or {}).get("is_reverted")
+        if action == "REVERT" or is_reverted:
+            Revert.objects.create(
+                content_type=ContentType.objects.get_for_model(application),
+                object_id=str(application.pk),
+                remarks=remarks or context.get("remarks", ""),
+                reverted_by=user,
+                reverted_to=forwarded_to,
+                stage=target_stage
+            )
 
     @staticmethod
     def get_application_by_id(application_id):

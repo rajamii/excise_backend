@@ -392,9 +392,12 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
 
     def get_commissioner_revert_remarks(self, obj) -> str | None:
         try:
-            last_tx = obj.transactions.all().order_by('-timestamp').first()
-            if last_tx and last_tx.stage_id == 4 and last_tx.performed_by and last_tx.performed_by.role_id == 10:
-                return last_tx.remarks
+            from auth.workflow.models import Revert
+            from django.contrib.contenttypes.models import ContentType
+            ct = ContentType.objects.get_for_model(obj)
+            last_revert = Revert.objects.filter(content_type=ct, object_id=str(obj.pk)).order_by('-reverted_on').first()
+            if last_revert:
+                return last_revert.remarks
         except Exception:
             pass
         return None
