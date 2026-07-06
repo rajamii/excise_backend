@@ -30,6 +30,7 @@ class LocationSubcategorySerializer(serializers.ModelSerializer):
             'created_by',
             'created_by_username',
             'operation_date',
+            'sub_division',
         ]
         read_only_fields = ['id', 'operation_date', 'created_by']
 

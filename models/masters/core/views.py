@@ -39,6 +39,8 @@ from .serializers.supplychaintimerconfig_serializer import SupplyChainTimerConfi
 from .serializers.additionalchargeconfig_serializer import AdditionalChargeConfigSerializer
 from .serializers.fixedfee_serializer import MasterFixedFeeSerializer
 from .serializers.whatscurrent_serializer import WhatsCurrentSerializer
+from .serializers.block_serializer import BlockSerializer
+from .serializers.rural_ward_serializer import RuralWardSerializer
 
 # NOTE: LicenseeProfile views have been moved to auth.user.views.
 # Endpoints are now served under /api/users/licensee-profiles/
@@ -957,11 +959,14 @@ def locationcategory_delete(request, pk):
 @permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
 def locationsubcategory_list(request):
-    """List all active location subcategories, optionally filtered by category."""
+    """List all active location subcategories, optionally filtered by category and subdivision."""
     queryset = masters_model.LocationSubcategory.objects.filter(is_active=True)
     category_id = request.query_params.get('category_id')
+    sub_division_id = request.query_params.get('sub_division_id')
     if category_id:
         queryset = queryset.filter(category_id=category_id)
+    if sub_division_id:
+        queryset = queryset.filter(sub_division_id=sub_division_id)
     serializer = LocationSubcategorySerializer(queryset, many=True, context={'request': request})
     return Response(serializer.data)
 
@@ -1258,6 +1263,123 @@ def whatscurrent_delete(request, pk):
     obj = get_object_or_404(masters_model.WhatsCurrent, pk=pk)
     obj.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+#################################################
+#           Block                               #
+#################################################
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def block_list(request):
+    """List all active blocks, optionally filtered by subcategory."""
+    queryset = masters_model.Block.objects.filter(is_active=True)
+    subcategory_id = request.query_params.get('subcategory_id')
+    if subcategory_id:
+        queryset = queryset.filter(subcategory_id=subcategory_id)
+    serializer = BlockSerializer(queryset, many=True, context={'request': request})
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'create')])
+@api_view(['POST'])
+def block_create(request):
+    """Create a new block."""
+    serializer = BlockSerializer(data=request.data, context={'request': request})
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def block_detail(request, pk):
+    """Retrieve a block instance."""
+    block = get_object_or_404(masters_model.Block, pk=pk, is_active=True)
+    serializer = BlockSerializer(block, context={'request': request})
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PUT', 'PATCH'])
+def block_update(request, pk):
+    """Update a block instance."""
+    block = get_object_or_404(masters_model.Block, pk=pk)
+    serializer = BlockSerializer(
+        instance=block, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'delete')])
+@api_view(['DELETE'])
+def block_delete(request, pk):
+    """Deactivate a block (soft delete)."""
+    block = get_object_or_404(masters_model.Block, pk=pk)
+    block.is_active = False
+    block.save()
+    return Response(
+        {'message': f'Block "{block.block_name}" deactivated successfully.'},
+        status=status.HTTP_200_OK
+    )
+
+
+#################################################
+#           Rural Ward                          #
+#################################################
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def rural_ward_list(request):
+    """List all active rural wards, optionally filtered by block."""
+    queryset = masters_model.RuralWard.objects.filter(is_active=True)
+    block_id = request.query_params.get('block_id')
+    if block_id:
+        queryset = queryset.filter(block_id=block_id)
+    serializer = RuralWardSerializer(queryset, many=True, context={'request': request})
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'create')])
+@api_view(['POST'])
+def rural_ward_create(request):
+    """Create a new rural ward."""
+    serializer = RuralWardSerializer(data=request.data, context={'request': request})
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def rural_ward_detail(request, pk):
+    """Retrieve a rural ward instance."""
+    ward = get_object_or_404(masters_model.RuralWard, pk=pk, is_active=True)
+    serializer = RuralWardSerializer(ward, context={'request': request})
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PUT', 'PATCH'])
+def rural_ward_update(request, pk):
+    """Update a rural ward instance."""
+    ward = get_object_or_404(masters_model.RuralWard, pk=pk)
+    serializer = RuralWardSerializer(
+        instance=ward, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'delete')])
+@api_view(['DELETE'])
+def rural_ward_delete(request, pk):
+    """Deactivate a rural ward (soft delete)."""
+    ward = get_object_or_404(masters_model.RuralWard, pk=pk)
+    ward.is_active = False
+    ward.save()
+    return Response(
+        {'message': f'Rural Ward {ward.ward_number} - "{ward.ward_name}" deactivated successfully.'},
+        status=status.HTTP_200_OK
+    )
+
 
 
 
