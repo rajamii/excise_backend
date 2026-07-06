@@ -21,6 +21,7 @@ class LocationCategorySerializer(serializers.ModelSerializer):
             'category_name',
             'description',
             'is_active',
+            'is_rural',
             'status',
             'subcategory_count',
             'created_by',

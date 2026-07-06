@@ -482,6 +482,7 @@ def dashboard_counts(request):
         pending_stages = stages['pending']
         
         counts = {
+            'applied': 0,
             'pending':  base_qs.filter(current_stage__name__in=pending_stages).count(),
             'approved': (
                 base_qs.exclude(current_stage__name__in=pending_stages + [STAGE_REJECTED])
@@ -491,6 +492,12 @@ def dashboard_counts(request):
             ),
             'rejected': (
                 base_qs.filter(current_stage__name=STAGE_REJECTED)
+                .annotate(_acted_by_role=acted_by_role)
+                .filter(_acted_by_role=True)
+                .count()
+            ),
+            'objection': (
+                base_qs.filter(current_stage__name__in=OBJECTION_STAGES)
                 .annotate(_acted_by_role=acted_by_role)
                 .filter(_acted_by_role=True)
                 .count()

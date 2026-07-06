@@ -1020,11 +1020,14 @@ def locationsubcategory_delete(request, pk):
 @permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
 def ward_list(request):
-    """List all active wards, optionally filtered by location_code."""
+    """List all active wards, optionally filtered by location_code or subcategory_id."""
     queryset = masters_model.Ward.objects.filter(is_active=True)
     location_code = request.query_params.get('location_code')
     if location_code:
         queryset = queryset.filter(location_code=location_code)
+    subcategory_id = request.query_params.get('subcategory_id')
+    if subcategory_id:
+        queryset = queryset.filter(subcategory=subcategory_id)
     serializer = WardSerializer(queryset, many=True, context={'request': request})
     return Response(serializer.data)
 
