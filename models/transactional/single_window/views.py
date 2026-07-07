@@ -598,6 +598,22 @@ def single_window_search(request):
 
     results = []
 
+    # Helper function to resolve where an application is currently pending
+    def _resolve_pending_at(app):
+        if getattr(app, 'is_approved', False):
+            return "Completed"
+        stage = getattr(app, 'current_stage', None)
+        if not stage:
+            return "N/A"
+        try:
+            from auth.workflow.models import StagePermission
+            perm = StagePermission.objects.filter(stage=stage, can_process=True).first()
+            if perm and perm.role:
+                return perm.role.name
+        except Exception:
+            pass
+        return "N/A"
+
     # Helper function to get linked NLA ID for different objects
     def get_linked_nla_id(obj):
         if isinstance(obj, License):
@@ -824,15 +840,17 @@ def single_window_search(request):
                 license_is_active = lic.is_active
 
         # Determine where application is pending (current stage role)
-        pending_at = "N/A"
-        if app.current_stage and not app.is_approved:
-            try:
-                from auth.workflow.models import StagePermission
-                perm = StagePermission.objects.filter(stage=app.current_stage, can_process=True).first()
-                if perm and perm.role:
-                    pending_at = perm.role.name
-            except Exception:
-                pass
+        pending_at = "Completed"
+        if not app.is_approved:
+            pending_at = "N/A"
+            if app.current_stage:
+                try:
+                    from auth.workflow.models import StagePermission
+                    perm = StagePermission.objects.filter(stage=app.current_stage, can_process=True).first()
+                    if perm and perm.role:
+                        pending_at = perm.role.name
+                except Exception:
+                    pass
 
         meta = {
             "application_id": app.application_id,
@@ -868,10 +886,28 @@ def single_window_search(request):
         })
 
     # Add License results
+    # Collect NLA IDs already covered by the new_apps results to avoid duplicates
+    covered_nla_ids = set()
+    for app in new_apps:
+        if app.is_approved:
+            covered_nla_ids.add(app.application_id)
+
     for lic in licenses:
         applicant_name = get_user_display_name(lic.applicant) if lic.applicant else "Unknown"
         nla_id = get_linked_nla_id(lic)
+        # Skip this license entry if its linked NLA is already shown (avoids duplicate rows)
+        if nla_id and nla_id in covered_nla_ids:
+            continue
         nla_suffix = f" | Linked NLA: {nla_id}" if nla_id else ""
+        # Get establishment name from linked NLA if available
+        establishment = "Active License"
+        if nla_id:
+            try:
+                linked_nla = NewLicenseApplication.objects.filter(application_id=nla_id).first()
+                if linked_nla and linked_nla.establishment_name:
+                    establishment = linked_nla.establishment_name
+            except Exception:
+                pass
         results.append({
             "type": "license",
             "id": lic.license_id,
@@ -880,7 +916,7 @@ def single_window_search(request):
             "status": "Active" if lic.is_active else "Expired/Inactive",
             
             "application_id": nla_id or lic.license_id,
-            "establishment_name": "Active License",
+            "establishment_name": establishment,
             "applicant_name": applicant_name,
             "applicant_username": lic.applicant.username if lic.applicant else "N/A",
             "license_category": lic.license_category.license_category if lic.license_category else "N/A",
@@ -932,7 +968,7 @@ def single_window_search(request):
             "issued_license_id": app.old_license_id,
             "license_is_active": True,
             "current_stage": app.current_stage.name if app.current_stage else "Draft",
-            "pending_at": "N/A",
+            "pending_at": _resolve_pending_at(app),
             "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
             
             "meta": meta
@@ -971,7 +1007,7 @@ def single_window_search(request):
             "issued_license_id": app.license_id or "N/A",
             "license_is_active": True,
             "current_stage": app.current_stage.name if app.current_stage else "Draft",
-            "pending_at": "N/A",
+            "pending_at": _resolve_pending_at(app),
             "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
             
             "meta": meta
