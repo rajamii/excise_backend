@@ -690,7 +690,15 @@ def single_window_search(request):
                 "id": u.id,
                 "title": f"{u.first_name} {u.last_name} ({u.username})",
                 "subtitle": f"Email: {u.email} | Phone: {u.phone_number} | Username: {u.username}",
-                "status": "Active" if u.is_active else "Inactive",
+                "status": "Active" if u.is_active else "Deactivated",
+                "first_name": u.first_name,
+                "last_name": u.last_name,
+                "username": u.username,
+                "email": u.email,
+                "phone_number": u.phone_number,
+                "role_name": u.role.name if u.role else "Licensee",
+                "date_joined": u.date_joined.strftime("%Y-%m-%d %H:%M:%S") if u.date_joined else "N/A",
+                "is_active": u.is_active,
                 "meta": meta
             })
     else:
@@ -804,6 +812,28 @@ def single_window_search(request):
 
     for app in new_apps:
         applicant_name = get_user_display_name(app.applicant) if app.applicant else "Unknown"
+        applicant_username = app.applicant.username if app.applicant else "N/A"
+
+        # Find issued license for this applicant (if application approved)
+        issued_license_id = None
+        license_is_active = False
+        if app.is_approved and app.applicant:
+            lic = License.objects.filter(applicant=app.applicant).order_by("-issue_date").first()
+            if lic:
+                issued_license_id = lic.license_id
+                license_is_active = lic.is_active
+
+        # Determine where application is pending (current stage role)
+        pending_at = "N/A"
+        if app.current_stage and not app.is_approved:
+            try:
+                from auth.workflow.models import StagePermission
+                perm = StagePermission.objects.filter(stage=app.current_stage, can_process=True).first()
+                if perm and perm.role:
+                    pending_at = perm.role.name
+            except Exception:
+                pass
+
         meta = {
             "application_id": app.application_id,
             "is_approved": app.is_approved,
@@ -822,6 +852,18 @@ def single_window_search(request):
             "title": f"New App: {app.application_id}",
             "subtitle": f"Establishment: {app.establishment_name or 'N/A'} | Applicant: {applicant_name}",
             "status": app.current_stage.name if app.current_stage else "Draft",
+            
+            "application_id": app.application_id,
+            "establishment_name": app.establishment_name or "N/A",
+            "applicant_name": applicant_name,
+            "applicant_username": applicant_username,
+            "license_category": app.license_category.license_category if app.license_category else "N/A",
+            "issued_license_id": issued_license_id,
+            "license_is_active": license_is_active,
+            "current_stage": app.current_stage.name if app.current_stage else "Draft",
+            "pending_at": pending_at,
+            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
+            
             "meta": meta
         })
 
@@ -836,6 +878,18 @@ def single_window_search(request):
             "title": f"License: {lic.license_id}",
             "subtitle": f"Applicant: {applicant_name} | Category: {lic.license_category.license_category if lic.license_category else 'N/A'}{nla_suffix}",
             "status": "Active" if lic.is_active else "Expired/Inactive",
+            
+            "application_id": nla_id or lic.license_id,
+            "establishment_name": "Active License",
+            "applicant_name": applicant_name,
+            "applicant_username": lic.applicant.username if lic.applicant else "N/A",
+            "license_category": lic.license_category.license_category if lic.license_category else "N/A",
+            "issued_license_id": lic.license_id,
+            "license_is_active": lic.is_active,
+            "current_stage": "Approved",
+            "pending_at": "Completed",
+            "created_at": lic.issue_date.strftime("%Y-%m-%d") if lic.issue_date else "N/A",
+            
             "meta": {
                 "license_id": lic.license_id,
                 "valid_up_to": lic.valid_up_to.strftime("%Y-%m-%d") if lic.valid_up_to else "N/A",
@@ -869,6 +923,18 @@ def single_window_search(request):
             "title": f"Renewal App: {app.application_id}",
             "subtitle": f"Old License: {app.old_license_id or 'N/A'}{nla_suffix} | Applicant: {applicant_name}",
             "status": app.current_stage.name if app.current_stage else "Draft",
+            
+            "application_id": app.application_id,
+            "establishment_name": f"Renewal for: {app.old_license_id or 'N/A'}",
+            "applicant_name": applicant_name,
+            "applicant_username": app.applicant.username if app.applicant else "N/A",
+            "license_category": app.license_category.license_category if app.license_category else "N/A",
+            "issued_license_id": app.old_license_id,
+            "license_is_active": True,
+            "current_stage": app.current_stage.name if app.current_stage else "Draft",
+            "pending_at": "N/A",
+            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
+            
             "meta": meta
         })
 
@@ -896,6 +962,18 @@ def single_window_search(request):
             "title": f"Salesman/Barman App: {app.application_id}",
             "subtitle": f"Name: {applicant_name} | Role: {app.role or 'N/A'}{nla_suffix} | Mobile: {app.mobileNumber or 'N/A'}",
             "status": app.current_stage.name if app.current_stage else "Draft",
+            
+            "application_id": app.application_id,
+            "establishment_name": f"Salesman/Barman: {applicant_name}",
+            "applicant_name": applicant_name,
+            "applicant_username": app.applicant.username if app.applicant else "N/A",
+            "license_category": app.role or "Salesman/Barman",
+            "issued_license_id": app.license_id or "N/A",
+            "license_is_active": True,
+            "current_stage": app.current_stage.name if app.current_stage else "Draft",
+            "pending_at": "N/A",
+            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
+            
             "meta": meta
         })
 
@@ -1227,90 +1305,21 @@ def single_window_salesman_barman_detail(request, application_id):
 @renderer_classes([JSONRenderer, BrowsableAPIRenderer])
 @permission_classes([IsAuthenticated])
 def single_window_latest_created(request):
-    # 1. Fetch latest users (Admin Users only, excluding licensees)
-    users = CustomUser.objects.exclude(role__name='Licensee').order_by("-date_joined")[:50]
-    users_list = []
-    for u in users:
-        users_list.append({
-            "id": u.id,
-            "username": u.username,
-            "email": u.email,
-            "first_name": u.first_name,
-            "last_name": u.last_name,
-            "phone_number": u.phone_number,
-            "role_name": u.role.name if u.role else "Licensee",
-            "is_active": u.is_active,
-            "date_joined": u.date_joined.strftime("%Y-%m-%d %H:%M:%S") if u.date_joined else "N/A"
+    try:
+        users_count = CustomUser.objects.exclude(role__name='Licensee').count()
+        records_count = NewLicenseApplication.objects.count()
+        deactivated_count = CustomUser.objects.filter(is_active=False).count()
+
+        return Response({
+            "users_count": users_count,
+            "records_count": records_count,
+            "deactivated_users_count": deactivated_count,
+            "users": [],
+            "records": [],
+            "deactivated_users": []
         })
-
-    # 2. Fetch ONLY New License Applications for the Licenses & Applications tab
-    records = []
-    new_apps = NewLicenseApplication.objects.all().order_by("-created_at")[:100]
-    for app in new_apps:
-        applicant_name = f"{app.applicant.first_name} {app.applicant.last_name}".strip() if app.applicant else "Unknown"
-        applicant_username = app.applicant.username if app.applicant else "N/A"
-
-        # Find issued license for this applicant (if application approved)
-        issued_license_id = None
-        license_is_active = False
-        license_valid_up_to = "N/A"
-        if app.is_approved and app.applicant:
-            lic = License.objects.filter(applicant=app.applicant).order_by("-issue_date").first()
-            if lic:
-                issued_license_id = lic.license_id
-                license_is_active = lic.is_active
-                license_valid_up_to = lic.valid_up_to.strftime("%Y-%m-%d") if lic.valid_up_to else "N/A"
-
-        # Determine where application is pending (current stage role)
-        pending_at = "N/A"
-        if app.current_stage and not app.is_approved:
-            try:
-                from auth.workflow.models import StagePermission
-                perm = StagePermission.objects.filter(stage=app.current_stage, can_process=True).first()
-                if perm and perm.role:
-                    pending_at = perm.role.name
-            except Exception:
-                pass
-
-        records.append({
-            "type": "new_license_app",
-            "id": app.application_id,
-            "application_id": app.application_id,
-            "establishment_name": app.establishment_name or "N/A",
-            "applicant_name": applicant_name,
-            "applicant_username": applicant_username,
-            "license_category": app.license_category.license_category if app.license_category else "N/A",
-            "current_stage": app.current_stage.name if app.current_stage else "Draft",
-            "is_approved": app.is_approved,
-            "issued_license_id": issued_license_id,
-            "license_is_active": license_is_active,
-            "license_valid_up_to": license_valid_up_to,
-            "pending_at": pending_at,
-            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
-            "meta": {
-                "application_id": app.application_id
-            }
-        })
-
-    # 3. Fetch Deactivated Users
-    deactivated = CustomUser.objects.filter(is_active=False).order_by("-date_joined")[:50]
-    deactivated_list = []
-    for u in deactivated:
-        deactivated_list.append({
-            "id": u.id,
-            "username": u.username,
-            "email": u.email,
-            "first_name": u.first_name,
-            "last_name": u.last_name,
-            "phone_number": u.phone_number,
-            "role_name": u.role.name if u.role else "Licensee",
-            "is_active": u.is_active,
-            "date_joined": u.date_joined.strftime("%Y-%m-%d %H:%M:%S") if u.date_joined else "N/A"
-        })
-
-    return Response({
-        "users": users_list,
-        "records": records,
-        "deactivated_users": deactivated_list
-    })
+    except Exception as e:
+        return Response({
+            "error": str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

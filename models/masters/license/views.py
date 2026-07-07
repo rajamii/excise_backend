@@ -287,6 +287,10 @@ def active_licensees(request):
             "id": license.license_id,
             "establishmentName": establishment_name,
             "license_category": license.license_category.license_category,
+            "license_subcategory": getattr(
+                getattr(source_app, 'license_sub_category', None),
+                'subcategory_name', None
+            ) or '',
             "district": license.excise_district.district,
             "district_code": license.excise_district.district_code,
             "valid_up_to": license.valid_up_to.isoformat() if getattr(license, "valid_up_to", None) else "",
