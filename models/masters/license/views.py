@@ -288,8 +288,9 @@ def active_licensees(request):
             "establishmentName": establishment_name,
             "license_category": license.license_category.license_category,
             "license_subcategory": getattr(
-                getattr(source_app, 'license_sub_category', None),
-                'subcategory_name', None
+                license.license_sub_category or getattr(source_app, 'license_sub_category', None),
+                'description',
+                ''
             ) or '',
             "district": license.excise_district.district,
             "district_code": license.excise_district.district_code,
