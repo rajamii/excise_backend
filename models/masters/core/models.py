@@ -223,6 +223,13 @@ class LicenseSubcategory(models.Model):
         on_delete=models.CASCADE,
         related_name='subcategories',
     )
+    dry_day_fee_type = models.CharField(
+        max_length=20,
+        choices=[('per_annum', 'Per Annum'), ('per_day', 'Per Day')],
+        null=True,
+        blank=True,
+        default=None
+    )
 
     class Meta:
         db_table = 'masters_licensesubcategory'

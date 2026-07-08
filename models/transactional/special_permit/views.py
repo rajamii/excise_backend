@@ -1,3 +1,6 @@
+from decimal import Decimal
+import logging
+import secrets
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
@@ -14,6 +17,8 @@ from models.transactional.helpers import _get_role_stage_names, _get_stage_sets,
 from .models import SpecialPermitApplication
 from .serializers import SpecialPermitApplicationSerializer
 
+logger = logging.getLogger(__name__)
+
 
 def _get_special_permit_workflow() -> Workflow | None:
     return (
@@ -21,6 +26,117 @@ def _get_special_permit_workflow() -> Workflow | None:
         or Workflow.objects.filter(name='Special Permission for Dry Day').order_by('id').first()
         or Workflow.objects.filter(name='License Approval').order_by('id').first()
     )
+
+
+def _resolve_sub_category(license_obj):
+    if license_obj.license_sub_category:
+        return license_obj.license_sub_category
+    
+    # Try source application
+    source_app = getattr(license_obj, 'source_application', None)
+    if source_app:
+        sub_cat = getattr(source_app, 'license_sub_category', None)
+        if sub_cat:
+            return sub_cat
+        # Try new_license_application of source_app
+        new_app = getattr(source_app, 'new_license_application', None)
+        if new_app:
+            sub_cat = getattr(new_app, 'license_sub_category', None)
+            if sub_cat:
+                return sub_cat
+        # Try shop license of salesman application
+        shop_license = getattr(source_app, 'license', None)
+        if shop_license:
+            if shop_license.license_sub_category:
+                return shop_license.license_sub_category
+            shop_src_app = getattr(shop_license, 'source_application', None)
+            if shop_src_app:
+                sub_cat = getattr(shop_src_app, 'license_sub_category', None)
+                if sub_cat:
+                    return sub_cat
+
+    # Fallback to any NewLicenseApplication for this user
+    from django.apps import apps
+    NewLicenseApplication = apps.get_model('new_license_application', 'NewLicenseApplication')
+    new_app = NewLicenseApplication.objects.filter(
+        applicant=license_obj.applicant,
+        license_sub_category__isnull=False
+    ).order_by('-created_at').first()
+    if new_app:
+        return new_app.license_sub_category
+
+    return None
+
+
+def _resolve_location_category(license_obj) -> str | None:
+    source_app = getattr(license_obj, 'source_application', None)
+    if source_app:
+        loc = getattr(source_app, 'location_category', None)
+        if loc:
+            return str(loc)
+        # Try shop license
+        shop_license = getattr(source_app, 'license', None)
+        if shop_license:
+            shop_src_app = getattr(shop_license, 'source_application', None)
+            if shop_src_app:
+                loc = getattr(shop_src_app, 'location_category', None)
+                if loc:
+                    return str(loc)
+        # Try new_license_application
+        new_app = getattr(source_app, 'new_license_application', None)
+        if new_app:
+            loc = getattr(new_app, 'location_category', None)
+            if loc:
+                return str(loc)
+
+    # Fallback to any NewLicenseApplication for this user
+    from django.apps import apps
+    NewLicenseApplication = apps.get_model('new_license_application', 'NewLicenseApplication')
+    new_app = NewLicenseApplication.objects.filter(
+        applicant=license_obj.applicant,
+        location_category__isnull=False
+    ).exclude(location_category='').order_by('-created_at').first()
+    if new_app:
+        return str(new_app.location_category)
+
+    return None
+
+
+def calculate_special_permit_fee_raw(license_obj: License) -> dict:
+    from models.masters.core.models import MasterFixedFee
+    
+    sub_category = _resolve_sub_category(license_obj)
+    location_category = _resolve_location_category(license_obj)
+    
+    is_rural = False
+    if location_category and str(location_category).strip().lower() == 'rural':
+        is_rural = True
+        
+    dry_day_fee_type = getattr(sub_category, 'dry_day_fee_type', None)
+    
+    dry_day_fee = Decimal('0.00')
+    if dry_day_fee_type == 'per_day':
+        fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_PER_DAY', is_active=True).first()
+        if fee_obj:
+            dry_day_fee = fee_obj.amount
+    elif dry_day_fee_type == 'per_annum':
+        if is_rural:
+            fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_ANNUAL_RURAL', is_active=True).first()
+        else:
+            fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_ANNUAL_URBAN', is_active=True).first()
+        if fee_obj:
+            dry_day_fee = fee_obj.amount
+                
+    return {
+        'dry_day_fee_type': dry_day_fee_type,
+        'is_rural': is_rural,
+        'dry_day_fee': Decimal(str(dry_day_fee))
+    }
+
+
+def calculate_special_permit_fee(app: SpecialPermitApplication) -> Decimal:
+    res = calculate_special_permit_fee_raw(app.license)
+    return res['dry_day_fee']
 
 
 def _serialize_license(license_obj: License) -> dict:
@@ -33,12 +149,40 @@ def _serialize_license(license_obj: License) -> dict:
                 establishment_name = str(value)
                 break
 
+    # If not found on direct source app (e.g. SalesmanBarmanModel), check shop license's source app
+    if not establishment_name and source_application:
+        shop_license = getattr(source_application, 'license', None)
+        if shop_license:
+            shop_src_app = getattr(shop_license, 'source_application', None)
+            if shop_src_app:
+                for field in ('establishment_name', 'business_premises_name', 'company_name', 'applicant_name'):
+                    value = getattr(shop_src_app, field, None)
+                    if value:
+                        establishment_name = str(value)
+                        break
+
+    fee_details = calculate_special_permit_fee_raw(license_obj)
+    resolved_sub_cat = _resolve_sub_category(license_obj)
+    
+    sub_cat_desc = getattr(resolved_sub_cat, 'description', None)
+    if sub_cat_desc:
+        fee_type = fee_details['dry_day_fee_type']
+        if fee_type == 'per_annum':
+            sub_cat_desc = f"{sub_cat_desc} (Dry Day Permit: Per Annum)"
+        elif fee_type == 'per_day':
+            sub_cat_desc = f"{sub_cat_desc} (Dry Day Permit: Per Day)"
+        else:
+            sub_cat_desc = f"{sub_cat_desc} (Dry Day Permit: None)"
+
     return {
         'license_id': license_obj.license_id,
         'district': getattr(license_obj.excise_district, 'district', None),
         'district_code': getattr(license_obj.excise_district, 'district_code', None),
         'license_category': getattr(license_obj.license_category, 'license_category', None),
-        'license_sub_category': getattr(license_obj.license_sub_category, 'description', None),
+        'license_sub_category': sub_cat_desc,
+        'dry_day_fee_type': fee_details['dry_day_fee_type'],
+        'is_rural': fee_details['is_rural'],
+        'dry_day_fee': float(fee_details['dry_day_fee']),
         'establishment_name': establishment_name,
         'valid_up_to': license_obj.valid_up_to.isoformat() if license_obj.valid_up_to else None,
         'is_active': license_obj.is_active,
@@ -101,10 +245,19 @@ def _status_sets(workflow):
 @permission_classes([IsAuthenticated])
 def eligible_licenses(request):
     now_dt = timezone.now()
+    allowed_categories = [
+        'Restaurant - cum - Bar Shop',
+        'Foreign Liquor Retail Shop',
+        'Special Category Hotel',
+        'Discotheque & Night Club',
+        'Casino with Bar'
+    ]
     licenses = License.objects.filter(
         applicant=request.user,
         is_active=True,
         valid_up_to__gte=now_dt,
+        source_type='new_license_application',
+        license_category__license_category__in=allowed_categories
     ).select_related('excise_district', 'license_category', 'license_sub_category')
     return Response([_serialize_license(license_obj) for license_obj in licenses], status=status.HTTP_200_OK)
 
@@ -153,7 +306,7 @@ def create_special_permit_application(request):
         applicant=request.user,
         excise_district=license_obj.excise_district,
         license_category=license_obj.license_category,
-        license_sub_category=license_obj.license_sub_category,
+        license_sub_category=_resolve_sub_category(license_obj),
         workflow=workflow,
         current_stage=initial_stage,
     )
@@ -216,4 +369,109 @@ def application_group(request):
         'approved': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=status_sets['approved']), many=True).data,
         'rejected': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=status_sets['rejected']), many=True).data,
         'awaiting_payment': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=status_sets['payment']), many=True).data,
+    }, status=status.HTTP_200_OK)
+
+
+def _sync_special_permit_payment_status(application):
+    workflow = application.workflow
+    if workflow:
+        approved_stage = workflow.stages.filter(is_approved=True).order_by('id').first()
+        if not approved_stage:
+            approved_stage = (
+                workflow.stages.filter(name__icontains='approved').order_by('id').first() or
+                workflow.stages.filter(is_final=True).order_by('id').first()
+            )
+        if approved_stage:
+            application.current_stage = approved_stage
+            application.is_approved = True
+            application.save(update_fields=['current_stage', 'is_approved'])
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def pay_special_permit_fee_wallet(request, application_id):
+    application = get_object_or_404(SpecialPermitApplication, application_id=str(application_id))
+    if application.applicant_id != request.user.id:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    stage_name = str(getattr(getattr(application, "current_stage", None), "name", "") or "").strip().lower()
+    if stage_name and "awaiting payment" not in stage_name and "payment" not in stage_name:
+        return Response({"detail": "Payment is not allowed at the current stage."}, status=status.HTTP_400_BAD_REQUEST)
+
+    license_obj = application.license
+    amount = calculate_special_permit_fee(application)
+    if amount <= Decimal('0.00'):
+        return Response({"detail": "Special permit fee is not configured or is zero."}, status=status.HTTP_400_BAD_REQUEST)
+
+    wallet_licensee_id = str(license_obj.license_id)
+
+    from models.transactional.license_renewal_application.views import _resolve_hoa_code
+    license_fee_hoa = _resolve_hoa_code(module_type="other", wallet_type="license_fee")
+
+    txn_id = None
+    try:
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+        from models.transactional.wallet.models import WalletTransaction
+        from datetime import timedelta
+        
+        candidates = [
+            str(request.user.username).strip(),
+            str(wallet_licensee_id).strip(),
+            str(application.application_id).strip()
+        ]
+        time_limit = timezone.now() - timedelta(days=2)
+        
+        recent_txs = PaymentBilldeskTransaction.objects.filter(
+            payer_id__in=candidates,
+            payment_status="S",
+            transaction_amount=Decimal(str(amount)),
+            transaction_date__gte=time_limit
+        ).order_by("-transaction_date")
+        
+        for tx in recent_txs:
+            if not WalletTransaction.objects.filter(transaction_id=tx.utr, entry_type="DR").exists():
+                txn_id = tx.utr
+                break
+                
+        if not txn_id:
+            recent_txs_any = PaymentBilldeskTransaction.objects.filter(
+                payer_id__in=candidates,
+                payment_status="S",
+                transaction_date__gte=time_limit
+            ).order_by("-transaction_date")
+            for tx in recent_txs_any:
+                if not WalletTransaction.objects.filter(transaction_id=tx.utr, entry_type="DR").exists():
+                    txn_id = tx.utr
+                    break
+    except Exception as e:
+        logger.warning("Failed to link BillDesk UTR to wallet special permit payment: %s", e)
+
+    if not txn_id:
+        txn_id = secrets.token_hex(12).upper()
+
+    try:
+        from models.transactional.wallet.wallet_service import debit_wallet_balance
+        debit_wallet_balance(
+            transaction_id=txn_id,
+            licensee_id=wallet_licensee_id,
+            wallet_type="license_fee",
+            head_of_account=license_fee_hoa,
+            amount=Decimal(str(amount)),
+            user_id=str(getattr(request.user, "username", "") or "").strip(),
+            remarks=f"Special permit fee paid for {application.application_id}",
+            reference_no=application.application_id,
+        )
+    except Exception as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    application.is_fee_paid = True
+    application.save(update_fields=["is_fee_paid"])
+
+    _sync_special_permit_payment_status(application)
+
+    return Response({
+        "success": True,
+        "application_id": application.application_id,
+        "is_fee_paid": True,
+        "current_stage": getattr(application.current_stage, "name", None)
     }, status=status.HTTP_200_OK)

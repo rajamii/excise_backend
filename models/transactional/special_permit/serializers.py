@@ -16,6 +16,8 @@ class SpecialPermitApplicationSerializer(serializers.ModelSerializer):
     license_sub_category_name = serializers.CharField(source='license_sub_category.description', read_only=True)
     applicant_name = serializers.SerializerMethodField()
     establishment_name = serializers.SerializerMethodField()
+    payment_amount = serializers.SerializerMethodField()
+    dry_day_fee_type = serializers.CharField(source='license_sub_category.dry_day_fee_type', read_only=True)
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)
     objections = WorkflowObjectionSerializer(many=True, read_only=True)
 
@@ -60,3 +62,10 @@ class SpecialPermitApplicationSerializer(serializers.ModelSerializer):
             if value:
                 return str(value)
         return None
+
+    def get_payment_amount(self, obj):
+        from .views import calculate_special_permit_fee
+        try:
+            return float(calculate_special_permit_fee(obj))
+        except Exception:
+            return 0.0

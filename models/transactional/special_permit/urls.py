@@ -26,6 +26,7 @@ urlpatterns = [
     path('dashboard-counts/', views.dashboard_counts, name='dashboard-counts'),
     path('list-by-status/', views.application_group, name='applications-by-status'),
     path('detail/<everything:application_id>/', views.special_permit_detail, name='detail'),
+    path('pay/<everything:application_id>/', views.pay_special_permit_fee_wallet, name='pay-fee-wallet'),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
