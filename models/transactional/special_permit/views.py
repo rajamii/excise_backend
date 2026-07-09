@@ -397,7 +397,7 @@ def dashboard_counts(request):
             'applied': 0,
             'pending': qs.filter(current_stage__name__in=pending_stages).count(),
             'objection': qs.filter(current_stage__name__in=role_objection_stages).count(),
-            'approved': qs.filter(current_stage__name__in=approved_stages | (forward_stages - payment_stages)).count(),
+            'approved': qs.filter(current_stage__name__in=approved_stages | forward_stages).count(),
             'rejected': qs.filter(current_stage__name__in=role_rejected_stages).count(),
             'awaiting_payment': qs.filter(current_stage__name__in=payment_stages).count(),
         }, status=status.HTTP_200_OK)
@@ -470,7 +470,7 @@ def application_group(request):
             'applied': [],
             'pending': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=pending_stages), many=True).data,
             'objection': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=role_objection_stages), many=True).data,
-            'approved': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=approved_stages | (forward_stages - payment_stages)), many=True).data,
+            'approved': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=approved_stages | forward_stages), many=True).data,
             'rejected': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=role_rejected_stages), many=True).data,
             'awaiting_payment': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=payment_stages), many=True).data,
         }, status=status.HTTP_200_OK)
