@@ -142,8 +142,6 @@ def calculate_special_permit_fee(app: SpecialPermitApplication) -> Decimal:
         selected_dates = getattr(app, 'selected_dates', None)
         if isinstance(selected_dates, list) and len(selected_dates) > 0:
             return base_fee * len(selected_dates)
-        elif app.permission_date:
-            return base_fee * 1
         return Decimal('0.00')
     return base_fee
 
@@ -283,14 +281,14 @@ def create_special_permit_application(request):
         )
 
     permission_duration = request.data.get('permission_duration') or request.data.get('permissionDuration') or SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM
-    permission_date = request.data.get('permission_date') or request.data.get('permissionDate') or None
+    selected_dates = request.data.get('selected_dates') or request.data.get('selectedDates') or None
     financial_year = request.data.get('financial_year') or request.data.get('financialYear') or SpecialPermitApplication.generate_fin_year()
 
     serializer = SpecialPermitApplicationSerializer(data={
         'license': license_obj.license_id,
         'financial_year': financial_year,
         'permission_duration': permission_duration,
-        'permission_date': permission_date,
+        'selected_dates': selected_dates,
         'remarks': request.data.get('remarks', ''),
     })
     if not serializer.is_valid():

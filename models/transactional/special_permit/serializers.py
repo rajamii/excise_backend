@@ -40,8 +40,8 @@ class SpecialPermitApplicationSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         duration = attrs.get('permission_duration') or SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM
         if duration == SpecialPermitApplication.PERMISSION_DURATION_PER_DAY:
-            if not attrs.get('permission_date') and not attrs.get('selected_dates'):
-                raise serializers.ValidationError({'permission_date': 'Permission date or selected dates is required for per day category.'})
+            if not attrs.get('selected_dates'):
+                raise serializers.ValidationError({'selected_dates': 'Selected dates is required for per day category.'})
         return attrs
 
     def get_applicant_name(self, obj):

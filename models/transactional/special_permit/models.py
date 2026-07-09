@@ -56,7 +56,7 @@ class SpecialPermitApplication(models.Model):
         choices=PERMISSION_DURATION_CHOICES,
         default=PERMISSION_DURATION_PER_ANNUM,
     )
-    permission_date = models.DateField(null=True, blank=True)
+
 
     workflow = models.ForeignKey(
         Workflow,
@@ -113,9 +113,9 @@ class SpecialPermitApplication(models.Model):
 
     def clean(self):
         super().clean()
-        if self.permission_duration == self.PERMISSION_DURATION_PER_DAY and not self.permission_date and not self.selected_dates:
+        if self.permission_duration == self.PERMISSION_DURATION_PER_DAY and not self.selected_dates:
             from django.core.exceptions import ValidationError
-            raise ValidationError({'permission_date': 'Permission date or selected dates is required for per day category.'})
+            raise ValidationError({'selected_dates': 'Selected dates is required for per day category.'})
 
     @staticmethod
     def generate_fin_year(today=None) -> str:
