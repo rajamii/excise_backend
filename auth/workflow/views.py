@@ -594,6 +594,7 @@ def _get_application_by_id(application_id):
         ("license_renewal_application", "LicenseApplication"),
         ("new_license_application", "NewLicenseApplication"),
         ("salesman_barman", "SalesmanBarmanModel"),
+        ("special_permit", "SpecialPermitApplication"),
     ]
 
     for app_label, model_name in model_configs:

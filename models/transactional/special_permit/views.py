@@ -12,7 +12,8 @@ from rest_framework.response import Response
 from auth.workflow.models import Workflow
 from auth.workflow.services import WorkflowService
 from models.masters.license.models import License
-from models.transactional.helpers import _get_role_stage_names, _get_stage_sets, _normalize_role
+from models.transactional.helpers import _get_role_stage_names, _get_stage_sets, _normalize_role, _collect_reachable_stage_names
+from models.transactional.dashboard_cache import dashboard_counts_cache
 
 from .models import SpecialPermitApplication
 from .serializers import SpecialPermitApplicationSerializer
@@ -204,14 +205,10 @@ def _visible_queryset(request):
     if role == 'licensee':
         return qs.filter(applicant=request.user)
 
-    wf = _get_special_permit_workflow()
-    if not wf or role in ('site_admin', 'single_window'):
-        return qs
+    if role == 'district_user' and getattr(request.user, 'district', None):
+        return qs.filter(excise_district=request.user.district)
 
-    role_stage_names = _get_role_stage_names(request.user, wf.id)
-    if not role_stage_names:
-        return qs.none()
-    return qs.filter(current_stage__name__in=role_stage_names)
+    return qs
 
 
 def _status_sets(workflow):
@@ -331,9 +328,16 @@ def special_permit_detail(request, application_id):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+@dashboard_counts_cache("special_permit")
 def dashboard_counts(request):
+    role = _normalize_role(request.user.role.name if getattr(request.user, 'role', None) else None)
     workflow = _get_special_permit_workflow()
-    status_sets = _status_sets(workflow)
+    if not workflow:
+        return Response({
+            'applied': 0, 'pending': 0, 'objection': 0, 'approved': 0, 'rejected': 0, 'awaiting_payment': 0
+        }, status=status.HTTP_200_OK)
+
+    stage_sets = _get_stage_sets(workflow.id)
     qs = _visible_queryset(request)
 
     month = request.query_params.get('month')
@@ -343,46 +347,162 @@ def dashboard_counts(request):
     if year:
         qs = qs.filter(created_at__year=year)
 
+    if role == 'licensee':
+        applied_stages = set(stage_sets['initial'])
+        objection_stages = set(stage_sets['objection'])
+        approved_stages = set(stage_sets['approved'])
+        rejected_stages = set(stage_sets['rejected'])
+        payment_stages = set(stage_sets['payment'])
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
+
+        return Response({
+            'applied': qs.filter(current_stage__name__in=applied_stages).count(),
+            'pending': qs.filter(current_stage__name__in=pending_stages).count(),
+            'objection': qs.filter(current_stage__name__in=objection_stages).count(),
+            'approved': qs.filter(current_stage__name__in=approved_stages).count(),
+            'rejected': qs.filter(current_stage__name__in=rejected_stages).count(),
+            'awaiting_payment': qs.filter(current_stage__name__in=payment_stages).count(),
+        }, status=status.HTTP_200_OK)
+
+    if role in ('site_admin', 'single_window'):
+        applied_stages = set(stage_sets['initial'])
+        objection_stages = set(stage_sets['objection'])
+        approved_stages = set(stage_sets['approved'])
+        rejected_stages = set(stage_sets['rejected'])
+        payment_stages = set(stage_sets['payment'])
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
+
+        return Response({
+            'applied': qs.filter(current_stage__name__in=applied_stages).count(),
+            'pending': qs.filter(current_stage__name__in=pending_stages).count(),
+            'objection': qs.filter(current_stage__name__in=objection_stages).count(),
+            'approved': qs.filter(current_stage__name__in=approved_stages).count(),
+            'rejected': qs.filter(current_stage__name__in=rejected_stages).count(),
+            'awaiting_payment': qs.filter(current_stage__name__in=payment_stages).count(),
+        }, status=status.HTTP_200_OK)
+
+    # For District User, Commissioner, etc.
+    role_stage_names = _get_role_stage_names(request.user, workflow.id)
+    if role_stage_names:
+        role_objection_stages = set(stage_sets['objection'])
+        pending_stages = set(role_stage_names) | role_objection_stages
+        reachable_from_role = _collect_reachable_stage_names(workflow.id, set(role_stage_names))
+        role_rejected_stages = set(stage_sets['rejected'])
+
+        approved_stages = set(stage_sets['approved'])
+        payment_stages = set(stage_sets['payment'])
+        forward_stages = set(reachable_from_role) - pending_stages - role_rejected_stages
+
+        return Response({
+            'applied': 0,
+            'pending': qs.filter(current_stage__name__in=pending_stages).count(),
+            'objection': qs.filter(current_stage__name__in=role_objection_stages).count(),
+            'approved': qs.filter(current_stage__name__in=approved_stages | (forward_stages - payment_stages)).count(),
+            'rejected': qs.filter(current_stage__name__in=role_rejected_stages).count(),
+            'awaiting_payment': qs.filter(current_stage__name__in=payment_stages).count(),
+        }, status=status.HTTP_200_OK)
+
     return Response({
-        'applied': qs.filter(current_stage__name__in=status_sets['applied']).count(),
-        'pending': qs.filter(current_stage__name__in=status_sets['pending']).count(),
-        'objection': qs.filter(current_stage__name__in=status_sets['objection']).count(),
-        'approved': qs.filter(current_stage__name__in=status_sets['approved']).count(),
-        'rejected': qs.filter(current_stage__name__in=status_sets['rejected']).count(),
-        'awaiting_payment': qs.filter(current_stage__name__in=status_sets['payment']).count(),
+        'applied': 0, 'pending': 0, 'objection': 0, 'approved': 0, 'rejected': 0, 'awaiting_payment': 0
     }, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def application_group(request):
+    role = _normalize_role(request.user.role.name if getattr(request.user, 'role', None) else None)
     workflow = _get_special_permit_workflow()
-    status_sets = _status_sets(workflow)
+    if not workflow:
+        return Response({
+            'applied': [], 'pending': [], 'objection': [], 'approved': [], 'rejected': [], 'awaiting_payment': []
+        }, status=status.HTTP_200_OK)
+
+    stage_sets = _get_stage_sets(workflow.id)
     qs = _visible_queryset(request)
 
+    if role == 'licensee':
+        applied_stages = set(stage_sets['initial'])
+        objection_stages = set(stage_sets['objection'])
+        approved_stages = set(stage_sets['approved'])
+        rejected_stages = set(stage_sets['rejected'])
+        payment_stages = set(stage_sets['payment'])
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
+
+        return Response({
+            'applied': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=applied_stages), many=True).data,
+            'pending': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=pending_stages), many=True).data,
+            'objection': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=objection_stages), many=True).data,
+            'approved': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=approved_stages), many=True).data,
+            'rejected': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=rejected_stages), many=True).data,
+            'awaiting_payment': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=payment_stages), many=True).data,
+        }, status=status.HTTP_200_OK)
+
+    if role in ('site_admin', 'single_window'):
+        applied_stages = set(stage_sets['initial'])
+        objection_stages = set(stage_sets['objection'])
+        approved_stages = set(stage_sets['approved'])
+        rejected_stages = set(stage_sets['rejected'])
+        payment_stages = set(stage_sets['payment'])
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
+
+        return Response({
+            'applied': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=applied_stages), many=True).data,
+            'pending': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=pending_stages), many=True).data,
+            'objection': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=objection_stages), many=True).data,
+            'approved': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=approved_stages), many=True).data,
+            'rejected': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=rejected_stages), many=True).data,
+            'awaiting_payment': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=payment_stages), many=True).data,
+        }, status=status.HTTP_200_OK)
+
+    # For District User, Commissioner, etc.
+    role_stage_names = _get_role_stage_names(request.user, workflow.id)
+    if role_stage_names:
+        role_objection_stages = set(stage_sets['objection'])
+        pending_stages = set(role_stage_names) | role_objection_stages
+        reachable_from_role = _collect_reachable_stage_names(workflow.id, set(role_stage_names))
+        role_rejected_stages = set(stage_sets['rejected'])
+
+        approved_stages = set(stage_sets['approved'])
+        payment_stages = set(stage_sets['payment'])
+        forward_stages = set(reachable_from_role) - pending_stages - role_rejected_stages
+
+        return Response({
+            'applied': [],
+            'pending': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=pending_stages), many=True).data,
+            'objection': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=role_objection_stages), many=True).data,
+            'approved': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=approved_stages | (forward_stages - payment_stages)), many=True).data,
+            'rejected': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=role_rejected_stages), many=True).data,
+            'awaiting_payment': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=payment_stages), many=True).data,
+        }, status=status.HTTP_200_OK)
+
     return Response({
-        'applied': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=status_sets['applied']), many=True).data,
-        'pending': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=status_sets['pending']), many=True).data,
-        'objection': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=status_sets['objection']), many=True).data,
-        'approved': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=status_sets['approved']), many=True).data,
-        'rejected': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=status_sets['rejected']), many=True).data,
-        'awaiting_payment': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=status_sets['payment']), many=True).data,
+        'applied': [], 'pending': [], 'objection': [], 'approved': [], 'rejected': [], 'awaiting_payment': []
     }, status=status.HTTP_200_OK)
 
 
-def _sync_special_permit_payment_status(application):
+def _sync_special_permit_payment_status(application, user=None):
     workflow = application.workflow
     if workflow:
-        approved_stage = workflow.stages.filter(is_approved=True).order_by('id').first()
-        if not approved_stage:
-            approved_stage = (
-                workflow.stages.filter(name__icontains='approved').order_by('id').first() or
-                workflow.stages.filter(is_final=True).order_by('id').first()
-            )
+        approved_stage = (
+            workflow.stages.filter(name__icontains='approved').order_by('id').first() or
+            workflow.stages.filter(is_final=True).order_by('id').first()
+        )
         if approved_stage:
-            application.current_stage = approved_stage
-            application.is_approved = True
-            application.save(update_fields=['current_stage', 'is_approved'])
+            try:
+                WorkflowService.advance_stage(
+                    application=application,
+                    user=user or application.applicant,
+                    target_stage=approved_stage,
+                    context={"action": "PAY"},
+                    remarks="Special Permit fee paid successfully. Application approved."
+                )
+                application.is_approved = True
+                application.save(update_fields=['is_approved'])
+            except Exception as e:
+                logger.error("Failed to advance stage on payment: %s", e)
+                application.current_stage = approved_stage
+                application.is_approved = True
+                application.save(update_fields=['current_stage', 'is_approved'])
 
 
 @api_view(['POST'])
@@ -465,7 +585,7 @@ def pay_special_permit_fee_wallet(request, application_id):
     application.is_fee_paid = True
     application.save(update_fields=["is_fee_paid"])
 
-    _sync_special_permit_payment_status(application)
+    _sync_special_permit_payment_status(application, request.user)
 
     return Response({
         "success": True,

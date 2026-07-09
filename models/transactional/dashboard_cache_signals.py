@@ -12,6 +12,7 @@ DASHBOARD_MODEL_LABELS = (
     ("new_license_application", "NewLicenseApplication"),
     ("license_renewal_application", "LicenseApplication"),
     ("salesman_barman", "SalesmanBarmanModel"),
+    ("special_permit", "SpecialPermitApplication"),
 )
 
 
