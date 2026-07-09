@@ -33,6 +33,10 @@ class LicenseCategory(models.Model):
         default=True,
         help_text="Whether this license category is active"
     )
+    is_special_permit_allowed = models.BooleanField(
+        default=False,
+        help_text="Whether licenses of this category are allowed to submit Special Permit (Dry Day) applications"
+    )
 
     class Meta:
         db_table = 'masters_licensecategory'

@@ -161,6 +161,7 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
     
     application_type = serializers.CharField(source='get_source_type_display', read_only=True)
     license_category = serializers.CharField(source='license_category.license_category', read_only=True)
+    is_special_permit_allowed = serializers.BooleanField(source='license_category.is_special_permit_allowed', read_only=True)
     license_sub_category_id = serializers.IntegerField(read_only=True)
     license_sub_category = serializers.CharField(source='license_sub_category.description', read_only=True)
     establishment_name = serializers.SerializerMethodField()
@@ -385,6 +386,7 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
             'district',
             'application_type',
             'license_category',
+            'is_special_permit_allowed',
             'license_sub_category_id',
             'license_sub_category',
             'establishment_name',

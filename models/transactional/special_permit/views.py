@@ -245,19 +245,12 @@ def _status_sets(workflow):
 @permission_classes([IsAuthenticated])
 def eligible_licenses(request):
     now_dt = timezone.now()
-    allowed_categories = [
-        'Restaurant - cum - Bar Shop',
-        'Foreign Liquor Retail Shop',
-        'Special Category Hotel',
-        'Discotheque & Night Club',
-        'Casino with Bar'
-    ]
     licenses = License.objects.filter(
         applicant=request.user,
         is_active=True,
         valid_up_to__gte=now_dt,
         source_type='new_license_application',
-        license_category__license_category__in=allowed_categories
+        license_category__is_special_permit_allowed=True
     ).select_related('excise_district', 'license_category', 'license_sub_category')
     return Response([_serialize_license(license_obj) for license_obj in licenses], status=status.HTTP_200_OK)
 
@@ -278,6 +271,11 @@ def create_special_permit_application(request):
         return Response({'detail': 'You can only apply special permit for your own license.'}, status=status.HTTP_403_FORBIDDEN)
     if not license_obj.is_active or (license_obj.valid_up_to and license_obj.valid_up_to < timezone.now()):
         return Response({'detail': 'Special permit can be applied only against an active license.'}, status=status.HTTP_400_BAD_REQUEST)
+    if not getattr(license_obj.license_category, 'is_special_permit_allowed', False):
+        return Response(
+            {'detail': 'Special permit is not available for this license category.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
 
     permission_duration = request.data.get('permission_duration') or request.data.get('permissionDuration') or SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM
     permission_date = request.data.get('permission_date') or request.data.get('permissionDate') or None
