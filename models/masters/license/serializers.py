@@ -396,3 +396,5 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
             'salesman_barman_role',
             'yearly_license_fee',
         ]
+
+
