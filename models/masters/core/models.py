@@ -29,6 +29,10 @@ class LicenseCategory(models.Model):
         db_index=True,
         help_text="Legacy license category code used in old system"
     )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Whether this license category is active"
+    )
 
     class Meta:
         db_table = 'masters_licensecategory'
@@ -229,6 +233,10 @@ class LicenseSubcategory(models.Model):
         null=True,
         blank=True,
         default=None
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Whether this license subcategory is active"
     )
 
     class Meta:

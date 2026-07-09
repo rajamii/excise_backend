@@ -189,6 +189,16 @@ def license_category_delete(request, pk):
     category.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PATCH'])
+def license_category_toggle_active(request, pk):
+    """Toggle is_active for a license category."""
+    category = get_object_or_404(masters_model.LicenseCategory, pk=pk)
+    category.is_active = not category.is_active
+    category.save(update_fields=['is_active'])
+    serializer = LicenseCategorySerializer(category)
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 #################################################
 #           License Type                        #
@@ -536,6 +546,16 @@ def license_subcategory_delete(request, pk):
         {'message': f'License Subcategory "{subcategory.description}" deleted successfully.'},
         status=status.HTTP_200_OK
     )
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PATCH'])
+def license_subcategory_toggle_active(request, pk):
+    """Toggle is_active for a license subcategory."""
+    subcategory = get_object_or_404(masters_model.LicenseSubcategory, pk=pk)
+    subcategory.is_active = not subcategory.is_active
+    subcategory.save(update_fields=['is_active'])
+    serializer = LicenseSubcategorySerializer(subcategory)
+    return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 #################################################

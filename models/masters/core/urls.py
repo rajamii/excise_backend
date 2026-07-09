@@ -5,11 +5,12 @@ app_name = 'core_masters'
 
 # License Category URLs
 license_category_patterns = [
-    path('',                 views.license_category_list,   name='license-category-list'),
-    path('create/',          views.license_category_create, name='license-category-create'),
-    path('<int:pk>/',        views.license_category_detail, name='license-category-detail'),
-    path('<int:pk>/update/', views.license_category_update, name='license-category-update'),
-    path('<int:pk>/delete/', views.license_category_delete, name='license-category-delete'),
+    path('',                       views.license_category_list,          name='license-category-list'),
+    path('create/',                views.license_category_create,        name='license-category-create'),
+    path('<int:pk>/',              views.license_category_detail,        name='license-category-detail'),
+    path('<int:pk>/update/',       views.license_category_update,        name='license-category-update'),
+    path('<int:pk>/delete/',       views.license_category_delete,        name='license-category-delete'),
+    path('<int:pk>/toggle-active/', views.license_category_toggle_active, name='license-category-toggle-active'),
 ]
 
 # License Type URLs
@@ -59,11 +60,12 @@ policestation_patterns = [
 
 # License Subcategory URLs
 license_subcategory_patterns = [
-    path('',                 views.license_subcategory_list,   name='license-subcategory-list'),
-    path('create/',          views.license_subcategory_create, name='license-subcategory-create'),
-    path('<int:pk>/',        views.license_subcategory_detail, name='license-subcategory-detail'),
-    path('<int:pk>/update/', views.license_subcategory_update, name='license-subcategory-update'),
-    path('<int:pk>/delete/', views.license_subcategory_delete, name='license-subcategory-delete'),
+    path('',                       views.license_subcategory_list,          name='license-subcategory-list'),
+    path('create/',                views.license_subcategory_create,        name='license-subcategory-create'),
+    path('<int:pk>/',              views.license_subcategory_detail,        name='license-subcategory-detail'),
+    path('<int:pk>/update/',       views.license_subcategory_update,        name='license-subcategory-update'),
+    path('<int:pk>/delete/',       views.license_subcategory_delete,        name='license-subcategory-delete'),
+    path('<int:pk>/toggle-active/', views.license_subcategory_toggle_active, name='license-subcategory-toggle-active'),
 ]
 
 # License Title URLs

@@ -6,7 +6,7 @@ class LicenseSubcategorySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = master_models.LicenseSubcategory
-        fields = ['id', 'description', 'old_license_cat_code', 'old_license_scat_code', 'category', 'dry_day_fee_type']
+        fields = ['id', 'description', 'old_license_cat_code', 'old_license_scat_code', 'category', 'dry_day_fee_type', 'is_active']
 
     def to_representation(self, instance):
         representation = super().to_representation(instance)
