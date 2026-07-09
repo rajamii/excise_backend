@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from auth.workflow.serializers import WorkflowObjectionSerializer, WorkflowTransactionSerializer
-from .models import SpecialPermitApplication
+from .models import SpecialPermitApplication, MasterDryDay
 
 
 class SpecialPermitApplicationSerializer(serializers.ModelSerializer):
@@ -39,8 +39,9 @@ class SpecialPermitApplicationSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         duration = attrs.get('permission_duration') or SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM
-        if duration == SpecialPermitApplication.PERMISSION_DURATION_PER_DAY and not attrs.get('permission_date'):
-            raise serializers.ValidationError({'permission_date': 'Permission date is required for per day category.'})
+        if duration == SpecialPermitApplication.PERMISSION_DURATION_PER_DAY:
+            if not attrs.get('permission_date') and not attrs.get('selected_dates'):
+                raise serializers.ValidationError({'permission_date': 'Permission date or selected dates is required for per day category.'})
         return attrs
 
     def get_applicant_name(self, obj):
@@ -69,3 +70,10 @@ class SpecialPermitApplicationSerializer(serializers.ModelSerializer):
             return float(calculate_special_permit_fee(obj))
         except Exception:
             return 0.0
+
+
+class MasterDryDaySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MasterDryDay
+        fields = '__all__'
+

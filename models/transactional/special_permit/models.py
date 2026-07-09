@@ -80,6 +80,8 @@ class SpecialPermitApplication(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    selected_dates = models.JSONField(null=True, blank=True)
+
     transactions = GenericRelation(
         Transaction,
         content_type_field='content_type',
@@ -111,9 +113,9 @@ class SpecialPermitApplication(models.Model):
 
     def clean(self):
         super().clean()
-        if self.permission_duration == self.PERMISSION_DURATION_PER_DAY and not self.permission_date:
+        if self.permission_duration == self.PERMISSION_DURATION_PER_DAY and not self.permission_date and not self.selected_dates:
             from django.core.exceptions import ValidationError
-            raise ValidationError({'permission_date': 'Permission date is required for per day category.'})
+            raise ValidationError({'permission_date': 'Permission date or selected dates is required for per day category.'})
 
     @staticmethod
     def generate_fin_year(today=None) -> str:
@@ -143,3 +145,17 @@ class SpecialPermitApplication(models.Model):
                 except (ValueError, IndexError):
                     last_number = 0
             return f"{prefix}/{str(last_number + 1).zfill(4)}"
+
+
+class MasterDryDay(models.Model):
+    financial_year = models.CharField(max_length=9, unique=True)
+    allowed_dates = models.JSONField(default=list)  # list of ISO strings, e.g., ["2026-08-15"]
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'master_dry_day_calendar'
+        ordering = ['-financial_year']
+
+    def __str__(self):
+        return f"Dry Day Calendar {self.financial_year}"

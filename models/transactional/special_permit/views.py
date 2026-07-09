@@ -15,8 +15,8 @@ from models.masters.license.models import License
 from models.transactional.helpers import _get_role_stage_names, _get_stage_sets, _normalize_role, _collect_reachable_stage_names
 from models.transactional.dashboard_cache import dashboard_counts_cache
 
-from .models import SpecialPermitApplication
-from .serializers import SpecialPermitApplicationSerializer
+from .models import SpecialPermitApplication, MasterDryDay
+from .serializers import SpecialPermitApplicationSerializer, MasterDryDaySerializer
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,15 @@ def calculate_special_permit_fee_raw(license_obj: License) -> dict:
 
 def calculate_special_permit_fee(app: SpecialPermitApplication) -> Decimal:
     res = calculate_special_permit_fee_raw(app.license)
-    return res['dry_day_fee']
+    base_fee = res['dry_day_fee']
+    if res['dry_day_fee_type'] == 'per_day':
+        selected_dates = getattr(app, 'selected_dates', None)
+        if isinstance(selected_dates, list) and len(selected_dates) > 0:
+            return base_fee * len(selected_dates)
+        elif app.permission_date:
+            return base_fee * 1
+        return Decimal('0.00')
+    return base_fee
 
 
 def _serialize_license(license_obj: License) -> dict:
@@ -593,3 +601,43 @@ def pay_special_permit_fee_wallet(request, application_id):
         "is_fee_paid": True,
         "current_stage": getattr(application.current_stage, "name", None)
     }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def master_dry_day_list_create(request):
+    if request.method == 'GET':
+        financial_year = request.query_params.get('financial_year')
+        if financial_year:
+            obj = MasterDryDay.objects.filter(financial_year=financial_year).first()
+            if obj:
+                serializer = MasterDryDaySerializer(obj)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'financial_year': financial_year,
+                    'allowed_dates': []
+                }, status=status.HTTP_200_OK)
+        else:
+            objs = MasterDryDay.objects.all()
+            serializer = MasterDryDaySerializer(objs, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+    elif request.method == 'POST':
+        role_name = request.user.role.name if getattr(request.user, 'role', None) else ''
+        role_name_lower = role_name.lower().replace('_', '').replace(' ', '')
+        if 'siteadmin' not in role_name_lower:
+            return Response({"detail": "Only Site Admin is allowed to update the dry day calendar."}, status=status.HTTP_403_FORBIDDEN)
+
+        financial_year = request.data.get('financial_year')
+        allowed_dates = request.data.get('allowed_dates', [])
+        if not financial_year:
+            return Response({"detail": "financial_year is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        obj, created = MasterDryDay.objects.get_or_create(financial_year=financial_year)
+        obj.allowed_dates = allowed_dates
+        obj.save()
+
+        serializer = MasterDryDaySerializer(obj)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
