@@ -10,5 +10,5 @@ def validate_Numbers(value):
         raise ValidationError(f'{value} is not a valid phone number.')
     
 def validate_name_extended(value):
-    if not re.match(r'^[a-zA-Z0-9\s\-]*$', value):
-        raise ValidationError(f'{value} is not a valid name. Only letters, numbers, spaces, and hyphens are allowed.')
+    if not re.match(r'^[a-zA-Z0-9\s\-\&\(\)\.\,\/\+\']*$', value):
+        raise ValidationError(f'{value} is not a valid name. Only letters, numbers, spaces, hyphens, and common punctuation are allowed.')
