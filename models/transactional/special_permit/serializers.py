@@ -20,6 +20,10 @@ class SpecialPermitApplicationSerializer(serializers.ModelSerializer):
     dry_day_fee_type = serializers.CharField(source='license_sub_category.dry_day_fee_type', read_only=True)
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)
     objections = WorkflowObjectionSerializer(many=True, read_only=True)
+    establishment_address = serializers.SerializerMethodField()
+    mode_of_operation = serializers.SerializerMethodField()
+    payment_txn_id = serializers.SerializerMethodField()
+    payment_txn_date = serializers.SerializerMethodField()
 
     class Meta:
         model = SpecialPermitApplication
@@ -70,6 +74,40 @@ class SpecialPermitApplicationSerializer(serializers.ModelSerializer):
             return float(calculate_special_permit_fee(obj))
         except Exception:
             return 0.0
+
+    def get_establishment_address(self, obj):
+        source_application = getattr(getattr(obj, 'license', None), 'source_application', None)
+        if not source_application:
+            return None
+        for field in ('business_address', 'present_address', 'permanent_address', 'company_address'):
+            value = getattr(source_application, field, None)
+            if value:
+                return str(value)
+        return None
+
+    def get_mode_of_operation(self, obj):
+        source_application = getattr(getattr(obj, 'license', None), 'source_application', None)
+        if not source_application:
+            return None
+        return getattr(source_application, 'mode_of_operation', None)
+
+    def _get_wallet_transaction(self, obj):
+        from models.transactional.wallet.models import WalletTransaction
+        if not getattr(self, '_wallet_txn_cache', None):
+            self._wallet_txn_cache = {}
+        if obj.application_id not in self._wallet_txn_cache:
+            txn = WalletTransaction.objects.filter(reference_no=obj.application_id, entry_type='DR').first()
+            self._wallet_txn_cache[obj.application_id] = txn
+        return self._wallet_txn_cache[obj.application_id]
+
+    def get_payment_txn_id(self, obj):
+        txn = self._get_wallet_transaction(obj)
+        return txn.transaction_id if txn else None
+
+    def get_payment_txn_date(self, obj):
+        txn = self._get_wallet_transaction(obj)
+        return txn.created_at if txn else None
+
 
 
 class MasterDryDaySerializer(serializers.ModelSerializer):
