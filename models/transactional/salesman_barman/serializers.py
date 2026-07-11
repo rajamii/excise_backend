@@ -7,6 +7,7 @@ from auth.user.models import CustomUser
 from utils.fields import CodeRelatedField
 from .helpers import validate_email, validate_pan_number, validate_aadhaar_number, validate_phone_number
 from models.transactional.payment_gateway.models import PaymentSBIePayTransaction
+from utils.file_validation import validate_uploaded_file
 
 DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE = "001"
 
@@ -259,4 +260,48 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
 
     def validate_mobileNumber(self, value):
         validate_phone_number(value)
+        return value
+
+    def validate_passPhoto(self, value):
+        validate_uploaded_file(
+            value,
+            field_name='passPhoto',
+            label='Passport photo',
+            allowed_extensions={'.jpg', '.jpeg', '.png'},
+            allowed_content_types={'image/jpeg', 'image/png', 'image/jpg'},
+            max_size_mb=5,
+        )
+        return value
+
+    def validate_aadhaarCard(self, value):
+        validate_uploaded_file(
+            value,
+            field_name='aadhaarCard',
+            label='Aadhaar card',
+            allowed_extensions={'.pdf', '.jpg', '.jpeg', '.png'},
+            allowed_content_types={'application/pdf', 'image/jpeg', 'image/png', 'image/jpg'},
+            max_size_mb=10,
+        )
+        return value
+
+    def validate_residentialCertificate(self, value):
+        validate_uploaded_file(
+            value,
+            field_name='residentialCertificate',
+            label='Residential certificate',
+            allowed_extensions={'.pdf', '.jpg', '.jpeg', '.png'},
+            allowed_content_types={'application/pdf', 'image/jpeg', 'image/png', 'image/jpg'},
+            max_size_mb=10,
+        )
+        return value
+
+    def validate_dateofBirthProof(self, value):
+        validate_uploaded_file(
+            value,
+            field_name='dateofBirthProof',
+            label='Date of birth proof',
+            allowed_extensions={'.pdf', '.jpg', '.jpeg', '.png'},
+            allowed_content_types={'application/pdf', 'image/jpeg', 'image/png', 'image/jpg'},
+            max_size_mb=10,
+        )
         return value

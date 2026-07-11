@@ -14,11 +14,12 @@ from models.masters.core.models import (
     Location,
 )
 from auth.user.models import CustomUser
-
 from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
+from utils.file_validation import secure_upload_filename
 
 def upload_document_path(instance, filename):
-    return f'new_license_application/{instance.application_id}/{filename}'
+    safe_name = secure_upload_filename(filename)
+    return f'new_license_application/{instance.application_id}/{safe_name}'
 
 
 class NewLicenseApplication(models.Model):

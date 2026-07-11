@@ -4,6 +4,12 @@ from django.utils.timezone import now
 from . import helpers
 from auth.user.models import CustomUser
 from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
+from utils.file_validation import secure_upload_filename
+
+
+def upload_undertaking_path(instance, filename):
+    safe_name = secure_upload_filename(filename)
+    return f'company_registration/{instance.application_id}/{safe_name}'
 
 
 class CompanyRegistration(models.Model):
@@ -42,8 +48,7 @@ class CompanyRegistration(models.Model):
     payment_remarks = models.TextField(blank=True, null=True)
 
     # ===== Document Upload =====
-    # Using simple string path instead of function reference
-    undertaking = models.FileField(upload_to='company_registration/')
+    undertaking = models.FileField(upload_to=upload_undertaking_path)
 
     # ===== Metadata =====
     created_at = models.DateTimeField(auto_now_add=True)

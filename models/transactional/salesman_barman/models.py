@@ -8,13 +8,15 @@ from models.masters.license.models import License
 from models.masters.core.models import District, LicenseCategory
 from models.transactional.new_license_application.models import NewLicenseApplication
 from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
+from utils.file_validation import secure_upload_filename
 from .helpers import (
     validate_pan_number, validate_aadhaar_number, validate_phone_number,
     validate_address, validate_email, ROLE_CHOICES, GENDER_CHOICES
 )
 
 def upload_document_path(instance, filename):
-    return f'salesman_barman/{instance.application_id}/{filename}'
+    safe_name = secure_upload_filename(filename)
+    return f'salesman_barman/{instance.application_id}/{safe_name}'
 
 class SalesmanBarmanModel(models.Model):
     application_id = models.CharField(max_length=30, primary_key=True, db_index=True)

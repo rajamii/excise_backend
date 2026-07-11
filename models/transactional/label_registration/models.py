@@ -2,10 +2,12 @@ from django.db import models
 from django.utils import timezone
 
 from auth.user.models import CustomUser
+from utils.file_validation import secure_upload_filename
 
 
 def upload_document_path(instance, filename):
-    return f"label_registration/{instance.application_id}/{filename}"
+    safe_name = secure_upload_filename(filename)
+    return f"label_registration/{instance.application_id}/{safe_name}"
 
 
 class LabelRegistration(models.Model):
