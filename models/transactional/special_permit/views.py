@@ -228,6 +228,9 @@ def _visible_queryset(request):
     if role == 'district_user' and getattr(request.user, 'district', None):
         return qs.filter(excise_district=request.user.district)
 
+    if role and 'commissioner' in role:
+        return qs.exclude(current_stage__name__in=['Applied', 'District User'])
+
     return qs
 
 
@@ -410,6 +413,8 @@ def dashboard_counts(request):
 
     # For District User, Commissioner, etc.
     role_stage_names = _get_role_stage_names(request.user, workflow.id)
+    if role and 'commissioner' in role:
+        role_stage_names = set(role_stage_names) | {'Commissioner'}
     if role_stage_names:
         role_objection_stages = set(stage_sets['objection'])
         pending_stages = set(role_stage_names) | role_objection_stages
@@ -483,6 +488,8 @@ def application_group(request):
 
     # For District User, Commissioner, etc.
     role_stage_names = _get_role_stage_names(request.user, workflow.id)
+    if role and 'commissioner' in role:
+        role_stage_names = set(role_stage_names) | {'Commissioner'}
     if role_stage_names:
         role_objection_stages = set(stage_sets['objection'])
         pending_stages = set(role_stage_names) | role_objection_stages
