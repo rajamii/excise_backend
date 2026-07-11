@@ -129,7 +129,7 @@ class SpecialPermitApplication(models.Model):
     def generate_application_id(cls, license_obj: License, financial_year: str | None = None) -> str:
         district_code = str(getattr(getattr(license_obj, 'excise_district', None), 'district_code', '') or '000').strip()
         fin_year = financial_year or cls.generate_fin_year()
-        prefix = f"SP/{district_code}/{fin_year}"
+        prefix = f"DP/{district_code}/{fin_year}"
 
         with transaction.atomic():
             last_app = (
