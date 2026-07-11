@@ -136,14 +136,28 @@ def calculate_special_permit_fee_raw(license_obj: License) -> dict:
 
 
 def calculate_special_permit_fee(app: SpecialPermitApplication) -> Decimal:
-    res = calculate_special_permit_fee_raw(app.license)
-    base_fee = res['dry_day_fee']
-    if res['dry_day_fee_type'] == 'per_day':
+    from models.masters.core.models import MasterFixedFee
+    
+    location_category = _resolve_location_category(app.license)
+    is_rural = False
+    if location_category and str(location_category).strip().lower() == 'rural':
+        is_rural = True
+        
+    duration = getattr(app, 'permission_duration', SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM)
+    
+    if duration == SpecialPermitApplication.PERMISSION_DURATION_PER_DAY:
+        fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_PER_DAY', is_active=True).first()
+        base_fee = fee_obj.amount if fee_obj else Decimal('0.00')
         selected_dates = getattr(app, 'selected_dates', None)
         if isinstance(selected_dates, list) and len(selected_dates) > 0:
             return base_fee * len(selected_dates)
         return Decimal('0.00')
-    return base_fee
+    else: # per_annum
+        if is_rural:
+            fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_ANNUAL_RURAL', is_active=True).first()
+        else:
+            fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_ANNUAL_URBAN', is_active=True).first()
+        return fee_obj.amount if fee_obj else Decimal('0.00')
 
 
 def _serialize_license(license_obj: License) -> dict:
