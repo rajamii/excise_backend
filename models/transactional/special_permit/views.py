@@ -396,9 +396,9 @@ def dashboard_counts(request):
             'applied': qs.filter(current_stage__name__in=applied_stages).count(),
             'pending': qs.filter(current_stage__name__in=pending_stages).count(),
             'objection': qs.filter(current_stage__name__in=objection_stages).count(),
-            'approved': qs.filter(current_stage__name__in=approved_stages).count(),
+            'approved': qs.filter(current_stage__name__in=approved_stages | payment_stages).count(),
             'rejected': qs.filter(current_stage__name__in=rejected_stages).count(),
-            'awaiting_payment': qs.filter(current_stage__name__in=payment_stages).count(),
+            'awaiting_payment': 0,
         }, status=status.HTTP_200_OK)
 
     # For District User, Commissioner, etc.
@@ -417,9 +417,9 @@ def dashboard_counts(request):
             'applied': 0,
             'pending': qs.filter(current_stage__name__in=pending_stages).count(),
             'objection': qs.filter(current_stage__name__in=role_objection_stages).count(),
-            'approved': qs.filter(current_stage__name__in=approved_stages | forward_stages).count(),
+            'approved': qs.filter(current_stage__name__in=approved_stages | forward_stages | payment_stages).count(),
             'rejected': qs.filter(current_stage__name__in=role_rejected_stages).count(),
-            'awaiting_payment': qs.filter(current_stage__name__in=payment_stages).count(),
+            'awaiting_payment': 0,
         }, status=status.HTTP_200_OK)
 
     return Response({
@@ -469,9 +469,9 @@ def application_group(request):
             'applied': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=applied_stages), many=True).data,
             'pending': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=pending_stages), many=True).data,
             'objection': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=objection_stages), many=True).data,
-            'approved': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=approved_stages), many=True).data,
+            'approved': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=approved_stages | payment_stages), many=True).data,
             'rejected': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=rejected_stages), many=True).data,
-            'awaiting_payment': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=payment_stages), many=True).data,
+            'awaiting_payment': [],
         }, status=status.HTTP_200_OK)
 
     # For District User, Commissioner, etc.
@@ -490,9 +490,9 @@ def application_group(request):
             'applied': [],
             'pending': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=pending_stages), many=True).data,
             'objection': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=role_objection_stages), many=True).data,
-            'approved': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=approved_stages | forward_stages), many=True).data,
+            'approved': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=approved_stages | forward_stages | payment_stages), many=True).data,
             'rejected': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=role_rejected_stages), many=True).data,
-            'awaiting_payment': SpecialPermitApplicationSerializer(qs.filter(current_stage__name__in=payment_stages), many=True).data,
+            'awaiting_payment': [],
         }, status=status.HTTP_200_OK)
 
     return Response({
