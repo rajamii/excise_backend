@@ -298,6 +298,13 @@ def create_special_permit_application(request):
     selected_dates = request.data.get('selected_dates') or request.data.get('selectedDates') or None
     financial_year = request.data.get('financial_year') or request.data.get('financialYear') or SpecialPermitApplication.generate_fin_year()
 
+    if permission_duration == SpecialPermitApplication.PERMISSION_DURATION_PER_DAY and selected_dates:
+        if isinstance(selected_dates, list):
+            today_str = timezone.localdate().strftime('%Y-%m-%d')
+            for date_str in selected_dates:
+                if str(date_str) < today_str:
+                    return Response({'detail': 'Back-dated permits are not allowed. Selection must be for today or future dates.'}, status=status.HTTP_400_BAD_REQUEST)
+
     serializer = SpecialPermitApplicationSerializer(data={
         'license': license_obj.license_id,
         'financial_year': financial_year,
