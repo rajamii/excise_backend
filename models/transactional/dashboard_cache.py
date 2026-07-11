@@ -74,7 +74,9 @@ def dashboard_counts_cache(namespace: str):
             cache_key = _request_cache_key(request, namespace)
             cached_data = None
 
-            if _dashboard_cache_available():
+            query_params = getattr(request, 'query_params', request.GET if hasattr(request, 'GET') else {})
+            has_cache_buster = any(k in query_params for k in IGNORED_CACHE_QUERY_PARAMS)
+            if _dashboard_cache_available() and not has_cache_buster:
                 try:
                     cached_data = cache.get(cache_key)
                 except Exception as exc:
