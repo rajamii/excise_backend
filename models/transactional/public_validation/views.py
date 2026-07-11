@@ -499,12 +499,64 @@ def _validate_license_pdf_from_code(request, code: str):
             'terms': [],
         }
 
+    elif source == 'special_permit':
+        from models.transactional.special_permit.models import SpecialPermitApplication
+        app = SpecialPermitApplication.objects.filter(application_id=application_id).first()
+        if not app:
+            return Response({'detail': 'Special Permit not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        duration_label = "Per Day" if app.permission_duration == "per_day" else "Annual"
+        
+        # Get licensee name safely
+        licensee_name = ""
+        if app.applicant:
+            licensee_name = ' '.join([
+                str(getattr(app.applicant, 'first_name', '') or '').strip(),
+                str(getattr(app.applicant, 'last_name', '') or '').strip(),
+            ]).strip() or getattr(app.applicant, 'username', '') or getattr(app.applicant, 'email', '')
+        elif app.license:
+            licensee_name = app.license.applicant_name or ""
+
+        # Get establishment address safely
+        establishment_address = ""
+        if app.license and getattr(app.license, 'source_application', None):
+            source_app = app.license.source_application
+            for field in ('business_address', 'present_address', 'permanent_address', 'company_address'):
+                val = getattr(source_app, field, None)
+                if val:
+                    establishment_address = str(val)
+                    break
+
+        response_payload = {
+            'applicationId': app.application_id,
+            'licenseNumber': app.application_id,
+            'licenseTitle': f'Special Permission Certificate ({duration_label})',
+            'licenseeName': licensee_name,
+            'fatherOrHusbandName': '',
+            'kindOfShop': app.license_sub_category.description if app.license_sub_category else '',
+            'addressOfBusiness': establishment_address,
+            'district': app.excise_district.district if app.excise_district else '',
+            'modeOfOperation': app.mode_of_operation or 'Self',
+            'validFrom': app.updated_at.strftime('%d/%m/%Y') if app.updated_at else '',
+            'validTo': '',
+            'generatedOn': _fmt_dt(now_date),
+            'validationCode': token,
+            'validationPdfUrl': validation_pdf_url,
+            'validatedViaCode': False,
+            'terms': [],
+        }
+
     else:
         return Response({'detail': 'Unsupported license source.'}, status=status.HTTP_400_BAD_REQUEST)
 
     if source == 'company_registration':
         if not app.is_approved:
             return Response({'detail': 'Company Registration is not approved yet.'}, status=status.HTTP_403_FORBIDDEN)
+    elif source == 'special_permit':
+        if not app.is_approved:
+            return Response({'detail': 'Special Permit is not approved yet.'}, status=status.HTTP_403_FORBIDDEN)
+        if not app.is_fee_paid:
+            return Response({'detail': 'Special Permit fee has not been paid.'}, status=status.HTTP_403_FORBIDDEN)
     else:
         if not license_obj:
             return Response({'detail': 'License not issued yet.'}, status=status.HTTP_403_FORBIDDEN)
@@ -900,6 +952,56 @@ def _resolve_validation_result(request, code: str) -> dict:
                 'validTo': '',
             }
         )
+    elif source == 'special_permit':
+        from models.transactional.special_permit.models import SpecialPermitApplication
+        app = SpecialPermitApplication.objects.filter(application_id=application_id).first()
+        if not app:
+            return {
+                'status': 'not_found',
+                'message': 'Special Permit not found.',
+                'code': token,
+                'signatureVerified': True,
+                'authenticity': 'Digitally signed QR (record not found)',
+                'canDownload': False,
+                'details': details,
+                'verificationId': hashlib.sha256(token.encode('utf-8')).hexdigest()[:12],
+                'watermarkUrl': watermark_data_url,
+            }
+
+        duration_label = "Per Day" if app.permission_duration == "per_day" else "Annual"
+        
+        # Get licensee name safely
+        licensee_name = ""
+        if app.applicant:
+            licensee_name = ' '.join([
+                str(getattr(app.applicant, 'first_name', '') or '').strip(),
+                str(getattr(app.applicant, 'last_name', '') or '').strip(),
+            ]).strip() or getattr(app.applicant, 'username', '') or getattr(app.applicant, 'email', '')
+        elif app.license:
+            licensee_name = app.license.applicant_name or ""
+
+        # Get establishment address safely
+        establishment_address = ""
+        if app.license and getattr(app.license, 'source_application', None):
+            source_app = app.license.source_application
+            for field in ('business_address', 'present_address', 'permanent_address', 'company_address'):
+                val = getattr(source_app, field, None)
+                if val:
+                    establishment_address = str(val)
+                    break
+
+        details.update(
+            {
+                'licenseTitle': f'Special Permission Certificate ({duration_label})',
+                'licenseNumber': app.application_id,
+                'licenseeName': licensee_name,
+                'kindOfShop': app.license_sub_category.description if app.license_sub_category else '',
+                'addressOfBusiness': establishment_address,
+                'district': app.excise_district.district if app.excise_district else '',
+                'validFrom': app.updated_at.strftime('%d/%m/%Y') if app.updated_at else '',
+                'validTo': '',
+            }
+        )
     else:
         return {
             'status': 'invalid_code',
@@ -924,6 +1026,43 @@ def _resolve_validation_result(request, code: str) -> dict:
             message = 'Company Registration is valid.'
             can_download = True
             authenticity = 'Original (digitally signed QR)'
+    elif source == 'special_permit':
+        if not app.is_approved:
+            status_code = 'not_issued'
+            message = 'Special Permit is not approved yet.'
+            can_download = False
+            authenticity = 'Digitally signed QR (not approved)'
+        elif not app.is_fee_paid:
+            status_code = 'inactive'
+            message = 'Special Permit fee has not been paid.'
+            can_download = False
+            authenticity = 'Digitally signed QR (fee unpaid)'
+        else:
+            if app.permission_duration == 'per_day':
+                selected_dates = app.selected_dates or []
+                today_str = now_date.strftime('%Y-%m-%d')
+                if selected_dates and today_str not in selected_dates:
+                    all_past = all(d < today_str for d in selected_dates)
+                    if all_past:
+                        status_code = 'expired'
+                        message = 'Special Permit has expired.'
+                        can_download = False
+                        authenticity = 'Digitally signed QR (expired)'
+                    else:
+                        status_code = 'valid'
+                        message = f'Special Permit is approved and valid for dates: {", ".join(selected_dates)}.'
+                        can_download = True
+                        authenticity = 'Original (digitally signed QR)'
+                else:
+                    status_code = 'valid'
+                    message = 'Special Permit is valid.'
+                    can_download = True
+                    authenticity = 'Original (digitally signed QR)'
+            else:
+                status_code = 'valid'
+                message = f'Special Permit is valid for Financial Year {app.financial_year}.'
+                can_download = True
+                authenticity = 'Original (digitally signed QR)'
     else:
         status_code = 'valid'
         message = 'License is valid.'

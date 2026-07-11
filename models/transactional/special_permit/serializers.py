@@ -24,6 +24,7 @@ class SpecialPermitApplicationSerializer(serializers.ModelSerializer):
     mode_of_operation = serializers.SerializerMethodField()
     payment_txn_id = serializers.SerializerMethodField()
     payment_txn_date = serializers.SerializerMethodField()
+    validation_code = serializers.SerializerMethodField()
 
     class Meta:
         model = SpecialPermitApplication
@@ -108,6 +109,12 @@ class SpecialPermitApplicationSerializer(serializers.ModelSerializer):
         txn = self._get_wallet_transaction(obj)
         return txn.created_at if txn else None
 
+    def get_validation_code(self, obj):
+        from django.core import signing
+        return signing.dumps(
+            {"applicationId": obj.application_id, "source": "special_permit"},
+            salt="final-license",
+        )
 
 
 class MasterDryDaySerializer(serializers.ModelSerializer):

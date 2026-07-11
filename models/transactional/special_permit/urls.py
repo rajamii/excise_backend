@@ -27,6 +27,7 @@ urlpatterns = [
     path('list-by-status/', views.application_group, name='applications-by-status'),
     path('detail/<everything:application_id>/', views.special_permit_detail, name='detail'),
     path('pay/<everything:application_id>/', views.pay_special_permit_fee_wallet, name='pay-fee-wallet'),
+    path('qr-code/<everything:application_id>/', views.special_permit_qr_code, name='qr-code'),
     path('master-dry-day/', views.master_dry_day_list_create, name='master-dry-day-list-create'),
 ]
 

@@ -6,7 +6,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import JSONParser
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 
 from auth.workflow.models import Workflow
@@ -652,4 +652,48 @@ def master_dry_day_list_create(request):
 
         serializer = MasterDryDaySerializer(obj)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def special_permit_qr_code(request, application_id):
+    import base64
+    import hashlib
+    from io import BytesIO
+    from urllib.parse import quote
+    from PIL import Image
+    from django.http import HttpResponse
+    from django.shortcuts import get_object_or_404
+    from django.core import signing
+    from rest_framework.decorators import permission_classes, api_view
+    from rest_framework.permissions import AllowAny
+    
+    from utils.qrcodegen import QrCode
+    from models.transactional.special_permit.models import SpecialPermitApplication
+
+    application = get_object_or_404(SpecialPermitApplication, application_id=application_id)
+    
+    signed_code = signing.dumps(
+        {"applicationId": application.application_id, "source": "special_permit"},
+        salt="final-license",
+    )
+    validation_url = request.build_absolute_uri(f"/v/{quote(signed_code, safe=':')}/")
+    
+    qr = QrCode.encode_text(str(validation_url or ""), QrCode.Ecc.MEDIUM)
+    size = qr.get_size()
+    border = 2
+    scale = 4
+    img_size = (size + border * 2) * scale
+    img = Image.new("RGB", (img_size, img_size), "white")
+    pixels = img.load()
+    for y in range(size):
+        for x in range(size):
+            if qr.get_module(x, y):
+                for dy in range(scale):
+                    for dx in range(scale):
+                        pixels[(x + border) * scale + dx, (y + border) * scale + dy] = (0, 0, 0)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return HttpResponse(buf.getvalue(), content_type="image/png")
+
 
