@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 DASHBOARD_COUNTS_CACHE_PREFIX = "dashboard_counts"
 DEFAULT_DASHBOARD_COUNTS_CACHE_TIMEOUT = 600
 DEFAULT_DASHBOARD_CACHE_FAILURE_COOLDOWN = 60
-IGNORED_CACHE_QUERY_PARAMS = {"cb", "_", "cache_buster", "cachebuster"}
+IGNORED_CACHE_QUERY_PARAMS = {"cb", "_", "_t", "cache_buster", "cachebuster"}
+BYPASS_CACHE_QUERY_PARAMS = {"cb", "_", "cache_buster", "cachebuster"}
 _cache_disabled_until = 0.0
 
 
@@ -55,6 +56,51 @@ def _request_cache_key(request, namespace: str) -> str:
     )
 
 
+def get_cached_api_response(request, namespace: str):
+    cache_key = _request_cache_key(request, namespace)
+    query_params = getattr(request, 'query_params', request.GET if hasattr(request, 'GET') else {})
+    has_cache_buster = any(k in query_params for k in BYPASS_CACHE_QUERY_PARAMS)
+    if not _dashboard_cache_available() or has_cache_buster:
+        return None
+
+    try:
+        return cache.get(cache_key)
+    except Exception as exc:
+        _mark_dashboard_cache_unavailable()
+        logger.info("API response cache unavailable; using database fallback: %s", exc)
+        return None
+
+
+def _mark_cache_response(response, status_value: str):
+    try:
+        response["X-Redis-Cache"] = status_value
+    except Exception:
+        pass
+    return response
+
+
+def set_cached_api_response(request, namespace: str, response_data, timeout=None) -> None:
+    if response_data is None:
+        return
+
+    if timeout is None:
+        timeout = getattr(
+            settings,
+            "DASHBOARD_COUNTS_CACHE_TIMEOUT",
+            DEFAULT_DASHBOARD_COUNTS_CACHE_TIMEOUT,
+        )
+
+    if not _dashboard_cache_available():
+        return
+
+    cache_key = _request_cache_key(request, namespace)
+    try:
+        cache.set(cache_key, response_data, timeout=timeout)
+    except Exception as exc:
+        _mark_dashboard_cache_unavailable()
+        logger.info("API response cache unavailable; skipped cache write: %s", exc)
+
+
 def dashboard_counts_cache(namespace: str):
     """
     Cache dashboard count API responses per user/role/query string.
@@ -71,31 +117,20 @@ def dashboard_counts_cache(namespace: str):
     def decorator(view_func):
         @wraps(view_func)
         def wrapper(request, *args, **kwargs):
-            cache_key = _request_cache_key(request, namespace)
-            cached_data = None
-
-            query_params = getattr(request, 'query_params', request.GET if hasattr(request, 'GET') else {})
-            has_cache_buster = any(k in query_params for k in IGNORED_CACHE_QUERY_PARAMS)
-            if _dashboard_cache_available() and not has_cache_buster:
-                try:
-                    cached_data = cache.get(cache_key)
-                except Exception as exc:
-                    _mark_dashboard_cache_unavailable()
-                    logger.info("Dashboard cache unavailable; using database fallback: %s", exc)
-
+            cached_data = get_cached_api_response(request, namespace)
             if cached_data is not None:
-                return Response(cached_data)
+                return _mark_cache_response(Response(cached_data), "HIT")
 
             response = view_func(request, *args, **kwargs)
 
             status_code = getattr(response, "status_code", 200)
             response_data = getattr(response, "data", None)
-            if _dashboard_cache_available() and 200 <= status_code < 300 and isinstance(response_data, dict):
-                try:
-                    cache.set(cache_key, dict(response_data), timeout=timeout)
-                except Exception as exc:
-                    _mark_dashboard_cache_unavailable()
-                    logger.info("Dashboard cache unavailable; skipped cache write: %s", exc)
+            if 200 <= status_code < 300 and isinstance(response_data, (dict, list)):
+                cached_payload = dict(response_data) if isinstance(response_data, dict) else list(response_data)
+                set_cached_api_response(request, namespace, cached_payload, timeout=timeout)
+                _mark_cache_response(response, "MISS")
+            else:
+                _mark_cache_response(response, "BYPASS")
 
             return response
 

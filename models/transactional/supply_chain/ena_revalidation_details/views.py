@@ -10,6 +10,7 @@ from datetime import timedelta
 import logging
 from .models import EnaRevalidationDetail
 from .serializers import EnaRevalidationDetailSerializer
+from models.transactional.dashboard_cache import get_cached_api_response, set_cached_api_response, _mark_cache_response
 from models.transactional.supply_chain.ena_requisition_details.models import EnaRequisitionDetail
 from models.transactional.supply_chain.ena_requisition_details.models import EnaRevalidationActivationSchedule
 from auth.workflow.constants import WORKFLOW_IDS
@@ -541,7 +542,17 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         self._process_due_activation_schedules()
-        return super().list(request, *args, **kwargs)
+        cached_data = get_cached_api_response(request, "supply_chain_ena_revalidations")
+        if cached_data is not None:
+            return _mark_cache_response(Response(cached_data), "HIT")
+
+        response = super().list(request, *args, **kwargs)
+        if getattr(response, "status_code", 200) < 300:
+            set_cached_api_response(request, "supply_chain_ena_revalidations", response.data)
+            _mark_cache_response(response, "MISS")
+        else:
+            _mark_cache_response(response, "BYPASS")
+        return response
 
     @action(detail=False, methods=['post'], url_path='from-requisition')
     def create_from_requisition(self, request):
