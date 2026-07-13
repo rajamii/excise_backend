@@ -151,7 +151,8 @@ def _fetch_title_terms(cat_code: int | None, scat_code: int | None) -> tuple[str
         return '', []
 
     cfg = MasterLicenseForm.get_license_config(int(resolved_cat), int(resolved_scat))
-    title = cfg.license_title if cfg else ''
+    title_obj = __import__('models.masters.core.models', fromlist=['LicenseTitle']).LicenseTitle.objects.filter(name='new-license').first()
+    title = title_obj.description if title_obj else (cfg.license_title if cfg else '')
 
     qs = (
         MasterLicenseFormTerms.objects.filter(
@@ -441,7 +442,15 @@ def _validate_license_pdf_from_code(request, code: str):
         response_payload = {
             'applicationId': app.application_id,
             'licenseNumber': license_number,
-            'licenseTitle': f'{role_label} Registration Certificate',
+            'licenseTitle': (
+                (lambda title_key: (
+                    __import__('models.masters.core.models', fromlist=['LicenseTitle']).LicenseTitle.objects.filter(name=title_key).first() or
+                    __import__('models.masters.core.models', fromlist=['LicenseTitle']).LicenseTitle.objects.filter(name='salesman-barman').first()
+                ).description)(role_label.lower())
+                if __import__('models.masters.core.models', fromlist=['LicenseTitle']).LicenseTitle.objects.filter(name=role_label.lower()).exists() or
+                   __import__('models.masters.core.models', fromlist=['LicenseTitle']).LicenseTitle.objects.filter(name='salesman-barman').exists()
+                else f'{role_label} Registration Certificate'
+            ),
             'licenseeName': _salesman_barman_name(app),
             'fatherOrHusbandName': str(getattr(app, 'fatherHusbandName', '') or ''),
             'kindOfShop': _salesman_barman_kind_of_shop(app, license_obj),
@@ -530,7 +539,11 @@ def _validate_license_pdf_from_code(request, code: str):
         response_payload = {
             'applicationId': app.application_id,
             'licenseNumber': app.application_id,
-            'licenseTitle': f'Special Permission Certificate ({duration_label})',
+            'licenseTitle': (
+                (lambda: __import__('models.masters.core.models', fromlist=['LicenseTitle']).LicenseTitle.objects.filter(name='special-permit').first().description)()
+                if __import__('models.masters.core.models', fromlist=['LicenseTitle']).LicenseTitle.objects.filter(name='special-permit').exists()
+                else f'Special Permission Certificate ({duration_label})'
+            ),
             'licenseeName': licensee_name,
             'fatherOrHusbandName': '',
             'kindOfShop': app.license_sub_category.description if app.license_sub_category else '',
@@ -897,7 +910,15 @@ def _resolve_validation_result(request, code: str) -> dict:
         role_label = str(getattr(app, 'role', '') or 'Salesman').strip().title()
         details.update(
             {
-                'licenseTitle': f'{role_label} Registration Certificate',
+                'licenseTitle': (
+                    (lambda title_key: (
+                        __import__('models.masters.core.models', fromlist=['LicenseTitle']).LicenseTitle.objects.filter(name=title_key).first() or
+                        __import__('models.masters.core.models', fromlist=['LicenseTitle']).LicenseTitle.objects.filter(name='salesman-barman').first()
+                    ).description)(role_label.lower())
+                    if __import__('models.masters.core.models', fromlist=['LicenseTitle']).LicenseTitle.objects.filter(name=role_label.lower()).exists() or
+                       __import__('models.masters.core.models', fromlist=['LicenseTitle']).LicenseTitle.objects.filter(name='salesman-barman').exists()
+                    else f'{role_label} Registration Certificate'
+                ),
                 'licenseNumber': (license_obj.license_id if license_obj else app.application_id),
                 'licenseeName': _salesman_barman_name(app),
                 'kindOfShop': _salesman_barman_kind_of_shop(app, license_obj),
@@ -992,7 +1013,11 @@ def _resolve_validation_result(request, code: str) -> dict:
 
         details.update(
             {
-                'licenseTitle': f'Special Permission Certificate ({duration_label})',
+                'licenseTitle': (
+                    (lambda: __import__('models.masters.core.models', fromlist=['LicenseTitle']).LicenseTitle.objects.filter(name='special-permit').first().description)()
+                    if __import__('models.masters.core.models', fromlist=['LicenseTitle']).LicenseTitle.objects.filter(name='special-permit').exists()
+                    else f'Special Permission Certificate ({duration_label})'
+                ),
                 'licenseNumber': app.application_id,
                 'licenseeName': licensee_name,
                 'kindOfShop': app.license_sub_category.description if app.license_sub_category else '',

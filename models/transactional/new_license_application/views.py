@@ -956,6 +956,10 @@ def final_license_detail(request, application_id):
         if cfg:
             response["licenseTitle"] = cfg.license_title
 
+        from models.masters.core.models import LicenseTitle
+        title_obj = LicenseTitle.objects.filter(name='new-license').first()
+        response["licenseSubTitle"] = title_obj.description if title_obj else "COUNTER FOIL"
+
         qs = (
             MasterLicenseFormTerms.objects.filter(
                 licensee_cat_code=int(resolved_cat),

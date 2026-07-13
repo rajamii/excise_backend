@@ -25,6 +25,7 @@ class SpecialPermitApplicationSerializer(serializers.ModelSerializer):
     payment_txn_id = serializers.SerializerMethodField()
     payment_txn_date = serializers.SerializerMethodField()
     validation_code = serializers.SerializerMethodField()
+    license_title = serializers.SerializerMethodField()
 
     class Meta:
         model = SpecialPermitApplication
@@ -115,6 +116,11 @@ class SpecialPermitApplicationSerializer(serializers.ModelSerializer):
             {"applicationId": obj.application_id, "source": "special_permit"},
             salt="final-license",
         )
+
+    def get_license_title(self, obj):
+        from models.masters.core.models import LicenseTitle
+        title_obj = LicenseTitle.objects.filter(name='special-permit').first()
+        return title_obj.description if title_obj else 'SPECIAL PERMISSION TO OPERATE BAR ON DRY DAYS'
 
 
 class MasterDryDaySerializer(serializers.ModelSerializer):

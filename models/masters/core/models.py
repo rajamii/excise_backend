@@ -198,6 +198,7 @@ class PoliceStation(models.Model):
 
 
 class LicenseTitle(models.Model):
+    name = models.CharField(max_length=100, default='', blank=True)
     description = models.CharField(max_length=200, default=None, null=False)
 
     class Meta:

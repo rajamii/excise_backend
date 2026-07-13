@@ -767,13 +767,20 @@ def final_license_detail(request, application_id):
     except Exception:
         pass
 
+    from models.masters.core.models import LicenseTitle
+    title_key = role_label.lower()
+    title_obj = LicenseTitle.objects.filter(name=title_key).first()
+    if not title_obj:
+        title_obj = LicenseTitle.objects.filter(name='salesman-barman').first()
+    license_title = title_obj.description if title_obj else f"{role_label} Registration Certificate"
+
     response = {
         "applicationId": application.application_id,
         "renewalApplicationId": renewal_application_id,
         "renewal_application_id": renewal_application_id,
         "certificateType": "salesman-barman",
         "licenseNumber": license_number,
-        "licenseTitle": f"{role_label} Registration Certificate",
+        "licenseTitle": license_title,
         "validationCode": validation_code,
         "validationPdfUrl": validation_url,
         "validatedViaCode": validated_via_code,
