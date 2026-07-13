@@ -688,7 +688,7 @@ class WhatsCurrent(models.Model):
         ('rule', 'Rules'),
         ('circular', 'Circulars'),
         ('bullet', 'Bullet Notifications'),
-        ('license', 'License Info'),
+        ('license', 'Flash Notification'),
     ]
 
     title = models.CharField(max_length=500)
