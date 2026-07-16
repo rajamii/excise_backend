@@ -120,10 +120,7 @@ class SpecialPermitApplication(models.Model):
     @staticmethod
     def generate_fin_year(today=None) -> str:
         d = today or now().date()
-        year = d.year
-        if d.month >= 4:
-            return f"{year}-{str(year + 1)[2:]}"
-        return f"{year - 1}-{str(year)[2:]}"
+        return str(d.year)
 
     @classmethod
     def generate_application_id(cls, license_obj: License, financial_year: str | None = None) -> str:

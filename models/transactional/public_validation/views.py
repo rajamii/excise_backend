@@ -516,6 +516,25 @@ def _validate_license_pdf_from_code(request, code: str):
 
         duration_label = "Per Day" if app.permission_duration == "per_day" else "Annual"
         
+        # Calculate validTo date till year end for annual or last date for per_day
+        valid_to_str = ""
+        if app.permission_duration == "per_day" and app.selected_dates:
+            try:
+                sorted_dates = sorted(app.selected_dates)
+                if sorted_dates:
+                    from datetime import datetime
+                    last_dt = datetime.strptime(sorted_dates[-1], "%Y-%m-%d")
+                    valid_to_str = last_dt.strftime('%d/%m/%Y')
+            except Exception:
+                valid_to_str = ""
+        else:
+            year_str = str(app.financial_year).strip()
+            if len(year_str) == 4 and year_str.isdigit():
+                valid_to_str = f"31/12/{year_str}"
+            elif len(year_str) == 7 and "-" in year_str:
+                next_year = "20" + year_str.split("-")[1]
+                valid_to_str = f"31/03/{next_year}"
+
         # Get licensee name safely
         licensee_name = ""
         if app.applicant:
@@ -551,7 +570,7 @@ def _validate_license_pdf_from_code(request, code: str):
             'district': app.excise_district.district if app.excise_district else '',
             'modeOfOperation': app.mode_of_operation or 'Self',
             'validFrom': app.updated_at.strftime('%d/%m/%Y') if app.updated_at else '',
-            'validTo': '',
+            'validTo': valid_to_str,
             'generatedOn': _fmt_dt(now_date),
             'validationCode': token,
             'validationPdfUrl': validation_pdf_url,
@@ -991,6 +1010,25 @@ def _resolve_validation_result(request, code: str) -> dict:
 
         duration_label = "Per Day" if app.permission_duration == "per_day" else "Annual"
         
+        # Calculate validTo date till year end for annual or last date for per_day
+        valid_to_str = ""
+        if app.permission_duration == "per_day" and app.selected_dates:
+            try:
+                sorted_dates = sorted(app.selected_dates)
+                if sorted_dates:
+                    from datetime import datetime
+                    last_dt = datetime.strptime(sorted_dates[-1], "%Y-%m-%d")
+                    valid_to_str = last_dt.strftime('%d/%m/%Y')
+            except Exception:
+                valid_to_str = ""
+        else:
+            year_str = str(app.financial_year).strip()
+            if len(year_str) == 4 and year_str.isdigit():
+                valid_to_str = f"31/12/{year_str}"
+            elif len(year_str) == 7 and "-" in year_str:
+                next_year = "20" + year_str.split("-")[1]
+                valid_to_str = f"31/03/{next_year}"
+
         # Get licensee name safely
         licensee_name = ""
         if app.applicant:
@@ -1024,7 +1062,7 @@ def _resolve_validation_result(request, code: str) -> dict:
                 'addressOfBusiness': establishment_address,
                 'district': app.excise_district.district if app.excise_district else '',
                 'validFrom': app.updated_at.strftime('%d/%m/%Y') if app.updated_at else '',
-                'validTo': '',
+                'validTo': valid_to_str,
             }
         )
     else:
