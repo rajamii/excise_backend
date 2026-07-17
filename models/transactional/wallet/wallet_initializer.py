@@ -233,6 +233,7 @@ def _resolve_primary_wallet_licensee_id(license_obj, *, fallback_licensee_id: st
 
     We still need a licensee_id value for wallet rows; treat an active NA/... for the applicant
     as the canonical one (supply-chain flows use NA/... heavily). If NA/... doesn't exist,
+    fall back to any NA/... for the applicant (even inactive). If that doesn't exist,
     fall back to the current issued license_id.
     """
     fallback = str(fallback_licensee_id or "").strip()
@@ -243,8 +244,19 @@ def _resolve_primary_wallet_licensee_id(license_obj, *, fallback_licensee_id: st
         try:
             from models.masters.license.models import License
 
+            # 1. First, try to resolve an active NA/ license for the applicant
             lic = (
                 License.objects.filter(applicant=applicant, is_active=True)
+                .filter(license_id__istartswith="NA/")
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if lic and lic.license_id:
+                return str(lic.license_id).strip()
+
+            # 2. If no active NA/ license, look for any NA/ license (even inactive/pending payment)
+            lic = (
+                License.objects.filter(applicant=applicant)
                 .filter(license_id__istartswith="NA/")
                 .order_by("-issue_date", "-license_id")
                 .first()
@@ -256,10 +268,12 @@ def _resolve_primary_wallet_licensee_id(license_obj, *, fallback_licensee_id: st
 
     if user_key:
         # If we already have any wallet rows for this user, keep their licensee_id as stable fallback.
+        # CRITICAL: Exclude 'SB/' licenses from template fallback so we don't catch a salesman/barman license ID.
         template = (
             WalletBalance.objects.filter(user_id__iexact=user_key)
             .exclude(licensee_id__isnull=True)
             .exclude(licensee_id__exact="")
+            .exclude(licensee_id__istartswith="SB/")
             .order_by("wallet_balance_id")
             .first()
         )
