@@ -1,10 +1,15 @@
 from rest_framework import serializers
 
-from .models import BrandOwner, BrandOwnerFee, BrandOwnerType, LiquorBrand, LiquorKind, LiquorType
+from .models import BrandOwner, BrandOwnerFee, BrandOwnerType, LiquorBrand, LiquorKind, LiquorType, LiquorCategory
 
 
 def _category_label(code):
-    return f"Category {code}" if code is not None else ""
+    if code is None:
+        return ""
+    try:
+        return LiquorCategory.objects.get(pk=code).liquor_cat_desc
+    except LiquorCategory.DoesNotExist:
+        return f"Category {code}"
 
 
 def _type_label(code):
@@ -121,7 +126,59 @@ class LiquorBrandSerializer(serializers.ModelSerializer):
             'liquor_type_code_old',
             'entry_flag',
             'delete_status',
+            'pack_sizes',
         ]
+
+    pack_sizes = serializers.SerializerMethodField()
+
+    def get_pack_sizes(self, obj):
+        from .models import LiquorProduct
+        sizes = []
+        seen_labels = set()
+        
+        # 1) Always populate category-based default standard sizes
+        if obj.liquor_cat == 3:  # Beer
+            defaults = [
+                {'value': 650, 'label': '650 Ml'},
+                {'value': 500, 'label': '500 Ml'},
+                {'value': 330, 'label': '330 Ml'}
+            ]
+        else:  # Spirits, Wine, Country Liquor, Homemade
+            defaults = [
+                {'value': 750, 'label': '750 Ml'},
+                {'value': 375, 'label': '375 Ml'},
+                {'value': 180, 'label': '180 Ml'}
+            ]
+            
+        for idx, d in enumerate(defaults):
+            label = d['label']
+            seen_labels.add(label)
+            sizes.append({
+                'product_id': -(obj.id * 10 + idx),
+                'value': d['value'],
+                'unit': 'Ml',
+                'label': label
+            })
+            
+        # 2) Merge additional custom sizes from master_liquor_product if available
+        if obj.liquor_brand_code:
+            products = LiquorProduct.objects.filter(liquor_brand_code=obj.liquor_brand_code)
+            for p in products:
+                if p.measure_value:
+                    unit = p.measure_unit or 'M'
+                    display_unit = 'Ml' if unit.strip().upper() in ('M', 'ML') else unit
+                    label = f"{p.measure_value} {display_unit}"
+                    if label not in seen_labels:
+                        seen_labels.add(label)
+                        sizes.append({
+                            'product_id': p.id,
+                            'value': p.measure_value,
+                            'unit': display_unit,
+                            'label': label,
+                        })
+        
+        sizes.sort(key=lambda x: x['value'], reverse=True)
+        return sizes
 
 
 class BrandOwnerFeeSerializer(serializers.ModelSerializer):

@@ -2,7 +2,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import BrandOwner, BrandOwnerFee, BrandOwnerType, LiquorBrand, LiquorKind, LiquorType
+from .models import BrandOwner, BrandOwnerFee, BrandOwnerType, LiquorBrand, LiquorKind, LiquorType, LiquorCategory
 from .serializers import (
     BrandOwnerFeeSerializer,
     BrandOwnerSerializer,
@@ -15,10 +15,17 @@ from .serializers import (
 
 
 def _category_row(code):
+    try:
+        cat = LiquorCategory.objects.get(pk=code)
+        desc = cat.liquor_cat_desc
+        abbr = cat.liquor_cat_abbr
+    except LiquorCategory.DoesNotExist:
+        desc = f'Category {code}'
+        abbr = str(code)
     return {
         'liquor_cat_code': code,
-        'liquor_cat_desc': f'Category {code}',
-        'liquor_cat_abbr': str(code),
+        'liquor_cat_desc': desc,
+        'liquor_cat_abbr': abbr,
         'delete_status': 'N',
     }
 
