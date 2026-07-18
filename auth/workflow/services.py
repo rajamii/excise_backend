@@ -1153,3 +1153,22 @@ class WorkflowService:
             stage=target_stage,
             remarks=remarks,
         )
+
+    @staticmethod
+    def record_transaction(application, user, action, remarks=None):
+        stage = application.current_stage
+        forwarded_to = None
+        perm = StagePermission.objects.filter(stage=stage, can_process=True).first()
+        if perm:
+            forwarded_to = perm.role
+
+        Transaction.objects.create(
+            content_type=ContentType.objects.get_for_model(application),
+            object_id=str(application.pk),
+            performed_by=user,
+            forwarded_by=getattr(user, "role", None),
+            forwarded_to=forwarded_to,
+            stage=stage,
+            remarks=remarks
+        )
+

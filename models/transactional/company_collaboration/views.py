@@ -459,75 +459,63 @@ def workflow_action(request, application_id):
 @dashboard_counts_cache("company_collaboration")
 def dashboard_counts(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
-    base_qs = CompanyCollaboration.objects
+    base_qs = CompanyCollaboration.objects.all()
 
-    # ── Officer roles ────────────────────────────────────────────────────
-    if role in ROLE_STAGE_MAP:
-        stages = ROLE_STAGE_MAP[role]
-        
-        content_type = ContentType.objects.get_for_model(CompanyCollaboration)
-        role_id = getattr(getattr(request.user, 'role', None), 'id', None)
-        
-        acted_by_role = Exists(
-            WorkflowTransaction.objects.filter(
-                content_type=content_type, 
-                object_id=OuterRef('application_id'),
-                performed_by__role_id=role_id
-            )
-        )
-        
-        pending_stages = stages['pending']
-        
+    # Filter by month and year if provided
+    month = request.query_params.get('month')
+    year = request.query_params.get('year')
+    if month:
+        base_qs = base_qs.filter(created_at__month=month)
+    if year:
+        base_qs = base_qs.filter(created_at__year=year)
+
+    # ── Permit Section ───────────────────────────────────────────────────
+    if role == 'permit_section':
         counts = {
-            'applied': 0,
-            'pending':  base_qs.filter(current_stage__name__in=pending_stages).count(),
-            'approved': (
-                base_qs.exclude(current_stage__name__in=pending_stages + [STAGE_REJECTED])
-                .annotate(_acted_by_role=acted_by_role)
-                .filter(_acted_by_role=True)
-                .count()
-            ),
-            'rejected': (
-                base_qs.filter(current_stage__name=STAGE_REJECTED)
-                .annotate(_acted_by_role=acted_by_role)
-                .filter(_acted_by_role=True)
-                .count()
-            ),
-            'objection': (
-                base_qs.filter(current_stage__name__in=OBJECTION_STAGES)
-                .annotate(_acted_by_role=acted_by_role)
-                .filter(_acted_by_role=True)
-                .count()
-            ),
+            'applied': base_qs.count(),
+            'pending':  base_qs.filter(current_stage__name__in=[STAGE_PERMIT_SECTION, STAGE_PERMIT_SECTION_OBJECTION]).count(),
+            'approved': base_qs.filter(current_stage__name__in=[
+                STAGE_COMMISSIONER, STAGE_COMMISSIONER_OBJECTION, 
+                STAGE_AWAITING_PAYMENT, STAGE_FINAL_COMMISSIONER_REVIEW, STAGE_APPROVED
+            ]).count(),
+            'rejected': base_qs.filter(current_stage__name=STAGE_REJECTED).count(),
+            'objection': base_qs.filter(current_stage__name=STAGE_PERMIT_SECTION_OBJECTION).count(),
+            'awaiting_payment': base_qs.filter(current_stage__name=STAGE_AWAITING_PAYMENT).count(),
+        }
+
+    # ── Commissioner ─────────────────────────────────────────────────────
+    elif role == 'commissioner':
+        counts = {
+            'applied': base_qs.count(),
+            'pending':  base_qs.filter(current_stage__name__in=[STAGE_COMMISSIONER, STAGE_COMMISSIONER_OBJECTION, STAGE_FINAL_COMMISSIONER_REVIEW]).count(),
+            'approved': base_qs.filter(current_stage__name__in=[STAGE_AWAITING_PAYMENT, STAGE_APPROVED]).count(),
+            'rejected': base_qs.filter(current_stage__name=STAGE_REJECTED).count(),
+            'objection': base_qs.filter(current_stage__name=STAGE_COMMISSIONER_OBJECTION).count(),
+            'awaiting_payment': base_qs.filter(current_stage__name=STAGE_AWAITING_PAYMENT).count(),
         }
 
     # ── Applicant / licensee ─────────────────────────────────────────────
     elif role == 'licensee':
         mine = base_qs.filter(applicant=request.user)
         counts = {
-            'applied':   mine.filter(current_stage__name__in=OFFICER_PENDING_STAGES).count(),
+            'applied':   mine.count(),
+            'pending':   mine.filter(current_stage__name__in=[STAGE_APPLICANT_APPLIED] + OFFICER_PENDING_STAGES).count(),
             'objection': mine.filter(current_stage__name__in=OBJECTION_STAGES).count(),
             'approved':  mine.filter(current_stage__name=STAGE_APPROVED, is_approved=True).count(),
             'rejected':  mine.filter(current_stage__name=STAGE_REJECTED).count(),
+            'awaiting_payment': mine.filter(current_stage__name=STAGE_AWAITING_PAYMENT).count(),
         }
 
-    # ── Admin / single window ────────────────────────────────────────────
-    elif role in ['site_admin', 'single_window']:
+    # ── Admins, single window, and fallbacks ─────────────────────────────
+    else:
         counts = {
-            'total':     base_qs.count(),
-            'applied':   base_qs.filter(current_stage__name=STAGE_APPLICANT_APPLIED).count(),
-            'in_review': base_qs.filter(current_stage__name__in=OFFICER_PENDING_STAGES).count(),
+            'applied':   base_qs.count(),
+            'pending':   base_qs.filter(current_stage__name__in=OFFICER_PENDING_STAGES).count(),
             'objection': base_qs.filter(current_stage__name__in=OBJECTION_STAGES).count(),
             'approved':  base_qs.filter(current_stage__name=STAGE_APPROVED, is_approved=True).count(),
             'rejected':  base_qs.filter(current_stage__name=STAGE_REJECTED).count(),
+            'awaiting_payment': base_qs.filter(current_stage__name=STAGE_AWAITING_PAYMENT).count(),
         }
-
-    else:
-        return Response({
-            "pending": 0,
-            "approved": 0,
-            "rejected": 0,
-        })
 
     return Response(counts)
 
