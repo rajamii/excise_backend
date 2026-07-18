@@ -590,13 +590,16 @@ def _serialize_renewal_application(obj: LicenseApplication):
             elif model_name == "companyregistration":
                 from models.transactional.company_registration.serializers import CompanyRegistrationSerializer
                 source_data = dict(CompanyRegistrationSerializer(source_app).data)
+            elif model_name == "companycollaboration":
+                from models.transactional.company_collaboration.serializers import CompanyCollaborationSerializer
+                source_data = dict(CompanyCollaborationSerializer(source_app).data)
             else:
                 from models.transactional.new_license_application.serializers import NewLicenseApplicationSerializer
                 source_data = dict(NewLicenseApplicationSerializer(source_app).data)
 
             orig_security_paid = source_data.get("is_security_fee_paid", False)
             source_data.update(data)
-            if model_name != "salesmanbarmanmodel" and model_name != "companyregistration":
+            if model_name not in ["salesmanbarmanmodel", "companyregistration", "companycollaboration"]:
                 source_data["is_security_fee_paid"] = orig_security_paid or data.get("is_security_fee_paid", False)
             data = source_data
         except Exception:
@@ -637,6 +640,24 @@ def _serialize_renewal_application(obj: LicenseApplication):
                 comp_fee = fee_obj.amount if fee_obj else Decimal('5000.00')
             except Exception:
                 comp_fee = Decimal('5000.00')
+            if comp_fee is not None:
+                data.update({
+                    "license_fee_amount": float(comp_fee),
+                    "licenseFeeAmount": float(comp_fee),
+                    "yearly_license_fee": float(comp_fee),
+                    "yearlyLicenseFee": float(comp_fee),
+                    "security_fee_amount": 0,
+                    "securityFeeAmount": 0,
+                })
+        elif getattr(old_license, "source_type", None) == "company_collaboration":
+            try:
+                from django.apps import apps
+                from decimal import Decimal
+                FixedFee = apps.get_model('core', 'MasterFixedFee')
+                fee_obj = FixedFee.objects.filter(fee_code='COMP_COLLAB_FEE', is_active=True).first()
+                comp_fee = fee_obj.amount if fee_obj else Decimal('25000.00')
+            except Exception:
+                comp_fee = Decimal('25000.00')
             if comp_fee is not None:
                 data.update({
                     "license_fee_amount": float(comp_fee),
@@ -804,6 +825,14 @@ def pay_license_fee_wallet(request, application_id):
                 amount = fee_obj.amount if fee_obj else Decimal('5000.00')
             except Exception:
                 amount = Decimal('5000.00')
+        elif getattr(old_license, "source_type", None) == "company_collaboration":
+            try:
+                from django.apps import apps
+                FixedFee = apps.get_model('core', 'MasterFixedFee')
+                fee_obj = FixedFee.objects.filter(fee_code='COMP_COLLAB_FEE', is_active=True).first()
+                amount = fee_obj.amount if fee_obj else Decimal('25000.00')
+            except Exception:
+                amount = Decimal('25000.00')
 
     if amount is None:
         return Response({"detail": "License fee structure not configured for this renewal."}, status=status.HTTP_400_BAD_REQUEST)
