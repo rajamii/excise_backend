@@ -33,6 +33,9 @@ urlpatterns = [
     # Dashboard / reporting
     path('dashboard-counts/', views.dashboard_counts,  name='dashboard-counts'),
     path('list-by-status/',   views.application_group, name='applications-by-status'),
+
+    # Wallet payment
+    path('pay-fee/<everything:application_id>/', views.pay_collaboration_fee, name='pay-fee'),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

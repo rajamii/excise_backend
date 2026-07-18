@@ -30,79 +30,77 @@ JSON_FIELDS = ['selected_brand_ids', 'selected_brands', 'fee_structure', 'overvi
 STAGE_APPLICANT_APPLIED             = 'applicant_applied'
 STAGE_PERMIT_SECTION                = 'permit_section'
 STAGE_PERMIT_SECTION_OBJECTION      = 'permit_section_objection'
-STAGE_DEPUTY_COMMISSIONER           = 'deputy_commissioner'
-STAGE_DEPUTY_COMMISSIONER_OBJECTION = 'deputy_commissioner_objection'
 STAGE_COMMISSIONER                  = 'commissioner'
 STAGE_COMMISSIONER_OBJECTION        = 'commissioner_objection'
+STAGE_AWAITING_PAYMENT              = 'awaiting_payment'
+STAGE_FINAL_COMMISSIONER_REVIEW     = 'final_commissioner_review'
 STAGE_APPROVED                      = 'approved'
 STAGE_REJECTED                      = 'rejected'
 
 # Stages that are considered "in review" by an officer (application moving forward)
 OFFICER_PENDING_STAGES = [
     STAGE_PERMIT_SECTION,
-    STAGE_DEPUTY_COMMISSIONER,
     STAGE_COMMISSIONER,
+    STAGE_FINAL_COMMISSIONER_REVIEW,
 ]
 
 # Stages where the applicant needs to respond to an objection
 OBJECTION_STAGES = [
     STAGE_PERMIT_SECTION_OBJECTION,
-    STAGE_DEPUTY_COMMISSIONER_OBJECTION,
     STAGE_COMMISSIONER_OBJECTION,
 ]
 
-# Role name → (pending_stages, approved_stages, rejected_stages)
+# Role name -> (pending_stages, approved_stages, rejected_stages)
 ROLE_STAGE_MAP = {
     'permit_section': {
         'pending':  [STAGE_PERMIT_SECTION, STAGE_PERMIT_SECTION_OBJECTION],
-        'approved': [STAGE_DEPUTY_COMMISSIONER],
-        'rejected': [STAGE_REJECTED],
-    },
-    'deputy_commissioner': {
-        'pending':  [STAGE_DEPUTY_COMMISSIONER, STAGE_DEPUTY_COMMISSIONER_OBJECTION],
         'approved': [STAGE_COMMISSIONER],
         'rejected': [STAGE_REJECTED],
     },
     'commissioner': {
-        'pending':  [STAGE_COMMISSIONER, STAGE_COMMISSIONER_OBJECTION],
+        'pending':  [STAGE_COMMISSIONER, STAGE_COMMISSIONER_OBJECTION, STAGE_FINAL_COMMISSIONER_REVIEW],
+        'approved': [STAGE_AWAITING_PAYMENT, STAGE_APPROVED],
+        'rejected': [STAGE_REJECTED],
+    },
+    'licensee': {
+        'pending':  [STAGE_APPLICANT_APPLIED, STAGE_AWAITING_PAYMENT,
+                     STAGE_PERMIT_SECTION_OBJECTION, STAGE_COMMISSIONER_OBJECTION],
         'approved': [STAGE_APPROVED],
         'rejected': [STAGE_REJECTED],
     },
 }
 
 # Valid workflow transitions:
-# current_stage_name → action → target_stage_name
+# current_stage_name -> action -> target_stage_name
 WORKFLOW_TRANSITIONS = {
     STAGE_APPLICANT_APPLIED: {
         'FORWARD': STAGE_PERMIT_SECTION,
         'REJECT':  STAGE_REJECTED,
     },
     STAGE_PERMIT_SECTION: {
-        'FORWARD':        STAGE_DEPUTY_COMMISSIONER,
-        'REJECT':         STAGE_REJECTED,
+        'FORWARD':         STAGE_COMMISSIONER,
+        'REJECT':          STAGE_REJECTED,
         'RAISE_OBJECTION': STAGE_PERMIT_SECTION_OBJECTION,
     },
     STAGE_PERMIT_SECTION_OBJECTION: {
         'RESPOND_OBJECTION': STAGE_PERMIT_SECTION,
         'WITHDRAW':          STAGE_REJECTED,
     },
-    STAGE_DEPUTY_COMMISSIONER: {
-        'FORWARD':        STAGE_COMMISSIONER,
-        'REJECT':         STAGE_REJECTED,
-        'RAISE_OBJECTION': STAGE_DEPUTY_COMMISSIONER_OBJECTION,
-    },
-    STAGE_DEPUTY_COMMISSIONER_OBJECTION: {
-        'RESPOND_OBJECTION': STAGE_DEPUTY_COMMISSIONER,
-        'WITHDRAW':          STAGE_REJECTED,
-    },
     STAGE_COMMISSIONER: {
-        'APPROVE':        STAGE_APPROVED,
-        'REJECT':         STAGE_REJECTED,
+        'APPROVE':         STAGE_AWAITING_PAYMENT,
+        'REJECT':          STAGE_REJECTED,
         'RAISE_OBJECTION': STAGE_COMMISSIONER_OBJECTION,
     },
     STAGE_COMMISSIONER_OBJECTION: {
         'RESPOND_OBJECTION': STAGE_COMMISSIONER,
         'WITHDRAW':          STAGE_REJECTED,
+    },
+    STAGE_AWAITING_PAYMENT: {
+        'PAY': STAGE_FINAL_COMMISSIONER_REVIEW,
+    },
+    STAGE_FINAL_COMMISSIONER_REVIEW: {
+        'APPROVE': STAGE_APPROVED,
+        'REJECT':  STAGE_REJECTED,
     },
 }
 
@@ -111,20 +109,19 @@ ROLE_ACTION_PERMISSIONS = {
     'permit_section': {
         STAGE_PERMIT_SECTION: ['FORWARD', 'REJECT', 'RAISE_OBJECTION'],
     },
-    'deputy_commissioner': {
-        STAGE_DEPUTY_COMMISSIONER: ['FORWARD', 'REJECT', 'RAISE_OBJECTION'],
-    },
     'commissioner': {
-        STAGE_COMMISSIONER: ['APPROVE', 'REJECT', 'RAISE_OBJECTION'],
+        STAGE_COMMISSIONER:              ['APPROVE', 'REJECT', 'RAISE_OBJECTION'],
+        STAGE_FINAL_COMMISSIONER_REVIEW: ['APPROVE', 'REJECT'],
     },
     'licensee': {
-        STAGE_PERMIT_SECTION_OBJECTION:      ['RESPOND_OBJECTION', 'WITHDRAW'],
-        STAGE_DEPUTY_COMMISSIONER_OBJECTION: ['RESPOND_OBJECTION', 'WITHDRAW'],
-        STAGE_COMMISSIONER_OBJECTION:        ['RESPOND_OBJECTION', 'WITHDRAW'],
+        STAGE_APPLICANT_APPLIED:         ['FORWARD'],
+        STAGE_PERMIT_SECTION_OBJECTION:  ['RESPOND_OBJECTION', 'WITHDRAW'],
+        STAGE_COMMISSIONER_OBJECTION:    ['RESPOND_OBJECTION', 'WITHDRAW'],
+        STAGE_AWAITING_PAYMENT:          ['PAY'],
     },
     'site_admin': {
         # Admin can trigger any action for support / testing purposes
-        '__all__': ['FORWARD', 'APPROVE', 'REJECT', 'RAISE_OBJECTION', 'RESPOND_OBJECTION', 'WITHDRAW'],
+        '__all__': ['FORWARD', 'APPROVE', 'REJECT', 'RAISE_OBJECTION', 'RESPOND_OBJECTION', 'WITHDRAW', 'PAY'],
     },
     'single_window': {
         STAGE_APPLICANT_APPLIED: ['FORWARD', 'REJECT'],
@@ -607,3 +604,97 @@ def application_group(request):
         "approved": [],
         "rejected": []
     })
+
+
+# ---------------------------------------------------------------------------
+# POST /pay-fee/<application_id>/
+# ---------------------------------------------------------------------------
+
+@api_view(['POST'])
+@permission_classes([HasCompanyCollaborationViewPermission, HasStagePermission])
+def pay_collaboration_fee(request, application_id):
+    """
+    Wallet debit for Company Collaboration fee (COMP_COLLAB_FEE).
+    On success, advance workflow from awaiting_payment → final_commissioner_review.
+    """
+    import secrets
+    from decimal import Decimal
+    from models.transactional.wallet.wallet_service import debit_wallet_balance
+    from models.transactional.wallet.wallet_initializer import _resolve_hoa_code
+
+    application = get_object_or_404(CompanyCollaboration, application_id=application_id)
+
+    # Verify user is licensee and owns this application
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role not in ('licensee', 'site_admin'):
+        return Response(
+            {'detail': 'Only licensees can pay the collaboration fee.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    if role == 'licensee' and application.applicant != request.user:
+        return Response({'detail': 'Not found or not authorized.'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Only allow payment when application is awaiting_payment
+    current_stage_name = application.current_stage.name if application.current_stage else ''
+    if current_stage_name != STAGE_AWAITING_PAYMENT:
+        return Response(
+            {'detail': f"Application is in stage '{current_stage_name}', not '{STAGE_AWAITING_PAYMENT}'."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Fetch fee amount from masters_fixedfee
+    try:
+        from django.apps import apps
+        FixedFee = apps.get_model('core', 'MasterFixedFee')
+        fee_obj = FixedFee.objects.filter(fee_code='COMP_COLLAB_FEE', is_active=True).first()
+        amount = fee_obj.amount if fee_obj else Decimal('25000.00')
+    except Exception:
+        amount = Decimal('25000.00')
+
+    # Debit from license_fee wallet
+    wallet_licensee_id = str(getattr(request.user, 'username', '') or '').strip()
+    license_fee_hoa = _resolve_hoa_code(module_type='other', wallet_type='license_fee')
+    txn_id = secrets.token_hex(12).upper()
+
+    try:
+        debit_wallet_balance(
+            transaction_id=txn_id,
+            licensee_id=wallet_licensee_id,
+            wallet_type='license_fee',
+            head_of_account=license_fee_hoa,
+            amount=amount,
+            user_id=wallet_licensee_id,
+            remarks=f'Company Collaboration fee paid for {application.application_id}',
+            reference_no=application.application_id,
+        )
+    except Exception as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Advance to final_commissioner_review
+    try:
+        with transaction.atomic():
+            target_stage = _get_stage(application.workflow, STAGE_FINAL_COMMISSIONER_REVIEW)
+            application.current_stage = target_stage
+            application.save()
+
+            WorkflowService.record_transaction(
+                application=application,
+                user=request.user,
+                action='PAY',
+                remarks=f'Collaboration fee paid via license wallet. Trans ID: {txn_id}',
+            )
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as exc:
+        return Response(
+            {'detail': f'Payment succeeded but workflow advance failed: {str(exc)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    fresh = CompanyCollaboration.objects.get(pk=application.pk)
+    return Response({
+        'success': True,
+        'transaction_id': txn_id,
+        'application': CompanyCollaborationSerializer(fresh).data,
+    })
+

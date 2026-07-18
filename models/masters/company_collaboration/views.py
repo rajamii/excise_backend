@@ -137,7 +137,14 @@ def list_liquor_brands(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def active_fee(request):
-    fee = BrandOwnerFee.objects.filter(active_status='A').order_by('-from_date').first()
-    if not fee:
-        return Response({'detail': 'No active fee structure found.'}, status=404)
-    return Response(BrandOwnerFeeSerializer(fee).data)
+    from models.masters.core.models import MasterFixedFee
+    fee_obj = MasterFixedFee.objects.filter(
+        fee_code='COMP_COLLAB_FEE',
+        is_active=True,
+    ).first()
+    if not fee_obj:
+        return Response({'detail': 'No active collaboration fee found.'}, status=404)
+
+    return Response({
+        'collaborationFee': str(fee_obj.amount),
+    })

@@ -1448,6 +1448,51 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                         txn_ref,
                         exc,
                     )
+        elif module_code == "010":
+            if status_code == "S":
+                try:
+                    from models.transactional.company_collaboration.models import CompanyCollaboration
+                    from auth.workflow.models import WorkflowStage
+                    from auth.workflow.services import WorkflowService
+
+                    application_id = str(getattr(tx, "payer_id", "") or "").strip()
+                    app = CompanyCollaboration.objects.select_related("workflow", "current_stage").filter(
+                        application_id__iexact=application_id
+                    ).first()
+
+                    if not app:
+                        raise ValueError(f"CompanyCollaboration not found for application_id={application_id}")
+
+                    # Only advance if the application is in the awaiting_payment stage
+                    stage_name = str(getattr(app.current_stage, "name", "") or "").strip().lower()
+                    if stage_name == "awaiting_payment":
+                        target_stage = WorkflowStage.objects.filter(
+                            workflow=app.workflow,
+                            name__iexact="final_commissioner_review"
+                        ).first()
+
+                        if not target_stage:
+                            raise ValueError("Stage 'final_commissioner_review' not found for Company Collaboration workflow.")
+
+                        with transaction.atomic():
+                            app.current_stage = target_stage
+                            app.save()
+
+                            username = str(getattr(tx, "user_id", "") or "").strip()
+                            user = None
+                            if username:
+                                user = CustomUser.objects.filter(username__iexact=username).first()
+                            if not user:
+                                user = getattr(app, "applicant", None)
+
+                            WorkflowService.record_transaction(
+                                application=app,
+                                user=user,
+                                action="PAY",
+                                remarks="Payment of Company Collaboration fee completed via BillDesk.",
+                            )
+                except Exception as exc:
+                    logger.exception("Failed to update Company Collaboration stage for txn_ref=%s: %s", txn_ref, exc)
         else:
             # Persist wallet_transactions entry for license fee / security deposit on successful payment.
             if status_code == "S":
