@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import BrandOwner, BrandOwnerFee, BrandOwnerType, LiquorBrand, LiquorKind
+from .models import BrandOwner, BrandOwnerFee, BrandOwnerType, LiquorBrand, LiquorKind, LiquorType
 
 
 def _category_label(code):
@@ -94,11 +94,20 @@ class LiquorBrandSerializer(serializers.ModelSerializer):
         return _category_label(getattr(obj, 'liquor_cat', None))
 
     def get_liquor_type_desc(self, obj):
-        return _type_label(getattr(obj, 'liquor_type', None))
+        try:
+            lt = LiquorType.objects.get(
+                liquor_cat=obj.liquor_cat,
+                liquor_kind_id=obj.liquor_kind_id,
+                liquor_type_code=obj.liquor_type
+            )
+            return lt.liquor_type_desc
+        except LiquorType.DoesNotExist:
+            return _type_label(getattr(obj, 'liquor_type', None))
 
     class Meta:
         model = LiquorBrand
         fields = [
+            'id',
             'liquor_brand_code',
             'liquor_cat',
             'liquor_cat_desc',
