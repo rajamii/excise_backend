@@ -205,7 +205,13 @@ def initiate_renewal(request, license_id):
     district_code = str(getattr(getattr(old_license, "excise_district", None), "district_code", "") or "000").strip()
     fin_year = LicenseApplication.generate_fin_year()
     
-    app_prefix = "RCR" if getattr(old_license, "source_type", None) == "company_registration" else "LRA"
+    old_source_type = getattr(old_license, "source_type", None)
+    if old_source_type == "company_registration":
+        app_prefix = "RCR"
+    elif old_source_type == "company_collaboration":
+        app_prefix = "RCOL"
+    else:
+        app_prefix = "LRA"
     prefix = f"{app_prefix}/{district_code}/{fin_year}"
 
     last = (
