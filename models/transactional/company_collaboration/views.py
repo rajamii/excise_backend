@@ -686,3 +686,252 @@ def pay_collaboration_fee(request, application_id):
         'application': CompanyCollaborationSerializer(fresh).data,
     })
 
+
+# ---------------------------------------------------------------------------
+# GET /final-license/<application_id>/
+# Returns the data needed to render the FORM D-11 (Collaboration Certificate)
+# ---------------------------------------------------------------------------
+
+@api_view(['GET'])
+@permission_classes([HasCompanyCollaborationViewPermission])
+def final_license_detail(request, application_id):
+    from django.core import signing
+    from urllib.parse import quote
+
+    raw_id = str(application_id or '').strip()
+    token = raw_id
+    low = token.lower()
+    if low.startswith('val:') or low.startswith('val-') or low.startswith('val '):
+        token = token[4:].strip()
+
+    resolved_application_id = raw_id
+    validated_via_code = False
+    try:
+        payload = signing.loads(token, salt='final-license-collab')
+        if isinstance(payload, dict) and payload.get('source') == 'company_collaboration' and payload.get('applicationId'):
+            resolved_application_id = str(payload['applicationId'])
+            validated_via_code = True
+    except Exception:
+        resolved_application_id = raw_id
+
+    application = get_object_or_404(CompanyCollaboration, application_id=resolved_application_id)
+
+    role_name = request.user.role.name if request.user.role else None
+    role = _normalize_role(role_name)
+    if role == 'licensee' and application.applicant != request.user:
+        return Response({'detail': 'Not found or not authorized.'}, status=status.HTTP_404_NOT_FOUND)
+
+    signed_code = signing.dumps(
+        {'applicationId': application.application_id, 'source': 'company_collaboration'},
+        salt='final-license-collab',
+    )
+    validation_url = request.build_absolute_uri(f'/v/{quote(signed_code, safe=":")}/collab/')
+
+    # Build the collaboration registration ID (CCF/<serial>)
+    parts = application.application_id.split('/')
+    serial_str = parts[-1] if parts else '0001'
+    try:
+        serial_num = int(serial_str)
+    except ValueError:
+        serial_num = 1
+    collab_reg_id = f'CCF/{serial_num:08d}'
+
+    # Extract transaction ID and date from the PAY workflow transaction
+    txn_ref = ''
+    txn_date = ''
+    security_deposit_ref = ''
+    security_deposit_date = ''
+    try:
+        ct = ContentType.objects.get_for_model(application)
+        pay_txn = WorkflowTransaction.objects.filter(
+            content_type=ct,
+            object_id=str(application.pk),
+            action='PAY',
+        ).order_by('-created_at').first()
+        if pay_txn:
+            remarks = str(pay_txn.remarks or '')
+            if 'Trans ID:' in remarks:
+                txn_ref = remarks.split('Trans ID:')[-1].strip()
+            else:
+                txn_ref = remarks
+            if pay_txn.created_at:
+                txn_date = pay_txn.created_at.strftime('%d/%m/%Y')
+    except Exception:
+        pass
+
+    # Fee amounts — from fee_structure or master fee table
+    collab_fee_amount = ''
+    security_deposit_amount = ''
+    try:
+        fee_struct = application.fee_structure or {}
+        if isinstance(fee_struct, dict):
+            collab_fee = fee_struct.get('collaborationFee') or fee_struct.get('collaboration_fee') or fee_struct.get('collaboration_fees', '')
+            sec_dep = fee_struct.get('securityDeposit') or fee_struct.get('security_deposit', '')
+            if collab_fee:
+                collab_fee_amount = f'{float(collab_fee):.2f}'
+            if sec_dep:
+                security_deposit_amount = f'{float(sec_dep):.2f}'
+    except Exception:
+        pass
+
+    # Fallback: load from master BrandOwnerFee if not in fee_structure
+    if not collab_fee_amount or not security_deposit_amount:
+        try:
+            from models.masters.company_collaboration.models import BrandOwnerFee
+            fee_obj = BrandOwnerFee.objects.filter(active_status=1).order_by('-from_date').first()
+            if fee_obj:
+                if not collab_fee_amount:
+                    collab_fee_amount = f'{float(fee_obj.collaboration_fees):.2f}'
+                if not security_deposit_amount:
+                    security_deposit_amount = f'{float(fee_obj.security_deposit):.2f}'
+        except Exception:
+            pass
+
+    # Fallback to fixed fee constant
+    if not collab_fee_amount:
+        collab_fee_amount = '25000.00'
+    if not security_deposit_amount:
+        security_deposit_amount = '0.00'
+
+    # Build brands table rows from selected_brands JSONField (with overview_summary fallback)
+    # Frontend stores brands as CompanyCollaborationBrand objects:
+    #   { brand_name, brand_code, category, type, kind, selected_sizes: ['750 Ml', '375 Ml'], ... }
+    brands_table = []
+    try:
+        selected_brands = application.selected_brands or []
+        # Fallback to overview_summary.selectedBrands if selected_brands is empty
+        if not selected_brands:
+            summary = application.overview_summary or {}
+            if isinstance(summary, dict):
+                selected_brands = summary.get('selectedBrands') or summary.get('selected_brands') or []
+        if isinstance(selected_brands, list) and selected_brands:
+            sl_no = 1
+            for brand in selected_brands:
+                if not isinstance(brand, dict):
+                    continue
+                # Handle both camelCase and snake_case field names from the frontend
+                brand_name = (
+                    brand.get('brand_name') or brand.get('brandName') or
+                    brand.get('name') or brand.get('label') or ''
+                )
+                sizes = brand.get('selected_sizes') or brand.get('selectedSizes') or []
+                # Sizes may be a list of strings ('750 Ml') or dicts ({label:'750 Ml', value:750})
+                size_labels = []
+                for sz in sizes:
+                    if isinstance(sz, str):
+                        size_labels.append(sz)
+                    elif isinstance(sz, dict):
+                        size_labels.append(sz.get('label') or sz.get('value') or str(sz))
+                if size_labels:
+                    for size in size_labels:
+                        brands_table.append({
+                            'sl_no': sl_no,
+                            'brand_name': brand_name,
+                            'pack_size': str(size),
+                        })
+                        sl_no += 1
+                else:
+                    brands_table.append({
+                        'sl_no': sl_no,
+                        'brand_name': brand_name,
+                        'pack_size': '-',
+                    })
+                    sl_no += 1
+    except Exception as brand_err:
+        import logging as _logging
+        _logging.getLogger(__name__).error(f"Error building brands_table: {brand_err}")
+        brands_table = []
+
+    response_payload = {
+        'applicationId': application.application_id,
+        'certificateType': 'company-collaboration',
+        'licenseNumber': collab_reg_id,
+        'licenseTitle': 'FORM D-11 (See Rule 33)',
+        'validationCode': signed_code,
+        'validationPdfUrl': validation_url,
+        'validatedViaCode': validated_via_code,
+        'print_count': 0,
+        'is_print_fee_paid': True,
+        'terms': [],
+
+        # Brand owner (the collaborating company)
+        'brandOwnerName': application.brand_owner_name or application.brand_owner or '',
+        'brandOwnerCode': application.brand_owner_code or '',
+
+        # Licensee / bottler (factory premises)
+        'licenseeName': application.licensee_name or '',
+        'licenseeAddress': application.licensee_address or '',
+        'licenseNumber_bottler': application.license_number or '',
+
+        # Financial year
+        'applicationYear': application.application_year or application.financial_year or '',
+        'financialYear': application.financial_year or '',
+
+        # Fees and transactions
+        'collaborationFee': collab_fee_amount,
+        'securityDeposit': security_deposit_amount,
+        'transactionRef': txn_ref,
+        'transactionDate': txn_date,
+        'securityDepositRef': security_deposit_ref,
+        'securityDepositDate': security_deposit_date,
+        'generatedOn': application.updated_at.strftime('%d/%m/%Y') if application.updated_at else '',
+        'applicationDateTime': application.created_at.strftime('%d/%m/%Y') if application.created_at else '',
+
+        # Brands
+        'brandsTable': brands_table,
+
+        # QR
+        'qrCodeDataUrl': _make_collab_qr_data_url(validation_url),
+    }
+
+    return Response(response_payload, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([HasCompanyCollaborationViewPermission])
+def final_license_qr_code(request, application_id):
+    import base64
+    from django.core import signing
+    from django.http import HttpResponse
+    from urllib.parse import quote
+
+    application = get_object_or_404(CompanyCollaboration, application_id=application_id)
+
+    role_name = request.user.role.name if request.user.role else None
+    role = _normalize_role(role_name)
+    if role == 'licensee' and application.applicant != request.user:
+        return Response({'detail': 'Not found or not authorized.'}, status=status.HTTP_404_NOT_FOUND)
+
+    signed_code = signing.dumps(
+        {'applicationId': application.application_id, 'source': 'company_collaboration'},
+        salt='final-license-collab',
+    )
+    validation_url = request.build_absolute_uri(f'/v/{quote(signed_code, safe=":")}/collab/')
+    data_url = _make_collab_qr_data_url(validation_url)
+    b64 = data_url.split(',', 1)[1] if ',' in data_url else ''
+    return HttpResponse(base64.b64decode(b64), content_type='image/png')
+
+
+def _make_collab_qr_data_url(payload: str) -> str:
+    import base64
+    from io import BytesIO
+    from PIL import Image
+    from utils.qrcodegen import QrCode
+
+    qr = QrCode.encode_text(str(payload or ''), QrCode.Ecc.MEDIUM)
+    size = qr.get_size()
+    border = 2
+    scale = 4
+    img_size = (size + border * 2) * scale
+    img = Image.new('RGB', (img_size, img_size), 'white')
+    pixels = img.load()
+    for y in range(size):
+        for x in range(size):
+            if qr.get_module(x, y):
+                for dy in range(scale):
+                    for dx in range(scale):
+                        pixels[(x + border) * scale + dx, (y + border) * scale + dy] = (0, 0, 0)
+    buf = BytesIO()
+    img.save(buf, format='PNG')
+    return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+

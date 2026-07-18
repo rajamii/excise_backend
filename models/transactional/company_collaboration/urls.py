@@ -36,6 +36,10 @@ urlpatterns = [
 
     # Wallet payment
     path('pay-fee/<everything:application_id>/', views.pay_collaboration_fee, name='pay-fee'),
+
+    # Final license / certificate (Form D-11)
+    path('final-license/<everything:application_id>/', views.final_license_detail, name='final-license-detail'),
+    path('final-license/<everything:application_id>/qr-code/', views.final_license_qr_code, name='final-license-qr-code'),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
