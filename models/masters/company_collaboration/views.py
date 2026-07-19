@@ -412,19 +412,33 @@ def delete_type_crud(request, pk):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_brands_crud(request):
-    search = request.query_params.get('search', '').strip()
-    if not search:
+    search   = request.query_params.get('search', '').strip()
+    cat_code = request.query_params.get('liquor_cat', '').strip()
+    kind_id  = request.query_params.get('liquor_kind', '').strip()
+    type_id  = request.query_params.get('liquor_type', '').strip()
+
+    # Require at least one filter so we don't dump the whole table
+    if not search and not cat_code and not kind_id and not type_id:
         return Response([])
-    
+
     qs = LiquorBrand.objects.filter(delete_status='N').select_related('liquor_kind')
-    
-    # Split search into tokens and apply AND logic: all tokens must match somewhere
-    tokens = search.split()
-    for token in tokens:
-        qs = qs.filter(
-            Q(liquor_brand_desc__icontains=token) | Q(liquor_brand_code__icontains=token)
-        )
-    
+
+    # Category / kind / type filters
+    if cat_code:
+        qs = qs.filter(liquor_cat=cat_code)
+    if kind_id:
+        qs = qs.filter(liquor_kind_id=kind_id)
+    if type_id:
+        qs = qs.filter(liquor_type=type_id)
+
+    # Text search — AND across tokens
+    if search:
+        tokens = search.split()
+        for token in tokens:
+            qs = qs.filter(
+                Q(liquor_brand_desc__icontains=token) | Q(liquor_brand_code__icontains=token)
+            )
+
     return Response(LiquorBrandCRUDSerializer(qs[:100], many=True).data)
 
 
