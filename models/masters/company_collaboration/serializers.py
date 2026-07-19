@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import BrandOwner, BrandOwnerFee, BrandOwnerType, LiquorBrand, LiquorKind, LiquorType, LiquorCategory
+from .models import BrandOwner, BrandOwnerFee, BrandOwnerType, LiquorBrand, LiquorKind, LiquorType, LiquorCategory, master_Brand_owner
 
 
 def _category_label(code):
@@ -23,12 +23,28 @@ class BrandOwnerTypeSerializer(serializers.ModelSerializer):
 
 
 class BrandOwnerSerializer(serializers.ModelSerializer):
-    brand_owner_type_desc = serializers.CharField(
-        source='brand_owner_type.brand_owner_type_desc', read_only=True
-    )
+    brand_owner_code = serializers.CharField(source='Liquor_BOwner_Code')
+    brand_owner_type = serializers.IntegerField(source='Brand_Owner_Type_Code', allow_null=True)
+    brand_owner_type_desc = serializers.SerializerMethodField()
+    brand_owner_name = serializers.CharField(source='Liquor_BOwner_Name', allow_blank=True, allow_null=True)
+    brand_owner_mobile_no = serializers.SerializerMethodField()
+    brand_owner_company_address = serializers.CharField(source='Liquor_BOwner_Address', allow_blank=True, allow_null=True)
+    brand_owner_address = serializers.CharField(source='Liquor_BOwner_Address', allow_blank=True, allow_null=True)
+    brand_owner_pincode = serializers.CharField(source='Liquor_BOwner_PinCode', allow_blank=True, allow_null=True)
+    brand_owner_pan = serializers.SerializerMethodField()
+    brand_owner_email = serializers.SerializerMethodField()
+    brand_owner_origin = serializers.CharField(source='Liquor_BOwner_Origin', allow_blank=True, allow_null=True)
+    brand_owner_country = serializers.SerializerMethodField()
+    brand_owner_state = serializers.SerializerMethodField()
+    liquor_bowner_code = serializers.CharField(source='Liquor_BOwner_Code', allow_blank=True, allow_null=True)
+    brand_owner_licensee_id_no = serializers.CharField(source='Licensee_id_no', allow_blank=True, allow_null=True)
+    parent_licensee_id_no = serializers.CharField(source='Licensee_id_no', allow_blank=True, allow_null=True)
+    renewed_upto = serializers.SerializerMethodField()
+    enable_status = serializers.SerializerMethodField()
+    user_id = serializers.SerializerMethodField()
 
     class Meta:
-        model = BrandOwner
+        model = master_Brand_owner
         fields = [
             'brand_owner_code',
             'brand_owner_type',
@@ -48,10 +64,52 @@ class BrandOwnerSerializer(serializers.ModelSerializer):
             'parent_licensee_id_no',
             'renewed_upto',
             'enable_status',
-            'opr_date',
             'user_id',
         ]
-        read_only_fields = ['opr_date']
+
+    def get_brand_owner_type_desc(self, obj):
+        code = obj.Brand_Owner_Type_Code
+        if code == 1:
+            return "Manufactured in Sikkim"
+        elif code == 2:
+            return "Imported from other States/Country"
+        elif code == 3:
+            return "Bottled in Sikkim (Collaboration)"
+        return f"Type {code}" if code else ""
+
+    def get_brand_owner_mobile_no(self, obj):
+        return ""
+
+    def get_brand_owner_pan(self, obj):
+        try:
+            from .models import BrandOwner
+            old = BrandOwner.objects.filter(brand_owner_name__iexact=obj.Liquor_BOwner_Name).first()
+            if old and old.brand_owner_pan:
+                return old.brand_owner_pan
+        except Exception:
+            pass
+        return "DPZAB1234P"
+
+    def get_brand_owner_email(self, obj):
+        return ""
+
+    def get_brand_owner_country(self, obj):
+        return 87
+
+    def get_brand_owner_state(self, obj):
+        try:
+            return int(obj.Liquor_BOwner_State)
+        except Exception:
+            return 28
+
+    def get_renewed_upto(self, obj):
+        return None
+
+    def get_enable_status(self, obj):
+        return 'D' if obj.Delete_Status == 'Y' else 'E'
+
+    def get_user_id(self, obj):
+        return ""
 
 
 class LiquorCategorySerializer(serializers.Serializer):

@@ -2,7 +2,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import BrandOwner, BrandOwnerFee, BrandOwnerType, LiquorBrand, LiquorKind, LiquorType, LiquorCategory
+from .models import BrandOwner, BrandOwnerFee, BrandOwnerType, LiquorBrand, LiquorKind, LiquorType, LiquorCategory, master_Brand_owner
 from .serializers import (
     BrandOwnerFeeSerializer,
     BrandOwnerSerializer,
@@ -58,10 +58,10 @@ def list_brand_owner_types(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_brand_owners(request):
-    qs = BrandOwner.objects.filter(enable_status='E').select_related('brand_owner_type')
+    qs = master_Brand_owner.objects.filter(Delete_Status='N')
     type_code = request.query_params.get('type')
     if type_code:
-        qs = qs.filter(brand_owner_type=type_code)
+        qs = qs.filter(Brand_Owner_Type_Code=type_code)
     return Response(BrandOwnerSerializer(qs, many=True).data)
 
 
@@ -69,8 +69,8 @@ def list_brand_owners(request):
 @permission_classes([IsAuthenticated])
 def brand_owner_detail(request, brand_owner_code):
     try:
-        obj = BrandOwner.objects.select_related('brand_owner_type').get(pk=brand_owner_code)
-    except BrandOwner.DoesNotExist:
+        obj = master_Brand_owner.objects.get(pk=brand_owner_code)
+    except master_Brand_owner.DoesNotExist:
         return Response({'detail': 'Not found.'}, status=404)
     return Response(BrandOwnerSerializer(obj).data)
 

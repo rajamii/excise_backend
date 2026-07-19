@@ -332,4 +332,32 @@ class LiquorType(models.Model):
         return f"{self.liquor_type_desc} ({self.liquor_type_code})"
 
 
+# ---------------------------------------------------------------------------
+# master_Brand_owner
+# ---------------------------------------------------------------------------
+
+class master_Brand_owner(models.Model):
+    Liquor_BOwner_Origin = models.CharField(max_length=10, blank=True, null=True)
+    Liquor_BOwner_Code = models.CharField(max_length=50, primary_key=True)
+    Liquor_BOwner_Country = models.CharField(max_length=100, blank=True, null=True)
+    Liquor_BOwner_State = models.CharField(max_length=100, blank=True, null=True)
+    Liquor_BOwner_Name = models.CharField(max_length=255, blank=True, null=True)
+    Liquor_BOwner_Address = models.TextField(blank=True, null=True)
+    Liquor_BOwner_PinCode = models.CharField(max_length=20, blank=True, null=True)
+    Licensee_id_no = models.CharField(max_length=50, blank=True, null=True)
+    Entry_Flag = models.CharField(max_length=10, blank=True, null=True)
+    Merged_Flag = models.CharField(max_length=10, blank=True, null=True)
+    Merged_Liquor_BOwner_Code = models.CharField(max_length=50, blank=True, null=True)
+    Delete_Status = models.CharField(max_length=10, default='N')
+    Brand_Owner_Type_Code = models.IntegerField(blank=True, null=True)
+
+    class Meta:
+        db_table = 'master_brand_owner_table'
+        ordering = ['Liquor_BOwner_Code']
+
+    def __str__(self):
+        return f"{self.Liquor_BOwner_Code} — {self.Liquor_BOwner_Name}"
+
+
+
 
