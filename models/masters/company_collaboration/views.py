@@ -546,6 +546,26 @@ def brand_pack_sizes_view(request, brand_code):
             }
             for s in sizes
         ]
+
+        if not data:
+            # Fall back to category-based defaults if no custom sizes exist in master_liquor_product
+            brand = LiquorBrand.objects.filter(liquor_brand_code=brand_code, delete_status='N').first()
+            if brand:
+                if brand.liquor_cat == 3: # Beer
+                    defaults = [650, 500, 330]
+                else: # Spirits, Wine, Country Liquor, Homemade
+                    defaults = [750, 375, 180]
+                
+                data = [
+                    {
+                        'id': -(brand.id * 10 + idx),
+                        'measureValue': val,
+                        'measureUnit': 'Ml',
+                        'label': f"{val} Ml"
+                    }
+                    for idx, val in enumerate(defaults)
+                ]
+
         return Response(data)
 
     # POST — add a new size
