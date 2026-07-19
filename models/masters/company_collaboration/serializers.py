@@ -20,6 +20,10 @@ class BrandOwnerTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = BrandOwnerType
         fields = ['brand_owner_type_code', 'brand_owner_type_desc']
+        # Allow code to be set on create but not on update
+        extra_kwargs = {
+            'brand_owner_type_code': {'required': True}
+        }
 
 
 class CompanyDetailSerializer(serializers.ModelSerializer):

@@ -4,8 +4,11 @@ from . import views
 app_name = 'masters_company_collaboration'
 
 urlpatterns = [
-    # Brand owner types
-    path('brand-owner-types/',                    views.list_brand_owner_types, name='brand-owner-types'),
+    # Brand Owner Type CRUD
+    path('brand-owner-types/',                            views.list_brand_owner_types,      name='brand-owner-types'),
+    path('brand-owner-types/create/',                     views.create_brand_owner_type,     name='brand-owner-type-create'),
+    path('brand-owner-types/<int:pk>/update/',            views.update_brand_owner_type,     name='brand-owner-type-update'),
+    path('brand-owner-types/<int:pk>/delete/',            views.delete_brand_owner_type,     name='brand-owner-type-delete'),
 
     # Brand owners
     path('brand-owners/',                         views.list_brand_owners,      name='brand-owners'),

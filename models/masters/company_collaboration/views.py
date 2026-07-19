@@ -61,6 +61,41 @@ def list_brand_owner_types(request):
     return Response(BrandOwnerTypeSerializer(BrandOwnerType.objects.all(), many=True).data)
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_brand_owner_type(request):
+    serializer = BrandOwnerTypeSerializer(data=request.data)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data, status=201)
+    return Response(serializer.errors, status=400)
+
+
+@api_view(['PUT', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def update_brand_owner_type(request, pk):
+    try:
+        obj = BrandOwnerType.objects.get(pk=pk)
+    except BrandOwnerType.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    serializer = BrandOwnerTypeSerializer(obj, data=request.data, partial=True)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data)
+    return Response(serializer.errors, status=400)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_brand_owner_type(request, pk):
+    try:
+        obj = BrandOwnerType.objects.get(pk=pk)
+    except BrandOwnerType.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    obj.delete()
+    return Response({'detail': 'Deleted successfully.'}, status=204)
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_brand_owners(request):
