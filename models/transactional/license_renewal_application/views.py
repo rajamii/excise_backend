@@ -232,6 +232,8 @@ def initiate_renewal(request, license_id):
         application_id=application_id,
         is_approved=False,
         old_license_id=old_license.license_id,
+        source_content_type=old_license.source_content_type,
+        source_object_id=old_license.source_object_id,
         applicant=request.user,
         license_category=old_license.license_category,
         license_sub_category=old_license.license_sub_category,
@@ -408,7 +410,7 @@ def _renewal_is_paid(application) -> bool:
     if getattr(application, "old_license_id", None):
         old_license = License.objects.filter(license_id=str(application.old_license_id)).first()
 
-    if old_license and old_license.source_type in ["salesman_barman", "company_registration"]:
+    if old_license and old_license.source_type in ["salesman_barman", "company_registration", "company_collaboration"]:
         return bool(getattr(application, "is_license_fee_paid", False))
 
     source_app = _renewal_source_application(application)
