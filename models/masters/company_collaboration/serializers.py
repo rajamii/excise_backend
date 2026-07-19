@@ -260,15 +260,21 @@ class LiquorBrandCRUDSerializer(serializers.ModelSerializer):
             return ''
 
     def get_liquor_type_desc(self, obj):
-        try:
-            lt = LiquorType.objects.get(
-                liquor_cat=obj.liquor_cat,
-                liquor_kind_id=obj.liquor_kind_id,
-                liquor_type_code=obj.liquor_type
-            )
+        # Use filter().first() instead of .get() to avoid MultipleObjectsReturned
+        lt = LiquorType.objects.filter(
+            liquor_cat=obj.liquor_cat,
+            liquor_kind_id=obj.liquor_kind_id,
+            liquor_type_code=obj.liquor_type,
+            delete_status='N'
+        ).first()
+        if lt:
             return lt.liquor_type_desc
-        except LiquorType.DoesNotExist:
-            return ''
+        # Fallback: match only by type_code in case cat/kind don't align
+        lt = LiquorType.objects.filter(
+            liquor_type_code=obj.liquor_type,
+            delete_status='N'
+        ).first()
+        return lt.liquor_type_desc if lt else ''
 
     class Meta:
         model = LiquorBrand

@@ -181,14 +181,23 @@ def delete_company_detail(request, brand_owner_code):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_liquor_categories(request):
-    codes = (
-        LiquorKind.objects
-        .filter(delete_status='N')
-        .order_by('liquor_cat')
-        .values_list('liquor_cat', flat=True)
-        .distinct()
-    )
-    data = [_category_row(code) for code in codes]
+    """
+    Return all active categories from master_liquor_category directly.
+    Previously this queried LiquorKind for distinct cat codes, which
+    meant newly created categories didn't appear until a kind used them.
+    """
+    qs = LiquorCategory.objects.filter(delete_status='N').order_by('liquor_cat_code')
+    from .serializers import LiquorCategoryCRUDSerializer as CatSerializer
+    # Build the same shape as LiquorCategorySerializer expects
+    data = [
+        {
+            'liquor_cat_code': c.liquor_cat_code,
+            'liquor_cat_desc': c.liquor_cat_desc,
+            'liquor_cat_abbr': c.liquor_cat_abbr,
+            'delete_status': c.delete_status,
+        }
+        for c in qs
+    ]
     return Response(LiquorCategorySerializer(data, many=True).data)
 
 
@@ -205,19 +214,29 @@ def list_liquor_kinds(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_liquor_types(request):
-    qs = LiquorBrand.objects.filter(delete_status='N')
+    """
+    Return types from master_liquor_type_details directly.
+    Previously this queried LiquorBrand for distinct type codes, which
+    meant newly created types didn't appear until a brand used them.
+    """
+    qs = LiquorType.objects.filter(delete_status='N').select_related('liquor_kind').order_by('liquor_cat', 'liquor_kind', 'liquor_type_code')
     cat_code = request.query_params.get('cat')
     kind_id  = request.query_params.get('kind')
     if cat_code:
         qs = qs.filter(liquor_cat=cat_code)
     if kind_id:
-        qs = qs.filter(liquor_kind=kind_id)
-    rows = (
-        qs.order_by('liquor_cat', 'liquor_kind', 'liquor_type')
-        .values('liquor_cat', 'liquor_kind', 'liquor_type')
-        .distinct()
-    )
-    data = [_type_row(row) for row in rows]
+        qs = qs.filter(liquor_kind_id=kind_id)
+    data = [
+        {
+            'id': lt.liquor_type_code,
+            'liquor_cat': lt.liquor_cat,
+            'liquor_kind': lt.liquor_kind_id,
+            'liquor_type_code': lt.liquor_type_code,
+            'liquor_type_desc': lt.liquor_type_desc,
+            'delete_status': lt.delete_status,
+        }
+        for lt in qs
+    ]
     return Response(LiquorTypeSerializer(data, many=True).data)
 
 
@@ -447,48 +466,53 @@ def delete_brand_crud(request, pk):
 
 # ── Brand Pack Sizes (ML from master_liquor_product) ──────────────────────────
 
-@api_view(['GET'])
+@api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
-def brand_pack_sizes(request, brand_code):
+def brand_pack_sizes_view(request, brand_code):
     """
-    Return distinct pack sizes for a brand from master_liquor_product.
-    brand_code is URL-encoded since it may contain '/'
+    GET  → Return existing pack sizes for a brand from master_liquor_product.
+    POST → Add a new pack size. Expects: { measureValue: 750 }
+
+    Using a single view for both methods removes the URL routing ambiguity
+    caused by <path:brand_code> greedily capturing the trailing '/add/' segment.
     """
     import urllib.parse
     brand_code = urllib.parse.unquote(brand_code)
-    sizes = (
-        LiquorProduct.objects
-        .filter(liquor_brand_code=brand_code, delete_status='N')
-        .exclude(measure_value__isnull=True)
-        .values('id', 'measure_value', 'measure_unit')
-        .distinct()
-        .order_by('measure_value')
+
+    if request.method == 'GET':
+        sizes = (
+            LiquorProduct.objects
+            .filter(liquor_brand_code=brand_code, delete_status='N')
+            .exclude(measure_value__isnull=True)
+            .values('id', 'measure_value', 'measure_unit')
+            .distinct()
+            .order_by('measure_value')
+        )
+        data = [
+            {
+                'id': s['id'],
+                'measureValue': s['measure_value'],
+                'measureUnit': s['measure_unit'] or 'Ml',
+                'label': f"{s['measure_value']} Ml"
+            }
+            for s in sizes
+        ]
+        return Response(data)
+
+    # POST — add a new size
+    # The Angular interceptor converts camelCase to snake_case, so accept both
+    measure_value = (
+        request.data.get('measure_value')
+        or request.data.get('measureValue')
     )
-    data = [
-        {
-            'id': s['id'],
-            'measureValue': s['measure_value'],
-            'measureUnit': s['measure_unit'] or 'Ml',
-            'label': f"{s['measure_value']} Ml"
-        }
-        for s in sizes
-    ]
-    return Response(data)
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def add_brand_pack_size(request, brand_code):
-    """
-    Add a pack size for a brand in master_liquor_product.
-    Expects: { measureValue: 750 }
-    """
-    import urllib.parse
-    brand_code = urllib.parse.unquote(brand_code)
-    measure_value = request.data.get('measureValue') or request.data.get('measure_value')
     if not measure_value:
         return Response({'detail': 'measureValue is required.'}, status=400)
-    
+
+    try:
+        measure_value = int(measure_value)
+    except (TypeError, ValueError):
+        return Response({'detail': 'measureValue must be a number.'}, status=400)
+
     # Check if already exists
     already = LiquorProduct.objects.filter(
         liquor_brand_code=brand_code,
@@ -497,15 +521,16 @@ def add_brand_pack_size(request, brand_code):
     ).exists()
     if already:
         return Response({'detail': 'This pack size already exists for this brand.'}, status=400)
-    
-    # Get the brand details to copy liquor_cat/kind/type
-    try:
-        brand = LiquorBrand.objects.get(liquor_brand_code=brand_code, delete_status='N')
-    except LiquorBrand.DoesNotExist:
-        return Response({'detail': 'Brand not found.'}, status=404)
-    except LiquorBrand.MultipleObjectsReturned:
-        brand = LiquorBrand.objects.filter(liquor_brand_code=brand_code, delete_status='N').first()
-    
+
+    # Get the brand to copy liquor_cat/kind/type metadata
+    brand = (
+        LiquorBrand.objects
+        .filter(liquor_brand_code=brand_code, delete_status='N')
+        .first()
+    )
+    if not brand:
+        return Response({'detail': f'Brand "{brand_code}" not found.'}, status=404)
+
     prod = LiquorProduct.objects.create(
         liquor_brand_code=brand_code,
         liquor_cat_code=brand.liquor_cat,
@@ -537,3 +562,5 @@ def delete_brand_pack_size(request, size_id):
     prod.delete_status = 'Y'
     prod.save()
     return Response({'detail': 'Pack size removed.'}, status=204)
+
+

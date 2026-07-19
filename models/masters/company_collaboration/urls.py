@@ -55,7 +55,7 @@ urlpatterns = [
     path('liquor-brands-crud/<int:pk>/delete/',      views.delete_brand_crud,         name='liquor-brands-crud-delete'),
 
     # Brand Pack Sizes (from master_liquor_product)
-    path('liquor-brands-crud/pack-sizes/<path:brand_code>/',      views.brand_pack_sizes,         name='brand-pack-sizes'),
-    path('liquor-brands-crud/pack-sizes/<path:brand_code>/add/',  views.add_brand_pack_size,      name='brand-pack-size-add'),
+    # IMPORTANT: <int:size_id> must come BEFORE <path:brand_code> to avoid path capturing "123/delete"
     path('liquor-brands-crud/pack-sizes/<int:size_id>/delete/',   views.delete_brand_pack_size,   name='brand-pack-size-delete'),
+    path('liquor-brands-crud/pack-sizes/<path:brand_code>/',      views.brand_pack_sizes_view,    name='brand-pack-sizes'),
 ]
