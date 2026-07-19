@@ -36,11 +36,18 @@ def _normalize_token(raw: str) -> str:
     token = str(raw or '').strip()
     low = token.lower()
     if low.startswith('val:'):
-        return token[4:].strip()
-    if low.startswith('val-'):
-        return token[4:].strip()
-    if low.startswith('val '):
-        return token[4:].strip()
+        token = token[4:].strip()
+    elif low.startswith('val-'):
+        token = token[4:].strip()
+    elif low.startswith('val '):
+        token = token[4:].strip()
+    
+    # Strip trailing /collab/ or /collab
+    low = token.lower()
+    if low.endswith('/collab/'):
+        token = token[:-8].strip()
+    elif low.endswith('/collab'):
+        token = token[:-7].strip()
     return token
 
 
@@ -337,10 +344,14 @@ def _make_qr_image(payload: str):
 
 def _validate_license_pdf_from_code(request, code: str):
     token = _normalize_token(code)
+    payload = None
     try:
         payload = signing.loads(token, salt='final-license')
     except Exception:
-        return Response({'detail': 'Invalid validation code.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            payload = signing.loads(token, salt='final-license-collab')
+        except Exception:
+            return Response({'detail': 'Invalid validation code.'}, status=status.HTTP_400_BAD_REQUEST)
 
     if not isinstance(payload, dict):
         return Response({'detail': 'Invalid validation code.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -578,12 +589,84 @@ def _validate_license_pdf_from_code(request, code: str):
             'terms': [],
         }
 
+    elif source == 'company_collaboration':
+        from models.transactional.company_collaboration.models import CompanyCollaboration
+        app = CompanyCollaboration.objects.filter(application_id=application_id).first()
+        if not app:
+            return Response({'detail': 'Company Collaboration not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        from models.masters.license.models import License
+        lic = License.objects.filter(source_object_id=str(app.pk)).first()
+        
+        license_number = app.application_id
+        valid_to_str = ''
+        if lic:
+            license_number = lic.license_id
+            if lic.valid_up_to:
+                valid_to_str = lic.valid_up_to.strftime('%d/%m/%Y')
+                
+        txn_date = ''
+        try:
+            pay_txn = None
+            if lic:
+                from models.transactional.license_renewal_application.models import LicenseApplication as LRA
+                lra_app = LRA.objects.filter(old_license_id=str(lic.license_id), is_approved=True).order_by('-created_at').first()
+                if lra_app:
+                    from auth.workflow.models import Transaction as WorkflowTransaction
+                    from django.contrib.contenttypes.models import ContentType
+                    ct_lra = ContentType.objects.get_for_model(lra_app)
+                    pay_txn = WorkflowTransaction.objects.filter(
+                        content_type=ct_lra,
+                        object_id=str(lra_app.pk),
+                        action='PAY',
+                    ).order_by('-created_at').first()
+
+            if not pay_txn:
+                from auth.workflow.models import Transaction as WorkflowTransaction
+                from django.contrib.contenttypes.models import ContentType
+                ct_cc = ContentType.objects.get_for_model(app)
+                pay_txn = WorkflowTransaction.objects.filter(
+                    content_type=ct_cc,
+                    object_id=str(app.pk),
+                    action='PAY',
+                ).order_by('-created_at').first()
+
+            if pay_txn and pay_txn.created_at:
+                txn_date = pay_txn.created_at.strftime('%d/%m/%Y')
+        except Exception:
+            pass
+
+        if not txn_date:
+            txn_date = app.updated_at.strftime('%d/%m/%Y') if app.updated_at else ''
+
+        response_payload = {
+            'applicationId': app.application_id,
+            'licenseNumber': license_number,
+            'licenseTitle': 'FORM D-11 (Collaboration Certificate)',
+            'licenseeName': app.brand_owner_name or app.brand_owner or '',
+            'fatherOrHusbandName': '',
+            'kindOfShop': 'Company Collaboration',
+            'addressOfBusiness': app.licensee_address,
+            'district': app.licensee_name,
+            'modeOfOperation': '',
+            'validFrom': txn_date,
+            'validTo': valid_to_str,
+            'generatedOn': _fmt_dt(now_date),
+            'validationCode': token,
+            'validationPdfUrl': validation_pdf_url,
+            'validatedViaCode': False,
+            'terms': [],
+        }
+
     else:
         return Response({'detail': 'Unsupported license source.'}, status=status.HTTP_400_BAD_REQUEST)
 
     if source == 'company_registration':
         if not app.is_approved:
             return Response({'detail': 'Company Registration is not approved yet.'}, status=status.HTTP_403_FORBIDDEN)
+    elif source == 'company_collaboration':
+        if not app.is_approved:
+            return Response({'detail': 'Company Collaboration is not approved yet.'}, status=status.HTTP_403_FORBIDDEN)
     elif source == 'special_permit':
         if not app.is_approved:
             return Response({'detail': 'Special Permit is not approved yet.'}, status=status.HTTP_403_FORBIDDEN)
@@ -787,20 +870,24 @@ def _resolve_validation_result(request, code: str) -> dict:
     now_date = now_dt.date()
     watermark_data_url = _get_watermark_data_url()
 
+    payload = None
     try:
         payload = signing.loads(token, salt='final-license')
     except Exception:
-        return {
-            'status': 'invalid_code',
-            'message': 'Invalid validation code.',
-            'code': token,
-            'signatureVerified': False,
-            'authenticity': 'Unverified (QR code is not digitally signed)',
-            'canDownload': False,
-            'details': {},
-            'verificationId': hashlib.sha256(token.encode('utf-8')).hexdigest()[:12] if token else '',
-            'watermarkUrl': watermark_data_url,
-        }
+        try:
+            payload = signing.loads(token, salt='final-license-collab')
+        except Exception:
+            return {
+                'status': 'invalid_code',
+                'message': 'Invalid validation code.',
+                'code': token,
+                'signatureVerified': False,
+                'authenticity': 'Unverified (QR code is not digitally signed)',
+                'canDownload': False,
+                'details': {},
+                'verificationId': hashlib.sha256(token.encode('utf-8')).hexdigest()[:12] if token else '',
+                'watermarkUrl': watermark_data_url,
+            }
 
     if not isinstance(payload, dict):
         return {
@@ -1065,13 +1152,86 @@ def _resolve_validation_result(request, code: str) -> dict:
                 'validTo': valid_to_str,
             }
         )
+    elif source == 'company_collaboration':
+        from models.transactional.company_collaboration.models import CompanyCollaboration
+        app = CompanyCollaboration.objects.filter(application_id=application_id).first()
+        if not app:
+            return {
+                'status': 'not_found',
+                'message': 'Company Collaboration not found.',
+                'code': token,
+                'signatureVerified': True,
+                'authenticity': 'Digitally signed QR (record not found)',
+                'canDownload': False,
+                'details': details,
+                'verificationId': hashlib.sha256(token.encode('utf-8')).hexdigest()[:12],
+                'watermarkUrl': watermark_data_url,
+            }
+
+        from models.masters.license.models import License
+        lic = License.objects.filter(source_object_id=str(app.pk)).first()
+        
+        license_number = app.application_id
+        valid_to_str = ''
+        if lic:
+            license_number = lic.license_id
+            if lic.valid_up_to:
+                valid_to_str = lic.valid_up_to.strftime('%d/%m/%Y')
+                
+        txn_date = ''
+        try:
+            pay_txn = None
+            if lic:
+                from models.transactional.license_renewal_application.models import LicenseApplication as LRA
+                lra_app = LRA.objects.filter(old_license_id=str(lic.license_id), is_approved=True).order_by('-created_at').first()
+                if lra_app:
+                    from auth.workflow.models import Transaction as WorkflowTransaction
+                    from django.contrib.contenttypes.models import ContentType
+                    ct_lra = ContentType.objects.get_for_model(lra_app)
+                    pay_txn = WorkflowTransaction.objects.filter(
+                        content_type=ct_lra,
+                        object_id=str(lra_app.pk),
+                        action='PAY',
+                    ).order_by('-created_at').first()
+
+            if not pay_txn:
+                from auth.workflow.models import Transaction as WorkflowTransaction
+                from django.contrib.contenttypes.models import ContentType
+                ct_cc = ContentType.objects.get_for_model(app)
+                pay_txn = WorkflowTransaction.objects.filter(
+                    content_type=ct_cc,
+                    object_id=str(app.pk),
+                    action='PAY',
+                ).order_by('-created_at').first()
+
+            if pay_txn and pay_txn.created_at:
+                txn_date = pay_txn.created_at.strftime('%d/%m/%Y')
+        except Exception:
+            pass
+
+        if not txn_date:
+            txn_date = app.updated_at.strftime('%d/%m/%Y') if app.updated_at else ''
+
+        details.update(
+            {
+                'licenseTitle': 'FORM D-11 (Collaboration Certificate)',
+                'licenseNumber': license_number,
+                'licenseeName': app.brand_owner_name or app.brand_owner or '',
+                'kindOfShop': 'Company Collaboration',
+                'addressOfBusiness': app.licensee_address,
+                'district': app.licensee_name,
+                'validFrom': txn_date,
+                'validTo': valid_to_str,
+            }
+        )
+
     else:
         return {
             'status': 'invalid_code',
             'message': 'Unsupported license source.',
             'code': token,
             'signatureVerified': True,
-            'authenticity': 'Digitally signed QR (unsupported source)',
+            'authenticity': 'Unverified (QR code is not digitally signed)',
             'canDownload': False,
             'details': details,
             'verificationId': hashlib.sha256(token.encode('utf-8')).hexdigest()[:12],
@@ -1087,6 +1247,17 @@ def _resolve_validation_result(request, code: str) -> dict:
         else:
             status_code = 'valid'
             message = 'Company Registration is valid.'
+            can_download = True
+            authenticity = 'Original (digitally signed QR)'
+    elif source == 'company_collaboration':
+        if not app.is_approved:
+            status_code = 'not_issued'
+            message = 'Company Collaboration is not approved yet.'
+            can_download = False
+            authenticity = 'Digitally signed QR (not approved)'
+        else:
+            status_code = 'valid'
+            message = 'Company Collaboration is valid.'
             can_download = True
             authenticity = 'Original (digitally signed QR)'
     elif source == 'special_permit':

@@ -707,12 +707,31 @@ def final_license_detail(request, application_id):
     resolved_application_id = raw_id
     validated_via_code = False
     try:
-        payload = signing.loads(token, salt='final-license-collab')
-        if isinstance(payload, dict) and payload.get('source') == 'company_collaboration' and payload.get('applicationId'):
-            resolved_application_id = str(payload['applicationId'])
-            validated_via_code = True
+        payload = signing.loads(token, salt='final-license')
     except Exception:
+        try:
+            payload = signing.loads(token, salt='final-license-collab')
+        except Exception:
+            payload = None
+
+    if isinstance(payload, dict) and payload.get('source') == 'company_collaboration' and payload.get('applicationId'):
+        resolved_application_id = str(payload['applicationId'])
+        validated_via_code = True
+    else:
         resolved_application_id = raw_id
+
+    # Resolve company collaboration application from license_id or renewal_id
+    if resolved_application_id.startswith('RCOL/'):
+        from models.transactional.license_renewal_application.models import LicenseApplication as LRA
+        lra_app = LRA.objects.filter(application_id=resolved_application_id).first()
+        if lra_app and lra_app.old_license_id:
+            resolved_application_id = lra_app.old_license_id
+
+    if resolved_application_id.startswith('CC/'):
+        from models.masters.license.models import License
+        lic = License.objects.filter(license_id=resolved_application_id).first()
+        if lic and lic.source_object_id:
+            resolved_application_id = lic.source_object_id
 
     application = get_object_or_404(CompanyCollaboration, application_id=resolved_application_id)
 
@@ -723,11 +742,15 @@ def final_license_detail(request, application_id):
 
     signed_code = signing.dumps(
         {'applicationId': application.application_id, 'source': 'company_collaboration'},
-        salt='final-license-collab',
+        salt='final-license',
     )
-    validation_url = request.build_absolute_uri(f'/v/{quote(signed_code, safe=":")}/collab/')
+    validation_url = request.build_absolute_uri(f'/v/{quote(signed_code, safe=":")}/')
 
-    # Build the collaboration registration ID (CCF/<serial>)
+    # Resolve the license associated with this company collaboration
+    from models.masters.license.models import License
+    lic = License.objects.filter(source_object_id=str(application.pk)).first()
+
+    # Build the collaboration registration ID fallback (CCF/<serial>)
     parts = application.application_id.split('/')
     serial_str = parts[-1] if parts else '0001'
     try:
@@ -736,18 +759,46 @@ def final_license_detail(request, application_id):
         serial_num = 1
     collab_reg_id = f'CCF/{serial_num:08d}'
 
+    license_number = collab_reg_id
+    valid_from_str = ''
+    valid_to_str = ''
+    if lic:
+        license_number = lic.license_id
+        if lic.issue_date:
+            valid_from_str = lic.issue_date.strftime('%d/%m/%Y')
+        if lic.valid_up_to:
+            valid_to_str = lic.valid_up_to.strftime('%d/%m/%Y')
+
     # Extract transaction ID and date from the PAY workflow transaction
     txn_ref = ''
     txn_date = ''
     security_deposit_ref = ''
     security_deposit_date = ''
     try:
-        ct = ContentType.objects.get_for_model(application)
-        pay_txn = WorkflowTransaction.objects.filter(
-            content_type=ct,
-            object_id=str(application.pk),
-            action='PAY',
-        ).order_by('-created_at').first()
+        pay_txn = None
+        if lic:
+            from models.transactional.license_renewal_application.models import LicenseApplication as LRA
+            lra_app = LRA.objects.filter(old_license_id=str(lic.license_id), is_approved=True).order_by('-created_at').first()
+            if lra_app:
+                from auth.workflow.models import Transaction as WorkflowTransaction
+                from django.contrib.contenttypes.models import ContentType
+                ct_lra = ContentType.objects.get_for_model(lra_app)
+                pay_txn = WorkflowTransaction.objects.filter(
+                    content_type=ct_lra,
+                    object_id=str(lra_app.pk),
+                    action='PAY',
+                ).order_by('-created_at').first()
+
+        if not pay_txn:
+            from auth.workflow.models import Transaction as WorkflowTransaction
+            from django.contrib.contenttypes.models import ContentType
+            ct_cc = ContentType.objects.get_for_model(application)
+            pay_txn = WorkflowTransaction.objects.filter(
+                content_type=ct_cc,
+                object_id=str(application.pk),
+                action='PAY',
+            ).order_by('-created_at').first()
+
         if pay_txn:
             remarks = str(pay_txn.remarks or '')
             if 'Trans ID:' in remarks:
@@ -845,11 +896,13 @@ def final_license_detail(request, application_id):
     response_payload = {
         'applicationId': application.application_id,
         'certificateType': 'company-collaboration',
-        'licenseNumber': collab_reg_id,
+        'licenseNumber': license_number,
         'licenseTitle': 'FORM D-11 (See Rule 33)',
         'validationCode': signed_code,
         'validationPdfUrl': validation_url,
         'validatedViaCode': validated_via_code,
+        'validFrom': valid_from_str,
+        'validTo': valid_to_str,
         'print_count': 0,
         'is_print_fee_paid': True,
         'terms': [],
