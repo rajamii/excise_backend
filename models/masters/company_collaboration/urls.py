@@ -14,6 +14,13 @@ urlpatterns = [
     path('brand-owners/<str:brand_owner_code>/update/', views.update_brand_owner, name='brand-owner-update'),
     path('brand-owners/<str:brand_owner_code>/delete/', views.delete_brand_owner, name='brand-owner-delete'),
 
+    # Company details (Original BrandOwner table)
+    path('company-details/',                         views.list_company_details,      name='company-details-list'),
+    path('company-details/create/',                  views.create_company_detail,     name='company-details-create'),
+    path('company-details/<str:brand_owner_code>/',  views.company_detail_detail,     name='company-details-detail'),
+    path('company-details/<str:brand_owner_code>/update/', views.update_company_detail, name='company-details-update'),
+    path('company-details/<str:brand_owner_code>/delete/', views.delete_company_detail, name='company-details-delete'),
+
     # Liquor hierarchy
     path('liquor-categories/',                    views.list_liquor_categories, name='liquor-categories'),
     path('liquor-kinds/',                         views.list_liquor_kinds,      name='liquor-kinds'),

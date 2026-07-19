@@ -22,6 +22,38 @@ class BrandOwnerTypeSerializer(serializers.ModelSerializer):
         fields = ['brand_owner_type_code', 'brand_owner_type_desc']
 
 
+class CompanyDetailSerializer(serializers.ModelSerializer):
+    brand_owner_type_desc = serializers.CharField(
+        source='brand_owner_type.brand_owner_type_desc', read_only=True
+    )
+
+    class Meta:
+        model = BrandOwner
+        fields = [
+            'brand_owner_code',
+            'brand_owner_type',
+            'brand_owner_type_desc',
+            'brand_owner_name',
+            'brand_owner_mobile_no',
+            'brand_owner_company_address',
+            'brand_owner_address',
+            'brand_owner_pincode',
+            'brand_owner_pan',
+            'brand_owner_email',
+            'brand_owner_origin',
+            'brand_owner_country',
+            'brand_owner_state',
+            'liquor_bowner_code',
+            'brand_owner_licensee_id_no',
+            'parent_licensee_id_no',
+            'renewed_upto',
+            'enable_status',
+            'opr_date',
+            'user_id',
+        ]
+        read_only_fields = ['opr_date']
+
+
 class BrandOwnerSerializer(serializers.ModelSerializer):
     brand_owner_code = serializers.CharField(source='Liquor_BOwner_Code', required=True)
     brand_owner_type = serializers.IntegerField(source='Brand_Owner_Type_Code', required=False, allow_null=True)

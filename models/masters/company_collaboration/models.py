@@ -70,6 +70,8 @@ class BrandOwner(models.Model):
         db_table = 'master_brand_owner'
         managed = False
         ordering = ['brand_owner_code']
+        verbose_name = 'company details'
+        verbose_name_plural = 'company details'
         indexes = [
             models.Index(fields=['brand_owner_name'], name='mbo_name_idx'),
             models.Index(fields=['brand_owner_type'], name='mbo_type_idx'),

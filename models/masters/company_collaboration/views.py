@@ -11,6 +11,7 @@ from .serializers import (
     LiquorCategorySerializer,
     LiquorKindSerializer,
     LiquorTypeSerializer,
+    CompanyDetailSerializer,
 )
 
 
@@ -110,6 +111,65 @@ def delete_brand_owner(request, brand_owner_code):
     
     obj.Delete_Status = 'Y'
     obj.save()
+    return Response({'detail': 'Deleted successfully.'}, status=204)
+
+
+# ── Company Details (Original BrandOwner) CRUD ────────────────────────────────
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def list_company_details(request):
+    qs = BrandOwner.objects.all().select_related('brand_owner_type')
+    type_code = request.query_params.get('type')
+    if type_code:
+        qs = qs.filter(brand_owner_type=type_code)
+    return Response(CompanyDetailSerializer(qs, many=True).data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def company_detail_detail(request, brand_owner_code):
+    try:
+        obj = BrandOwner.objects.select_related('brand_owner_type').get(pk=brand_owner_code)
+    except BrandOwner.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    return Response(CompanyDetailSerializer(obj).data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_company_detail(request):
+    serializer = CompanyDetailSerializer(data=request.data)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data, status=201)
+    return Response(serializer.errors, status=400)
+
+
+@api_view(['PUT', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def update_company_detail(request, brand_owner_code):
+    try:
+        obj = BrandOwner.objects.get(pk=brand_owner_code)
+    except BrandOwner.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    
+    serializer = CompanyDetailSerializer(obj, data=request.data, partial=True)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data)
+    return Response(serializer.errors, status=400)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_company_detail(request, brand_owner_code):
+    try:
+        obj = BrandOwner.objects.get(pk=brand_owner_code)
+    except BrandOwner.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    
+    obj.delete()
     return Response({'detail': 'Deleted successfully.'}, status=204)
 
 
