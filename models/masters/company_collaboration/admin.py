@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import BrandOwner, BrandOwnerFee, BrandOwnerType, LiquorBrand, LiquorKind, LiquorCategory, LiquorType
+from .models import BrandOwner, BrandOwnerFee, BrandOwnerType, LiquorBrand, LiquorKind, LiquorCategory, LiquorType, master_Brand_owner
 
 
 @admin.register(BrandOwnerType)
@@ -43,5 +43,19 @@ class LiquorCategoryAdmin(admin.ModelAdmin):
 class LiquorTypeAdmin(admin.ModelAdmin):
     list_display = ['liquor_cat', 'liquor_kind', 'liquor_type_code', 'liquor_type_desc', 'delete_status']
     list_filter = ['liquor_cat', 'liquor_kind', 'delete_status']
+
+
+@admin.register(master_Brand_owner)
+class master_Brand_ownerAdmin(admin.ModelAdmin):
+    list_display = [
+        'Liquor_BOwner_Code',
+        'Liquor_BOwner_Name',
+        'Liquor_BOwner_Origin',
+        'Licensee_id_no',
+        'Brand_Owner_Type_Code',
+        'Delete_Status',
+    ]
+    list_filter = ['Liquor_BOwner_Origin', 'Brand_Owner_Type_Code', 'Delete_Status']
+    search_fields = ['Liquor_BOwner_Code', 'Liquor_BOwner_Name', 'Licensee_id_no']
 
 

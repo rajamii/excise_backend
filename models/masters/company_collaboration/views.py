@@ -75,6 +75,44 @@ def brand_owner_detail(request, brand_owner_code):
     return Response(BrandOwnerSerializer(obj).data)
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_brand_owner(request):
+    serializer = BrandOwnerSerializer(data=request.data)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data, status=201)
+    return Response(serializer.errors, status=400)
+
+
+@api_view(['PUT', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def update_brand_owner(request, brand_owner_code):
+    try:
+        obj = master_Brand_owner.objects.get(pk=brand_owner_code)
+    except master_Brand_owner.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    
+    serializer = BrandOwnerSerializer(obj, data=request.data, partial=True)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data)
+    return Response(serializer.errors, status=400)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_brand_owner(request, brand_owner_code):
+    try:
+        obj = master_Brand_owner.objects.get(pk=brand_owner_code)
+    except master_Brand_owner.DoesNotExist:
+        return Response({'detail': 'Not found.'}, status=404)
+    
+    obj.Delete_Status = 'Y'
+    obj.save()
+    return Response({'detail': 'Deleted successfully.'}, status=204)
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_liquor_categories(request):

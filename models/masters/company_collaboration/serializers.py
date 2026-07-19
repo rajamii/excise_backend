@@ -23,22 +23,22 @@ class BrandOwnerTypeSerializer(serializers.ModelSerializer):
 
 
 class BrandOwnerSerializer(serializers.ModelSerializer):
-    brand_owner_code = serializers.CharField(source='Liquor_BOwner_Code')
-    brand_owner_type = serializers.IntegerField(source='Brand_Owner_Type_Code', allow_null=True)
+    brand_owner_code = serializers.CharField(source='Liquor_BOwner_Code', required=True)
+    brand_owner_type = serializers.IntegerField(source='Brand_Owner_Type_Code', required=False, allow_null=True)
     brand_owner_type_desc = serializers.SerializerMethodField()
-    brand_owner_name = serializers.CharField(source='Liquor_BOwner_Name', allow_blank=True, allow_null=True)
+    brand_owner_name = serializers.CharField(source='Liquor_BOwner_Name', required=False, allow_blank=True, allow_null=True)
     brand_owner_mobile_no = serializers.SerializerMethodField()
-    brand_owner_company_address = serializers.CharField(source='Liquor_BOwner_Address', allow_blank=True, allow_null=True)
-    brand_owner_address = serializers.CharField(source='Liquor_BOwner_Address', allow_blank=True, allow_null=True)
-    brand_owner_pincode = serializers.CharField(source='Liquor_BOwner_PinCode', allow_blank=True, allow_null=True)
+    brand_owner_company_address = serializers.CharField(source='Liquor_BOwner_Address', required=False, allow_blank=True, allow_null=True)
+    brand_owner_address = serializers.CharField(source='Liquor_BOwner_Address', required=False, allow_blank=True, allow_null=True)
+    brand_owner_pincode = serializers.CharField(source='Liquor_BOwner_PinCode', required=False, allow_blank=True, allow_null=True)
     brand_owner_pan = serializers.SerializerMethodField()
     brand_owner_email = serializers.SerializerMethodField()
-    brand_owner_origin = serializers.CharField(source='Liquor_BOwner_Origin', allow_blank=True, allow_null=True)
+    brand_owner_origin = serializers.CharField(source='Liquor_BOwner_Origin', required=False, allow_blank=True, allow_null=True)
     brand_owner_country = serializers.SerializerMethodField()
     brand_owner_state = serializers.SerializerMethodField()
-    liquor_bowner_code = serializers.CharField(source='Liquor_BOwner_Code', allow_blank=True, allow_null=True)
-    brand_owner_licensee_id_no = serializers.CharField(source='Licensee_id_no', allow_blank=True, allow_null=True)
-    parent_licensee_id_no = serializers.CharField(source='Licensee_id_no', allow_blank=True, allow_null=True)
+    liquor_bowner_code = serializers.CharField(source='Liquor_BOwner_Code', required=False, allow_blank=True, allow_null=True)
+    brand_owner_licensee_id_no = serializers.CharField(source='Licensee_id_no', required=False, allow_blank=True, allow_null=True)
+    parent_licensee_id_no = serializers.CharField(source='Licensee_id_no', required=False, allow_blank=True, allow_null=True)
     renewed_upto = serializers.SerializerMethodField()
     enable_status = serializers.SerializerMethodField()
     user_id = serializers.SerializerMethodField()
@@ -110,6 +110,40 @@ class BrandOwnerSerializer(serializers.ModelSerializer):
 
     def get_user_id(self, obj):
         return ""
+
+    def create(self, validated_data):
+        code = validated_data.get('Liquor_BOwner_Code')
+        if not code:
+            raise serializers.ValidationError({"brand_owner_code": "This field is required."})
+        
+        obj_data = {
+            'Liquor_BOwner_Code': code,
+            'Liquor_BOwner_Origin': validated_data.get('Liquor_BOwner_Origin', 'I'),
+            'Liquor_BOwner_Country': 'India',
+            'Liquor_BOwner_State': validated_data.get('Liquor_BOwner_State', '28'),
+            'Liquor_BOwner_Name': validated_data.get('Liquor_BOwner_Name', ''),
+            'Liquor_BOwner_Address': validated_data.get('Liquor_BOwner_Address', ''),
+            'Liquor_BOwner_PinCode': validated_data.get('Liquor_BOwner_PinCode', ''),
+            'Licensee_id_no': validated_data.get('Licensee_id_no', ''),
+            'Brand_Owner_Type_Code': validated_data.get('Brand_Owner_Type_Code', 1),
+            'Delete_Status': 'N',
+        }
+        return master_Brand_owner.objects.create(**obj_data)
+
+    def update(self, instance, validated_data):
+        instance.Liquor_BOwner_Origin = validated_data.get('Liquor_BOwner_Origin', instance.Liquor_BOwner_Origin)
+        instance.Liquor_BOwner_State = validated_data.get('Liquor_BOwner_State', instance.Liquor_BOwner_State)
+        instance.Liquor_BOwner_Name = validated_data.get('Liquor_BOwner_Name', instance.Liquor_BOwner_Name)
+        
+        address = validated_data.get('Liquor_BOwner_Address')
+        if address:
+            instance.Liquor_BOwner_Address = address
+            
+        instance.Liquor_BOwner_PinCode = validated_data.get('Liquor_BOwner_PinCode', instance.Liquor_BOwner_PinCode)
+        instance.Licensee_id_no = validated_data.get('Licensee_id_no', instance.Licensee_id_no)
+        instance.Brand_Owner_Type_Code = validated_data.get('Brand_Owner_Type_Code', instance.Brand_Owner_Type_Code)
+        instance.save()
+        return instance
 
 
 class LiquorCategorySerializer(serializers.Serializer):

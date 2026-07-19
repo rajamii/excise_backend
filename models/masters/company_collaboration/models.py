@@ -354,6 +354,8 @@ class master_Brand_owner(models.Model):
     class Meta:
         db_table = 'master_brand_owner_table'
         ordering = ['Liquor_BOwner_Code']
+        verbose_name = 'master Brand owner'
+        verbose_name_plural = 'master Brand owner'
 
     def __str__(self):
         return f"{self.Liquor_BOwner_Code} — {self.Liquor_BOwner_Name}"
