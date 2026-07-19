@@ -213,6 +213,82 @@ class LiquorTypeSerializer(serializers.Serializer):
     delete_status = serializers.CharField()
 
 
+class LiquorCategoryCRUDSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LiquorCategory
+        fields = ['liquor_cat_code', 'liquor_cat_desc', 'liquor_cat_abbr', 'delete_status']
+
+
+class LiquorKindCRUDSerializer(serializers.ModelSerializer):
+    liquor_cat_desc = serializers.SerializerMethodField()
+
+    def get_liquor_cat_desc(self, obj):
+        try:
+            return LiquorCategory.objects.get(pk=obj.liquor_cat).liquor_cat_desc
+        except LiquorCategory.DoesNotExist:
+            return ''
+
+    class Meta:
+        model = LiquorKind
+        fields = ['id', 'liquor_cat', 'liquor_cat_desc', 'liquor_kind_code', 'liquor_kind_desc', 'liquor_kind_abbr', 'delete_status']
+
+
+class LiquorTypeCRUDSerializer(serializers.ModelSerializer):
+    liquor_cat_desc = serializers.SerializerMethodField()
+    liquor_kind_desc = serializers.CharField(source='liquor_kind.liquor_kind_desc', read_only=True)
+
+    def get_liquor_cat_desc(self, obj):
+        try:
+            return LiquorCategory.objects.get(pk=obj.liquor_cat).liquor_cat_desc
+        except LiquorCategory.DoesNotExist:
+            return ''
+
+    class Meta:
+        model = LiquorType
+        fields = ['id', 'liquor_cat', 'liquor_cat_desc', 'liquor_kind', 'liquor_kind_desc', 'liquor_type_code', 'liquor_type_desc', 'liquor_type_code_old', 'delete_status']
+
+
+class LiquorBrandCRUDSerializer(serializers.ModelSerializer):
+    liquor_cat_desc = serializers.SerializerMethodField()
+    liquor_kind_desc = serializers.CharField(source='liquor_kind.liquor_kind_desc', read_only=True)
+    liquor_type_desc = serializers.SerializerMethodField()
+
+    def get_liquor_cat_desc(self, obj):
+        try:
+            return LiquorCategory.objects.get(pk=obj.liquor_cat).liquor_cat_desc
+        except LiquorCategory.DoesNotExist:
+            return ''
+
+    def get_liquor_type_desc(self, obj):
+        try:
+            lt = LiquorType.objects.get(
+                liquor_cat=obj.liquor_cat,
+                liquor_kind_id=obj.liquor_kind_id,
+                liquor_type_code=obj.liquor_type
+            )
+            return lt.liquor_type_desc
+        except LiquorType.DoesNotExist:
+            return ''
+
+    class Meta:
+        model = LiquorBrand
+        fields = [
+            'id',
+            'liquor_brand_code',
+            'liquor_cat',
+            'liquor_cat_desc',
+            'liquor_kind',
+            'liquor_kind_desc',
+            'liquor_type',
+            'liquor_type_desc',
+            'liquor_brand_desc',
+            'brand_name_alias',
+            'liquor_type_code_old',
+            'entry_flag',
+            'delete_status'
+        ]
+
+
 class LiquorBrandSerializer(serializers.ModelSerializer):
     liquor_cat_desc  = serializers.SerializerMethodField()
     liquor_kind_desc = serializers.CharField(source='liquor_kind.liquor_kind_desc', read_only=True)
@@ -258,49 +334,50 @@ class LiquorBrandSerializer(serializers.ModelSerializer):
     def get_pack_sizes(self, obj):
         from .models import LiquorProduct
         sizes = []
-        seen_labels = set()
-        
-        # 1) Always populate category-based default standard sizes
-        if obj.liquor_cat == 3:  # Beer
-            defaults = [
-                {'value': 650, 'label': '650 Ml'},
-                {'value': 500, 'label': '500 Ml'},
-                {'value': 330, 'label': '330 Ml'}
-            ]
-        else:  # Spirits, Wine, Country Liquor, Homemade
-            defaults = [
-                {'value': 750, 'label': '750 Ml'},
-                {'value': 375, 'label': '375 Ml'},
-                {'value': 180, 'label': '180 Ml'}
-            ]
-            
-        for idx, d in enumerate(defaults):
-            label = d['label']
-            seen_labels.add(label)
-            sizes.append({
-                'product_id': -(obj.id * 10 + idx),
-                'value': d['value'],
-                'unit': 'Ml',
-                'label': label
-            })
-            
-        # 2) Merge additional custom sizes from master_liquor_product if available
+        seen_values = set()
+
+        # 1) First check master_liquor_product for real registered sizes for this brand
         if obj.liquor_brand_code:
-            products = LiquorProduct.objects.filter(liquor_brand_code=obj.liquor_brand_code)
+            products = (
+                LiquorProduct.objects
+                .filter(liquor_brand_code=obj.liquor_brand_code, delete_status='N')
+                .exclude(measure_value__isnull=True)
+                .order_by('measure_value')
+            )
             for p in products:
-                if p.measure_value:
+                if p.measure_value and p.measure_value not in seen_values:
+                    seen_values.add(p.measure_value)
                     unit = p.measure_unit or 'M'
                     display_unit = 'Ml' if unit.strip().upper() in ('M', 'ML') else unit
-                    label = f"{p.measure_value} {display_unit}"
-                    if label not in seen_labels:
-                        seen_labels.add(label)
-                        sizes.append({
-                            'product_id': p.id,
-                            'value': p.measure_value,
-                            'unit': display_unit,
-                            'label': label,
-                        })
-        
+                    sizes.append({
+                        'product_id': p.id,
+                        'value': p.measure_value,
+                        'unit': display_unit,
+                        'label': f"{p.measure_value} {display_unit}",
+                    })
+
+        # 2) Fall back to category-based defaults ONLY if no sizes exist in master_liquor_product
+        if not sizes:
+            if obj.liquor_cat == 3:  # Beer
+                defaults = [
+                    {'value': 650, 'label': '650 Ml'},
+                    {'value': 500, 'label': '500 Ml'},
+                    {'value': 330, 'label': '330 Ml'}
+                ]
+            else:  # Spirits, Wine, Country Liquor, Homemade
+                defaults = [
+                    {'value': 750, 'label': '750 Ml'},
+                    {'value': 375, 'label': '375 Ml'},
+                    {'value': 180, 'label': '180 Ml'}
+                ]
+            for idx, d in enumerate(defaults):
+                sizes.append({
+                    'product_id': -(obj.id * 10 + idx),
+                    'value': d['value'],
+                    'unit': 'Ml',
+                    'label': d['label']
+                })
+
         sizes.sort(key=lambda x: x['value'], reverse=True)
         return sizes
 

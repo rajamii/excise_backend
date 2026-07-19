@@ -29,4 +29,33 @@ urlpatterns = [
 
     # Fee structure
     path('fee/',                                  views.active_fee,             name='active-fee'),
+
+    # Liquor Category CRUD
+    path('liquor-categories-crud/',                  views.list_categories_crud,      name='liquor-categories-crud-list'),
+    path('liquor-categories-crud/create/',           views.create_category_crud,     name='liquor-categories-crud-create'),
+    path('liquor-categories-crud/<int:pk>/update/',  views.update_category_crud,     name='liquor-categories-crud-update'),
+    path('liquor-categories-crud/<int:pk>/delete/',  views.delete_category_crud,     name='liquor-categories-crud-delete'),
+
+    # Liquor Kind CRUD
+    path('liquor-kinds-crud/',                       views.list_kinds_crud,           name='liquor-kinds-crud-list'),
+    path('liquor-kinds-crud/create/',                views.create_kind_crud,          name='liquor-kinds-crud-create'),
+    path('liquor-kinds-crud/<int:pk>/update/',       views.update_kind_crud,          name='liquor-kinds-crud-update'),
+    path('liquor-kinds-crud/<int:pk>/delete/',       views.delete_kind_crud,          name='liquor-kinds-crud-delete'),
+
+    # Liquor Type CRUD
+    path('liquor-types-crud/',                       views.list_types_crud,           name='liquor-types-crud-list'),
+    path('liquor-types-crud/create/',                views.create_type_crud,          name='liquor-types-crud-create'),
+    path('liquor-types-crud/<int:pk>/update/',       views.update_type_crud,          name='liquor-types-crud-update'),
+    path('liquor-types-crud/<int:pk>/delete/',       views.delete_type_crud,          name='liquor-types-crud-delete'),
+
+    # Liquor Brand CRUD
+    path('liquor-brands-crud/',                      views.list_brands_crud,          name='liquor-brands-crud-list'),
+    path('liquor-brands-crud/create/',               views.create_brand_crud,         name='liquor-brands-crud-create'),
+    path('liquor-brands-crud/<int:pk>/update/',      views.update_brand_crud,         name='liquor-brands-crud-update'),
+    path('liquor-brands-crud/<int:pk>/delete/',      views.delete_brand_crud,         name='liquor-brands-crud-delete'),
+
+    # Brand Pack Sizes (from master_liquor_product)
+    path('liquor-brands-crud/pack-sizes/<path:brand_code>/',      views.brand_pack_sizes,         name='brand-pack-sizes'),
+    path('liquor-brands-crud/pack-sizes/<path:brand_code>/add/',  views.add_brand_pack_size,      name='brand-pack-size-add'),
+    path('liquor-brands-crud/pack-sizes/<int:size_id>/delete/',   views.delete_brand_pack_size,   name='brand-pack-size-delete'),
 ]
