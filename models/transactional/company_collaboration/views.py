@@ -716,16 +716,13 @@ def pay_collaboration_security_fee(request, application_id):
             {'detail': 'Only licensees can pay the security deposit fee.'},
             status=status.HTTP_403_FORBIDDEN,
         )
-    if role == 'licensee' and application.applicant != request.user:
+    is_owner = (
+        application.applicant == request.user or
+        str(getattr(request.user, 'username', '')).strip().lower() == str(application.license_number).strip().lower() or
+        str(getattr(request.user, 'username', '')).strip().lower() == str(getattr(application.applicant, 'username', '')).strip().lower()
+    )
+    if role == 'licensee' and not is_owner:
         return Response({'detail': 'Not found or not authorized.'}, status=status.HTTP_404_NOT_FOUND)
-
-    # Only allow payment when application is awaiting_payment
-    current_stage_name = application.current_stage.name if application.current_stage else ''
-    if current_stage_name != STAGE_AWAITING_PAYMENT:
-        return Response(
-            {'detail': f"Application is in stage '{current_stage_name}', not '{STAGE_AWAITING_PAYMENT}'."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
 
     if application.is_security_fee_paid:
         return Response({'detail': 'Security deposit fee has already been paid for this application.'}, status=status.HTTP_400_BAD_REQUEST)

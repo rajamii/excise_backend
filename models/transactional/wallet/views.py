@@ -373,22 +373,21 @@ def wallet_recharge_credit(request, licensee_id):
 
             # First, check if user has a pending CompanyCollaboration application awaiting security fee
             pending_collab = None
+            collab_qs = CompanyCollaboration.objects.filter(is_security_fee_paid=False)
             if user and user.is_authenticated:
-                pending_collab = CompanyCollaboration.objects.filter(
-                    applicant=user,
-                    is_approved=False,
-                    is_security_fee_paid=False
-                ).filter(
-                    Q(current_stage__name__icontains="payment") |
-                    Q(current_stage__name__icontains="awaiting")
+                user_name = str(getattr(user, "username", "") or "").strip()
+                pending_collab = collab_qs.filter(
+                    Q(applicant=user) |
+                    Q(applicant__username__iexact=user_name) |
+                    Q(license_number__iexact=user_name) |
+                    Q(license_number__iexact=str(licensee_id))
                 ).first()
 
-                if not pending_collab:
-                    pending_collab = CompanyCollaboration.objects.filter(
-                        applicant=user,
-                        is_approved=False,
-                        is_security_fee_paid=False
-                    ).first()
+            if not pending_collab and licensee_id:
+                pending_collab = collab_qs.filter(
+                    Q(applicant__username__iexact=str(licensee_id)) |
+                    Q(license_number__iexact=str(licensee_id))
+                ).first()
 
             if pending_collab:
                 pending_collab.is_security_fee_paid = True

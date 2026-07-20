@@ -1463,34 +1463,31 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                     if not app:
                         raise ValueError(f"CompanyCollaboration not found for application_id={application_id}")
 
-                    # Only advance if the application is in the awaiting_payment stage
-                    stage_name = str(getattr(app.current_stage, "name", "") or "").strip().lower()
-                    if stage_name == "awaiting_payment":
+                    with transaction.atomic():
+                        app.is_license_fee_paid = True
+                        app.is_security_fee_paid = True
                         target_stage = WorkflowStage.objects.filter(
                             workflow=app.workflow,
                             name__iexact="final_commissioner_review"
                         ).first()
 
-                        if not target_stage:
-                            raise ValueError("Stage 'final_commissioner_review' not found for Company Collaboration workflow.")
-
-                        with transaction.atomic():
+                        if target_stage:
                             app.current_stage = target_stage
-                            app.save()
+                        app.save()
 
-                            username = str(getattr(tx, "user_id", "") or "").strip()
-                            user = None
-                            if username:
-                                user = CustomUser.objects.filter(username__iexact=username).first()
-                            if not user:
-                                user = getattr(app, "applicant", None)
+                        username = str(getattr(tx, "user_id", "") or "").strip()
+                        user = None
+                        if username:
+                            user = CustomUser.objects.filter(username__iexact=username).first()
+                        if not user:
+                            user = getattr(app, "applicant", None)
 
-                            WorkflowService.record_transaction(
-                                application=app,
-                                user=user,
-                                action="PAY",
-                                remarks="Payment of Company Collaboration fee completed via BillDesk.",
-                            )
+                        WorkflowService.record_transaction(
+                            application=app,
+                            user=user,
+                            action="PAY",
+                            remarks="Payment of Company Collaboration fee completed via BillDesk.",
+                        )
                 except Exception as exc:
                     logger.exception("Failed to update Company Collaboration stage for txn_ref=%s: %s", txn_ref, exc)
         else:
@@ -1532,54 +1529,81 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                             remarks="BillDesk payment success",
                         )
 
-                        # Auto security fee payment logic for new license applications upon security deposit wallet recharge
+                        # Auto security fee payment logic for applications upon security deposit wallet recharge
                         if credit_wallet_type == "security_deposit":
                             try:
                                 from django.db.models import Q
                                 from models.masters.license.models import License
+                                from models.transactional.company_collaboration.models import CompanyCollaboration
+                                from models.transactional.new_license_application.models import NewLicenseApplication
                                 from models.transactional.new_license_application.payment_status import sync_new_license_payment_status
                                 from models.transactional.wallet.views import _wallet_license_candidates
 
-                                candidates = _wallet_license_candidates(credit_licensee_id)
-                                lic = License.objects.filter(license_id__in=candidates).order_by("-issue_date", "-license_id").first()
-                                application = None
-                                if lic and lic.source_type == "new_license_application":
-                                    application = NewLicenseApplication.objects.filter(application_id=lic.source_object_id).first()
+                                username = str(getattr(tx, "user_id", "") or "").strip()
+                                user = None
+                                if username:
+                                    user = CustomUser.objects.filter(username__iexact=username).first()
+                                if not user:
+                                    user = CustomUser.objects.filter(username__iexact=credit_licensee_id).first()
 
-                                # Fallback logic: if the resolved application is None, already approved, or already marked as paid,
-                                # check if there is a pending, unapproved NewLicenseApplication for this user.
-                                if not application or getattr(application, "is_approved", False) or getattr(application, "is_security_fee_paid", False):
-                                    username = str(tx.user_id or "").strip()
-                                    user = None
-                                    if username:
-                                        user = CustomUser.objects.filter(username__iexact=username).first()
-                                    if not user and lic:
-                                        user = getattr(lic, "applicant", None)
+                                pending_collab = None
+                                collab_qs = CompanyCollaboration.objects.filter(is_security_fee_paid=False)
+                                if user:
+                                    pending_collab = collab_qs.filter(
+                                        Q(applicant=user) |
+                                        Q(applicant__username__iexact=user.username) |
+                                        Q(license_number__iexact=user.username) |
+                                        Q(license_number__iexact=str(credit_licensee_id))
+                                    ).first()
 
-                                    if user:
-                                        pending_app = NewLicenseApplication.objects.filter(
-                                            applicant=user,
-                                            is_approved=False,
-                                            is_security_fee_paid=False
-                                        ).filter(
-                                            Q(current_stage__name__icontains="payment") |
-                                            Q(current_stage__name__icontains="awaiting")
-                                        ).first()
+                                if not pending_collab and credit_licensee_id:
+                                    pending_collab = collab_qs.filter(
+                                        Q(applicant__username__iexact=str(credit_licensee_id)) |
+                                        Q(license_number__iexact=str(credit_licensee_id))
+                                    ).first()
 
-                                        if not pending_app:
+                                if pending_collab:
+                                    pending_collab.is_security_fee_paid = True
+                                    if pending_collab.is_paid:
+                                        stage = pending_collab.workflow.stages.filter(name='final_commissioner_review').first()
+                                        if stage:
+                                            pending_collab.current_stage = stage
+                                    pending_collab.save()
+                                else:
+                                    candidates = _wallet_license_candidates(credit_licensee_id)
+                                    lic = License.objects.filter(license_id__in=candidates).order_by("-issue_date", "-license_id").first()
+                                    application = None
+                                    if lic and lic.source_type == "new_license_application":
+                                        application = NewLicenseApplication.objects.filter(application_id=lic.source_object_id).first()
+
+                                    if not application or getattr(application, "is_approved", False) or getattr(application, "is_security_fee_paid", False):
+                                        if not user and lic:
+                                            user = getattr(lic, "applicant", None)
+
+                                        if user:
                                             pending_app = NewLicenseApplication.objects.filter(
                                                 applicant=user,
                                                 is_approved=False,
                                                 is_security_fee_paid=False
+                                            ).filter(
+                                                Q(current_stage__name__icontains="payment") |
+                                                Q(current_stage__name__icontains="awaiting")
                                             ).first()
 
-                                        if pending_app:
-                                            application = pending_app
+                                            if not pending_app:
+                                                pending_app = NewLicenseApplication.objects.filter(
+                                                    applicant=user,
+                                                    is_approved=False,
+                                                    is_security_fee_paid=False
+                                                ).first()
 
-                                if application and not application.is_security_fee_paid:
-                                    application.is_security_fee_paid = True
-                                    application.save(update_fields=["is_security_fee_paid"])
-                                    sync_new_license_payment_status(application)
+                                            if pending_app:
+                                                application = pending_app
+
+                                    if application and not application.is_security_fee_paid:
+                                        application.is_security_fee_paid = True
+                                        application.save(update_fields=["is_security_fee_paid"])
+                                        sync_new_license_payment_status(application)
                             except Exception as auto_pay_error:
                                 logger.error("Auto security fee payment in Billdesk callback failed: %s", str(auto_pay_error), exc_info=True)
                 except Exception as exc:
