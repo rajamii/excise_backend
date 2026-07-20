@@ -158,11 +158,11 @@ REST_FRAMEWORK = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'sems_db',       # Database name
+        'NAME': 'Sems_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
         'PASSWORD': 'sameer123',  # Your PostgreSQL password
         'HOST': 'localhost',        
-        'PORT': '5432',             # Default PostgreSQL port
+        'PORT': '5433',             # Default PostgreSQL port
         'CONN_MAX_AGE': 300,         # Don't reuse connections — avoids aborted transaction state
     }
 }
@@ -286,11 +286,13 @@ BILLDESK_GATEWAY_URL = os.getenv(
 # Where Django redirects the user after BillDesk response is validated.
 PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL = os.getenv(
     "PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL",
-    "https://sems.sikkim.gov.in/dashboard/wallet-recharge/success",
+    # "https://sems.sikkim.gov.in/dashboard/wallet-recharge/success",
+    "http://localhost:4200/dashboard/wallet-recharge/success",
 ).strip()
 PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL = os.getenv(
     "PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL",
-    "https://sems.sikkim.gov.in/dashboard/new-license/application-fee/receipt",
+    # "https://sems.sikkim.gov.in/dashboard/new-license/application-fee/receipt",
+    "http://localhost:4200/dashboard/new-license/application-fee/receipt",
 ).strip()
 
 # Captcha tuning: keep it readable with only light line noise.

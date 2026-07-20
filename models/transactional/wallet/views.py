@@ -405,6 +405,25 @@ def wallet_recharge_credit(request, licensee_id):
                 application.is_security_fee_paid = True
                 application.save(update_fields=["is_security_fee_paid"])
                 sync_new_license_payment_status(application)
+            else:
+                user = request.user
+                if user and user.is_authenticated:
+                    from models.transactional.company_collaboration.models import CompanyCollaboration
+                    pending_collab = CompanyCollaboration.objects.filter(
+                        applicant=user,
+                        is_approved=False,
+                        is_security_fee_paid=False
+                    ).filter(
+                        Q(current_stage__name__icontains="payment") |
+                        Q(current_stage__name__icontains="awaiting")
+                    ).first()
+                    if pending_collab:
+                        pending_collab.is_security_fee_paid = True
+                        if pending_collab.is_paid:
+                            stage = pending_collab.workflow.stages.filter(name='final_commissioner_review').first()
+                            if stage:
+                                pending_collab.current_stage = stage
+                        pending_collab.save()
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)

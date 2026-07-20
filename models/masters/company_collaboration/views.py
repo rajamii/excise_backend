@@ -302,8 +302,11 @@ def active_fee(request):
     if not fee_obj:
         return Response({'detail': 'No active collaboration fee found.'}, status=404)
 
+    amount_str = str(fee_obj.amount)
     return Response({
-        'collaborationFee': str(fee_obj.amount),
+        'applicationFee': '0.00',
+        'collaborationFee': amount_str,
+        'securityDeposit': amount_str,
     })
 
 

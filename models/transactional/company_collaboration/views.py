@@ -602,8 +602,8 @@ def application_group(request):
 @permission_classes([HasCompanyCollaborationViewPermission, HasStagePermission])
 def pay_collaboration_fee(request, application_id):
     """
-    Wallet debit for Company Collaboration fee (COMP_COLLAB_FEE).
-    On success, advance workflow from awaiting_payment → final_commissioner_review.
+    Wallet debit for Company Collaboration license fee (COMP_COLLAB_FEE).
+    When both license fee and security fee are paid (or if renewal), advance workflow from awaiting_payment → final_commissioner_review.
     """
     import secrets
     from decimal import Decimal
@@ -629,6 +629,9 @@ def pay_collaboration_fee(request, application_id):
             {'detail': f"Application is in stage '{current_stage_name}', not '{STAGE_AWAITING_PAYMENT}'."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+    if application.is_license_fee_paid:
+        return Response({'detail': 'License fee has already been paid for this application.'}, status=status.HTTP_400_BAD_REQUEST)
 
     # Fetch fee amount from masters_fixedfee
     try:
@@ -658,11 +661,16 @@ def pay_collaboration_fee(request, application_id):
     except Exception as exc:
         return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Advance to final_commissioner_review
     try:
         with transaction.atomic():
-            target_stage = _get_stage(application.workflow, STAGE_FINAL_COMMISSIONER_REVIEW)
-            application.current_stage = target_stage
+            application.is_license_fee_paid = True
+            if application.is_renewal:
+                application.is_security_fee_paid = True
+
+            if application.is_paid:
+                target_stage = _get_stage(application.workflow, STAGE_FINAL_COMMISSIONER_REVIEW)
+                application.current_stage = target_stage
+
             application.save()
 
             WorkflowService.record_transaction(
@@ -675,7 +683,104 @@ def pay_collaboration_fee(request, application_id):
         return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as exc:
         return Response(
-            {'detail': f'Payment succeeded but workflow advance failed: {str(exc)}'},
+            {'detail': f'Payment succeeded but workflow update failed: {str(exc)}'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    fresh = CompanyCollaboration.objects.get(pk=application.pk)
+    return Response({
+        'success': True,
+        'transaction_id': txn_id,
+        'application': CompanyCollaborationSerializer(fresh).data,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([HasCompanyCollaborationViewPermission, HasStagePermission])
+def pay_collaboration_security_fee(request, application_id):
+    """
+    Wallet debit for Company Collaboration security deposit fee (COMP_COLLAB_SECURITY_FEE).
+    When both license fee and security fee are paid, advance workflow from awaiting_payment → final_commissioner_review.
+    """
+    import secrets
+    from decimal import Decimal
+    from models.transactional.wallet.wallet_service import debit_wallet_balance
+    from models.transactional.wallet.wallet_initializer import _resolve_hoa_code
+
+    application = get_object_or_404(CompanyCollaboration, application_id=application_id)
+
+    # Verify user is licensee and owns this application
+    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if role not in ('licensee', 'site_admin'):
+        return Response(
+            {'detail': 'Only licensees can pay the security deposit fee.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    if role == 'licensee' and application.applicant != request.user:
+        return Response({'detail': 'Not found or not authorized.'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Only allow payment when application is awaiting_payment
+    current_stage_name = application.current_stage.name if application.current_stage else ''
+    if current_stage_name != STAGE_AWAITING_PAYMENT:
+        return Response(
+            {'detail': f"Application is in stage '{current_stage_name}', not '{STAGE_AWAITING_PAYMENT}'."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if application.is_security_fee_paid:
+        return Response({'detail': 'Security deposit fee has already been paid for this application.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Fetch fee amount from masters_fixedfee
+    try:
+        from django.apps import apps
+        FixedFee = apps.get_model('core', 'MasterFixedFee')
+        fee_obj = FixedFee.objects.filter(fee_code='COMP_COLLAB_SECURITY_FEE', is_active=True).first()
+        if not fee_obj:
+            fee_obj = FixedFee.objects.filter(fee_code='COMP_COLLAB_FEE', is_active=True).first()
+        amount = fee_obj.amount if fee_obj else Decimal('25000.00')
+    except Exception:
+        amount = Decimal('25000.00')
+
+    # Debit from security_deposit wallet
+    wallet_licensee_id = str(getattr(request.user, 'username', '') or '').strip()
+    security_deposit_hoa = _resolve_hoa_code(module_type='other', wallet_type='security_deposit')
+    txn_id = secrets.token_hex(12).upper()
+
+    try:
+        debit_wallet_balance(
+            transaction_id=txn_id,
+            licensee_id=wallet_licensee_id,
+            wallet_type='security_deposit',
+            head_of_account=security_deposit_hoa,
+            amount=amount,
+            user_id=wallet_licensee_id,
+            remarks=f'Company Collaboration security deposit paid for {application.application_id}',
+            reference_no=application.application_id,
+        )
+    except Exception as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        with transaction.atomic():
+            application.is_security_fee_paid = True
+
+            if application.is_paid:
+                target_stage = _get_stage(application.workflow, STAGE_FINAL_COMMISSIONER_REVIEW)
+                application.current_stage = target_stage
+
+            application.save()
+
+            WorkflowService.record_transaction(
+                application=application,
+                user=request.user,
+                action='PAY',
+                remarks=f'Collaboration security deposit paid via security wallet. Trans ID: {txn_id}',
+            )
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as exc:
+        return Response(
+            {'detail': f'Payment succeeded but workflow update failed: {str(exc)}'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 

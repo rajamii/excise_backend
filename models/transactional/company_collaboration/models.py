@@ -21,6 +21,15 @@ class CompanyCollaboration(models.Model):
         related_name='company_collaborations',
     )
     is_approved = models.BooleanField(default=False)
+    is_license_fee_paid = models.BooleanField(default=False)
+    is_security_fee_paid = models.BooleanField(default=False)
+    is_renewal = models.BooleanField(default=False)
+
+    @property
+    def is_paid(self) -> bool:
+        if self.is_renewal:
+            return bool(self.is_license_fee_paid)
+        return bool(self.is_license_fee_paid and self.is_security_fee_paid)
 
     # ── Year fields ───────────────────────────────────────────────────────
     # financial_year: set automatically in save() — format "2025-26"
