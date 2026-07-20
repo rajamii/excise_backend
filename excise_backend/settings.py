@@ -264,7 +264,7 @@ SIMPLE_JWT = {
     'SIGNING_KEY': SECRET_KEY,
     'AUTH_HEADER_TYPES': ('Bearer',),
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
-}1
+}
 
 # Payment gateway (BillDesk) defaults for local/UAT.
 BILLDESK_GATEWAY_URL = os.getenv(
