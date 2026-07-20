@@ -1035,7 +1035,16 @@ def pay_security_fee_wallet(request, application_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def approve_renewal_application(request, application_id):
-    app = get_object_or_404(LicenseApplication, application_id=str(application_id))
+    from urllib.parse import unquote
+    from django.db.models import Q
+    raw_id = str(application_id).strip()
+    decoded_id = unquote(raw_id).strip()
+    app = LicenseApplication.objects.filter(
+        Q(application_id=raw_id) | Q(application_id=decoded_id)
+    ).first()
+    if not app:
+        return Response({"detail": "License renewal application not found."}, status=status.HTTP_404_NOT_FOUND)
+
     target_stage = _pick_renewal_target_stage(app, "approve")
     if not target_stage:
         return Response({"detail": "No valid target stage found for approval."}, status=status.HTTP_400_BAD_REQUEST)
@@ -1058,7 +1067,16 @@ def approve_renewal_application(request, application_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def reject_renewal_application(request, application_id):
-    app = get_object_or_404(LicenseApplication, application_id=str(application_id))
+    from urllib.parse import unquote
+    from django.db.models import Q
+    raw_id = str(application_id).strip()
+    decoded_id = unquote(raw_id).strip()
+    app = LicenseApplication.objects.filter(
+        Q(application_id=raw_id) | Q(application_id=decoded_id)
+    ).first()
+    if not app:
+        return Response({"detail": "License renewal application not found."}, status=status.HTTP_404_NOT_FOUND)
+
     target_stage = _pick_renewal_target_stage(app, "reject")
     if not target_stage:
         return Response({"detail": "No valid target stage found for rejection."}, status=status.HTTP_400_BAD_REQUEST)
@@ -1093,7 +1111,15 @@ def list_license_applications(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def license_application_detail(request, pk):
-    obj = get_object_or_404(LicenseApplication, application_id=str(pk))
+    from urllib.parse import unquote
+    from django.db.models import Q
+    raw_pk = str(pk).strip()
+    decoded_pk = unquote(raw_pk).strip()
+    obj = LicenseApplication.objects.filter(
+        Q(application_id=raw_pk) | Q(application_id=decoded_pk)
+    ).first()
+    if not obj:
+        return Response({"detail": "License renewal application not found."}, status=status.HTTP_404_NOT_FOUND)
     return Response(_serialize_renewal_application(obj), status=status.HTTP_200_OK)
 
 
