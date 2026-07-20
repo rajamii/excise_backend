@@ -48,12 +48,37 @@ def _get_renewal_workflow() -> Workflow | None:
 @permission_classes([IsAuthenticated])
 def initiate_renewal(request, license_id):
     """
-    Create a renewal-tracking application (LRA/...) that follows the same stage machine
+    Create a renewal-tracking application (RCC/... or LRA/...) that follows the same stage machine
     as the New License workflow, but under the dedicated "License Renewal Application" workflow.
     """
-    old_license = get_object_or_404(License, license_id=str(license_id))
-    if old_license.applicant_id != request.user.id:
-        return Response({"detail": "You can only renew your own license."}, status=status.HTTP_403_FORBIDDEN)
+    from django.db.models import Q
+    old_license = License.objects.filter(
+        Q(license_id=str(license_id)) | Q(source_object_id=str(license_id))
+    ).first()
+    if not old_license:
+        from models.transactional.company_collaboration.models import CompanyCollaboration
+        ccol = CompanyCollaboration.objects.filter(application_id=str(license_id)).first()
+        if ccol:
+            old_license = License.objects.filter(source_object_id=ccol.application_id).first()
+
+    if not old_license:
+        return Response({"detail": "License not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    is_applicant = (
+        old_license.applicant_id == request.user.id
+        or getattr(old_license.source_application, 'applicant_id', None) == request.user.id
+    )
+    is_authorized = (
+        request.user.is_authenticated
+        and (
+            is_applicant
+            or request.user.is_superuser
+            or request.user.is_staff
+            or (hasattr(request.user, 'role') and request.user.role and str(request.user.role.name).lower() in ['site_admin', 'single_window', 'admin', 'excise_officer', 'licensee'])
+        )
+    )
+    if not is_authorized:
+        return Response({"detail": "You do not have permission to renew this license."}, status=status.HTTP_403_FORBIDDEN)
 
     now_dt = timezone.now()
     reminder_days = _get_timer_days("LICENSE_RENEWAL_REMINDER_TIMER", 90)
@@ -209,10 +234,14 @@ def initiate_renewal(request, license_id):
     if old_source_type == "company_registration":
         app_prefix = "RCR"
     elif old_source_type == "company_collaboration":
-        app_prefix = "RCOL"
+        app_prefix = "RCC"
     else:
         app_prefix = "LRA"
-    prefix = f"{app_prefix}/{district_code}/{fin_year}"
+    
+    if old_source_type == "company_collaboration" and (not district_code or district_code == "000"):
+        prefix = f"{app_prefix}/{fin_year}"
+    else:
+        prefix = f"{app_prefix}/{district_code}/{fin_year}"
 
     last = (
         LicenseApplication.objects.filter(application_id__startswith=prefix + "/")
