@@ -17,7 +17,7 @@ class BrandOwnerType(models.Model):
 
     class Meta:
         db_table = 'master_brand_owner_type'
-        managed = False
+        
         ordering = ['brand_owner_type_code']
 
     def __str__(self):
@@ -68,7 +68,7 @@ class BrandOwner(models.Model):
 
     class Meta:
         db_table = 'master_brand_owner'
-        managed = False
+        
         ordering = ['brand_owner_code']
         verbose_name = 'company details'
         verbose_name_plural = 'company details'
@@ -99,7 +99,7 @@ class LiquorKind(models.Model):
 
     class Meta:
         db_table = 'master_liquor_kind'
-        managed = False
+        
         unique_together = [('liquor_cat', 'liquor_kind_code')]
         ordering = ['liquor_cat', 'liquor_kind_code']
 
@@ -133,7 +133,7 @@ class LiquorBrand(models.Model):
 
     class Meta:
         db_table = 'master_liquor_brand'
-        managed = False
+        
         ordering = ['liquor_brand_code']
         indexes = [
             models.Index(fields=['liquor_brand_desc'], name='mlb_desc_idx'),
@@ -168,7 +168,7 @@ class BrandOwnerFee(models.Model):
 
     class Meta:
         db_table = 'master_brand_owner_fee'
-        managed = False
+        
         ordering = ['-from_date']
 
     def __str__(self):
@@ -274,7 +274,7 @@ class LiquorProduct(models.Model):
 
     class Meta:
         db_table = 'master_liquor_product'
-        managed = False
+        
 
     def __str__(self):
         return f"{self.liquor_brand_code} — {self.liquor_product_reg_no or 'No Reg No'}"
@@ -295,7 +295,7 @@ class LiquorCategory(models.Model):
 
     class Meta:
         db_table = 'master_liquor_category'
-        managed = False
+        
         ordering = ['liquor_cat_code']
 
     def __str__(self):
@@ -326,7 +326,7 @@ class LiquorType(models.Model):
 
     class Meta:
         db_table = 'master_liquor_type_details'
-        managed = False
+        
         ordering = ['liquor_cat', 'liquor_kind', 'liquor_type_code']
         unique_together = [('liquor_cat', 'liquor_kind', 'liquor_type_code')]
 
