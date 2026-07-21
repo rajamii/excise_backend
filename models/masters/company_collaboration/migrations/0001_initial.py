@@ -27,7 +27,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 'db_table': 'master_brand_owner_fee',
-                'managed': False,
+                
                 'ordering': ['-from_date'],
             },
         ),
@@ -39,7 +39,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 'db_table': 'master_brand_owner_type',
-                'managed': False,
+                
                 'ordering': ['brand_owner_type_code'],
             },
         ),
@@ -53,7 +53,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 'db_table': 'master_liquor_category',
-                'managed': False,
+                
                 'ordering': ['liquor_cat_code'],
             },
         ),
@@ -69,7 +69,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 'db_table': 'master_liquor_kind',
-                'managed': False,
+                
                 'ordering': ['liquor_cat', 'liquor_kind_code'],
                 'unique_together': {('liquor_cat', 'liquor_kind_code')},
             },
@@ -87,7 +87,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 'db_table': 'master_liquor_type',
-                'managed': False,
+                
                 'ordering': ['liquor_cat', 'liquor_kind', 'liquor_type_code'],
                 'unique_together': {('liquor_cat', 'liquor_kind', 'liquor_type_code')},
             },
@@ -117,7 +117,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 'db_table': 'master_brand_owner',
-                'managed': False,
+                
                 'ordering': ['brand_owner_code'],
                 'indexes': [models.Index(fields=['brand_owner_name'], name='mbo_name_idx'), models.Index(fields=['brand_owner_type'], name='mbo_type_idx'), models.Index(fields=['enable_status'], name='mbo_status_idx')],
             },
@@ -137,7 +137,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 'db_table': 'master_liquor_brand',
-                'managed': False,
+                
                 'ordering': ['liquor_brand_code'],
                 'indexes': [models.Index(fields=['liquor_brand_desc'], name='mlb_desc_idx'), models.Index(fields=['liquor_cat'], name='mlb_cat_idx'), models.Index(fields=['liquor_type'], name='mlb_type_idx'), models.Index(fields=['delete_status'], name='mlb_del_idx')],
             },

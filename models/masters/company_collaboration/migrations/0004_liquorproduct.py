@@ -104,7 +104,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 'db_table': 'master_liquor_product',
-                'managed': False,
+                
             },
         ),
     ]

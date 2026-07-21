@@ -32,7 +32,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 'db_table': 'wallet_balances',
-                'managed': False,
+                
             },
         ),
         migrations.CreateModel(
@@ -59,7 +59,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 'db_table': 'wallet_transactions',
-                'managed': False,
+                
             },
         ),
     ]
