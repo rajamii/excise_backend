@@ -21,7 +21,7 @@ class Migration(migrations.Migration):
             options={
                 'db_table': 'master_liquor_category',
                 'ordering': ['liquor_cat_code'],
-                
+                'managed': False,
             },
         ),
     ]

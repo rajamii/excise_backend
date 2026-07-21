@@ -23,7 +23,7 @@ class Migration(migrations.Migration):
             options={
                 'db_table': 'master_liquor_type_details',
                 'ordering': ['liquor_cat', 'liquor_kind', 'liquor_type_code'],
-                
+                'managed': False,
             },
         ),
     ]
