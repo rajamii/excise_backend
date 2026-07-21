@@ -86,7 +86,6 @@ INSTALLED_APPS = [
     'models.transactional.company_collaboration',
     'models.transactional.license_renewal_application',
     'models.transactional.special_permit',
-    'models.transactional.distributor_permit',
     'models.transactional.site_enquiry',
     'models.transactional.new_license_application',
     'models.transactional.label_registration',
@@ -159,11 +158,11 @@ REST_FRAMEWORK = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'Sems_db',       # Database name
+        'NAME': 'sems_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'postgres',  # Your PostgreSQL password
+        'PASSWORD': 'sameer123',  # Your PostgreSQL password
         'HOST': 'localhost',        
-        'PORT': '5433',             # Default PostgreSQL port
+        'PORT': '5432',             # Default PostgreSQL port
         'CONN_MAX_AGE': 300,         # Don't reuse connections — avoids aborted transaction state
     }
 }
