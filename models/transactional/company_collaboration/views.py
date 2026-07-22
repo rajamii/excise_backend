@@ -154,6 +154,7 @@ def _normalize_role(role_name):
         'jointcommissioner': 'deputy_commissioner',
         'commissioner_excise': 'commissioner',
         'commissionerexcise': 'commissioner',
+        'distributor': 'licensee',
     }
     return aliases.get(normalized, normalized)
 
