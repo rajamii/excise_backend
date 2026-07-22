@@ -58,6 +58,15 @@ class CompanyRegistrationSerializer(serializers.ModelSerializer):
     # dashboard renewal-warning card uses the correct (post-renewal) expiry date.
     valid_up_to = serializers.SerializerMethodField()
     license_id = serializers.SerializerMethodField()
+    applicant_name = serializers.SerializerMethodField()
+
+    def get_applicant_name(self, obj):
+        if obj.applicant:
+            first = getattr(obj.applicant, 'first_name', '')
+            last = getattr(obj.applicant, 'last_name', '')
+            full = f"{first} {last}".strip()
+            return full if full else obj.applicant.username
+        return ""
 
     def _get_license(self, obj):
         try:

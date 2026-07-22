@@ -270,6 +270,102 @@ def _create_application(request) -> Response:
             remarks='Company collaboration application submitted',
         )
 
+        # ── Auto-create Company Registration ─────────────────────────────
+        try:
+            from models.transactional.company_registration.models import CompanyRegistration as RegCompany
+            from auth.workflow.models import StagePermission as RegStagePermission
+            
+            reg_workflow = Workflow.objects.get(name="Company Registration")
+            reg_initial_stage = reg_workflow.stages.get(is_initial=True)
+            
+            reg_fin_year = RegCompany.generate_fin_year()
+            reg_prefix = f"COMP/{reg_fin_year}"
+            reg_last_app = RegCompany.objects.filter(
+                application_id__startswith=reg_prefix
+            ).select_for_update().order_by('-application_id').first()
+
+            reg_last_number = int(reg_last_app.application_id.split('/')[-1]) if reg_last_app else 0
+            reg_new_number = str(reg_last_number + 1).zfill(4)
+            reg_new_application_id = f"{reg_prefix}/{reg_new_number}"
+
+            # Extract fields safely
+            members_data = []
+            import json
+            raw_members = request.data.get('members')
+            if raw_members:
+                try:
+                    members_data = json.loads(raw_members) if isinstance(raw_members, str) else raw_members
+                except Exception:
+                    pass
+            
+            member_name = ""
+            member_designation = ""
+            member_mobile = 0
+            member_email = ""
+            member_address = ""
+            if members_data and len(members_data) > 0:
+                first_m = members_data[0]
+                member_name = first_m.get('memberName') or first_m.get('member_name') or ""
+                member_designation = first_m.get('memberDesignation') or first_m.get('member_designation') or ""
+                member_mobile = first_m.get('memberMobileNumber') or first_m.get('member_mobile_number') or 0
+                member_email = first_m.get('memberEmailId') or first_m.get('member_email_id') or ""
+                member_address = first_m.get('memberAddress') or first_m.get('member_address') or ""
+
+            pin_code = 0
+            try: pin_code = int(request.data.get('pinCode') or request.data.get('pin_code') or 0)
+            except Exception: pass
+            
+            mobile = 0
+            try: mobile = int(payload.get('brand_owner_mobile') or 0)
+            except Exception: pass
+
+            try: member_mobile = int(member_mobile or 0)
+            except Exception: pass
+
+            # Files copy
+            undertaking_file = request.FILES.get('undertaking')
+            excise_license_file = request.FILES.get('excise_license')
+            deed_of_partnership_file = request.FILES.get('deed_of_partnership')
+            memorandum_of_association_file = request.FILES.get('memorandum_of_association')
+
+            # Create RegCompany
+            reg_app = RegCompany.objects.create(
+                application_id=reg_new_application_id,
+                workflow=reg_workflow,
+                current_stage=reg_initial_stage,
+                applicant=request.user,
+                brand_type=request.data.get('brandType') or request.data.get('brand_type') or 'Bottled in Sikkim (Collaboration)',
+                license=request.data.get('license') or request.data.get('bottlerId') or '',
+                company_name=payload.get('brand_owner_name') or '',
+                country=request.data.get('country') or 'India',
+                state=request.data.get('state') or 'Sikkim',
+                factory_address=payload.get('brand_owner_factory_address') or '',
+                pin_code=pin_code,
+                company_mobile_number=mobile,
+                company_email_id=payload.get('brand_owner_email') or '',
+                member_name=member_name,
+                member_designation=member_designation,
+                member_mobile_number=member_mobile,
+                member_email_id=member_email,
+                member_address=member_address,
+                members=members_data,
+                undertaking=undertaking_file,
+                excise_license=excise_license_file,
+                deed_of_partnership=deed_of_partnership_file,
+                memorandum_of_association=memorandum_of_association_file
+            )
+
+            # Submit RegCompany application in workflow
+            WorkflowService.submit_application(
+                application=reg_app,
+                user=request.user,
+                remarks="Application submitted via Company Collaboration",
+            )
+            
+        except Exception as e:
+            print("Error creating auto company registration:", e)
+            raise e
+
     fresh = CompanyCollaboration.objects.get(pk=application.pk)
     return Response(CompanyCollaborationSerializer(fresh).data, status=status.HTTP_201_CREATED)
 
@@ -638,9 +734,16 @@ def pay_collaboration_fee(request, application_id):
         from django.apps import apps
         FixedFee = apps.get_model('core', 'MasterFixedFee')
         fee_obj = FixedFee.objects.filter(fee_code='COMP_COLLAB_FEE', is_active=True).first()
-        amount = fee_obj.amount if fee_obj else Decimal('25000.00')
+        base_amount = fee_obj.amount if fee_obj else Decimal('25000.00')
     except Exception:
-        amount = Decimal('25000.00')
+        base_amount = Decimal('25000.00')
+
+    if getattr(application, 'is_renewal', False):
+        amount = base_amount
+        remarks = f'Company Collaboration fee paid for {application.application_id}'
+    else:
+        amount = base_amount + Decimal('25000.00')
+        remarks = f'Company Collaboration fee (25000) & Company Registration fee (25000) paid for {application.application_id}'
 
     # Debit from license_fee wallet
     wallet_licensee_id = str(getattr(request.user, 'username', '') or '').strip()
@@ -655,7 +758,7 @@ def pay_collaboration_fee(request, application_id):
             head_of_account=license_fee_hoa,
             amount=amount,
             user_id=wallet_licensee_id,
-            remarks=f'Company Collaboration fee paid for {application.application_id}',
+            remarks=remarks,
             reference_no=application.application_id,
         )
     except Exception as exc:
