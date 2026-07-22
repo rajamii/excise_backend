@@ -8,6 +8,7 @@ def seed_distributor_role(apps, schema_editor):
         return
 
     Role.objects.create(
+        id=16,
         name='Distributor',
         can_add=[],
         can_update=[],
