@@ -371,71 +371,41 @@ def wallet_recharge_credit(request, licensee_id):
                 username = str(getattr(request, "user", "") or "").strip()
                 user = CustomUser.objects.filter(username__iexact=username).first()
 
-            # First, check if user has a pending CompanyCollaboration application awaiting security fee
-            pending_collab = None
-            collab_qs = CompanyCollaboration.objects.filter(is_security_fee_paid=False)
-            if user and user.is_authenticated:
-                user_name = str(getattr(user, "username", "") or "").strip()
-                pending_collab = collab_qs.filter(
-                    Q(applicant=user) |
-                    Q(applicant__username__iexact=user_name) |
-                    Q(license_number__iexact=user_name) |
-                    Q(license_number__iexact=str(licensee_id))
-                ).first()
+            candidates = _wallet_candidates_for_request(request, licensee_id)
+            lic = License.objects.filter(license_id__in=candidates).order_by("-issue_date", "-license_id").first()
+            application = None
+            if lic and lic.source_type == "new_license_application":
+                application = NewLicenseApplication.objects.filter(application_id=lic.source_object_id).first()
 
-            if not pending_collab and licensee_id:
-                pending_collab = collab_qs.filter(
-                    Q(applicant__username__iexact=str(licensee_id)) |
-                    Q(license_number__iexact=str(licensee_id))
-                ).first()
+            # Fallback logic for NewLicenseApplication
+            if not application or getattr(application, "is_approved", False) or getattr(application, "is_security_fee_paid", False):
+                if not user and lic:
+                    user = getattr(lic, "applicant", None)
 
-            if pending_collab:
-                pending_collab.is_security_fee_paid = True
-                if pending_collab.is_paid:
-                    stage = pending_collab.workflow.stages.filter(name='final_commissioner_review').first()
-                    if stage:
-                        pending_collab.current_stage = stage
-                pending_collab.save()
+                if user and user.is_authenticated:
+                    pending_app = NewLicenseApplication.objects.filter(
+                        applicant=user,
+                        is_approved=False,
+                        is_security_fee_paid=False
+                    ).filter(
+                        Q(current_stage__name__icontains="payment") |
+                        Q(current_stage__name__icontains="awaiting")
+                    ).first()
 
-                if wallet_txn:
-                    wallet_txn.remarks = f"Company Collaboration security deposit paid for {pending_collab.application_id}"
-                    wallet_txn.save(update_fields=["remarks"])
-            else:
-                candidates = _wallet_candidates_for_request(request, licensee_id)
-                lic = License.objects.filter(license_id__in=candidates).order_by("-issue_date", "-license_id").first()
-                application = None
-                if lic and lic.source_type == "new_license_application":
-                    application = NewLicenseApplication.objects.filter(application_id=lic.source_object_id).first()
-
-                # Fallback logic for NewLicenseApplication
-                if not application or getattr(application, "is_approved", False) or getattr(application, "is_security_fee_paid", False):
-                    if not user and lic:
-                        user = getattr(lic, "applicant", None)
-
-                    if user and user.is_authenticated:
+                    if not pending_app:
                         pending_app = NewLicenseApplication.objects.filter(
                             applicant=user,
                             is_approved=False,
                             is_security_fee_paid=False
-                        ).filter(
-                            Q(current_stage__name__icontains="payment") |
-                            Q(current_stage__name__icontains="awaiting")
                         ).first()
 
-                        if not pending_app:
-                            pending_app = NewLicenseApplication.objects.filter(
-                                applicant=user,
-                                is_approved=False,
-                                is_security_fee_paid=False
-                            ).first()
+                    if pending_app:
+                        application = pending_app
 
-                        if pending_app:
-                            application = pending_app
-
-                if application and not application.is_security_fee_paid:
-                    application.is_security_fee_paid = True
-                    application.save(update_fields=["is_security_fee_paid"])
-                    sync_new_license_payment_status(application)
+            if application and not application.is_security_fee_paid:
+                application.is_security_fee_paid = True
+                application.save(update_fields=["is_security_fee_paid"])
+                sync_new_license_payment_status(application)
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)

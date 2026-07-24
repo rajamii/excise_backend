@@ -191,7 +191,7 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
 
     def get_is_security_fee_paid(self, obj):
         src = getattr(obj, "source_application", None)
-        if src is None or obj.source_type == "company_registration":
+        if src is None or obj.source_type in ["company_registration", "company_collaboration"]:
             return True
         return bool(getattr(src, "is_security_fee_paid", False))
 

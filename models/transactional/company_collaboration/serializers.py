@@ -13,7 +13,6 @@ class CompanyCollaborationSerializer(serializers.ModelSerializer):
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
     is_approved        = serializers.BooleanField(read_only=True)
     is_license_fee_paid = serializers.BooleanField(read_only=True)
-    is_security_fee_paid = serializers.BooleanField(read_only=True)
     is_renewal          = serializers.BooleanField(read_only=True)
     is_paid             = serializers.BooleanField(read_only=True)
     applicant          = serializers.PrimaryKeyRelatedField(read_only=True)
@@ -36,7 +35,6 @@ class CompanyCollaborationSerializer(serializers.ModelSerializer):
             'current_stage_name',
             'is_approved',
             'is_license_fee_paid',
-            'is_security_fee_paid',
             'is_renewal',
             'is_paid',
             'applicant',
@@ -77,7 +75,6 @@ class CompanyCollaborationSerializer(serializers.ModelSerializer):
             'current_stage_name',
             'is_approved',
             'is_license_fee_paid',
-            'is_security_fee_paid',
             'is_renewal',
             'is_paid',
             'applicant',

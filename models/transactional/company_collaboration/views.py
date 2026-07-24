@@ -768,8 +768,6 @@ def pay_collaboration_fee(request, application_id):
     try:
         with transaction.atomic():
             application.is_license_fee_paid = True
-            if application.is_renewal:
-                application.is_security_fee_paid = True
 
             if application.is_paid:
                 target_stage = _get_stage(application.workflow, STAGE_FINAL_COMMISSIONER_REVIEW)
@@ -782,100 +780,6 @@ def pay_collaboration_fee(request, application_id):
                 user=request.user,
                 action='PAY',
                 remarks=f'Collaboration fee paid via license wallet. Trans ID: {txn_id}',
-            )
-    except ValueError as exc:
-        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-    except Exception as exc:
-        return Response(
-            {'detail': f'Payment succeeded but workflow update failed: {str(exc)}'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
-
-    fresh = CompanyCollaboration.objects.get(pk=application.pk)
-    return Response({
-        'success': True,
-        'transaction_id': txn_id,
-        'application': CompanyCollaborationSerializer(fresh).data,
-    })
-
-
-@api_view(['POST'])
-@permission_classes([HasCompanyCollaborationViewPermission, HasStagePermission])
-def pay_collaboration_security_fee(request, application_id):
-    """
-    Wallet debit for Company Collaboration security deposit fee (COMP_COLLAB_SECURITY_FEE).
-    When both license fee and security fee are paid, advance workflow from awaiting_payment → final_commissioner_review.
-    """
-    import secrets
-    from decimal import Decimal
-    from models.transactional.wallet.wallet_service import debit_wallet_balance
-    from models.transactional.wallet.wallet_initializer import _resolve_hoa_code
-
-    application = get_object_or_404(CompanyCollaboration, application_id=application_id)
-
-    # Verify user is licensee and owns this application
-    role = _normalize_role(request.user.role.name if request.user.role else None)
-    if role not in ('licensee', 'site_admin'):
-        return Response(
-            {'detail': 'Only licensees can pay the security deposit fee.'},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-    is_owner = (
-        application.applicant == request.user or
-        str(getattr(request.user, 'username', '')).strip().lower() == str(application.license_number).strip().lower() or
-        str(getattr(request.user, 'username', '')).strip().lower() == str(getattr(application.applicant, 'username', '')).strip().lower()
-    )
-    if role == 'licensee' and not is_owner:
-        return Response({'detail': 'Not found or not authorized.'}, status=status.HTTP_404_NOT_FOUND)
-
-    if application.is_security_fee_paid:
-        return Response({'detail': 'Security deposit fee has already been paid for this application.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # Fetch fee amount from masters_fixedfee
-    try:
-        from django.apps import apps
-        FixedFee = apps.get_model('core', 'MasterFixedFee')
-        fee_obj = FixedFee.objects.filter(fee_code='COMP_COLLAB_SECURITY_FEE', is_active=True).first()
-        if not fee_obj:
-            fee_obj = FixedFee.objects.filter(fee_code='COMP_COLLAB_FEE', is_active=True).first()
-        amount = fee_obj.amount if fee_obj else Decimal('25000.00')
-    except Exception:
-        amount = Decimal('25000.00')
-
-    # Debit from security_deposit wallet
-    wallet_licensee_id = str(getattr(request.user, 'username', '') or '').strip()
-    security_deposit_hoa = _resolve_hoa_code(module_type='other', wallet_type='security_deposit')
-    txn_id = secrets.token_hex(12).upper()
-
-    try:
-        debit_wallet_balance(
-            transaction_id=txn_id,
-            licensee_id=wallet_licensee_id,
-            wallet_type='security_deposit',
-            head_of_account=security_deposit_hoa,
-            amount=amount,
-            user_id=wallet_licensee_id,
-            remarks=f'Company Collaboration security deposit paid for {application.application_id}',
-            reference_no=application.application_id,
-        )
-    except Exception as exc:
-        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        with transaction.atomic():
-            application.is_security_fee_paid = True
-
-            if application.is_paid:
-                target_stage = _get_stage(application.workflow, STAGE_FINAL_COMMISSIONER_REVIEW)
-                application.current_stage = target_stage
-
-            application.save()
-
-            WorkflowService.record_transaction(
-                application=application,
-                user=request.user,
-                action='PAY',
-                remarks=f'Collaboration security deposit paid via security wallet. Trans ID: {txn_id}',
             )
     except ValueError as exc:
         return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)

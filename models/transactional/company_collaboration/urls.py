@@ -36,7 +36,6 @@ urlpatterns = [
 
     # Wallet payment
     path('pay-fee/<everything:application_id>/', views.pay_collaboration_fee, name='pay-fee'),
-    path('pay-security-fee/<everything:application_id>/', views.pay_collaboration_security_fee, name='pay-security-fee'),
 
     # Final license / certificate (Form D-11)
     path('final-license/<everything:application_id>/', views.final_license_detail, name='final-license-detail'),
