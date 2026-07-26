@@ -10,10 +10,10 @@ def seed_distributor_role(apps, schema_editor):
     Role.objects.create(
         id=16,
         name='Distributor',
-        can_add=[],
+        can_add=['company_registration', 'company_collaboration'],
         can_update=[],
         can_delete=[],
-        can_view=[],
+        can_view=['license_application', 'salesman_barman_registration', 'company_registration', 'masters', 'company_collaboration'],
         role_precedence=2,
     )
 
