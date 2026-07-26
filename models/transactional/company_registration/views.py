@@ -240,13 +240,6 @@ def application_group(request):
         payment_stages = set(stage_sets['payment'])
         pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
 
-        # If all_approved parameter is passed, list all approved companies in the system
-        all_approved = request.query_params.get('all_approved', '').lower() == 'true'
-        if all_approved:
-            approved_qs = CompanyRegistration.objects.all()
-        else:
-            approved_qs = base_qs
-
         return Response({
             "applied": CompanyRegistrationSerializer(
                 base_qs.filter(current_stage__name__in=applied_stages), many=True
@@ -258,7 +251,7 @@ def application_group(request):
                 base_qs.filter(current_stage__name__in=objection_stages), many=True
             ).data,
             "approved": CompanyRegistrationSerializer(
-                approved_qs.filter(current_stage__name__in=approved_stages), many=True
+                base_qs.filter(current_stage__name__in=approved_stages), many=True
             ).data,
             "rejected": CompanyRegistrationSerializer(
                 base_qs.filter(current_stage__name__in=rejected_stages), many=True
