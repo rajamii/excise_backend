@@ -154,6 +154,7 @@ def _normalize_role(role_name):
         'jointcommissioner': 'deputy_commissioner',
         'commissioner_excise': 'commissioner',
         'commissionerexcise': 'commissioner',
+        'distributor': 'licensee',
     }
     return aliases.get(normalized, normalized)
 
@@ -269,6 +270,102 @@ def _create_application(request) -> Response:
             user=request.user,
             remarks='Company collaboration application submitted',
         )
+
+        # ── Auto-create Company Registration ─────────────────────────────
+        try:
+            from models.transactional.company_registration.models import CompanyRegistration as RegCompany
+            from auth.workflow.models import StagePermission as RegStagePermission
+            
+            reg_workflow = Workflow.objects.get(name="Company Registration")
+            reg_initial_stage = reg_workflow.stages.get(is_initial=True)
+            
+            reg_fin_year = RegCompany.generate_fin_year()
+            reg_prefix = f"COMP/{reg_fin_year}"
+            reg_last_app = RegCompany.objects.filter(
+                application_id__startswith=reg_prefix
+            ).select_for_update().order_by('-application_id').first()
+
+            reg_last_number = int(reg_last_app.application_id.split('/')[-1]) if reg_last_app else 0
+            reg_new_number = str(reg_last_number + 1).zfill(4)
+            reg_new_application_id = f"{reg_prefix}/{reg_new_number}"
+
+            # Extract fields safely
+            members_data = []
+            import json
+            raw_members = request.data.get('members')
+            if raw_members:
+                try:
+                    members_data = json.loads(raw_members) if isinstance(raw_members, str) else raw_members
+                except Exception:
+                    pass
+            
+            member_name = ""
+            member_designation = ""
+            member_mobile = 0
+            member_email = ""
+            member_address = ""
+            if members_data and len(members_data) > 0:
+                first_m = members_data[0]
+                member_name = first_m.get('memberName') or first_m.get('member_name') or ""
+                member_designation = first_m.get('memberDesignation') or first_m.get('member_designation') or ""
+                member_mobile = first_m.get('memberMobileNumber') or first_m.get('member_mobile_number') or 0
+                member_email = first_m.get('memberEmailId') or first_m.get('member_email_id') or ""
+                member_address = first_m.get('memberAddress') or first_m.get('member_address') or ""
+
+            pin_code = 0
+            try: pin_code = int(request.data.get('pinCode') or request.data.get('pin_code') or 0)
+            except Exception: pass
+            
+            mobile = 0
+            try: mobile = int(payload.get('brand_owner_mobile') or 0)
+            except Exception: pass
+
+            try: member_mobile = int(member_mobile or 0)
+            except Exception: pass
+
+            # Files copy
+            undertaking_file = request.FILES.get('undertaking')
+            excise_license_file = request.FILES.get('excise_license')
+            deed_of_partnership_file = request.FILES.get('deed_of_partnership')
+            memorandum_of_association_file = request.FILES.get('memorandum_of_association')
+
+            # Create RegCompany
+            reg_app = RegCompany.objects.create(
+                application_id=reg_new_application_id,
+                workflow=reg_workflow,
+                current_stage=reg_initial_stage,
+                applicant=request.user,
+                brand_type=request.data.get('brandType') or request.data.get('brand_type') or 'Bottled in Sikkim (Collaboration)',
+                license=request.data.get('license') or request.data.get('bottlerId') or '',
+                company_name=payload.get('brand_owner_name') or '',
+                country=request.data.get('country') or 'India',
+                state=request.data.get('state') or 'Sikkim',
+                factory_address=payload.get('brand_owner_factory_address') or '',
+                pin_code=pin_code,
+                company_mobile_number=mobile,
+                company_email_id=payload.get('brand_owner_email') or '',
+                member_name=member_name,
+                member_designation=member_designation,
+                member_mobile_number=member_mobile,
+                member_email_id=member_email,
+                member_address=member_address,
+                members=members_data,
+                undertaking=undertaking_file,
+                excise_license=excise_license_file,
+                deed_of_partnership=deed_of_partnership_file,
+                memorandum_of_association=memorandum_of_association_file
+            )
+
+            # Submit RegCompany application in workflow
+            WorkflowService.submit_application(
+                application=reg_app,
+                user=request.user,
+                remarks="Application submitted via Company Collaboration",
+            )
+            
+        except Exception as e:
+            print("Error creating auto company registration:", e)
+            raise e
 
     fresh = CompanyCollaboration.objects.get(pk=application.pk)
     return Response(CompanyCollaborationSerializer(fresh).data, status=status.HTTP_201_CREATED)
@@ -638,9 +735,16 @@ def pay_collaboration_fee(request, application_id):
         from django.apps import apps
         FixedFee = apps.get_model('core', 'MasterFixedFee')
         fee_obj = FixedFee.objects.filter(fee_code='COMP_COLLAB_FEE', is_active=True).first()
-        amount = fee_obj.amount if fee_obj else Decimal('25000.00')
+        base_amount = fee_obj.amount if fee_obj else Decimal('25000.00')
     except Exception:
-        amount = Decimal('25000.00')
+        base_amount = Decimal('25000.00')
+
+    if getattr(application, 'is_renewal', False):
+        amount = base_amount
+        remarks = f'Company Collaboration fee paid for {application.application_id}'
+    else:
+        amount = base_amount + Decimal('25000.00')
+        remarks = f'Company Collaboration fee (25000) & Company Registration fee (25000) paid for {application.application_id}'
 
     # Debit from license_fee wallet
     wallet_licensee_id = str(getattr(request.user, 'username', '') or '').strip()
@@ -655,7 +759,7 @@ def pay_collaboration_fee(request, application_id):
             head_of_account=license_fee_hoa,
             amount=amount,
             user_id=wallet_licensee_id,
-            remarks=f'Company Collaboration fee paid for {application.application_id}',
+            remarks=remarks,
             reference_no=application.application_id,
         )
     except Exception as exc:
@@ -664,8 +768,6 @@ def pay_collaboration_fee(request, application_id):
     try:
         with transaction.atomic():
             application.is_license_fee_paid = True
-            if application.is_renewal:
-                application.is_security_fee_paid = True
 
             if application.is_paid:
                 target_stage = _get_stage(application.workflow, STAGE_FINAL_COMMISSIONER_REVIEW)
@@ -678,100 +780,6 @@ def pay_collaboration_fee(request, application_id):
                 user=request.user,
                 action='PAY',
                 remarks=f'Collaboration fee paid via license wallet. Trans ID: {txn_id}',
-            )
-    except ValueError as exc:
-        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-    except Exception as exc:
-        return Response(
-            {'detail': f'Payment succeeded but workflow update failed: {str(exc)}'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
-
-    fresh = CompanyCollaboration.objects.get(pk=application.pk)
-    return Response({
-        'success': True,
-        'transaction_id': txn_id,
-        'application': CompanyCollaborationSerializer(fresh).data,
-    })
-
-
-@api_view(['POST'])
-@permission_classes([HasCompanyCollaborationViewPermission, HasStagePermission])
-def pay_collaboration_security_fee(request, application_id):
-    """
-    Wallet debit for Company Collaboration security deposit fee (COMP_COLLAB_SECURITY_FEE).
-    When both license fee and security fee are paid, advance workflow from awaiting_payment → final_commissioner_review.
-    """
-    import secrets
-    from decimal import Decimal
-    from models.transactional.wallet.wallet_service import debit_wallet_balance
-    from models.transactional.wallet.wallet_initializer import _resolve_hoa_code
-
-    application = get_object_or_404(CompanyCollaboration, application_id=application_id)
-
-    # Verify user is licensee and owns this application
-    role = _normalize_role(request.user.role.name if request.user.role else None)
-    if role not in ('licensee', 'site_admin'):
-        return Response(
-            {'detail': 'Only licensees can pay the security deposit fee.'},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-    is_owner = (
-        application.applicant == request.user or
-        str(getattr(request.user, 'username', '')).strip().lower() == str(application.license_number).strip().lower() or
-        str(getattr(request.user, 'username', '')).strip().lower() == str(getattr(application.applicant, 'username', '')).strip().lower()
-    )
-    if role == 'licensee' and not is_owner:
-        return Response({'detail': 'Not found or not authorized.'}, status=status.HTTP_404_NOT_FOUND)
-
-    if application.is_security_fee_paid:
-        return Response({'detail': 'Security deposit fee has already been paid for this application.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # Fetch fee amount from masters_fixedfee
-    try:
-        from django.apps import apps
-        FixedFee = apps.get_model('core', 'MasterFixedFee')
-        fee_obj = FixedFee.objects.filter(fee_code='COMP_COLLAB_SECURITY_FEE', is_active=True).first()
-        if not fee_obj:
-            fee_obj = FixedFee.objects.filter(fee_code='COMP_COLLAB_FEE', is_active=True).first()
-        amount = fee_obj.amount if fee_obj else Decimal('25000.00')
-    except Exception:
-        amount = Decimal('25000.00')
-
-    # Debit from security_deposit wallet
-    wallet_licensee_id = str(getattr(request.user, 'username', '') or '').strip()
-    security_deposit_hoa = _resolve_hoa_code(module_type='other', wallet_type='security_deposit')
-    txn_id = secrets.token_hex(12).upper()
-
-    try:
-        debit_wallet_balance(
-            transaction_id=txn_id,
-            licensee_id=wallet_licensee_id,
-            wallet_type='security_deposit',
-            head_of_account=security_deposit_hoa,
-            amount=amount,
-            user_id=wallet_licensee_id,
-            remarks=f'Company Collaboration security deposit paid for {application.application_id}',
-            reference_no=application.application_id,
-        )
-    except Exception as exc:
-        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        with transaction.atomic():
-            application.is_security_fee_paid = True
-
-            if application.is_paid:
-                target_stage = _get_stage(application.workflow, STAGE_FINAL_COMMISSIONER_REVIEW)
-                application.current_stage = target_stage
-
-            application.save()
-
-            WorkflowService.record_transaction(
-                application=application,
-                user=request.user,
-                action='PAY',
-                remarks=f'Collaboration security deposit paid via security wallet. Trans ID: {txn_id}',
             )
     except ValueError as exc:
         return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)

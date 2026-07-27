@@ -8,6 +8,7 @@ urlpatterns = [
     path('company-collaboration/', include(('models.transactional.company_collaboration.urls', 'company_collaboration'), namespace='company_collaboration')),
     path('license_renewal_application/', include(('models.transactional.license_renewal_application.urls', 'license_renewal_application'), namespace='license_renewal_application')),
     path('special-permit/', include(('models.transactional.special_permit.urls', 'special_permit'), namespace='special_permit')),
+    path('distributor-permit/', include(('models.transactional.distributor_permit.urls', 'distributor_permit'), namespace='distributor_permit')),
     path('salesman_barman/', include(('models.transactional.salesman_barman.urls', 'salesman_barman'), namespace='salesman_barman')),
     path('payment/', include(('models.transactional.wallet.urls', 'payment'), namespace='payment')),
     path('payment-gateway/', include(('models.transactional.payment_gateway.urls', 'payment_gateway'), namespace='payment_gateway')),

@@ -86,6 +86,7 @@ INSTALLED_APPS = [
     'models.transactional.company_collaboration',
     'models.transactional.license_renewal_application',
     'models.transactional.special_permit',
+    'models.transactional.distributor_permit',
     'models.transactional.site_enquiry',
     'models.transactional.new_license_application',
     'models.transactional.label_registration',

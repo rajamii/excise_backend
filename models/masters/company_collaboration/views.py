@@ -306,7 +306,7 @@ def active_fee(request):
     return Response({
         'applicationFee': '0.00',
         'collaborationFee': amount_str,
-        'securityDeposit': amount_str,
+        'securityDeposit': '0.00',
     })
 
 
