@@ -23,6 +23,8 @@ urlpatterns = [
     path('apply/', views.apply_label_registration, name='apply'),
     path('list/', views.list_label_registrations, name='list'),
     path('detail/<everything:application_id>/', views.label_registration_detail, name='detail'),
+    path('dashboard-counts/', views.dashboard_counts, name='dashboard-counts'),
+    path('list-by-status/', views.application_group, name='applications-by-status'),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

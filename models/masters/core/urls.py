@@ -5,11 +5,12 @@ app_name = 'core_masters'
 
 # License Category URLs
 license_category_patterns = [
-    path('',                 views.license_category_list,   name='license-category-list'),
-    path('create/',          views.license_category_create, name='license-category-create'),
-    path('<int:pk>/',        views.license_category_detail, name='license-category-detail'),
-    path('<int:pk>/update/', views.license_category_update, name='license-category-update'),
-    path('<int:pk>/delete/', views.license_category_delete, name='license-category-delete'),
+    path('',                       views.license_category_list,          name='license-category-list'),
+    path('create/',                views.license_category_create,        name='license-category-create'),
+    path('<int:pk>/',              views.license_category_detail,        name='license-category-detail'),
+    path('<int:pk>/update/',       views.license_category_update,        name='license-category-update'),
+    path('<int:pk>/delete/',       views.license_category_delete,        name='license-category-delete'),
+    path('<int:pk>/toggle-active/', views.license_category_toggle_active, name='license-category-toggle-active'),
 ]
 
 # License Type URLs
@@ -59,11 +60,12 @@ policestation_patterns = [
 
 # License Subcategory URLs
 license_subcategory_patterns = [
-    path('',                 views.license_subcategory_list,   name='license-subcategory-list'),
-    path('create/',          views.license_subcategory_create, name='license-subcategory-create'),
-    path('<int:pk>/',        views.license_subcategory_detail, name='license-subcategory-detail'),
-    path('<int:pk>/update/', views.license_subcategory_update, name='license-subcategory-update'),
-    path('<int:pk>/delete/', views.license_subcategory_delete, name='license-subcategory-delete'),
+    path('',                       views.license_subcategory_list,          name='license-subcategory-list'),
+    path('create/',                views.license_subcategory_create,        name='license-subcategory-create'),
+    path('<int:pk>/',              views.license_subcategory_detail,        name='license-subcategory-detail'),
+    path('<int:pk>/update/',       views.license_subcategory_update,        name='license-subcategory-update'),
+    path('<int:pk>/delete/',       views.license_subcategory_delete,        name='license-subcategory-delete'),
+    path('<int:pk>/toggle-active/', views.license_subcategory_toggle_active, name='license-subcategory-toggle-active'),
 ]
 
 # License Title URLs
@@ -133,10 +135,53 @@ ward_patterns = [
     path('<int:pk>/delete/', views.ward_delete, name='ward-delete'),
 ]
 
+# Block URLs
+block_patterns = [
+    path('',                 views.block_list,   name='block-list'),
+    path('create/',          views.block_create, name='block-create'),
+    path('<int:pk>/',        views.block_detail, name='block-detail'),
+    path('<int:pk>/update/', views.block_update, name='block-update'),
+    path('<int:pk>/delete/', views.block_delete, name='block-delete'),
+]
+
+# Rural Ward URLs
+rural_ward_patterns = [
+    path('',                 views.rural_ward_list,   name='rural-ward-list'),
+    path('create/',          views.rural_ward_create, name='rural-ward-create'),
+    path('<int:pk>/',        views.rural_ward_detail, name='rural-ward-detail'),
+    path('<int:pk>/update/', views.rural_ward_update, name='rural-ward-update'),
+    path('<int:pk>/delete/', views.rural_ward_delete, name='rural-ward-delete'),
+]
+
 # Renewal Application Config URLs
 renewal_application_config_patterns = [
     path('', views.renewal_application_config_detail, name='renewal-application-config-detail'),
     path('update/', views.renewal_application_config_update, name='renewal-application-config-update'),
+]
+
+# Additional Charge Config URLs
+additional_charge_config_patterns = [
+    path('',                 views.additional_charge_config_list,   name='additional-charge-config-list'),
+    path('create/',          views.additional_charge_config_create, name='additional-charge-config-create'),
+    path('<int:pk>/',        views.additional_charge_config_detail, name='additional-charge-config-detail'),
+    path('<int:pk>/update/', views.additional_charge_config_update, name='additional-charge-config-update'),
+    path('<int:pk>/delete/', views.additional_charge_config_delete, name='additional-charge-config-delete'),
+]
+
+# Fixed Fee URLs
+fixed_fee_patterns = [
+    path('',                 views.fixed_fee_list,   name='fixed-fee-list'),
+    path('<str:pk>/',        views.fixed_fee_detail, name='fixed-fee-detail'),
+    path('<str:pk>/update/', views.fixed_fee_update, name='fixed-fee-update'),
+]
+
+# Whats Current URLs
+whatscurrent_patterns = [
+    path('',                 views.whatscurrent_list,   name='whatscurrent-list'),
+    path('create/',          views.whatscurrent_create, name='whatscurrent-create'),
+    path('<int:pk>/',        views.whatscurrent_detail, name='whatscurrent-detail'),
+    path('<int:pk>/update/', views.whatscurrent_update, name='whatscurrent-update'),
+    path('<int:pk>/delete/', views.whatscurrent_delete, name='whatscurrent-delete'),
 ]
 
 urlpatterns = [
@@ -156,5 +201,12 @@ urlpatterns = [
     path('location-categories/',    include(locationcategory_patterns)),
     path('location-subcategories/', include(locationsubcategory_patterns)),
     path('wards/',                  include(ward_patterns)),
+    path('blocks/',                 include(block_patterns)),
+    path('rural-wards/',            include(rural_ward_patterns)),
     path('renewal-application-config/', include(renewal_application_config_patterns)),
+    path('additional-charge-configs/', include(additional_charge_config_patterns)),
+    path('fixed-fees/',             include(fixed_fee_patterns)),
+    path('whats-current/',          include(whatscurrent_patterns)),
 ]
+
+

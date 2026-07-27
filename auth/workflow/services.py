@@ -8,7 +8,7 @@ from django.apps import apps
 import json
 from .models import (
     WorkflowTransition, StagePermission,
-    Transaction, Objection, Rejection
+    Transaction, Objection, Rejection, Revert
 )
 
 # UI Configuration for Workflow Actions
@@ -150,10 +150,12 @@ SERIALIZER_MAPPING = {
     ('license_renewal_application', 'licenseapplication'): 'models.transactional.license_renewal_application.serializers.LicenseApplicationSerializer',
     ('new_license_application', 'newlicenseapplication'): 'models.transactional.new_license_application.serializers.NewLicenseApplicationSerializer',
     ('salesman_barman', 'salesmanbarmanmodel'): 'models.transactional.salesman_barman.serializers.SalesmanBarmanSerializer',
+    ('label_registration', 'labelregistration'): 'models.transactional.label_registration.serializers.LabelRegistrationSerializer',
     ('company_registration', 'companymodel'): 'models.transactional.company_registration.serializers.CompanySerializer',
     ('ena_requisition_details', 'enarequisitiondetail'): 'models.transactional.supply_chain.ena_requisition_details.serializers.EnaRequisitionDetailSerializer',
     ('ena_revalidation_details', 'enarevalidationdetail'): 'models.transactional.supply_chain.ena_revalidation_details.serializers.EnaRevalidationDetailSerializer',
     ('ena_cancellation_details', 'enacancellationdetail'): 'models.transactional.supply_chain.ena_cancellation_details.serializers.EnaCancellationDetailSerializer',
+    ('special_permit', 'specialpermitapplication'): 'models.transactional.special_permit.serializers.SpecialPermitApplicationSerializer',
 }
 
 class WorkflowService:
@@ -176,8 +178,46 @@ class WorkflowService:
         """
         Best-effort: read a value from the application model using a canonicalized field name.
         Supports simple dotted paths for dict-like values (e.g. "address.line1").
+        Also supports double colon notation for index-based JSON array items (e.g. "members::0::email").
         """
         raw = str(field_name or '').strip()
+        if '::' in raw:
+            parts = raw.split('::')
+            key = parts[0]
+            try:
+                idx = int(parts[1])
+                val = getattr(application, key, None)
+                if isinstance(val, str):
+                    import json
+                    try:
+                        val = json.loads(val)
+                    except Exception:
+                        val = None
+                if isinstance(val, list) and idx < len(val):
+                    item = val[idx]
+                    if len(parts) >= 3 and isinstance(item, dict):
+                        subfield = parts[2]
+                        aliases = [subfield]
+                        if subfield == 'email':
+                            aliases += ['emailId', 'email_id', 'memberEmailId', 'member_email_id']
+                        elif subfield == 'name':
+                            aliases += ['memberName', 'member_name']
+                        elif subfield == 'designation':
+                            aliases += ['memberDesignation', 'member_designation']
+                        elif subfield == 'mobile':
+                            aliases += ['mobileNumber', 'memberMobileNumber', 'member_mobile_number']
+                        elif subfield == 'address':
+                            aliases += ['memberAddress', 'member_address']
+                        
+                        for a in aliases:
+                            if a in item:
+                                return WorkflowService._stringify_for_audit(item[a])
+                        return WorkflowService._stringify_for_audit(item.get(subfield))
+                    return WorkflowService._stringify_for_audit(item)
+            except Exception:
+                pass
+            return None
+
         canonical = WorkflowService._canonical_field_name(raw)
 
         # Some models use camelCase python attribute names with snake_case DB columns
@@ -245,6 +285,8 @@ class WorkflowService:
         raw = str(value or '').strip()
         if not raw:
             return ''
+        if '::' in raw:
+            return raw
         if '_' in raw:
             return raw.lower()
         return ''.join([f"_{ch.lower()}" if ch.isupper() else ch for ch in raw]).lstrip('_')
@@ -654,6 +696,10 @@ class WorkflowService:
 
         application.current_stage = target_stage
         update_fields = ['current_stage']
+        target_name = str(getattr(target_stage, "name", "") or "").strip().lower()
+        if hasattr(application, 'is_approved'):
+            application.is_approved = target_name == 'approved'
+            update_fields.append('is_approved')
         if is_new_license_application:
             for f in ("licensee_fee_id", "is_fee_calculated", "is_license_category_updated"):
                 if hasattr(application, f):
@@ -695,6 +741,18 @@ class WorkflowService:
             stage=target_stage,
             remarks=remarks or context.get("remarks", "")
         )
+
+        action = str((context or {}).get("action") or "").strip().upper()
+        is_reverted = (context or {}).get("is_reverted")
+        if action == "REVERT" or is_reverted:
+            Revert.objects.create(
+                content_type=ContentType.objects.get_for_model(application),
+                object_id=str(application.pk),
+                remarks=remarks or context.get("remarks", ""),
+                reverted_by=user,
+                reverted_to=forwarded_to,
+                stage=target_stage
+            )
 
     @staticmethod
     def get_application_by_id(application_id):
@@ -774,6 +832,77 @@ class WorkflowService:
         updated_fields = updated_fields or {}
         remarks = remarks or "Objections resolved and application returned to previous stage"
 
+        # Pre-process index-based array field updates (e.g. members::0::email)
+        array_updates = {}
+        for key in list(updated_fields.keys()):
+            val = updated_fields[key]
+            if '::' in key:
+                parts = key.split('::')
+                if len(parts) >= 3:
+                    arr_name, idx_str, subfield = parts[0], parts[1], parts[2]
+                    try:
+                        idx = int(idx_str)
+                        array_updates.setdefault(arr_name, {})
+                        array_updates[arr_name].setdefault(idx, {})
+                        array_updates[arr_name][idx][subfield] = val
+                    except ValueError:
+                        pass
+
+        for arr_name, idx_dict in array_updates.items():
+            arr_val = getattr(application, arr_name, None)
+            if isinstance(arr_val, str):
+                import json
+                try:
+                    arr_val = json.loads(arr_val)
+                except Exception:
+                    arr_val = []
+            if not isinstance(arr_val, list):
+                arr_val = []
+            
+            for idx, field_dict in idx_dict.items():
+                while len(arr_val) <= idx:
+                    arr_val.append({})
+                
+                item = arr_val[idx]
+                if not isinstance(item, dict):
+                    item = {}
+                    arr_val[idx] = item
+                
+                for subfield, val in field_dict.items():
+                    aliases = [subfield]
+                    if subfield == 'email':
+                        aliases += ['emailId', 'email_id', 'memberEmailId', 'member_email_id']
+                    elif subfield == 'name':
+                        aliases += ['memberName', 'member_name']
+                    elif subfield == 'designation':
+                        aliases += ['memberDesignation', 'member_designation']
+                    elif subfield == 'mobile':
+                        aliases += ['mobileNumber', 'memberMobileNumber', 'member_mobile_number']
+                    elif subfield == 'address':
+                        aliases += ['memberAddress', 'member_address']
+                    
+                    updated_any = False
+                    for alias in aliases:
+                        if alias in item:
+                            item[alias] = val
+                            updated_any = True
+                    if not updated_any:
+                        item[subfield] = val
+                    
+                    if idx == 0 and arr_name == 'members':
+                        if subfield == 'name':
+                            updated_fields['member_name'] = val
+                        elif subfield == 'designation':
+                            updated_fields['member_designation'] = val
+                        elif subfield == 'mobile':
+                            updated_fields['member_mobile_number'] = val
+                        elif subfield == 'email':
+                            updated_fields['member_email_id'] = val
+                        elif subfield == 'address':
+                            updated_fields['member_address'] = val
+            
+            updated_fields[arr_name] = arr_val
+
         # --- 1. Early exit if no unresolved objections ---
         unresolved_qs = application.objections.filter(is_resolved=False)
         if objection_ids:
@@ -851,6 +980,8 @@ class WorkflowService:
             serializer_field_names = set(getattr(AppSerializer(application), 'fields', {}).keys())
             serializer_payload = {}
             for canonical_name, meta in normalized_updated_fields.items():
+                if '::' in canonical_name:
+                    continue
                 provided_name = str((meta or {}).get('provided') or '').strip()
                 value = (meta or {}).get('value')
                 original_name = str(required_field_map.get(canonical_name) or '').strip()
@@ -906,6 +1037,32 @@ class WorkflowService:
         # --- 6. Determine the stage to return to ---
         # Goal: after licensee corrects objected fields, route back to the officer/admin stage
         # for verification, not to licensee-facing payment gates.
+        return_stage = None
+        if forward_to:
+            from auth.workflow.models import StagePermission
+            sp = StagePermission.objects.filter(
+                stage__workflow=application.workflow,
+                role=forward_to,
+                can_process=True
+            ).select_related('stage').first()
+            if sp:
+                return_stage = sp.stage
+
+        if return_stage:
+            application.current_stage = return_stage
+            application.save(update_fields=['current_stage'])
+
+            Transaction.objects.create(
+                content_type=ContentType.objects.get_for_model(application),
+                object_id=str(application.pk),
+                performed_by=user,
+                forwarded_by=getattr(user, "role", None),
+                forwarded_to=forward_to,
+                stage=return_stage,
+                remarks=remarks
+            )
+            return
+
         def _is_payment_stage(stage):
             name = str(getattr(stage, "name", "") or "").strip().lower()
             return name == "awaiting_payment" or ("payment" in name and "reject" not in name)
@@ -996,3 +1153,22 @@ class WorkflowService:
             stage=target_stage,
             remarks=remarks,
         )
+
+    @staticmethod
+    def record_transaction(application, user, action, remarks=None):
+        stage = application.current_stage
+        forwarded_to = None
+        perm = StagePermission.objects.filter(stage=stage, can_process=True).first()
+        if perm:
+            forwarded_to = perm.role
+
+        Transaction.objects.create(
+            content_type=ContentType.objects.get_for_model(application),
+            object_id=str(application.pk),
+            performed_by=user,
+            forwarded_by=getattr(user, "role", None),
+            forwarded_to=forwarded_to,
+            stage=stage,
+            remarks=remarks
+        )
+

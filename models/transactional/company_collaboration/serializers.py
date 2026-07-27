@@ -3,7 +3,6 @@ from rest_framework import serializers
 from auth.workflow.serializers import WorkflowObjectionSerializer, WorkflowTransactionSerializer
 
 from .models import CompanyCollaboration
-from utils.file_validation import validate_uploaded_file
 
 
 class CompanyCollaborationSerializer(serializers.ModelSerializer):
@@ -13,9 +12,14 @@ class CompanyCollaborationSerializer(serializers.ModelSerializer):
     current_stage      = serializers.PrimaryKeyRelatedField(read_only=True)
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
     is_approved        = serializers.BooleanField(read_only=True)
+    is_license_fee_paid = serializers.BooleanField(read_only=True)
+    is_renewal          = serializers.BooleanField(read_only=True)
+    is_paid             = serializers.BooleanField(read_only=True)
     applicant          = serializers.PrimaryKeyRelatedField(read_only=True)
     created_at         = serializers.DateTimeField(read_only=True)
     updated_at         = serializers.DateTimeField(read_only=True)
+    valid_up_to        = serializers.SerializerMethodField()
+    issued_license_id  = serializers.SerializerMethodField()
 
     # ── Nested audit trails (read-only) ──────────────────────────────────
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)
@@ -30,9 +34,14 @@ class CompanyCollaborationSerializer(serializers.ModelSerializer):
             'current_stage',
             'current_stage_name',
             'is_approved',
+            'is_license_fee_paid',
+            'is_renewal',
+            'is_paid',
             'applicant',
             'created_at',
             'updated_at',
+            'valid_up_to',
+            'issued_license_id',
             # year
             'financial_year',
             'application_year',
@@ -65,6 +74,9 @@ class CompanyCollaborationSerializer(serializers.ModelSerializer):
             'current_stage',
             'current_stage_name',
             'is_approved',
+            'is_license_fee_paid',
+            'is_renewal',
+            'is_paid',
             'applicant',
             'financial_year',
             'created_at',
@@ -97,13 +109,26 @@ class CompanyCollaborationSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('selected_brands must be a list.')
         return value
 
-    def validate_undertaking(self, value):
-        validate_uploaded_file(
-            value,
-            field_name='undertaking',
-            label='Undertaking',
-            allowed_extensions={'.pdf'},
-            allowed_content_types={'application/pdf'},
-            max_size_mb=10,
-        )
-        return value
+    def get_valid_up_to(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            ct = ContentType.objects.get_for_model(obj)
+            license_obj = License.objects.filter(source_content_type=ct, source_object_id=obj.pk).first()
+            if license_obj and license_obj.valid_up_to:
+                return license_obj.valid_up_to.isoformat()
+        except Exception:
+            pass
+        return None
+
+    def get_issued_license_id(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from models.masters.license.models import License
+            ct = ContentType.objects.get_for_model(obj)
+            license_obj = License.objects.filter(source_content_type=ct, source_object_id=obj.pk).first()
+            if license_obj:
+                return license_obj.license_id
+        except Exception:
+            pass
+        return None

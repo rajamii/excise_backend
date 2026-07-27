@@ -36,6 +36,11 @@ from .serializers.locationsubcategory_serializer import LocationSubcategorySeria
 from .serializers.ward_serializer import WardSerializer
 from .serializers.renewalapplicationconfig_serializer import RenewalApplicationConfigSerializer
 from .serializers.supplychaintimerconfig_serializer import SupplyChainTimerConfigSerializer
+from .serializers.additionalchargeconfig_serializer import AdditionalChargeConfigSerializer
+from .serializers.fixedfee_serializer import MasterFixedFeeSerializer
+from .serializers.whatscurrent_serializer import WhatsCurrentSerializer
+from .serializers.block_serializer import BlockSerializer
+from .serializers.rural_ward_serializer import RuralWardSerializer
 
 # NOTE: LicenseeProfile views have been moved to auth.user.views.
 # Endpoints are now served under /api/users/licensee-profiles/
@@ -128,6 +133,7 @@ def timer_config(request):
             'is_active': cfg.is_active,
             'delay_seconds': seconds,
             'delay_ms': seconds * 1000,
+            'validity_period_days': getattr(cfg, 'validity_period_days', None),
             'source': 'db',
         },
         status=status.HTTP_200_OK,
@@ -182,6 +188,16 @@ def license_category_delete(request, pk):
     category = get_object_or_404(masters_model.LicenseCategory, pk=pk)
     category.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PATCH'])
+def license_category_toggle_active(request, pk):
+    """Toggle is_active for a license category."""
+    category = get_object_or_404(masters_model.LicenseCategory, pk=pk)
+    category.is_active = not category.is_active
+    category.save(update_fields=['is_active'])
+    serializer = LicenseCategorySerializer(category)
+    return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 #################################################
@@ -530,6 +546,16 @@ def license_subcategory_delete(request, pk):
         {'message': f'License Subcategory "{subcategory.description}" deleted successfully.'},
         status=status.HTTP_200_OK
     )
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PATCH'])
+def license_subcategory_toggle_active(request, pk):
+    """Toggle is_active for a license subcategory."""
+    subcategory = get_object_or_404(masters_model.LicenseSubcategory, pk=pk)
+    subcategory.is_active = not subcategory.is_active
+    subcategory.save(update_fields=['is_active'])
+    serializer = LicenseSubcategorySerializer(subcategory)
+    return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 #################################################
@@ -953,11 +979,14 @@ def locationcategory_delete(request, pk):
 @permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
 def locationsubcategory_list(request):
-    """List all active location subcategories, optionally filtered by category."""
+    """List all active location subcategories, optionally filtered by category and subdivision."""
     queryset = masters_model.LocationSubcategory.objects.filter(is_active=True)
     category_id = request.query_params.get('category_id')
+    sub_division_id = request.query_params.get('sub_division_id')
     if category_id:
         queryset = queryset.filter(category_id=category_id)
+    if sub_division_id:
+        queryset = queryset.filter(sub_division_id=sub_division_id)
     serializer = LocationSubcategorySerializer(queryset, many=True, context={'request': request})
     return Response(serializer.data)
 
@@ -1011,11 +1040,14 @@ def locationsubcategory_delete(request, pk):
 @permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
 def ward_list(request):
-    """List all active wards, optionally filtered by location_code."""
+    """List all active wards, optionally filtered by location_code or subcategory_id."""
     queryset = masters_model.Ward.objects.filter(is_active=True)
     location_code = request.query_params.get('location_code')
     if location_code:
         queryset = queryset.filter(location_code=location_code)
+    subcategory_id = request.query_params.get('subcategory_id')
+    if subcategory_id:
+        queryset = queryset.filter(subcategory=subcategory_id)
     serializer = WardSerializer(queryset, many=True, context={'request': request})
     return Response(serializer.data)
 
@@ -1110,4 +1142,267 @@ def timer_config_update(request):
     serializer.is_valid(raise_exception=True)
     serializer.save()
     return Response(serializer.data)
+
+
+# Additional Charge Config Views
+
+@api_view(['GET'])
+@permission_classes([HasAppPermission('masters', 'view')])
+def additional_charge_config_list(request):
+    category_id = request.query_params.get('category_id')
+    qs = masters_model.AdditionalChargeConfig.objects.all()
+    if category_id:
+        qs = qs.filter(category_id=category_id)
+    serializer = AdditionalChargeConfigSerializer(qs, many=True)
+    return Response(serializer.data)
+
+@api_view(['POST'])
+@permission_classes([HasAppPermission('masters', 'create')])
+def additional_charge_config_create(request):
+    serializer = AdditionalChargeConfigSerializer(data=request.data)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET'])
+@permission_classes([HasAppPermission('masters', 'view')])
+def additional_charge_config_detail(request, pk):
+    obj = get_object_or_404(masters_model.AdditionalChargeConfig, pk=pk)
+    serializer = AdditionalChargeConfigSerializer(obj)
+    return Response(serializer.data)
+
+@api_view(['PUT'])
+@permission_classes([HasAppPermission('masters', 'update')])
+def additional_charge_config_update(request, pk):
+    obj = get_object_or_404(masters_model.AdditionalChargeConfig, pk=pk)
+    serializer = AdditionalChargeConfigSerializer(obj, data=request.data, partial=True)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['DELETE'])
+@permission_classes([HasAppPermission('masters', 'delete')])
+def additional_charge_config_delete(request, pk):
+    obj = get_object_or_404(masters_model.AdditionalChargeConfig, pk=pk)
+    obj.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(['GET'])
+@permission_classes([HasAppPermission('masters', 'view')])
+def fixed_fee_list(request):
+    qs = masters_model.MasterFixedFee.objects.all().order_by('fee_code')
+    serializer = MasterFixedFeeSerializer(qs, many=True)
+    return Response(serializer.data)
+
+
+@api_view(['GET'])
+@permission_classes([HasAppPermission('masters', 'view')])
+def fixed_fee_detail(request, pk):
+    obj = get_object_or_404(masters_model.MasterFixedFee, pk=pk)
+    serializer = MasterFixedFeeSerializer(obj)
+    return Response(serializer.data)
+
+
+@api_view(['PUT'])
+@permission_classes([HasAppPermission('masters', 'update')])
+def fixed_fee_update(request, pk):
+    obj = get_object_or_404(masters_model.MasterFixedFee, pk=pk)
+    serializer = MasterFixedFeeSerializer(obj, data=request.data, partial=True)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+#################################################
+#           Whats Current                       #
+#################################################
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def whatscurrent_list(request):
+    """List active WhatsCurrent items, optionally filtered by category."""
+    category = request.query_params.get('category', None)
+    show_all = request.query_params.get('all', 'false').lower() == 'true'
+    
+    if show_all:
+        queryset = masters_model.WhatsCurrent.objects.all()
+    else:
+        queryset = masters_model.WhatsCurrent.objects.filter(is_active=True)
+        
+    if category and category != 'all':
+        queryset = queryset.filter(category=category)
+    serializer = WhatsCurrentSerializer(queryset, many=True)
+    return Response(serializer.data)
+
+
+@api_view(['POST'])
+@permission_classes([HasAppPermission('masters', 'create')])
+def whatscurrent_create(request):
+    """Create a new WhatsCurrent item."""
+    data = request.data.copy()
+    if 'isActive' in data:
+        val = data['isActive']
+        data['is_active'] = val.lower() == 'true' if isinstance(val, str) else bool(val)
+        
+    serializer = WhatsCurrentSerializer(data=data)
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def whatscurrent_detail(request, pk):
+    """Retrieve details of a WhatsCurrent item."""
+    obj = get_object_or_404(masters_model.WhatsCurrent, pk=pk)
+    serializer = WhatsCurrentSerializer(obj)
+    return Response(serializer.data)
+
+
+@api_view(['PUT', 'PATCH'])
+@permission_classes([HasAppPermission('masters', 'update')])
+def whatscurrent_update(request, pk):
+    """Update a WhatsCurrent item."""
+    obj = get_object_or_404(masters_model.WhatsCurrent, pk=pk)
+    data = request.data.copy()
+    if 'isActive' in data:
+        val = data['isActive']
+        data['is_active'] = val.lower() == 'true' if isinstance(val, str) else bool(val)
+        
+    serializer = WhatsCurrentSerializer(obj, data=data, partial=request.method == 'PATCH')
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+
+
+@api_view(['DELETE'])
+@permission_classes([HasAppPermission('masters', 'delete')])
+def whatscurrent_delete(request, pk):
+    """Delete a WhatsCurrent item."""
+    obj = get_object_or_404(masters_model.WhatsCurrent, pk=pk)
+    obj.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+#################################################
+#           Block                               #
+#################################################
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def block_list(request):
+    """List all active blocks, optionally filtered by subcategory."""
+    queryset = masters_model.Block.objects.filter(is_active=True)
+    subcategory_id = request.query_params.get('subcategory_id')
+    if subcategory_id:
+        queryset = queryset.filter(subcategory_id=subcategory_id)
+    serializer = BlockSerializer(queryset, many=True, context={'request': request})
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'create')])
+@api_view(['POST'])
+def block_create(request):
+    """Create a new block."""
+    serializer = BlockSerializer(data=request.data, context={'request': request})
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def block_detail(request, pk):
+    """Retrieve a block instance."""
+    block = get_object_or_404(masters_model.Block, pk=pk, is_active=True)
+    serializer = BlockSerializer(block, context={'request': request})
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PUT', 'PATCH'])
+def block_update(request, pk):
+    """Update a block instance."""
+    block = get_object_or_404(masters_model.Block, pk=pk)
+    serializer = BlockSerializer(
+        instance=block, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'delete')])
+@api_view(['DELETE'])
+def block_delete(request, pk):
+    """Deactivate a block (soft delete)."""
+    block = get_object_or_404(masters_model.Block, pk=pk)
+    block.is_active = False
+    block.save()
+    return Response(
+        {'message': f'Block "{block.block_name}" deactivated successfully.'},
+        status=status.HTTP_200_OK
+    )
+
+
+#################################################
+#           Rural Ward                          #
+#################################################
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def rural_ward_list(request):
+    """List all active rural wards, optionally filtered by block."""
+    queryset = masters_model.RuralWard.objects.filter(is_active=True)
+    block_id = request.query_params.get('block_id')
+    if block_id:
+        queryset = queryset.filter(block_id=block_id)
+    serializer = RuralWardSerializer(queryset, many=True, context={'request': request})
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'create')])
+@api_view(['POST'])
+def rural_ward_create(request):
+    """Create a new rural ward."""
+    serializer = RuralWardSerializer(data=request.data, context={'request': request})
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def rural_ward_detail(request, pk):
+    """Retrieve a rural ward instance."""
+    ward = get_object_or_404(masters_model.RuralWard, pk=pk, is_active=True)
+    serializer = RuralWardSerializer(ward, context={'request': request})
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PUT', 'PATCH'])
+def rural_ward_update(request, pk):
+    """Update a rural ward instance."""
+    ward = get_object_or_404(masters_model.RuralWard, pk=pk)
+    serializer = RuralWardSerializer(
+        instance=ward, data=request.data,
+        partial=request.method == 'PATCH', context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+
+@permission_classes([HasAppPermission('masters', 'delete')])
+@api_view(['DELETE'])
+def rural_ward_delete(request, pk):
+    """Deactivate a rural ward (soft delete)."""
+    ward = get_object_or_404(masters_model.RuralWard, pk=pk)
+    ward.is_active = False
+    ward.save()
+    return Response(
+        {'message': f'Rural Ward {ward.ward_number} - "{ward.ward_name}" deactivated successfully.'},
+        status=status.HTTP_200_OK
+    )
+
+
+
 

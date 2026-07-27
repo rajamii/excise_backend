@@ -53,10 +53,26 @@ def bulk_spirit_type_admin_list(request):
 @permission_classes([HasAppPermission("masters", "create")])
 @api_view(["POST"])
 def bulk_spirit_type_create(request):
-    serializer = BulkSpiritTypeSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-    serializer.save()
-    return Response(serializer.data, status=status.HTTP_201_CREATED)
+    license_ids = request.data.get("license_ids")
+    if license_ids and isinstance(license_ids, list):
+        created_objects = []
+        for lid in license_ids:
+            item_data = {
+                "bulk_spirit_kind_type": request.data.get("bulk_spirit_kind_type"),
+                "strength": request.data.get("strength"),
+                "price_bl": request.data.get("price_bl", 0),
+                "license_id": lid
+            }
+            serializer = BulkSpiritTypeSerializer(data=item_data)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            created_objects.append(serializer.data)
+        return Response(created_objects, status=status.HTTP_201_CREATED)
+    else:
+        serializer = BulkSpiritTypeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 @permission_classes([HasAppPermission("masters", "view")])

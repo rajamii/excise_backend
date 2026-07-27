@@ -9,6 +9,7 @@ import re
 from .models import EnaCancellationDetail
 from .serializers import EnaCancellationDetailSerializer, CancellationCreateSerializer
 from auth.workflow.constants import WORKFLOW_IDS
+from models.transactional.dashboard_cache import get_cached_api_response, set_cached_api_response, _mark_cache_response
 from models.transactional.supply_chain.access_control import (
     has_workflow_access,
     scope_by_profile_or_workflow,
@@ -631,13 +632,26 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             for cancellation in queryset:
                 self._try_auto_sync_wallet_debit(cancellation, request.user)
 
+        cached_data = get_cached_api_response(request, "supply_chain_ena_cancellations")
+        if cached_data is not None:
+            return _mark_cache_response(Response(cached_data), "HIT")
+
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
+            response = self.get_paginated_response(serializer.data)
+            if getattr(response, "status_code", 200) < 300:
+                set_cached_api_response(request, "supply_chain_ena_cancellations", response.data)
+                _mark_cache_response(response, "MISS")
+            else:
+                _mark_cache_response(response, "BYPASS")
+            return response
 
         serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
+        response = Response(serializer.data)
+        set_cached_api_response(request, "supply_chain_ena_cancellations", response.data)
+        _mark_cache_response(response, "MISS")
+        return response
 
     @action(detail=False, methods=['post'], url_path='submit', serializer_class=CancellationCreateSerializer)
     def submit_cancellation(self, request):

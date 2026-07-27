@@ -37,6 +37,7 @@ from urllib.parse import quote
 import secrets
 import hashlib
 from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_role_stage_names
+from models.transactional.dashboard_cache import dashboard_counts_cache
 from models.masters.core.models import LicenseFee, SupplyChainTimerConfig
 from models.transactional.wallet.wallet_service import debit_wallet_balance
 from .payment_status import sync_new_license_payment_status
@@ -521,14 +522,32 @@ def initiate_renewal(request, license_id):
     if old_app.applicant != request.user:
         return Response({"detail": "You can only renew your own license."}, status=status.HTTP_403_FORBIDDEN)
 
-    def get_timer_days(code: str, default_days: int) -> int:
+    def _format_days_duration(days: float) -> str:
+        if days >= 1.0:
+            if days.is_integer():
+                return f"{int(days)} day(s)"
+            return f"{days:.2f} day(s)"
+        hours = days * 24.0
+        if hours >= 1.0:
+            if hours.is_integer():
+                return f"{int(hours)} hour(s)"
+            return f"{hours:.2f} hour(s)"
+        minutes = hours * 60.0
+        if minutes >= 1.0:
+            if minutes.is_integer():
+                return f"{int(minutes)} minute(s)"
+            return f"{minutes:.2f} minute(s)"
+        seconds = minutes * 60.0
+        return f"{int(seconds)} second(s)"
+
+    def get_timer_days(code: str, default_days: int) -> float:
         cfg = (
             SupplyChainTimerConfig.objects.filter(code=code, is_active=True)
             .order_by("-updated_at", "-id")
             .first()
         )
         if not cfg:
-            return int(default_days)
+            return float(default_days)
 
         unit = str(getattr(cfg, "delay_unit", "") or "").lower().strip()
         value = getattr(cfg, "delay_value", None)
@@ -543,24 +562,28 @@ def initiate_renewal(request, license_id):
             if unit.endswith("s"):
                 unit = unit[:-1]
             if unit == "day":
-                return value_int
+                return float(value_int)
             if unit in ("week", "wk"):
-                return value_int * 7
+                return float(value_int * 7)
             if unit in ("month", "mon", "mo"):
-                return value_int * 30
+                return float(value_int * 30)
             if unit in ("year", "yr"):
-                return value_int * 365
+                return float(value_int * 365)
             if unit in ("hour", "hr"):
-                return max(0, value_int // 24)
+                return float(value_int) / 24.0
+            if unit in ("minute", "min"):
+                return float(value_int) / (24.0 * 60.0)
+            if unit in ("second", "sec"):
+                return float(value_int) / (24.0 * 3600.0)
 
         days = getattr(cfg, "validity_period_days", None)
         if days is not None:
             try:
-                return max(0, int(days))
+                return float(max(0, int(days)))
             except (TypeError, ValueError):
-                return int(default_days)
+                return float(default_days)
 
-        return int(default_days)
+        return float(default_days)
 
     now_dt = timezone.now()
     reminder_days = get_timer_days("LICENSE_RENEWAL_REMINDER_TIMER", 90)
@@ -573,16 +596,18 @@ def initiate_renewal(request, license_id):
     if old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
         window_start = old_license.valid_up_to - timedelta(days=reminder_days)
         window_end = old_license.valid_up_to
+        window_label = _format_days_duration(reminder_days)
         return Response({
             "detail": (
                 "Renewal not allowed yet. "
                 f"You can renew from {window_start.strftime('%d/%m/%Y')} "
-                f"to {window_end.strftime('%d/%m/%Y')}."
+                f"to {window_end.strftime('%d/%m/%Y')} (within {window_label} of expiry)."
             ),
             "renewal_window_starts_on": window_start.isoformat(),
             "renewal_window_ends_on": window_end.isoformat(),
             "license_valid_up_to": old_license.valid_up_to.isoformat(),
             "reminder_window_days": reminder_days,
+            "window_not_open": True,
         }, status=status.HTTP_400_BAD_REQUEST)
 
     # Build pre-filled data
@@ -611,8 +636,7 @@ def initiate_renewal(request, license_id):
         'police_station': old_app.police_station,
         'pin_code': old_app.pin_code,
         'company_name': old_app.company_name,
-        'company_pan': old_app.company_pan,
-        'company_cin': old_app.company_cin,
+        'company_gst': old_app.company_gst,
         'company_email': old_app.company_email,
         'company_phone_number': old_app.company_phone_number,
         # Documents (carry forward for renewal)
@@ -932,6 +956,10 @@ def final_license_detail(request, application_id):
         if cfg:
             response["licenseTitle"] = cfg.license_title
 
+        from models.masters.core.models import LicenseTitle
+        title_obj = LicenseTitle.objects.filter(name='new-license').first()
+        response["licenseSubTitle"] = title_obj.description if title_obj else "COUNTER FOIL"
+
         qs = (
             MasterLicenseFormTerms.objects.filter(
                 licensee_cat_code=int(resolved_cat),
@@ -1238,14 +1266,14 @@ DRAUGHT_BEER_MODULE_CODE = "NLI_ADD_DRAUGHT_BEER"
 def _get_additional_charge_total(application: NewLicenseApplication) -> Decimal:
     total = Decimal("0.00")
     try:
-        from models.transactional.payment_gateway.models import MasterPaymentModule
+        from models.masters.core.models import MasterFixedFee
 
         module_fees = {
-            m["module_code"]: (m["license_fee"] if m["license_fee"] is not None else Decimal("0.00"))
-            for m in MasterPaymentModule.objects.filter(
-                module_code__in=[PACHWAI_MODULE_CODE, DRAUGHT_BEER_MODULE_CODE],
-                visibility_status=True,
-            ).values("module_code", "license_fee")
+            m["fee_code"]: (m["amount"] if m["amount"] is not None else Decimal("0.00"))
+            for m in MasterFixedFee.objects.filter(
+                fee_code__in=[PACHWAI_MODULE_CODE, DRAUGHT_BEER_MODULE_CODE],
+                is_active=True,
+            ).values("fee_code", "amount")
         }
         if getattr(application, "pachwai", False):
             total += module_fees.get(PACHWAI_MODULE_CODE, Decimal("0.00"))
@@ -1314,7 +1342,50 @@ def pay_license_fee_wallet(request, application_id):
 
     license_fee_hoa = _resolve_hoa_code(module_type="other", wallet_type="license_fee")
     
-    txn_id = secrets.token_hex(12).upper()
+    # Find matching recent successful BillDesk transaction to link UTR
+    txn_id = None
+    try:
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+        from models.transactional.wallet.models import WalletTransaction
+        from datetime import timedelta
+        from django.utils import timezone
+        
+        candidates = [
+            str(request.user.username).strip(),
+            str(lic.license_id).strip(),
+            str(application.application_id).strip()
+        ]
+        time_limit = timezone.now() - timedelta(days=2)
+        
+        # Try with exact amount first
+        recent_txs = PaymentBilldeskTransaction.objects.filter(
+            payer_id__in=candidates,
+            payment_status="S",
+            transaction_amount=amount,
+            transaction_date__gte=time_limit
+        ).order_by("-transaction_date")
+        
+        for tx in recent_txs:
+            if not WalletTransaction.objects.filter(transaction_id=tx.utr, entry_type="DR").exists():
+                txn_id = tx.utr
+                break
+                
+        # If not found, try without amount filter
+        if not txn_id:
+            recent_txs_any = PaymentBilldeskTransaction.objects.filter(
+                payer_id__in=candidates,
+                payment_status="S",
+                transaction_date__gte=time_limit
+            ).order_by("-transaction_date")
+            for tx in recent_txs_any:
+                if not WalletTransaction.objects.filter(transaction_id=tx.utr, entry_type="DR").exists():
+                    txn_id = tx.utr
+                    break
+    except Exception as e:
+        logger.warning("Failed to link BillDesk UTR to wallet payment: %s", e)
+
+    if not txn_id:
+        txn_id = secrets.token_hex(12).upper()
     try:
         debit_wallet_balance(
             transaction_id=txn_id,
@@ -1361,9 +1432,52 @@ def pay_security_fee_wallet(request, application_id):
     amount = getattr(fee, "security_amount", None)
     if amount is None:
         return Response({"detail": "Security fee amount not configured."}, status=status.HTTP_400_BAD_REQUEST)
-    amount = amount + _get_additional_charge_total(application)
     security_deposit_hoa = _resolve_hoa_code(module_type="other", wallet_type="security_deposit")
-    txn_id = secrets.token_hex(12).upper()
+    
+    # Find matching recent successful BillDesk transaction to link UTR
+    txn_id = None
+    try:
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+        from models.transactional.wallet.models import WalletTransaction
+        from datetime import timedelta
+        from django.utils import timezone
+        
+        candidates = [
+            str(request.user.username).strip(),
+            str(lic.license_id).strip(),
+            str(application.application_id).strip()
+        ]
+        time_limit = timezone.now() - timedelta(days=2)
+        
+        # Try with exact amount first
+        recent_txs = PaymentBilldeskTransaction.objects.filter(
+            payer_id__in=candidates,
+            payment_status="S",
+            transaction_amount=amount,
+            transaction_date__gte=time_limit
+        ).order_by("-transaction_date")
+        
+        for tx in recent_txs:
+            if not WalletTransaction.objects.filter(transaction_id=tx.utr, entry_type="DR").exists():
+                txn_id = tx.utr
+                break
+                
+        # If not found, try without amount filter
+        if not txn_id:
+            recent_txs_any = PaymentBilldeskTransaction.objects.filter(
+                payer_id__in=candidates,
+                payment_status="S",
+                transaction_date__gte=time_limit
+            ).order_by("-transaction_date")
+            for tx in recent_txs_any:
+                if not WalletTransaction.objects.filter(transaction_id=tx.utr, entry_type="DR").exists():
+                    txn_id = tx.utr
+                    break
+    except Exception as e:
+        logger.warning("Failed to link BillDesk UTR to wallet payment: %s", e)
+
+    if not txn_id:
+        txn_id = secrets.token_hex(12).upper()
     try:
         debit_wallet_balance(
             transaction_id=txn_id,
@@ -1389,6 +1503,7 @@ def pay_security_fee_wallet(request, application_id):
 
 @permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
+@dashboard_counts_cache("new_license_application")
 def dashboard_counts(request):
     try:
         from models.masters.license.views import deactivate_all_expired_licenses
@@ -1396,13 +1511,24 @@ def dashboard_counts(request):
     except Exception:
         pass
 
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Exists, OuterRef, Q
+    from auth.workflow.models import Transaction as WorkflowTransaction
+
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['LICENSE_APPROVAL']
     stage_sets = _get_stage_sets(workflow_id)
     all_qs = NewLicenseApplication.objects.all()
 
+    month = request.query_params.get('month')
+    year = request.query_params.get('year')
+    if month:
+        all_qs = all_qs.filter(created_at__month=month)
+    if year:
+        all_qs = all_qs.filter(created_at__year=year)
+
     if role == 'licensee':
-        base_qs = NewLicenseApplication.objects.filter(applicant=request.user)
+        base_qs = all_qs.filter(applicant=request.user)
         unpaid_qs = base_qs.filter(is_application_fee_paid=False)
         paid_qs = base_qs.filter(is_application_fee_paid=True)
         applied_stages = set(stage_sets['initial'])
@@ -1422,18 +1548,31 @@ def dashboard_counts(request):
             "awaiting_payment": paid_qs.filter(current_stage__name__in=payment_stages).count(),
         })
 
-    if role in ['site_admin']:
+    if role in ['site_admin', 'single_window']:
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
         rejected_stages = set(stage_sets['rejected'])
         pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
 
+        content_type = ContentType.objects.get_for_model(NewLicenseApplication)
+        acted_by_admin = Exists(
+            WorkflowTransaction.objects.filter(
+                content_type=content_type,
+                object_id=OuterRef('application_id')
+            ).exclude(performed_by__role_id=2)
+        )
+        all_qs_annotated = all_qs.annotate(_acted_by_admin=acted_by_admin)
+
+        approved_count = all_qs_annotated.filter(
+            Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True)
+        ).count()
+
         return Response({
             "applied": all_qs.filter(current_stage__name__in=applied_stages).count(),
             "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
             "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
-            "approved": all_qs.filter(current_stage__name__in=approved_stages).count(),
+            "approved": approved_count,
             "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
         })
 
@@ -1444,9 +1583,6 @@ def dashboard_counts(request):
             "approved": 0,
             "rejected": 0,
         })
-
-    from django.contrib.contenttypes.models import ContentType
-    from django.db.models import OuterRef, Exists, Q
 
     content_type = ContentType.objects.get_for_model(NewLicenseApplication)
     role_id = getattr(getattr(request.user, 'role', None), 'id', None)
@@ -1460,12 +1596,12 @@ def dashboard_counts(request):
     )
 
     role_objection_stages = set(stage_sets['objection'])
-    pending_stages = set(role_stage_names) | role_objection_stages
+    pending_stages = set(role_stage_names) - role_objection_stages
     role_rejected_stages = set(stage_sets['rejected'])
 
     pending_count = all_qs.filter(current_stage__name__in=pending_stages).count()
     approved_count = (
-        all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages)
+        all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
         .annotate(_acted_by_role=acted_by_role)
         .filter(_acted_by_role=True)
         .count()
@@ -1476,11 +1612,18 @@ def dashboard_counts(request):
         .filter(_acted_by_role=True)
         .count()
     )
+    objection_count = (
+        all_qs.filter(current_stage__name__in=role_objection_stages)
+        .annotate(_acted_by_role=acted_by_role)
+        .filter(_acted_by_role=True)
+        .count()
+    )
 
     return Response({
         "pending": pending_count,
         "approved": approved_count,
         "rejected": rejected_count,
+        "objection": objection_count,
     })
 
 # Application Grouping

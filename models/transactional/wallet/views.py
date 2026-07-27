@@ -356,6 +356,7 @@ def wallet_recharge_credit(request, licensee_id):
             from django.db.models import Q
             from django.contrib.contenttypes.models import ContentType
             from models.masters.license.models import License
+            from models.transactional.company_collaboration.models import CompanyCollaboration
             from models.transactional.new_license_application.models import NewLicenseApplication
             from models.transactional.new_license_application.payment_status import sync_new_license_payment_status
             from models.transactional.new_license_application.views import (
@@ -364,20 +365,20 @@ def wallet_recharge_credit(request, licensee_id):
             )
             from models.transactional.wallet.wallet_service import debit_wallet_balance
 
+            user = request.user
+            if not user or not user.is_authenticated:
+                from auth.user.models import CustomUser
+                username = str(getattr(request, "user", "") or "").strip()
+                user = CustomUser.objects.filter(username__iexact=username).first()
+
             candidates = _wallet_candidates_for_request(request, licensee_id)
             lic = License.objects.filter(license_id__in=candidates).order_by("-issue_date", "-license_id").first()
             application = None
             if lic and lic.source_type == "new_license_application":
                 application = NewLicenseApplication.objects.filter(application_id=lic.source_object_id).first()
 
-            # Fallback logic: if no application is found, OR if the resolved application is already approved/paid,
-            # look for a pending application for this user.
+            # Fallback logic for NewLicenseApplication
             if not application or getattr(application, "is_approved", False) or getattr(application, "is_security_fee_paid", False):
-                user = request.user
-                if not user or not user.is_authenticated:
-                    from auth.user.models import CustomUser
-                    username = str(getattr(request, "user", "") or "").strip()
-                    user = CustomUser.objects.filter(username__iexact=username).first()
                 if not user and lic:
                     user = getattr(lic, "applicant", None)
 

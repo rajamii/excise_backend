@@ -16,6 +16,7 @@ from auth.workflow.constants import WORKFLOW_IDS
 from models.masters.supply_chain.profile.models import UserManufacturingUnit
 from models.masters.supply_chain.hologram_supplier.models import MasterHologramSupplier
 from models.transactional.supply_chain.access_control import scope_by_profile_or_workflow
+from models.transactional.dashboard_cache import dashboard_counts_cache
 from utils.simple_pdf import PdfPage, build_text_pdf, paginate_lines
 
 HOLOGRAM_REF_PREFIX = 'HQR'
@@ -446,6 +447,10 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
             
         # Fallback: return all for authenticated users (Commissioner can see all)
         return queryset.order_by('-date')
+
+    @dashboard_counts_cache("supply_chain_hologram_procurement")
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
 
     def perform_create(self, serializer):
         unit = _get_or_create_active_manufacturing_unit(self.request.user)

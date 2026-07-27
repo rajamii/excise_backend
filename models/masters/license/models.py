@@ -13,6 +13,7 @@ class License(models.Model):
         ('new_license_application', 'New License Application'),
         ('license_application', 'License Application'),
         ('salesman_barman', 'Salesman/Barman'),
+        ('company_registration', 'Company Registration'),
     ]
 
     license_id = models.CharField(max_length=50, primary_key=True, db_index=True, unique=True)
@@ -126,6 +127,7 @@ class License(models.Model):
             'new_license_application': 'NA',
             'license_application': 'LA',
             'salesman_barman': 'SB',
+            'company_registration': 'CR',
         }
         prefix = prefix_map.get(self.source_type, 'XX')  # fallback
 

@@ -133,6 +133,7 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
     """Includes source application fee flags so the licensee UI can hide supply-chain menus until fee payment."""
 
     source_object_id = serializers.CharField(read_only=True)
+    is_approved = serializers.SerializerMethodField()
     is_license_fee_paid = serializers.SerializerMethodField()
     is_security_fee_paid = serializers.SerializerMethodField()
     issue_date = serializers.SerializerMethodField()
@@ -160,11 +161,23 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
     
     application_type = serializers.CharField(source='get_source_type_display', read_only=True)
     license_category = serializers.CharField(source='license_category.license_category', read_only=True)
+    is_special_permit_allowed = serializers.BooleanField(source='license_category.is_special_permit_allowed', read_only=True)
     license_sub_category_id = serializers.IntegerField(read_only=True)
     license_sub_category = serializers.CharField(source='license_sub_category.description', read_only=True)
     establishment_name = serializers.SerializerMethodField()
     site_district = serializers.CharField(source='excise_district.district', read_only=True)
     salesman_barman_role = serializers.SerializerMethodField()
+    yearly_license_fee = serializers.SerializerMethodField()
+
+    def get_is_approved(self, obj):
+        src = getattr(obj, "source_application", None)
+        if src is None:
+            return True
+        is_app = getattr(src, "is_approved", False)
+        stage_name = ""
+        if hasattr(src, "current_stage") and src.current_stage:
+            stage_name = str(src.current_stage.name).strip().lower()
+        return bool(is_app or stage_name == "approved")
 
     def get_is_license_fee_paid(self, obj):
         src = getattr(obj, "source_application", None)
@@ -172,18 +185,23 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
             # For some issued licenses (especially renewals), source_application may not resolve reliably.
             # Treat such licenses as "paid" for menu gating since issuance typically implies fees were handled.
             return True
+        if obj.source_type == "company_registration":
+            return getattr(src, "payment_amount", None) is not None or getattr(src, "is_approved", False)
         return bool(getattr(src, "is_license_fee_paid", False))
 
     def get_is_security_fee_paid(self, obj):
         src = getattr(obj, "source_application", None)
-        if src is None:
+        if src is None or obj.source_type in ["company_registration", "company_collaboration"]:
             return True
         return bool(getattr(src, "is_security_fee_paid", False))
 
     def get_establishment_name(self, obj):
         src = getattr(obj, "source_application", None)
-        if src is not None and getattr(src, "establishment_name", None):
-            return str(getattr(src, "establishment_name") or "")
+        if src is not None:
+            if getattr(src, "company_name", None):
+                return str(getattr(src, "company_name") or "")
+            if getattr(src, "establishment_name", None):
+                return str(getattr(src, "establishment_name") or "")
         return str(getattr(obj, "license_id", "") or "")
 
     def get_salesman_barman_role(self, obj):
@@ -193,14 +211,26 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
                 return str(src.role).strip()
         return None
 
-    def _get_timer_days(self, code: str, default_days: int) -> int:
+    def get_yearly_license_fee(self, obj):
+        if obj.source_type == "company_registration":
+            try:
+                from django.apps import apps
+                FixedFee = apps.get_model('core', 'MasterFixedFee')
+                fee_obj = FixedFee.objects.filter(fee_code='COMP_REG', is_active=True).first()
+                return float(fee_obj.amount) if fee_obj else 5000.0
+            except Exception:
+                return 5000.0
+        src = getattr(obj, "source_application", None)
+        return float(getattr(src, "yearly_license_fee", 0) or 0)
+
+    def _get_timer_days(self, code: str, default_days: int) -> float:
         cfg = (
             SupplyChainTimerConfig.objects.filter(code=code, is_active=True)
             .order_by("-updated_at", "-id")
             .first()
         )
         if not cfg:
-            return int(default_days)
+            return float(default_days)
 
         unit = str(getattr(cfg, "delay_unit", "") or "").lower().strip()
         value = getattr(cfg, "delay_value", None)
@@ -213,24 +243,28 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
             if unit.endswith("s"):
                 unit = unit[:-1]
             if unit == "day":
-                return value_int
+                return float(value_int)
             if unit in ("week", "wk"):
-                return value_int * 7
+                return float(value_int * 7)
             if unit in ("month", "mon", "mo"):
-                return value_int * 30
+                return float(value_int * 30)
             if unit in ("year", "yr"):
-                return value_int * 365
+                return float(value_int * 365)
             if unit in ("hour", "hr"):
-                return max(0, value_int // 24)
+                return float(value_int) / 24.0
+            if unit in ("minute", "min"):
+                return float(value_int) / (24.0 * 60.0)
+            if unit in ("second", "sec"):
+                return float(value_int) / (24.0 * 3600.0)
 
         days = getattr(cfg, "validity_period_days", None)
         if days is not None:
             try:
-                return max(0, int(days))
+                return float(max(0, int(days)))
             except (TypeError, ValueError):
-                return int(default_days)
+                return float(default_days)
 
-        return int(default_days)
+        return float(default_days)
 
     def _license_is_valid_now(self, obj) -> bool:
         now_dt = timezone.now()
@@ -328,6 +362,7 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
             'license_id',
             'source_object_id',
             'is_active',
+            'is_approved',
             'is_license_fee_paid',
             'is_security_fee_paid',
             'issue_date',
@@ -351,6 +386,7 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
             'district',
             'application_type',
             'license_category',
+            'is_special_permit_allowed',
             'license_sub_category_id',
             'license_sub_category',
             'establishment_name',
@@ -358,4 +394,7 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
             'renewal_count',
             'renewal_details',
             'salesman_barman_role',
+            'yearly_license_fee',
         ]
+
+

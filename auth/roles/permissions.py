@@ -20,6 +20,9 @@ class HasAppPermission(permissions.BasePermission):
             'delete': 'can_delete'
         }
 
+    def __call__(self) -> 'HasAppPermission':
+        return self
+
     def _raise_denied(self, detail: str, code: str) -> NoReturn:
 
         """Helper to consistently raise PermissionDenied"""

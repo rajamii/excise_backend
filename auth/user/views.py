@@ -18,6 +18,7 @@ from auth.user.serializer import (
     UserCreateSerializer,
     UserUpdateSerializer,
     LoginSerializer,
+    LMSDBLOGINSerializer,
     LicenseeSignupSerializer,
     LicenseeProfileSerializer,
     OICOfficerCreateSerializer,
@@ -837,6 +838,35 @@ class MyLicenseeProfileView(APIView):
 # Auth endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def check_username(request):
+    """
+    Lightweight endpoint to check if a username exists before asking for password.
+    Returns 200 if the user exists (active or inactive), 404 if not found.
+    Never reveals password or any sensitive data.
+    """
+    username = str(request.data.get('username') or '').strip()
+    if not username:
+        return Response({'error': 'Username is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user = CustomUser.objects.get(username=username)
+    except CustomUser.DoesNotExist:
+        return Response(
+            {'exists': False, 'error': 'No account found with this User ID. Please sign up first.'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    if not user.is_active:
+        return Response(
+            {'exists': True, 'active': False, 'error': 'Your account is inactive. Contact the administrator.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    return Response({'exists': True, 'active': True}, status=status.HTTP_200_OK)
+
+
 class LoginAPI(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
@@ -854,6 +884,45 @@ class LoginAPI(APIView):
         #         'non_field_errors': ['Invalid or expired captcha.']
         #     }, status=status.HTTP_400_BAD_REQUEST)
 
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validated_data = serializer.validated_data
+
+        try:
+            user = validated_data.get('user') or None
+            if user:
+                UserActivity.objects.create(
+                    user=user,
+                    activity_type=UserActivity.ActivityType.LOGIN,
+                    ip_address=_safe_ip_address(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT'),
+                    metadata={"auth_method": "jwt"},
+                )
+        except Exception:
+            pass
+
+        # ─── FIX: GENERATE TOKENS HERE IN THE VIEW ───
+        user = validated_data['user']
+        refresh = RefreshToken.for_user(user)
+
+        return Response({
+            'success': True,
+            'status_code': status.HTTP_200_OK,
+            'message': 'User logged in successfully',
+            'authenticated_user': {
+                'username': validated_data['username'],
+                'access':   str(refresh.access_token), # Convert to string
+                'refresh':  str(refresh),              # Convert to string
+            },
+        })
+
+
+class LMSDBLOGIN(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    serializer_class = LMSDBLOGINSerializer
+
+    def post(self, request):
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
         validated_data = serializer.validated_data

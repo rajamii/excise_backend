@@ -2,7 +2,7 @@ import logging
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from models.transactional.wallet.wallet_service import record_wallet_transaction
 from models.transactional.new_license_application.models import NewLicenseApplication
@@ -283,9 +283,25 @@ def list_transactions(request):
     # Filters
     query = request.query_params.get("query", "").strip()
     status_filter = request.query_params.get("status", "").strip()
+    day = request.query_params.get("day", "").strip()
+    month = request.query_params.get("month", "").strip()
+    year = request.query_params.get("year", "").strip()
+    module = request.query_params.get("module", "").strip()
     
     if status_filter:
         queryset = queryset.filter(payment_status__iexact=status_filter)
+
+    if day.isdigit():
+        queryset = queryset.filter(transaction_date__day=int(day))
+    if month.isdigit():
+        queryset = queryset.filter(transaction_date__month=int(month))
+    if year.isdigit():
+        queryset = queryset.filter(transaction_date__year=int(year))
+    if module:
+        if module == '001':
+            queryset = queryset.exclude(payment_module_code__in=['002', '999'])
+        else:
+            queryset = queryset.filter(payment_module_code=module)
 
     if query:
         # Check if amount query
@@ -374,6 +390,12 @@ def list_transactions(request):
                 mod = MasterPaymentModule.objects.filter(module_code=tx.payment_module_code).first()
                 if mod and mod.module_desc:
                     purpose = mod.module_desc
+                else:
+                    # fallback to MasterFixedFee
+                    from models.masters.core.models import MasterFixedFee
+                    fixed_fee = MasterFixedFee.objects.filter(fee_code=tx.payment_module_code).first()
+                    if fixed_fee and fixed_fee.fee_desc:
+                        purpose = fixed_fee.fee_desc
             except Exception:
                 pass
 

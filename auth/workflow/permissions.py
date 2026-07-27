@@ -26,9 +26,9 @@ class HasStagePermission(permissions.BasePermission):
         if request.method in ['POST', 'PUT', 'PATCH'] and '/resolve-objections/' in request.path:
             return normalized_role_token() == 'licensee'
 
-        # 1. Allow licensee to submit new applications
+        # 1. Allow licensee/distributor to submit new applications
         if request.method == 'POST' and any(path in request.path for path in ['/apply/', '/create/']):
-            return getattr(user.role, 'id', None) == 2
+            return normalized_role_token() in ['licensee', 'distributor']
 
         # 2. For advance, raise-objection, resolve-objection, etc.
         if request.method in ['POST', 'PUT', 'PATCH']:

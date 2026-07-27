@@ -6,5 +6,6 @@ class LicenseTitleSerializer(serializers.ModelSerializer):
         model = master_models.LicenseTitle
         fields = [
             'id',
+            'name',
             'description',
         ]

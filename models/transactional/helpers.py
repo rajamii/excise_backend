@@ -10,6 +10,7 @@ def _normalize_role(role_name):
         'licensee_user': 'licensee',
         'singlewindow': 'single_window',
         'siteadmin': 'site_admin',
+        'distributor': 'licensee',
     }
     return aliases.get(normalized, normalized)
 

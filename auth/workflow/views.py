@@ -18,6 +18,7 @@ from .services import SERIALIZER_MAPPING, WorkflowService
 from models.transactional.license_renewal_application.models import LicenseApplication
 from models.transactional.new_license_application.models import NewLicenseApplication
 from models.transactional.salesman_barman.models import SalesmanBarmanModel
+from models.transactional.dashboard_cache import dashboard_counts_cache
 import logging
 
 def _normalized_role_token(user):
@@ -203,13 +204,13 @@ def get_next_stages(request, application_id):
     # Without this, non-processing users can still fetch next actions on GET.
     if not request.user.is_superuser:
         if not getattr(request.user, 'role', None):
-            return Response({"detail": "User has no role"}, status=status.HTTP_403_FORBIDDEN)
+            return Response([])
         if not StagePermission.objects.filter(
             stage=application.current_stage,
             role=request.user.role,
             can_process=True
         ).exists():
-            return Response({"detail": "You cannot process this stage."}, status=status.HTTP_403_FORBIDDEN)
+            return Response([])
 
     current_stage = application.current_stage
     transitions = WorkflowTransition.objects.filter(
@@ -466,6 +467,7 @@ def get_rejections(request, application_id):
     return Response(serializer.data)
 @api_view(['GET'])
 @permission_classes([HasStagePermission])
+@dashboard_counts_cache("workflow")
 def dashboard_counts(request):
     try:
         from models.masters.license.views import deactivate_all_expired_licenses
@@ -592,6 +594,7 @@ def _get_application_by_id(application_id):
         ("license_renewal_application", "LicenseApplication"),
         ("new_license_application", "NewLicenseApplication"),
         ("salesman_barman", "SalesmanBarmanModel"),
+        ("special_permit", "SpecialPermitApplication"),
     ]
 
     for app_label, model_name in model_configs:

@@ -31,7 +31,15 @@ def _resolve_approved_license_id(raw_value: str) -> str:
     if hit and hit.license_id:
         return str(hit.license_id).strip()
 
+    hit = License.objects.filter(license_id=value).order_by("-issue_date", "-license_id").first()
+    if hit and hit.license_id:
+        return str(hit.license_id).strip()
+
     hit = active_qs.filter(source_object_id=value).order_by("-issue_date", "-license_id").first()
+    if hit and hit.license_id:
+        return str(hit.license_id).strip()
+
+    hit = License.objects.filter(source_object_id=value).order_by("-issue_date", "-license_id").first()
     if hit and hit.license_id:
         return str(hit.license_id).strip()
 
@@ -40,9 +48,15 @@ def _resolve_approved_license_id(raw_value: str) -> str:
         hit = active_qs.filter(license_id=alias).order_by("-issue_date", "-license_id").first()
         if hit and hit.license_id:
             return str(hit.license_id).strip()
+        hit = License.objects.filter(license_id=alias).order_by("-issue_date", "-license_id").first()
+        if hit and hit.license_id:
+            return str(hit.license_id).strip()
     elif value.startswith("NA/"):
         alias = f"NLI/{value[3:]}"
         hit = active_qs.filter(source_object_id=alias).order_by("-issue_date", "-license_id").first()
+        if hit and hit.license_id:
+            return str(hit.license_id).strip()
+        hit = License.objects.filter(source_object_id=alias).order_by("-issue_date", "-license_id").first()
         if hit and hit.license_id:
             return str(hit.license_id).strip()
 
@@ -62,7 +76,21 @@ def _resolve_approved_license_id(raw_value: str) -> str:
             if hit and hit.license_id:
                 return str(hit.license_id).strip()
             hit = (
+                License.objects.filter(applicant=user, license_id__istartswith="NA/")
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+            hit = (
                 active_qs.filter(applicant=user, source_type="new_license_application")
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+            hit = (
+                License.objects.filter(applicant=user, source_type="new_license_application")
                 .order_by("-issue_date", "-license_id")
                 .first()
             )
@@ -85,7 +113,21 @@ def _resolve_approved_license_id(raw_value: str) -> str:
             if hit and hit.license_id:
                 return str(hit.license_id).strip()
             hit = (
+                License.objects.filter(applicant_id=unit.user_id, license_id__istartswith="NA/")
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+            hit = (
                 active_qs.filter(applicant_id=unit.user_id, source_type="new_license_application")
+                .order_by("-issue_date", "-license_id")
+                .first()
+            )
+            if hit and hit.license_id:
+                return str(hit.license_id).strip()
+            hit = (
+                License.objects.filter(applicant_id=unit.user_id, source_type="new_license_application")
                 .order_by("-issue_date", "-license_id")
                 .first()
             )
@@ -124,7 +166,21 @@ def _resolve_approved_license_id(raw_value: str) -> str:
         if hit and hit.license_id:
             return str(hit.license_id).strip()
         hit = (
+            License.objects.filter(applicant_id=int(value), license_id__istartswith="NA/")
+            .order_by("-issue_date", "-license_id")
+            .first()
+        )
+        if hit and hit.license_id:
+            return str(hit.license_id).strip()
+        hit = (
             active_qs.filter(applicant_id=int(value), source_type="new_license_application")
+            .order_by("-issue_date", "-license_id")
+            .first()
+        )
+        if hit and hit.license_id:
+            return str(hit.license_id).strip()
+        hit = (
+            License.objects.filter(applicant_id=int(value), source_type="new_license_application")
             .order_by("-issue_date", "-license_id")
             .first()
         )

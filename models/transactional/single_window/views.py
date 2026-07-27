@@ -138,8 +138,23 @@ def serialize_payment_transactions(app_id):
             elif tx.payment_status.lower() in ("pending", "p"):
                 status = "Pending"
                 
+            display_txn_id = tx.transaction_id
+            if display_txn_id and not str(display_txn_id).startswith("BILLDESK") and len(display_txn_id) == 24:
+                from datetime import timedelta
+                time_margin = timedelta(hours=2)
+                candidates = [c for c in [str(tx.user_id).strip(), str(tx.licensee_id).strip()] if c]
+                bd_match = PaymentBilldeskTransaction.objects.filter(
+                    payer_id__in=candidates,
+                    payment_status="S",
+                    transaction_amount=tx.amount,
+                    transaction_date__gte=tx.created_at - time_margin,
+                    transaction_date__lte=tx.created_at + time_margin
+                ).order_by("-transaction_date").first()
+                if bd_match:
+                    display_txn_id = bd_match.utr
+                    
             payments.append({
-                "transaction_id": tx.transaction_id or "N/A",
+                "transaction_id": display_txn_id or "N/A",
                 "amount": str(tx.amount),
                 "payment_type": "Wallet Balance",
                 "payment_status": status,
@@ -172,6 +187,7 @@ def single_window_search(request):
     year = request.query_params.get("year", "").strip()
     category = request.query_params.get("category", "").strip()
     role = request.query_params.get("role", "").strip()
+    module = request.query_params.get("module", "").strip()
 
     day_val = int(day) if day.isdigit() else None
     month_val = int(month) if month.isdigit() else None
@@ -232,6 +248,85 @@ def single_window_search(request):
         except Exception:
             return "N/A"
 
+    def resolve_payment_target_info(payer_id_or_ref):
+        ref = str(payer_id_or_ref or "").strip()
+        if not ref:
+            return None, None, None
+
+        ref_upper = ref.upper()
+        try:
+            from auth.user.models import CustomUser
+            from models.masters.license.models import License
+            from models.transactional.new_license_application.models import NewLicenseApplication
+            from models.transactional.license_renewal_application.models import LicenseApplication as RenewalApplication
+            from models.transactional.salesman_barman.models import SalesmanBarmanModel
+
+            # 1. Check if it matches an application prefix
+            if ref_upper.startswith(("NLA/", "NA/", "NLI/")):
+                app = NewLicenseApplication.objects.filter(application_id__iexact=ref).first()
+                if app:
+                    user_id = app.applicant_id if app.applicant else None
+                    return "new_license_app", app.application_id, user_id
+            
+            elif ref_upper.startswith(("LRA/", "LA/")):
+                renewal = RenewalApplication.objects.filter(application_id__iexact=ref).first()
+                if renewal:
+                    user_id = renewal.applicant_id if renewal.applicant else None
+                    return "renewal_app", renewal.application_id, user_id
+
+            elif ref_upper.startswith(("SBM/", "SB/", "RSBM/")):
+                sbm = SalesmanBarmanModel.objects.filter(application_id__iexact=ref).first()
+                if sbm:
+                    user_id = sbm.applicant_id if sbm.applicant else None
+                    return "salesman_barman_app", sbm.application_id, user_id
+
+            # 2. Check if there is a CustomUser matching username or id
+            user_filter = Q(username__iexact=ref)
+            if ref.isdigit():
+                user_filter |= Q(id=int(ref))
+            user = CustomUser.objects.filter(user_filter).first()
+            if user:
+                recent_app = NewLicenseApplication.objects.filter(applicant=user).order_by("-created_at").first()
+                if recent_app:
+                    return "new_license_app", recent_app.application_id, user.id
+                
+                recent_renewal = RenewalApplication.objects.filter(applicant=user).order_by("-created_at").first()
+                if recent_renewal:
+                    return "renewal_app", recent_renewal.application_id, user.id
+
+                recent_sbm = SalesmanBarmanModel.objects.filter(applicant=user).order_by("-created_at").first()
+                if recent_sbm:
+                    return "salesman_barman_app", recent_sbm.application_id, user.id
+
+                return "licensee", user.id, user.id
+
+            # 3. Check if it's a License ID directly
+            license_obj = License.objects.filter(license_id__iexact=ref).first()
+            if license_obj:
+                user_id = license_obj.applicant_id if license_obj.applicant else None
+                if license_obj.source_type == "new_license_application" and license_obj.source_object_id:
+                    app = NewLicenseApplication.objects.filter(application_id__iexact=license_obj.source_object_id).first()
+                    if app:
+                        return "new_license_app", app.application_id, user_id
+                
+                return "license", license_obj.license_id, user_id
+
+            # 4. Fallbacks if no prefix matched but exists in DB
+            app = NewLicenseApplication.objects.filter(application_id__iexact=ref).first()
+            if app:
+                user_id = app.applicant_id if app.applicant else None
+                return "new_license_app", app.application_id, user_id
+
+            renewal = RenewalApplication.objects.filter(application_id__iexact=ref).first()
+            if renewal:
+                user_id = renewal.applicant_id if renewal.applicant else None
+                return "renewal_app", renewal.application_id, user_id
+
+        except Exception:
+            pass
+
+        return None, None, None
+
     if search_type == "payment":
         from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
         from models.transactional.wallet.models import WalletTransaction
@@ -286,6 +381,11 @@ def single_window_search(request):
         try:
             bd_txs = PaymentBilldeskTransaction.objects.filter(bd_q)
             bd_txs = apply_date_filters(bd_txs, "transaction_date")
+            if module:
+                if module == '001':
+                    bd_txs = bd_txs.exclude(payment_module_code__in=['002', '999'])
+                else:
+                    bd_txs = bd_txs.filter(payment_module_code=module)
             bd_txs = bd_txs.order_by("-transaction_date")[:30]
         except Exception:
             bd_q_safe = Q(utr__icontains=query) | Q(transaction_id_no_hoa__icontains=query) | Q(payer_id__icontains=query)
@@ -293,6 +393,11 @@ def single_window_search(request):
                 bd_q_safe |= Q(transaction_amount=amount_query)
             bd_txs = PaymentBilldeskTransaction.objects.filter(bd_q_safe)
             bd_txs = apply_date_filters(bd_txs, "transaction_date")
+            if module:
+                if module == '001':
+                    bd_txs = bd_txs.exclude(payment_module_code__in=['002', '999'])
+                else:
+                    bd_txs = bd_txs.filter(payment_module_code=module)
             bd_txs = bd_txs.order_by("-transaction_date")[:30]
 
         for tx in bd_txs:
@@ -308,6 +413,11 @@ def single_window_search(request):
             applicant_name = resolve_applicant_name(tx.payer_id)
             applicant_suffix = f" | Applicant: {applicant_name}" if applicant_name != "N/A" else ""
             
+            target_type, target_id, user_id = resolve_payment_target_info(tx.payer_id)
+            if not target_type and tx.payer_id and "/" not in str(tx.payer_id):
+                target_type = "licensee"
+                target_id = tx.payer_id
+
             results.append({
                 "type": "payment",
                 "id": tx.utr or tx.transaction_id_no_hoa or "N/A",
@@ -320,7 +430,10 @@ def single_window_search(request):
                     "payment_type": "BillDesk Gateway",
                     "created_at": tx.transaction_date.strftime("%Y-%m-%d %H:%M:%S") if tx.transaction_date else "N/A",
                     "application_id": tx.payer_id,
-                    "applicant_name": applicant_name
+                    "applicant_name": applicant_name,
+                    "target_type": target_type,
+                    "target_id": target_id,
+                    "user_id": user_id
                 }
             })
             if applicant_suffix:
@@ -335,6 +448,13 @@ def single_window_search(request):
         try:
             w_txs = WalletTransaction.objects.filter(w_q)
             w_txs = apply_date_filters(w_txs, "created_at")
+            if module:
+                if module == '999':
+                    w_txs = w_txs.filter(transaction_type__iexact='recharge')
+                elif module == '002':
+                    w_txs = w_txs.filter(Q(reference_no__istartswith='LRA/') | Q(reference_no__istartswith='LA/'))
+                elif module == '001':
+                    w_txs = w_txs.exclude(transaction_type__iexact='recharge').exclude(Q(reference_no__istartswith='LRA/') | Q(reference_no__istartswith='LA/'))
             w_txs = w_txs.order_by("-created_at")[:30]
         except Exception:
             w_q_safe = Q(transaction_id__icontains=query) | Q(reference_no__icontains=query) | Q(licensee_id__icontains=query)
@@ -342,6 +462,13 @@ def single_window_search(request):
                 w_q_safe |= Q(amount=amount_query)
             w_txs = WalletTransaction.objects.filter(w_q_safe)
             w_txs = apply_date_filters(w_txs, "created_at")
+            if module:
+                if module == '999':
+                    w_txs = w_txs.filter(transaction_type__iexact='recharge')
+                elif module == '002':
+                    w_txs = w_txs.filter(Q(reference_no__istartswith='LRA/') | Q(reference_no__istartswith='LA/'))
+                elif module == '001':
+                    w_txs = w_txs.exclude(transaction_type__iexact='recharge').exclude(Q(reference_no__istartswith='LRA/') | Q(reference_no__istartswith='LA/'))
             w_txs = w_txs.order_by("-created_at")[:30]
 
         for tx in w_txs:
@@ -355,19 +482,44 @@ def single_window_search(request):
             applicant_name = resolve_applicant_name(reference)
             applicant_suffix = f" | Applicant: {applicant_name}" if applicant_name != "N/A" else ""
                 
+            target_type, target_id, user_id = resolve_payment_target_info(reference)
+            if not target_type and tx.licensee_id:
+                target_type, target_id, user_id = resolve_payment_target_info(tx.licensee_id)
+            if not target_type and reference and "/" not in str(reference):
+                target_type = "licensee"
+                target_id = reference
+
+            display_txn_id = tx.transaction_id
+            if display_txn_id and not str(display_txn_id).startswith("BILLDESK") and len(display_txn_id) == 24:
+                from datetime import timedelta
+                time_margin = timedelta(hours=2)
+                candidates = [c for c in [str(tx.user_id).strip(), str(tx.licensee_id).strip()] if c]
+                bd_match = PaymentBilldeskTransaction.objects.filter(
+                    payer_id__in=candidates,
+                    payment_status="S",
+                    transaction_amount=tx.amount,
+                    transaction_date__gte=tx.created_at - time_margin,
+                    transaction_date__lte=tx.created_at + time_margin
+                ).order_by("-transaction_date").first()
+                if bd_match:
+                    display_txn_id = bd_match.utr
+
             results.append({
                 "type": "payment",
-                "id": tx.transaction_id or "N/A",
-                "title": f"Wallet: {tx.transaction_id or 'N/A'}",
+                "id": display_txn_id or "N/A",
+                "title": f"Wallet: {display_txn_id or 'N/A'}",
                 "subtitle": f"Amount: ₹{tx.amount} | Type: {tx.transaction_type} | App/Ref ID: {tx.reference_no or tx.licensee_id}",
                 "status": status,
                 "meta": {
-                    "transaction_id": tx.transaction_id or "N/A",
+                    "transaction_id": display_txn_id or "N/A",
                     "amount": str(tx.amount),
                     "payment_type": f"Wallet {tx.transaction_type}",
                     "created_at": tx.created_at.strftime("%Y-%m-%d %H:%M:%S") if tx.created_at else "N/A",
-                    "application_id": tx.reference_no,
-                    "applicant_name": applicant_name
+                    "application_id": tx.reference_no or tx.licensee_id,
+                    "applicant_name": applicant_name,
+                    "target_type": target_type,
+                    "target_id": target_id,
+                    "user_id": user_id
                 }
             })
             if applicant_suffix:
@@ -445,6 +597,22 @@ def single_window_search(request):
         pass
 
     results = []
+
+    # Helper function to resolve where an application is currently pending
+    def _resolve_pending_at(app):
+        if getattr(app, 'is_approved', False):
+            return "Completed"
+        stage = getattr(app, 'current_stage', None)
+        if not stage:
+            return "N/A"
+        try:
+            from auth.workflow.models import StagePermission
+            perm = StagePermission.objects.filter(stage=stage, can_process=True).first()
+            if perm and perm.role:
+                return perm.role.name
+        except Exception:
+            pass
+        return "N/A"
 
     # Helper function to get linked NLA ID for different objects
     def get_linked_nla_id(obj):
@@ -538,7 +706,15 @@ def single_window_search(request):
                 "id": u.id,
                 "title": f"{u.first_name} {u.last_name} ({u.username})",
                 "subtitle": f"Email: {u.email} | Phone: {u.phone_number} | Username: {u.username}",
-                "status": "Active" if u.is_active else "Inactive",
+                "status": "Active" if u.is_active else "Deactivated",
+                "first_name": u.first_name,
+                "last_name": u.last_name,
+                "username": u.username,
+                "email": u.email,
+                "phone_number": u.phone_number,
+                "role_name": u.role.name if u.role else "Licensee",
+                "date_joined": u.date_joined.strftime("%Y-%m-%d %H:%M:%S") if u.date_joined else "N/A",
+                "is_active": u.is_active,
                 "meta": meta
             })
     else:
@@ -652,6 +828,30 @@ def single_window_search(request):
 
     for app in new_apps:
         applicant_name = get_user_display_name(app.applicant) if app.applicant else "Unknown"
+        applicant_username = app.applicant.username if app.applicant else "N/A"
+
+        # Find issued license for this applicant (if application approved)
+        issued_license_id = None
+        license_is_active = False
+        if app.is_approved and app.applicant:
+            lic = License.objects.filter(applicant=app.applicant).order_by("-issue_date").first()
+            if lic:
+                issued_license_id = lic.license_id
+                license_is_active = lic.is_active
+
+        # Determine where application is pending (current stage role)
+        pending_at = "Completed"
+        if not app.is_approved:
+            pending_at = "N/A"
+            if app.current_stage:
+                try:
+                    from auth.workflow.models import StagePermission
+                    perm = StagePermission.objects.filter(stage=app.current_stage, can_process=True).first()
+                    if perm and perm.role:
+                        pending_at = perm.role.name
+                except Exception:
+                    pass
+
         meta = {
             "application_id": app.application_id,
             "is_approved": app.is_approved,
@@ -670,20 +870,62 @@ def single_window_search(request):
             "title": f"New App: {app.application_id}",
             "subtitle": f"Establishment: {app.establishment_name or 'N/A'} | Applicant: {applicant_name}",
             "status": app.current_stage.name if app.current_stage else "Draft",
+            
+            "application_id": app.application_id,
+            "establishment_name": app.establishment_name or "N/A",
+            "applicant_name": applicant_name,
+            "applicant_username": applicant_username,
+            "license_category": app.license_category.license_category if app.license_category else "N/A",
+            "issued_license_id": issued_license_id,
+            "license_is_active": license_is_active,
+            "current_stage": app.current_stage.name if app.current_stage else "Draft",
+            "pending_at": pending_at,
+            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
+            
             "meta": meta
         })
 
     # Add License results
+    # Collect NLA IDs already covered by the new_apps results to avoid duplicates
+    covered_nla_ids = set()
+    for app in new_apps:
+        if app.is_approved:
+            covered_nla_ids.add(app.application_id)
+
     for lic in licenses:
         applicant_name = get_user_display_name(lic.applicant) if lic.applicant else "Unknown"
         nla_id = get_linked_nla_id(lic)
+        # Skip this license entry if its linked NLA is already shown (avoids duplicate rows)
+        if nla_id and nla_id in covered_nla_ids:
+            continue
         nla_suffix = f" | Linked NLA: {nla_id}" if nla_id else ""
+        # Get establishment name from linked NLA if available
+        establishment = "Active License"
+        if nla_id:
+            try:
+                linked_nla = NewLicenseApplication.objects.filter(application_id=nla_id).first()
+                if linked_nla and linked_nla.establishment_name:
+                    establishment = linked_nla.establishment_name
+            except Exception:
+                pass
         results.append({
             "type": "license",
             "id": lic.license_id,
             "title": f"License: {lic.license_id}",
             "subtitle": f"Applicant: {applicant_name} | Category: {lic.license_category.license_category if lic.license_category else 'N/A'}{nla_suffix}",
             "status": "Active" if lic.is_active else "Expired/Inactive",
+            
+            "application_id": nla_id or lic.license_id,
+            "establishment_name": establishment,
+            "applicant_name": applicant_name,
+            "applicant_username": lic.applicant.username if lic.applicant else "N/A",
+            "license_category": lic.license_category.license_category if lic.license_category else "N/A",
+            "issued_license_id": lic.license_id,
+            "license_is_active": lic.is_active,
+            "current_stage": "Approved",
+            "pending_at": "Completed",
+            "created_at": lic.issue_date.strftime("%Y-%m-%d") if lic.issue_date else "N/A",
+            
             "meta": {
                 "license_id": lic.license_id,
                 "valid_up_to": lic.valid_up_to.strftime("%Y-%m-%d") if lic.valid_up_to else "N/A",
@@ -717,6 +959,18 @@ def single_window_search(request):
             "title": f"Renewal App: {app.application_id}",
             "subtitle": f"Old License: {app.old_license_id or 'N/A'}{nla_suffix} | Applicant: {applicant_name}",
             "status": app.current_stage.name if app.current_stage else "Draft",
+            
+            "application_id": app.application_id,
+            "establishment_name": f"Renewal for: {app.old_license_id or 'N/A'}",
+            "applicant_name": applicant_name,
+            "applicant_username": app.applicant.username if app.applicant else "N/A",
+            "license_category": app.license_category.license_category if app.license_category else "N/A",
+            "issued_license_id": app.old_license_id,
+            "license_is_active": True,
+            "current_stage": app.current_stage.name if app.current_stage else "Draft",
+            "pending_at": _resolve_pending_at(app),
+            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
+            
             "meta": meta
         })
 
@@ -744,6 +998,18 @@ def single_window_search(request):
             "title": f"Salesman/Barman App: {app.application_id}",
             "subtitle": f"Name: {applicant_name} | Role: {app.role or 'N/A'}{nla_suffix} | Mobile: {app.mobileNumber or 'N/A'}",
             "status": app.current_stage.name if app.current_stage else "Draft",
+            
+            "application_id": app.application_id,
+            "establishment_name": f"Salesman/Barman: {applicant_name}",
+            "applicant_name": applicant_name,
+            "applicant_username": app.applicant.username if app.applicant else "N/A",
+            "license_category": app.role or "Salesman/Barman",
+            "issued_license_id": app.license_id or "N/A",
+            "license_is_active": True,
+            "current_stage": app.current_stage.name if app.current_stage else "Draft",
+            "pending_at": _resolve_pending_at(app),
+            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
+            
             "meta": meta
         })
 
@@ -754,7 +1020,11 @@ def single_window_search(request):
 @renderer_classes([JSONRenderer, BrowsableAPIRenderer])
 @permission_classes([IsAuthenticated])
 def single_window_licensee_detail(request, user_id):
-    u = get_object_or_404(CustomUser, id=user_id)
+    user_id_str = str(user_id).strip()
+    if user_id_str.isdigit():
+        u = get_object_or_404(CustomUser, id=int(user_id_str))
+    else:
+        u = get_object_or_404(CustomUser, username__iexact=user_id_str)
 
     user_data = {
         "id": u.id,
@@ -1071,90 +1341,21 @@ def single_window_salesman_barman_detail(request, application_id):
 @renderer_classes([JSONRenderer, BrowsableAPIRenderer])
 @permission_classes([IsAuthenticated])
 def single_window_latest_created(request):
-    # 1. Fetch latest users (Admin Users only, excluding licensees)
-    users = CustomUser.objects.exclude(role__name='Licensee').order_by("-date_joined")[:50]
-    users_list = []
-    for u in users:
-        users_list.append({
-            "id": u.id,
-            "username": u.username,
-            "email": u.email,
-            "first_name": u.first_name,
-            "last_name": u.last_name,
-            "phone_number": u.phone_number,
-            "role_name": u.role.name if u.role else "Licensee",
-            "is_active": u.is_active,
-            "date_joined": u.date_joined.strftime("%Y-%m-%d %H:%M:%S") if u.date_joined else "N/A"
+    try:
+        users_count = CustomUser.objects.exclude(role__name='Licensee').count()
+        records_count = NewLicenseApplication.objects.count()
+        deactivated_count = CustomUser.objects.filter(is_active=False).count()
+
+        return Response({
+            "users_count": users_count,
+            "records_count": records_count,
+            "deactivated_users_count": deactivated_count,
+            "users": [],
+            "records": [],
+            "deactivated_users": []
         })
-
-    # 2. Fetch ONLY New License Applications for the Licenses & Applications tab
-    records = []
-    new_apps = NewLicenseApplication.objects.all().order_by("-created_at")[:100]
-    for app in new_apps:
-        applicant_name = f"{app.applicant.first_name} {app.applicant.last_name}".strip() if app.applicant else "Unknown"
-        applicant_username = app.applicant.username if app.applicant else "N/A"
-
-        # Find issued license for this applicant (if application approved)
-        issued_license_id = None
-        license_is_active = False
-        license_valid_up_to = "N/A"
-        if app.is_approved and app.applicant:
-            lic = License.objects.filter(applicant=app.applicant).order_by("-issue_date").first()
-            if lic:
-                issued_license_id = lic.license_id
-                license_is_active = lic.is_active
-                license_valid_up_to = lic.valid_up_to.strftime("%Y-%m-%d") if lic.valid_up_to else "N/A"
-
-        # Determine where application is pending (current stage role)
-        pending_at = "N/A"
-        if app.current_stage and not app.is_approved:
-            try:
-                from auth.workflow.models import StagePermission
-                perm = StagePermission.objects.filter(stage=app.current_stage, can_process=True).first()
-                if perm and perm.role:
-                    pending_at = perm.role.name
-            except Exception:
-                pass
-
-        records.append({
-            "type": "new_license_app",
-            "id": app.application_id,
-            "application_id": app.application_id,
-            "establishment_name": app.establishment_name or "N/A",
-            "applicant_name": applicant_name,
-            "applicant_username": applicant_username,
-            "license_category": app.license_category.license_category if app.license_category else "N/A",
-            "current_stage": app.current_stage.name if app.current_stage else "Draft",
-            "is_approved": app.is_approved,
-            "issued_license_id": issued_license_id,
-            "license_is_active": license_is_active,
-            "license_valid_up_to": license_valid_up_to,
-            "pending_at": pending_at,
-            "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
-            "meta": {
-                "application_id": app.application_id
-            }
-        })
-
-    # 3. Fetch Deactivated Users
-    deactivated = CustomUser.objects.filter(is_active=False).order_by("-date_joined")[:50]
-    deactivated_list = []
-    for u in deactivated:
-        deactivated_list.append({
-            "id": u.id,
-            "username": u.username,
-            "email": u.email,
-            "first_name": u.first_name,
-            "last_name": u.last_name,
-            "phone_number": u.phone_number,
-            "role_name": u.role.name if u.role else "Licensee",
-            "is_active": u.is_active,
-            "date_joined": u.date_joined.strftime("%Y-%m-%d %H:%M:%S") if u.date_joined else "N/A"
-        })
-
-    return Response({
-        "users": users_list,
-        "records": records,
-        "deactivated_users": deactivated_list
-    })
+    except Exception as e:
+        return Response({
+            "error": str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     'models.masters.license',
     'models.masters.contact_us',
     'models.masters.about_us',
+    'models.masters.preventive_raids',
     'models.masters.company_collaboration',
 
     'models.masters.supply_chain.bulk_spirit',
@@ -85,6 +86,8 @@ INSTALLED_APPS = [
     'models.transactional.company_registration',
     'models.transactional.company_collaboration',
     'models.transactional.license_renewal_application',
+    'models.transactional.special_permit',
+    'models.transactional.distributor_permit',
     'models.transactional.site_enquiry',
     'models.transactional.new_license_application',
     'models.transactional.label_registration',
@@ -162,7 +165,7 @@ DATABASES = {
         'PASSWORD': 'postgres',  # Your PostgreSQL password
         'HOST': 'localhost',        
         'PORT': '5432',             # Default PostgreSQL port
-        'CONN_MAX_AGE': 300,          # Don't reuse connections — avoids aborted transaction state
+        'CONN_MAX_AGE': 300,         # Don't reuse connections — avoids aborted transaction state
     }
 }
 
@@ -194,9 +197,17 @@ OTP_EXPIRY_SECONDS = 600  # 10 minutes
 # Redis cache configuration for CAPTCHA storage
 CACHES = {
     "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": "redis://127.0.0.1:6379/1",
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            "SOCKET_CONNECT_TIMEOUT": 1,
+            "SOCKET_TIMEOUT": 1,
+        }
     }
 }
+DASHBOARD_COUNTS_CACHE_TIMEOUT = int(os.getenv("DASHBOARD_COUNTS_CACHE_TIMEOUT", "600"))
+DASHBOARD_CACHE_FAILURE_COOLDOWN = int(os.getenv("DASHBOARD_CACHE_FAILURE_COOLDOWN", "60"))
 
 AUTH_USER_MODEL = 'user.CustomUser'
 
@@ -290,10 +301,12 @@ BILLDESK_GATEWAY_URL = os.getenv(
 # Where Django redirects the user after BillDesk response is validated.
 PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL = os.getenv(
     "PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL",
+    # "https://sems.sikkim.gov.in/dashboard/wallet-recharge/success",
     "http://localhost:4200/dashboard/wallet-recharge/success",
 ).strip()
 PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL = os.getenv(
     "PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL",
+    # "https://sems.sikkim.gov.in/dashboard/new-license/application-fee/receipt",
     "http://localhost:4200/dashboard/new-license/application-fee/receipt",
 ).strip()
 

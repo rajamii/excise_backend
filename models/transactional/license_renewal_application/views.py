@@ -13,6 +13,7 @@ from auth.workflow.models import Workflow
 from auth.workflow.services import WorkflowService
 from models.masters.license.models import License
 from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_role_stage_names
+from models.transactional.dashboard_cache import dashboard_counts_cache
 from models.masters.core.models import SupplyChainTimerConfig
 from models.transactional.wallet.wallet_initializer import _resolve_hoa_code
 from models.transactional.wallet.wallet_service import debit_wallet_balance
@@ -47,12 +48,37 @@ def _get_renewal_workflow() -> Workflow | None:
 @permission_classes([IsAuthenticated])
 def initiate_renewal(request, license_id):
     """
-    Create a renewal-tracking application (LRA/...) that follows the same stage machine
+    Create a renewal-tracking application (RCC/... or LRA/...) that follows the same stage machine
     as the New License workflow, but under the dedicated "License Renewal Application" workflow.
     """
-    old_license = get_object_or_404(License, license_id=str(license_id))
-    if old_license.applicant_id != request.user.id:
-        return Response({"detail": "You can only renew your own license."}, status=status.HTTP_403_FORBIDDEN)
+    from django.db.models import Q
+    old_license = License.objects.filter(
+        Q(license_id=str(license_id)) | Q(source_object_id=str(license_id))
+    ).first()
+    if not old_license:
+        from models.transactional.company_collaboration.models import CompanyCollaboration
+        ccol = CompanyCollaboration.objects.filter(application_id=str(license_id)).first()
+        if ccol:
+            old_license = License.objects.filter(source_object_id=ccol.application_id).first()
+
+    if not old_license:
+        return Response({"detail": "License not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    is_applicant = (
+        old_license.applicant_id == request.user.id
+        or getattr(old_license.source_application, 'applicant_id', None) == request.user.id
+    )
+    is_authorized = (
+        request.user.is_authenticated
+        and (
+            is_applicant
+            or request.user.is_superuser
+            or request.user.is_staff
+            or (hasattr(request.user, 'role') and request.user.role and str(request.user.role.name).lower() in ['site_admin', 'single_window', 'admin', 'excise_officer', 'licensee'])
+        )
+    )
+    if not is_authorized:
+        return Response({"detail": "You do not have permission to renew this license."}, status=status.HTTP_403_FORBIDDEN)
 
     now_dt = timezone.now()
     reminder_days = _get_timer_days("LICENSE_RENEWAL_REMINDER_TIMER", 90)
@@ -65,7 +91,7 @@ def initiate_renewal(request, license_id):
     # Flip fee-paid flags on source application to False when renewal starts, so they must pay again.
     src_app = _resolve_new_license_application_from_license(old_license)
     if src_app is not None:
-        update_fields = ["is_license_fee_paid", "is_security_fee_paid"]
+        update_fields = ["is_license_fee_paid"]
         
         pachwai = request.data.get("pachwai")
         if pachwai is not None:
@@ -147,24 +173,27 @@ def initiate_renewal(request, license_id):
                         )
 
         src_app.is_license_fee_paid = False
-        src_app.is_security_fee_paid = False
         src_app.save(update_fields=update_fields)
 
-    # Renewal window opens only within the reminder window (or after expiry).
+    # Enforce renewal window: block if the license is valid and the renewal period
+    # has not yet opened (i.e. current date is more than reminder_days before valid_up_to).
+    # This applies to all license types including company_registration.
     if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to > now_dt + timedelta(days=reminder_days):
         window_start = old_license.valid_up_to - timedelta(days=reminder_days)
         window_end = old_license.valid_up_to
+        window_label = _format_days_duration(reminder_days)
         return Response(
             {
                 "detail": (
                     "Renewal not allowed yet. "
-                    f"You can renew from {window_start.strftime('%d/%m/%Y')} "
-                    f"to {window_end.strftime('%d/%m/%Y')}."
+                    f"The renewal window opens on {window_start.strftime('%d/%m/%Y')} "
+                    f"(within {window_label} of expiry on {window_end.strftime('%d/%m/%Y')})."
                 ),
                 "renewal_window_starts_on": window_start.isoformat(),
                 "renewal_window_ends_on": window_end.isoformat(),
                 "license_valid_up_to": old_license.valid_up_to.isoformat(),
                 "reminder_window_days": reminder_days,
+                "window_not_open": True,
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
@@ -200,7 +229,19 @@ def initiate_renewal(request, license_id):
 
     district_code = str(getattr(getattr(old_license, "excise_district", None), "district_code", "") or "000").strip()
     fin_year = LicenseApplication.generate_fin_year()
-    prefix = f"LRA/{district_code}/{fin_year}"
+    
+    old_source_type = getattr(old_license, "source_type", None)
+    if old_source_type == "company_registration":
+        app_prefix = "RCR"
+    elif old_source_type == "company_collaboration":
+        app_prefix = "RCC"
+    else:
+        app_prefix = "LRA"
+    
+    if old_source_type == "company_collaboration" and (not district_code or district_code == "000"):
+        prefix = f"{app_prefix}/{fin_year}"
+    else:
+        prefix = f"{app_prefix}/{district_code}/{fin_year}"
 
     last = (
         LicenseApplication.objects.filter(application_id__startswith=prefix + "/")
@@ -220,6 +261,8 @@ def initiate_renewal(request, license_id):
         application_id=application_id,
         is_approved=False,
         old_license_id=old_license.license_id,
+        source_content_type=old_license.source_content_type,
+        source_object_id=old_license.source_object_id,
         applicant=request.user,
         license_category=old_license.license_category,
         license_sub_category=old_license.license_sub_category,
@@ -240,14 +283,33 @@ def _require_licensee_user(request):
         raise PermissionDenied("Only licensees can pay fees.")
 
 
-def _get_timer_days(code: str, default_days: int) -> int:
+def _format_days_duration(days: float) -> str:
+    if days >= 1.0:
+        if days.is_integer():
+            return f"{int(days)} day(s)"
+        return f"{days:.2f} day(s)"
+    hours = days * 24.0
+    if hours >= 1.0:
+        if hours.is_integer():
+            return f"{int(hours)} hour(s)"
+        return f"{hours:.2f} hour(s)"
+    minutes = hours * 60.0
+    if minutes >= 1.0:
+        if minutes.is_integer():
+            return f"{int(minutes)} minute(s)"
+        return f"{minutes:.2f} minute(s)"
+    seconds = minutes * 60.0
+    return f"{int(seconds)} second(s)"
+
+
+def _get_timer_days(code: str, default_days: int) -> float:
     cfg = (
         SupplyChainTimerConfig.objects.filter(code=code, is_active=True)
         .order_by("-updated_at", "-id")
         .first()
     )
     if not cfg:
-        return int(default_days)
+        return float(default_days)
 
     unit = str(getattr(cfg, "delay_unit", "") or "").lower().strip()
     value = getattr(cfg, "delay_value", None)
@@ -262,24 +324,28 @@ def _get_timer_days(code: str, default_days: int) -> int:
         if unit.endswith("s"):
             unit = unit[:-1]
         if unit == "day":
-            return value_int
+            return float(value_int)
         if unit in ("week", "wk"):
-            return value_int * 7
+            return float(value_int * 7)
         if unit in ("month", "mon", "mo"):
-            return value_int * 30
+            return float(value_int * 30)
         if unit in ("year", "yr"):
-            return value_int * 365
+            return float(value_int * 365)
         if unit in ("hour", "hr"):
-            return max(0, value_int // 24)
+            return float(value_int) / 24.0
+        if unit in ("minute", "min"):
+            return float(value_int) / (24.0 * 60.0)
+        if unit in ("second", "sec"):
+            return float(value_int) / (24.0 * 3600.0)
 
     days = getattr(cfg, "validity_period_days", None)
     if days is not None:
         try:
-            return max(0, int(days))
+            return float(max(0, int(days)))
         except (TypeError, ValueError):
-            return int(default_days)
+            return float(default_days)
 
-    return int(default_days)
+    return float(default_days)
 
 
 def _extend_license_validity(lic: License) -> License:
@@ -373,12 +439,17 @@ def _renewal_is_paid(application) -> bool:
     if getattr(application, "old_license_id", None):
         old_license = License.objects.filter(license_id=str(application.old_license_id)).first()
 
-    if old_license and old_license.source_type == "salesman_barman":
+    if old_license and old_license.source_type in ["salesman_barman", "company_registration", "company_collaboration"]:
         return bool(getattr(application, "is_license_fee_paid", False))
 
     source_app = _renewal_source_application(application)
     app_license_paid = getattr(application, "is_license_fee_paid", False) or (source_app and getattr(source_app, "is_license_fee_paid", False))
     app_security_paid = getattr(application, "is_security_fee_paid", False) or (source_app and getattr(source_app, "is_security_fee_paid", False))
+    
+    # Fallback/Safety: if renewal fee is paid, do not block approval on the original security fee
+    if getattr(application, "is_license_fee_paid", False):
+        app_security_paid = True
+
     return bool(source_app and app_license_paid and app_security_paid)
 
 
@@ -530,6 +601,11 @@ def _serialize_renewal_application(obj: LicenseApplication):
     source_app = None
     if old_license is not None:
         source_app = _resolve_new_license_application_from_license(old_license)
+        if source_app is None:
+            try:
+                source_app = old_license.source_application
+            except Exception:
+                source_app = None
     if source_app is None:
         try:
             source_app = obj.source_object
@@ -542,13 +618,19 @@ def _serialize_renewal_application(obj: LicenseApplication):
             if model_name == "salesmanbarmanmodel":
                 from models.transactional.salesman_barman.serializers import SalesmanBarmanSerializer
                 source_data = dict(SalesmanBarmanSerializer(source_app).data)
+            elif model_name == "companyregistration":
+                from models.transactional.company_registration.serializers import CompanyRegistrationSerializer
+                source_data = dict(CompanyRegistrationSerializer(source_app).data)
+            elif model_name == "companycollaboration":
+                from models.transactional.company_collaboration.serializers import CompanyCollaborationSerializer
+                source_data = dict(CompanyCollaborationSerializer(source_app).data)
             else:
                 from models.transactional.new_license_application.serializers import NewLicenseApplicationSerializer
                 source_data = dict(NewLicenseApplicationSerializer(source_app).data)
 
             orig_security_paid = source_data.get("is_security_fee_paid", False)
             source_data.update(data)
-            if model_name != "salesmanbarmanmodel":
+            if model_name not in ["salesmanbarmanmodel", "companyregistration", "companycollaboration"]:
                 source_data["is_security_fee_paid"] = orig_security_paid or data.get("is_security_fee_paid", False)
             data = source_data
         except Exception:
@@ -563,6 +645,7 @@ def _serialize_renewal_application(obj: LicenseApplication):
                 "old_license_valid_up_to": old_license.valid_up_to,
                 "valid_up_to": old_license.valid_up_to,
                 "expired_date": old_license.valid_up_to,
+                "old_license_source_type": old_license.source_type,
             }
         )
         if getattr(old_license, "source_type", None) == "salesman_barman":
@@ -577,6 +660,41 @@ def _serialize_renewal_application(obj: LicenseApplication):
                     "licenseFeeAmount": sb_fee,
                     "yearly_license_fee": sb_fee,
                     "yearlyLicenseFee": sb_fee,
+                    "security_fee_amount": 0,
+                    "securityFeeAmount": 0,
+                })
+        elif getattr(old_license, "source_type", None) == "company_registration":
+            try:
+                from django.apps import apps
+                FixedFee = apps.get_model('core', 'MasterFixedFee')
+                fee_obj = FixedFee.objects.filter(fee_code='COMP_REG', is_active=True).first()
+                comp_fee = fee_obj.amount if fee_obj else Decimal('5000.00')
+            except Exception:
+                comp_fee = Decimal('5000.00')
+            if comp_fee is not None:
+                data.update({
+                    "license_fee_amount": float(comp_fee),
+                    "licenseFeeAmount": float(comp_fee),
+                    "yearly_license_fee": float(comp_fee),
+                    "yearlyLicenseFee": float(comp_fee),
+                    "security_fee_amount": 0,
+                    "securityFeeAmount": 0,
+                })
+        elif getattr(old_license, "source_type", None) == "company_collaboration":
+            try:
+                from django.apps import apps
+                from decimal import Decimal
+                FixedFee = apps.get_model('core', 'MasterFixedFee')
+                fee_obj = FixedFee.objects.filter(fee_code='COMP_COLLAB_FEE', is_active=True).first()
+                comp_fee = fee_obj.amount if fee_obj else Decimal('25000.00')
+            except Exception:
+                comp_fee = Decimal('25000.00')
+            if comp_fee is not None:
+                data.update({
+                    "license_fee_amount": float(comp_fee),
+                    "licenseFeeAmount": float(comp_fee),
+                    "yearly_license_fee": float(comp_fee),
+                    "yearlyLicenseFee": float(comp_fee),
                     "security_fee_amount": 0,
                     "securityFeeAmount": 0,
                 })
@@ -730,6 +848,22 @@ def pay_license_fee_wallet(request, application_id):
                 amount = _get_salesman_barman_registration_fee()
             except Exception:
                 amount = None
+        elif getattr(old_license, "source_type", None) == "company_registration":
+            try:
+                from django.apps import apps
+                FixedFee = apps.get_model('core', 'MasterFixedFee')
+                fee_obj = FixedFee.objects.filter(fee_code='COMP_REG', is_active=True).first()
+                amount = fee_obj.amount if fee_obj else Decimal('5000.00')
+            except Exception:
+                amount = Decimal('5000.00')
+        elif getattr(old_license, "source_type", None) == "company_collaboration":
+            try:
+                from django.apps import apps
+                FixedFee = apps.get_model('core', 'MasterFixedFee')
+                fee_obj = FixedFee.objects.filter(fee_code='COMP_COLLAB_FEE', is_active=True).first()
+                amount = fee_obj.amount if fee_obj else Decimal('25000.00')
+            except Exception:
+                amount = Decimal('25000.00')
 
     if amount is None:
         return Response({"detail": "License fee structure not configured for this renewal."}, status=status.HTTP_400_BAD_REQUEST)
@@ -763,7 +897,51 @@ def pay_license_fee_wallet(request, application_id):
         wallet_licensee_id = nli_license_id or str(getattr(request.user, "username", "") or "").strip()
 
     license_fee_hoa = _resolve_hoa_code(module_type="other", wallet_type="license_fee")
-    txn_id = secrets.token_hex(12).upper()
+    
+    # Find matching recent successful BillDesk transaction to link UTR
+    txn_id = None
+    try:
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+        from models.transactional.wallet.models import WalletTransaction
+        from datetime import timedelta
+        from django.utils import timezone
+        
+        candidates = [
+            str(request.user.username).strip(),
+            str(wallet_licensee_id).strip(),
+            str(app.application_id).strip()
+        ]
+        time_limit = timezone.now() - timedelta(days=2)
+        
+        # Try with exact amount first
+        recent_txs = PaymentBilldeskTransaction.objects.filter(
+            payer_id__in=candidates,
+            payment_status="S",
+            transaction_amount=Decimal(str(amount)),
+            transaction_date__gte=time_limit
+        ).order_by("-transaction_date")
+        
+        for tx in recent_txs:
+            if not WalletTransaction.objects.filter(transaction_id=tx.utr, entry_type="DR").exists():
+                txn_id = tx.utr
+                break
+                
+        # If not found, try without amount filter
+        if not txn_id:
+            recent_txs_any = PaymentBilldeskTransaction.objects.filter(
+                payer_id__in=candidates,
+                payment_status="S",
+                transaction_date__gte=time_limit
+            ).order_by("-transaction_date")
+            for tx in recent_txs_any:
+                if not WalletTransaction.objects.filter(transaction_id=tx.utr, entry_type="DR").exists():
+                    txn_id = tx.utr
+                    break
+    except Exception as e:
+        logger.warning("Failed to link BillDesk UTR to wallet renewal payment: %s", e)
+
+    if not txn_id:
+        txn_id = secrets.token_hex(12).upper()
     try:
         debit_wallet_balance(
             transaction_id=txn_id,
@@ -783,18 +961,55 @@ def pay_license_fee_wallet(request, application_id):
     app.save(update_fields=["is_license_fee_paid"])
 
     # Flip fee-paid flags on source application (if it was toggled to False after expiry).
-    if src_app is not None and not getattr(src_app, "is_license_fee_paid", False):
+    if src_app is not None:
         try:
-            src_app.is_license_fee_paid = True
-            src_app.save(update_fields=["is_license_fee_paid"])
+            need_save = False
+            if not getattr(src_app, "is_license_fee_paid", False):
+                src_app.is_license_fee_paid = True
+                need_save = True
+            if not getattr(src_app, "is_security_fee_paid", False):
+                src_app.is_security_fee_paid = True
+                need_save = True
+            if need_save:
+                src_app.save(update_fields=["is_license_fee_paid", "is_security_fee_paid"])
+            
+            # Sync new license payment status so it updates is_approved to True on src_app and is_active on license
+            from models.transactional.new_license_application.payment_status import sync_new_license_payment_status
+            sync_new_license_payment_status(src_app)
         except Exception:
             pass
 
     _extend_license_validity(old_license)
-    try:
-        _sync_license_active_from_renewal_payment(old_license, app)
-    except Exception:
-        pass
+
+    # For company_registration renewals, the _sync helper may not fire correctly
+    # because there is no src_app (new_license_application). Explicitly activate.
+    if getattr(old_license, "source_type", None) == "company_registration":
+        try:
+            old_license.refresh_from_db()
+            old_license.is_active = True
+            old_license.save(update_fields=["is_active"])
+
+            # Also mark the source CompanyRegistration as approved/paid so the
+            # dashboard card no longer shows EXPIRED and disallows a second renewal.
+            cr_src = None
+            try:
+                cr_src = old_license.source_application
+            except Exception:
+                pass
+            if cr_src is not None:
+                try:
+                    if not getattr(cr_src, "is_approved", False):
+                        cr_src.is_approved = True
+                        cr_src.save(update_fields=["is_approved"])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    else:
+        try:
+            _sync_license_active_from_renewal_payment(old_license, app)
+        except Exception:
+            pass
 
     try:
         _sync_renewal_payment_status(app)
@@ -802,6 +1017,7 @@ def pay_license_fee_wallet(request, application_id):
         pass
 
     return Response({"success": True, "transaction_id": txn_id, "license_id": old_license.license_id})
+
 
 
 @api_view(["POST"])
@@ -819,7 +1035,16 @@ def pay_security_fee_wallet(request, application_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def approve_renewal_application(request, application_id):
-    app = get_object_or_404(LicenseApplication, application_id=str(application_id))
+    from urllib.parse import unquote
+    from django.db.models import Q
+    raw_id = str(application_id).strip()
+    decoded_id = unquote(raw_id).strip()
+    app = LicenseApplication.objects.filter(
+        Q(application_id=raw_id) | Q(application_id=decoded_id)
+    ).first()
+    if not app:
+        return Response({"detail": "License renewal application not found."}, status=status.HTTP_404_NOT_FOUND)
+
     target_stage = _pick_renewal_target_stage(app, "approve")
     if not target_stage:
         return Response({"detail": "No valid target stage found for approval."}, status=status.HTTP_400_BAD_REQUEST)
@@ -842,7 +1067,16 @@ def approve_renewal_application(request, application_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def reject_renewal_application(request, application_id):
-    app = get_object_or_404(LicenseApplication, application_id=str(application_id))
+    from urllib.parse import unquote
+    from django.db.models import Q
+    raw_id = str(application_id).strip()
+    decoded_id = unquote(raw_id).strip()
+    app = LicenseApplication.objects.filter(
+        Q(application_id=raw_id) | Q(application_id=decoded_id)
+    ).first()
+    if not app:
+        return Response({"detail": "License renewal application not found."}, status=status.HTTP_404_NOT_FOUND)
+
     target_stage = _pick_renewal_target_stage(app, "reject")
     if not target_stage:
         return Response({"detail": "No valid target stage found for rejection."}, status=status.HTTP_400_BAD_REQUEST)
@@ -877,12 +1111,21 @@ def list_license_applications(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def license_application_detail(request, pk):
-    obj = get_object_or_404(LicenseApplication, application_id=str(pk))
+    from urllib.parse import unquote
+    from django.db.models import Q
+    raw_pk = str(pk).strip()
+    decoded_pk = unquote(raw_pk).strip()
+    obj = LicenseApplication.objects.filter(
+        Q(application_id=raw_pk) | Q(application_id=decoded_pk)
+    ).first()
+    if not obj:
+        return Response({"detail": "License renewal application not found."}, status=status.HTTP_404_NOT_FOUND)
     return Response(_serialize_renewal_application(obj), status=status.HTTP_200_OK)
 
 
 @permission_classes([IsAuthenticated])
 @api_view(["GET"])
+@dashboard_counts_cache("license_renewal_application")
 def dashboard_counts(request):
     try:
         from models.masters.license.views import deactivate_all_expired_licenses
@@ -897,6 +1140,13 @@ def dashboard_counts(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
     stage_sets = _get_stage_sets(wf.id)
     all_qs = LicenseApplication.objects.filter(workflow_id=wf.id)
+
+    month = request.query_params.get('month')
+    year = request.query_params.get('year')
+    if month:
+        all_qs = all_qs.filter(created_at__month=month)
+    if year:
+        all_qs = all_qs.filter(created_at__year=year)
 
     applied_stages = set(stage_sets["initial"])
     objection_stages = set(stage_sets["objection"])
@@ -915,6 +1165,34 @@ def dashboard_counts(request):
                 "approved": base_qs.filter(current_stage__name__in=approved_stages).count(),
                 "rejected": base_qs.filter(current_stage__name__in=rejected_stages).count(),
                 "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
+            }
+        )
+
+    if role in ['site_admin', 'single_window']:
+        from django.contrib.contenttypes.models import ContentType
+        from django.db.models import Exists, OuterRef, Q
+        from auth.workflow.models import Transaction as WorkflowTransaction
+
+        content_type = ContentType.objects.get_for_model(LicenseApplication)
+        acted_by_admin = Exists(
+            WorkflowTransaction.objects.filter(
+                content_type=content_type,
+                object_id=OuterRef('application_id')
+            ).exclude(performed_by__role_id=2)
+        )
+        all_qs_annotated = all_qs.annotate(_acted_by_admin=acted_by_admin)
+
+        approved_count = all_qs_annotated.filter(
+            Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True)
+        ).count()
+
+        return Response(
+            {
+                "applied": all_qs.filter(current_stage__name__in=applied_stages).count(),
+                "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
+                "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
+                "approved": approved_count,
+                "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
             }
         )
 

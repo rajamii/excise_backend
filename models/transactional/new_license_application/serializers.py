@@ -27,19 +27,19 @@ DRAUGHT_BEER_MODULE_CODE = "NLI_ADD_DRAUGHT_BEER"
 
 def _get_additional_charge_total(obj: NewLicenseApplication) -> Decimal:
     """
-    Additional charges are configurable in `sems_master_payment_module` (MasterPaymentModule.license_fee).
+    Additional charges are configurable in `masters_fixedfee` (MasterFixedFee.amount).
     They are added to both license fee and security fee when selected by the applicant.
     """
     total = Decimal("0.00")
     try:
-        from models.transactional.payment_gateway.models import MasterPaymentModule
+        from models.masters.core.models import MasterFixedFee
 
         module_fees = {
-            m["module_code"]: (m["license_fee"] if m["license_fee"] is not None else Decimal("0.00"))
-            for m in MasterPaymentModule.objects.filter(
-                module_code__in=[PACHWAI_MODULE_CODE, DRAUGHT_BEER_MODULE_CODE],
-                visibility_status=True,
-            ).values("module_code", "license_fee")
+            m["fee_code"]: (m["amount"] if m["amount"] is not None else Decimal("0.00"))
+            for m in MasterFixedFee.objects.filter(
+                fee_code__in=[PACHWAI_MODULE_CODE, DRAUGHT_BEER_MODULE_CODE],
+                is_active=True,
+            ).values("fee_code", "amount")
         }
         if getattr(obj, "pachwai", False):
             total += module_fees.get(PACHWAI_MODULE_CODE, Decimal("0.00"))
@@ -145,6 +145,11 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     # Site enquiry revert badge (annotated in views).
     site_enquiry_is_reverted = serializers.BooleanField(read_only=True, default=False)
     site_enquiry_reverted_remarks = serializers.CharField(read_only=True, allow_blank=True, allow_null=True)
+
+    # Commissioner revert remarks
+    commissioner_revert_remarks = serializers.SerializerMethodField()
+    is_reverted_by_commissioner = serializers.SerializerMethodField()
+    latest_revert = serializers.SerializerMethodField()
 
     # Backward-compatible fee field used across multiple frontend screens.
     yearly_license_fee = serializers.SerializerMethodField()
@@ -279,20 +284,39 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     def validate(self, data):
         # Resolve-objection updates are partial payloads, so only validate fields that
         # are actually being updated in this request.
-        if 'mobile_number' in data:
-            helpers.validate_mobile_number(data['mobile_number'])
-        if 'email' in data:
-            helpers.validate_email_field(data['email'])
-        if 'pan' in data:
+        license_type = data.get('license_type') or getattr(self.instance, 'license_type', None)
+        is_company = False
+        if license_type:
+            is_company = license_type.license_type.lower() == 'company' or license_type.id == 2
+
+        if not is_company:
+            if 'mobile_number' in data and data['mobile_number']:
+                helpers.validate_mobile_number(data['mobile_number'])
+            if 'email' in data and data['email']:
+                helpers.validate_email_field(data['email'])
+        
+        if 'pan' in data and data['pan']:
             helpers.validate_pan_number(data['pan'])
-        if data.get('company_pan'):
-            helpers.validate_pan_number(data['company_pan'])
+
+        if is_company:
+            # Set individual-only personal details to None/null for Company applications
+            individual_only_fields = [
+                'applicant_name', 'father_husband_name', 'dob', 'gender',
+                'residential_status', 'marital_status', 'has_sikkim_certificate', 'has_excise_license',
+                'family_excise_license', 'criminal_conviction', 'coi_rc_ss',
+                'pass_photo', 'dob_proof', 'sikkim_certificate',
+                'email', 'mobile_number'
+            ]
+            for field in individual_only_fields:
+                if field in data or self.instance is None:
+                    data[field] = None
+
+        if data.get('company_gst'):
+            helpers.validate_gst_number(data['company_gst'])
         if data.get('company_email'):
             helpers.validate_email_field(data['company_email'])
         if data.get('company_phone_number'):
             helpers.validate_mobile_number(data['company_phone_number'])
-        if data.get('company_cin'):
-            helpers.validate_cin_number(data['company_cin'])
         if 'pin_code' in data:
             helpers.validate_pin_code(data['pin_code'])
 
@@ -394,6 +418,38 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
                 renewal = LicenseApplication.objects.filter(old_license_id=license_obj.license_id).order_by('-created_at').first()
                 if renewal:
                     return renewal.application_id
+        except Exception:
+            pass
+        return None
+
+    def get_commissioner_revert_remarks(self, obj) -> str | None:
+        try:
+            from auth.workflow.models import Revert
+            from django.contrib.contenttypes.models import ContentType
+            ct = ContentType.objects.get_for_model(obj)
+            last_revert = Revert.objects.filter(content_type=ct, object_id=str(obj.pk)).order_by('-reverted_on').first()
+            if last_revert:
+                return last_revert.remarks
+        except Exception:
+            pass
+        return None
+
+    def get_is_reverted_by_commissioner(self, obj) -> bool:
+        return self.get_commissioner_revert_remarks(obj) is not None
+
+    def get_latest_revert(self, obj) -> dict | None:
+        try:
+            from auth.workflow.models import Revert
+            from django.contrib.contenttypes.models import ContentType
+            ct = ContentType.objects.get_for_model(obj)
+            last_revert = Revert.objects.filter(content_type=ct, object_id=str(obj.pk)).order_by('-reverted_on').first()
+            if last_revert:
+                return {
+                    "remarks": last_revert.remarks,
+                    "reverted_by": f"{last_revert.reverted_by.first_name} {last_revert.reverted_by.last_name}".strip() if last_revert.reverted_by else "Unknown",
+                    "reverted_by_role": last_revert.reverted_by.role.name if last_revert.reverted_by and last_revert.reverted_by.role else "Unknown",
+                    "reverted_on": last_revert.reverted_on.isoformat()
+                }
         except Exception:
             pass
         return None

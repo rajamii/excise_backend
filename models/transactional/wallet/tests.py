@@ -406,3 +406,95 @@ class WalletRechargeFallbackTests(TestCase):
         # The stage should be transitioned to Approved (final stage)
         self.assertEqual(self.app.current_stage_id, self.approved_stage.id)
         self.assertTrue(self.app.is_approved)
+
+
+class WalletInitializerSalesmanBarmanTests(TestCase):
+    def setUp(self):
+        self.state = State.objects.create(state="Sikkim", state_code=11, is_active=True)
+        self.district = District.objects.create(
+            district="Gangtok",
+            district_code=225,
+            is_active=True,
+            state_code=self.state,
+        )
+        self.subdivision = Subdivision.objects.create(
+            subdivision="Gangtok Subdivision",
+            subdivision_code=1553,
+            is_active=True,
+            district_code=self.district,
+        )
+        self.user = CustomUser.objects.create_user(
+            email="u3@example.com",
+            first_name="Test",
+            last_name="User",
+            phone_number="9999999997",
+            district=self.district,
+            subdivision=self.subdivision,
+            address="Test address",
+            password="pass",
+        )
+        self.user.username = "TH0003"
+        self.user.save(update_fields=["username"])
+
+        self.cat = LicenseCategory.objects.create(license_category="Test Category")
+        self.sub_other = LicenseSubcategory.objects.create(description="FLR Shop", category=self.cat)
+
+        # Seed HOA and Payment Module dependencies
+        from models.transactional.payment_gateway.models import MasterPaymentModule, PaymentModuleHoa, MasterHeadOfAccount
+        from models.transactional.wallet.models import MasterWalletType
+
+        mpm, _ = MasterPaymentModule.objects.get_or_create(module_code="other_module", defaults={"module_desc": "other"})
+        wt_sd, _ = MasterWalletType.objects.get_or_create(code="security_deposit", defaults={"name": "Security Deposit"})
+        wt_lf, _ = MasterWalletType.objects.get_or_create(code="license_fee", defaults={"name": "License Fee"})
+        hoa_sd, _ = MasterHeadOfAccount.objects.get_or_create(sl_no=1, defaults={"head_of_account": "non", "visible_status": True})
+        hoa_lf, _ = MasterHeadOfAccount.objects.get_or_create(sl_no=2, defaults={"head_of_account": "0039-00-800-45-02", "visible_status": True})
+
+        PaymentModuleHoa.objects.get_or_create(
+            module_code=mpm,
+            wallet_type=wt_sd,
+            head_of_account=hoa_sd,
+            defaults={"is_active": True}
+        )
+        PaymentModuleHoa.objects.get_or_create(
+            module_code=mpm,
+            wallet_type=wt_lf,
+            head_of_account=hoa_lf,
+            defaults={"is_active": True}
+        )
+
+    def test_sb_license_initialization_resolves_to_inactive_na_license(self):
+        # 1. Create an inactive NA/ license for the user (representing the pending new license application)
+        na_license = License.objects.create(
+            license_id="NA/225/2025-26/0005",
+            source_type="new_license_application",
+            applicant=self.user,
+            license_category=self.cat,
+            license_sub_category=self.sub_other,
+            excise_district=self.district,
+            issue_date=date(2026, 4, 1),
+            valid_up_to=date(2027, 3, 31),
+            is_active=False, # Inactive
+        )
+
+        # 2. Create the salesman/barman license (representing the subordinate license)
+        sb_license = License.objects.create(
+            license_id="SB/225/2025-26/0001",
+            source_type="salesman_barman",
+            applicant=self.user,
+            license_category=self.cat,
+            license_sub_category=None,
+            excise_district=self.district,
+            issue_date=date(2026, 4, 1),
+            valid_up_to=date(2027, 3, 31),
+            is_active=True,
+        )
+
+        # 3. Initialize wallet balances for the salesman/barman license.
+        # It should resolve to the applicant's NA/ license ID (even if it's inactive) rather than SB/.
+        initialize_wallet_balances_for_license(sb_license)
+
+        # 4. Verify wallet balances are created with licensee_id = NA/...
+        rows = WalletBalance.objects.filter(user_id__iexact="TH0003")
+        self.assertEqual(rows.count(), 2)
+        for r in rows:
+            self.assertEqual(r.licensee_id, "NA/225/2025-26/0005")

@@ -20,6 +20,7 @@ from .models import (
 )
 from .serializers import EnaRequisitionDetailSerializer, RequisitionBulkLiterDetailSerializer
 from auth.workflow.constants import WORKFLOW_IDS
+from models.transactional.dashboard_cache import dashboard_counts_cache
 from models.transactional.supply_chain.access_control import (
     has_workflow_access,
     scope_by_profile_or_workflow,
@@ -155,6 +156,10 @@ def _cancellation_requested_permit_numbers_for_requisition(requisition_ref_no: s
 
 
 def _filter_commissioner_visible_requisitions(user, queryset):
+    role_token = _normalize_role_token(getattr(getattr(user, 'role', None), 'name', ''))
+    if role_token in {'siteadmin', 'singlewindow'}:
+        return queryset
+
     if not _is_commissioner_user(user):
         return queryset
 
@@ -210,6 +215,10 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
         context = super().get_serializer_context()
         context['request'] = self.request
         return context
+
+    @dashboard_counts_cache("supply_chain_ena_requisitions")
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
 
 
 class EnaRequisitionDetailRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):

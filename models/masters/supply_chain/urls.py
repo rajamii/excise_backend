@@ -1,4 +1,5 @@
 from django.urls import include, path
+from models.masters.supply_chain.liquor_data.views import UpdateSyncStatusView
 
 urlpatterns = [
     path('ena-distillery-types/', include('models.masters.supply_chain.ena_distillery_details.urls')),
@@ -12,4 +13,5 @@ urlpatterns = [
     path('hologram-suppliers/', include('models.masters.supply_chain.hologram_supplier.urls')),
     # path('vehicles/', include('models.masters.supply_chain.vehicles.urls')),
     # path('status-master/', include('models.masters.supply_chain.status_master.urls')),
+    path('update-sync-status/', UpdateSyncStatusView.as_view(), name='update-sync-status'),
 ]

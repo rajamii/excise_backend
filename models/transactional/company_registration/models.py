@@ -4,12 +4,6 @@ from django.utils.timezone import now
 from . import helpers
 from auth.user.models import CustomUser
 from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
-from utils.file_validation import secure_upload_filename
-
-
-def upload_undertaking_path(instance, filename):
-    safe_name = secure_upload_filename(filename)
-    return f'company_registration/{instance.application_id}/{safe_name}'
 
 
 class CompanyRegistration(models.Model):
@@ -25,8 +19,6 @@ class CompanyRegistration(models.Model):
     application_year = models.CharField(max_length=9, default='2025-2026')
     
     company_name = models.CharField(max_length=255)
-    pan = models.CharField(max_length=10)
-    office_address = models.TextField()
     country = models.CharField(max_length=100)
     state = models.CharField(max_length=100)
     factory_address = models.TextField()
@@ -40,15 +32,18 @@ class CompanyRegistration(models.Model):
     member_mobile_number = models.BigIntegerField()
     member_email_id = models.EmailField(blank=True, null=True)
     member_address = models.TextField()
+    members = models.JSONField(default=list, blank=True)
 
     # ===== Payment Details =====
-    payment_id = models.CharField(max_length=100, blank=True, null=True)
-    payment_date = models.DateField(blank=True, null=True)
     payment_amount = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
     payment_remarks = models.TextField(blank=True, null=True)
 
     # ===== Document Upload =====
-    undertaking = models.FileField(upload_to=upload_undertaking_path)
+    # Using simple string path instead of function reference
+    undertaking = models.FileField(upload_to='company_registration/')
+    excise_license = models.FileField(upload_to='company_registration/', blank=True, null=True)
+    deed_of_partnership = models.FileField(upload_to='company_registration/', blank=True, null=True)
+    memorandum_of_association = models.FileField(upload_to='company_registration/', blank=True, null=True)
 
     # ===== Metadata =====
     created_at = models.DateTimeField(auto_now_add=True)
@@ -79,8 +74,6 @@ class CompanyRegistration(models.Model):
     def clean(self):
         helpers.validate_name(self.company_name)
         helpers.validate_name(self.member_name)
-        helpers.validate_pan_number(self.pan)
-        helpers.validate_address(self.office_address)
         helpers.validate_address(self.factory_address)
         helpers.validate_address(self.member_address)
         helpers.validate_mobile_number(self.company_mobile_number)
@@ -142,7 +135,6 @@ class CompanyRegistration(models.Model):
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['company_name']),
-            models.Index(fields=['pan']),
             models.Index(fields=['application_year']),
             models.Index(fields=['current_stage']),
             models.Index(fields=['applicant']),

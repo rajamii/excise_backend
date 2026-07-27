@@ -15,4 +15,11 @@ urlpatterns = [
     path('excisesecretaries/detail/<int:pk>/', views.ExciseSecretaryDetailAPIView.as_view(), name='excisesecretaries-detail'),
     path('excisesecretaries/update/<int:pk>/', views.ExciseSecretaryUpdateAPIView.as_view(), name='excisesecretaries-update'),
     path('excisesecretaries/delete/<int:pk>/', views.ExciseSecretaryDeleteAPIView.as_view(), name='excisesecretaries-delete'),
+
+    # About Us Content APIs
+    path('content/create/', views.AboutUsCreateAPIView.as_view(), name='aboutus-create'),
+    path('content/list/', views.AboutUsListAPIView.as_view(), name='aboutus-list'),
+    path('content/detail/<int:pk>/', views.AboutUsDetailAPIView.as_view(), name='aboutus-detail'),
+    path('content/update/<int:pk>/', views.AboutUsUpdateAPIView.as_view(), name='aboutus-update'),
+    path('content/delete/<int:pk>/', views.AboutUsDeleteAPIView.as_view(), name='aboutus-delete'),
 ]

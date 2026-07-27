@@ -1,4 +1,5 @@
 from django.db import models
+from django.utils import timezone
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator, MaxValueValidator
 from models.masters.core.validators import validate_name, validate_name_extended
@@ -27,6 +28,14 @@ class LicenseCategory(models.Model):
         blank=True,
         db_index=True,
         help_text="Legacy license category code used in old system"
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Whether this license category is active"
+    )
+    is_special_permit_allowed = models.BooleanField(
+        default=False,
+        help_text="Whether licenses of this category are allowed to submit Special Permit (Dry Day) applications"
     )
 
     class Meta:
@@ -189,6 +198,7 @@ class PoliceStation(models.Model):
 
 
 class LicenseTitle(models.Model):
+    name = models.CharField(max_length=100, default='', blank=True)
     description = models.CharField(max_length=200, default=None, null=False)
 
     class Meta:
@@ -221,6 +231,17 @@ class LicenseSubcategory(models.Model):
         LicenseCategory,
         on_delete=models.CASCADE,
         related_name='subcategories',
+    )
+    dry_day_fee_type = models.CharField(
+        max_length=20,
+        choices=[('per_annum', 'Per Annum'), ('per_day', 'Per Day')],
+        null=True,
+        blank=True,
+        default=None
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Whether this license subcategory is active"
     )
 
     class Meta:
@@ -262,6 +283,7 @@ class LocationCategory(models.Model):
     )
     description = models.TextField(null=True, blank=True, help_text="Detailed description")
     is_active = models.BooleanField(default=True)
+    is_rural = models.BooleanField(default=False)
     created_by = models.ForeignKey(
         'user.CustomUser',
         on_delete=models.SET_NULL,
@@ -293,6 +315,14 @@ class LocationSubcategory(models.Model):
         on_delete=models.CASCADE,
         related_name='subcategories',
         null=False
+    )
+    sub_division = models.ForeignKey(
+        Subdivision,
+        on_delete=models.CASCADE,
+        related_name='location_subcategories',
+        null=True,
+        blank=True,
+        db_column='sub_division_id'
     )
     description = models.TextField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
@@ -376,8 +406,17 @@ class Ward(models.Model):
         to_field='location_code',
         on_delete=models.CASCADE,
         related_name='wards',
-        null=False,
+        null=True,
+        blank=True,
         db_column='location_code'
+    )
+    subcategory = models.ForeignKey(
+        LocationSubcategory,
+        on_delete=models.SET_NULL,
+        related_name='wards',
+        null=True,
+        blank=True,
+        db_column='subcategory_id'
     )
     population = models.IntegerField(null=True, blank=True)
     area_sq_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
@@ -392,16 +431,16 @@ class Ward(models.Model):
     operation_date = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'masters_ward'
-        verbose_name = 'Ward'
-        verbose_name_plural = 'Wards'
+        db_table = 'master_urbanward'
+        verbose_name = 'Urban Ward'
+        verbose_name_plural = 'Urban Wards'
         constraints = [
             models.UniqueConstraint(
-                fields=['location_code', 'ward_number'],
-                name='unique_ward_number_per_location'
+                fields=['subcategory', 'ward_number'],
+                name='unique_ward_number_per_subcategory'
             )
         ]
-        ordering = ['location_code', 'ward_number']
+        ordering = ['subcategory', 'ward_number']
 
     def __str__(self) -> str:
         return f"Ward {self.ward_number} - {self.ward_name}"
@@ -413,6 +452,83 @@ class Ward(models.Model):
             raise ValidationError("Population cannot be negative")
         if self.area_sq_km is not None and self.area_sq_km <= 0:
             raise ValidationError("Area must be positive")
+
+
+class Block(models.Model):
+    block_name = models.CharField(
+        max_length=100,
+        validators=[validate_name_extended]
+    )
+    subcategory = models.ForeignKey(
+        LocationSubcategory,
+        on_delete=models.CASCADE,
+        related_name='blocks',
+        null=True,
+        blank=True
+    )
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        'user.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_blocks'
+    )
+    operation_date = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'master_block'
+        verbose_name = 'Block'
+        verbose_name_plural = 'Blocks'
+
+    def __str__(self) -> str:
+        return self.block_name
+
+
+class RuralWard(models.Model):
+    ward_name = models.CharField(
+        max_length=100,
+        null=False,
+        blank=False,
+        validators=[validate_name_extended]
+    )
+    ward_number = models.IntegerField(null=False, blank=False)
+    block = models.ForeignKey(
+        Block,
+        on_delete=models.CASCADE,
+        related_name='rural_wards',
+        null=False
+    )
+    population = models.IntegerField(null=True, blank=True)
+    area_sq_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        'user.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_rural_wards'
+    )
+    operation_date = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'master_ruralward'
+        verbose_name = 'Rural Ward'
+        verbose_name_plural = 'Rural Wards'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['block', 'ward_number'],
+                name='unique_rural_ward_number_per_block'
+            )
+        ]
+        ordering = ['block', 'ward_number']
+
+    def __str__(self) -> str:
+        return f"Ward {self.ward_number} - {self.ward_name}"
+
+    def clean(self):
+        if self.ward_number <= 0:
+            raise ValidationError("Ward number must be positive")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -534,3 +650,59 @@ class RenewalApplicationConfig(models.Model):
         if not self.pk and RenewalApplicationConfig.objects.exists():
             raise ValidationError("There can be only one RenewalApplicationConfig instance")
         return super().save(*args, **kwargs)
+
+
+class AdditionalChargeConfig(models.Model):
+    category = models.ForeignKey(LicenseCategory, on_delete=models.CASCADE, related_name='additional_charges')
+    charge_type = models.CharField(max_length=50, choices=[('pachwai', 'Pachwai'), ('draught_beer', 'Draught Beer')])
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'masters_additionalchargeconfig'
+        constraints = [
+            models.UniqueConstraint(fields=['category', 'charge_type'], name='unique_category_charge_type')
+        ]
+
+    def __str__(self):
+        return f"{self.charge_type} ({self.category.license_category})"
+
+
+class MasterFixedFee(models.Model):
+    fee_code = models.CharField(max_length=50, primary_key=True)
+    fee_desc = models.CharField(max_length=200)
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    is_active = models.BooleanField(default=True)
+    created_date = models.DateTimeField(default=timezone.now)
+    modified_date = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'masters_fixedfee'
+
+    def __str__(self):
+        return f"{self.fee_code} - {self.fee_desc}"
+
+
+class WhatsCurrent(models.Model):
+    CATEGORY_CHOICES = [
+        ('act', 'Acts'),
+        ('rule', 'Rules'),
+        ('circular', 'Circulars'),
+        ('bullet', 'Bullet Notifications'),
+        ('license', 'Flash Notification'),
+    ]
+
+    title = models.CharField(max_length=500)
+    category = models.CharField(max_length=50, choices=CATEGORY_CHOICES)
+    message = models.TextField(blank=True, null=True)
+    file = models.FileField(upload_to='whats_current/pdfs/', blank=True, null=True)
+    date = models.DateField(default=timezone.now)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'masters_whatscurrent'
+        ordering = ['-date', '-created_at']
+
+    def __str__(self):
+        return f"{self.category} - {self.title}"
