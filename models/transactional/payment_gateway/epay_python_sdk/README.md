@@ -1,0 +1,208 @@
+# SBI ePay Python SDK
+
+A Python SDK for integrating with SBI ePay Payment Gateway.
+
+## Requirements
+
+- Python 3.7+
+- requests >= 2.25.0
+- cryptography >= 3.4.0
+
+## Installation
+- Install the SDK  using Pip
+
+```bash
+pip install sbi-epay-sdk
+```
+
+## Usage
+
+### Basic Setup
+
+```python
+from epay_python_sdk import SBIEPayClient, SDKCredentials, Environment, Logging
+
+# Configure the SDK
+credentials  = SDKCredentials(
+    api_key="your_api_key",
+    api_secret="your_api_secret",
+    encryption_key="your_base64_encryption_key"
+)
+
+environment: Environment = "LIVE" # SANDBOX or LIVE
+logging: Logging = True # False or True
+responseType = "STRING" # STRING or JSON
+
+
+# Initialize the SDK
+sbiePayClient  = SBIEPayClient(credentials, environment, logging=logging, responseType=responseType)
+```
+
+### Customer Operations
+
+```python
+from sbi_epay.types import CustomerEntity
+
+# Create a customer
+customer_data = CustomerEntity(
+    customer_name="John Doe",
+    email="john@example.com",
+    phone_number="9876543210",
+    address1="123 Main Street",
+    country="India",
+    pin_code="400001",
+    city="Mumbai",
+    state="Maharashtra"
+)
+
+try:
+    result = sbiePayClient.customer.create(customer_data)
+    print(f"Customer created: {result.data}")
+except Exception as e:
+    print(f"Error: {e}")
+
+# Fetch a customer
+try:
+    customer = sdk.customer.fetch("customer_id")
+    print(f"Customer details: {customer.data}")
+except Exception as e:
+    print(f"Error: {e}")
+
+# Update customer status
+try:
+    result = sdk.customer.update_status("customer_id", "ACTIVE")
+    print(f"Status updated: {result.data}")
+except Exception as e:
+    print(f"Error: {e}")
+```
+
+### Order Operations
+
+```python
+from sbi_epay.types import OrderEntity, OrderSearchEntity
+
+# Create an order
+order_data = OrderEntity(
+    currency_code="INR",
+    order_amount=1000.50,
+    order_ref_number="ORD_123456",
+    return_url="https://yoursite.com/return",
+    customer_id="customer_id"
+)
+
+try:
+    result = sdk.order.create(order_data)
+    print(f"Order created: {result.data}")
+except Exception as e:
+    print(f"Error: {e}")
+
+# Search orders
+search_data = OrderSearchEntity(
+    order_amount=1000.50,
+    order_ref_number="ORD_123456"
+)
+
+try:
+    result = sdk.order.search(search_data)
+    print(f"Order search results: {result.data}")
+except Exception as e:
+    print(f"Error: {e}")
+```
+
+### Refund Operations
+
+```python
+from sbi_epay.types import RefundEntity, RefundSearchEntity
+
+# Book a refund
+refund_data = RefundEntity(
+    refund_type="FULL",
+    refund_amount=500.0,
+    atrn_number="ATRN_123456",
+    remark="Customer requested refund"
+)
+
+try:
+    result = sdk.refund.book(refund_data)
+    print(f"Refund booked: {result.data}")
+except Exception as e:
+    print(f"Error: {e}")
+
+# Search refunds
+search_data = RefundSearchEntity(
+    atrn_number="ATRN_123456",
+    arrn_number="ARRN_123456",
+    sbi_order_ref_number="SBI_123456",
+    refund_status="SUCCESS",
+    refund_type="FULL",
+    from_date=1640995200,  # Unix timestamp
+    to_date=1672531199     # Unix timestamp
+)
+
+try:
+    result = sdk.refund.search(search_data)
+    print(f"Refund search results: {result.data}")
+except Exception as e:
+    print(f"Error: {e}")
+```
+
+## Testing
+
+Run the test suite:
+
+```bash
+pytest tests/ -v
+```
+
+Run tests with coverage:
+
+```bash
+pytest tests/ --cov=sbi_epay --cov-report=html
+```
+
+## Development
+
+### Setting up development environment
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/sbi-epay-python-sdk.git
+cd sbi-epay-python-sdk
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install development dependencies
+pip install -e ".[dev]"
+```
+
+### Code formatting and linting
+
+```bash
+# Format code
+black sbi_epay/ tests/
+
+# Lint code
+flake8 sbi_epay/ tests/
+
+# Type checking
+mypy sbi_epay/
+```
+
+## Features
+
+- **Complete API Coverage**: All customer, order, and refund operations
+- **Automatic Encryption/Decryption**: Built-in AES-GCM encryption handling
+- **Type Safety**: Full type hints and dataclass support
+- **Error Handling**: Comprehensive error handling with meaningful messages
+- **Testing**: Complete test suite with mocking
+- **Documentation**: Comprehensive documentation and examples
+
+## License
+
+MIT License
+
+## Support
+
+For issues and questions, please create an issue on the GitHub repository.

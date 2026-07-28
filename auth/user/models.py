@@ -7,14 +7,13 @@ from auth.roles.models import Role
 from models.masters.core.models import District, Subdivision
 from models.masters.core.helper import GENDER_CHOICES, MARITAL_STATUS_CHOICES, RESIDENTIAL_STATUS_CHOICES
 from django.utils import timezone
+from datetime import datetime
 import uuid
 
 class CustomUserManager(BaseUserManager):
     def create_user(self, email, first_name, last_name, phone_number,
                    district, subdivision, address, password=None, **extra_fields):
-        """
-        Creates and saves a User with the given required fields.
-        """
+
         if not email:
             raise ValueError('The Email must be set')
         if not first_name:
@@ -170,6 +169,9 @@ class CustomUser(AbstractBaseUser):
     )
     is_oic_managed = models.BooleanField(default=False)
 
+    failed_login_attempts = models.PositiveIntegerField(default=0)
+    lockout_until = models.DateTimeField(null=True, blank=True)
+
     objects = CustomUserManager()
 
     USERNAME_FIELD = 'username'
@@ -187,6 +189,29 @@ class CustomUser(AbstractBaseUser):
     def clean(self):
         super().clean()
         self.email = self.__class__.normalize_email(self.email)
+
+    def is_locked_out(self) -> bool:
+        """Check if user account is currently locked due to failed attempts."""
+        if self.lockout_until and timezone.now() < self.lockout_until:
+            return True
+        return False
+
+    def record_failed_login(self, max_attempts: int = 5, lockout_minutes: int = 15):
+        """Increments failed attempts and sets lockout timestamp if max attempts reached."""
+        if self.is_locked_out():
+            return
+        
+        self.failed_login_attempts += 1
+        if self.failed_login_attempts >= max_attempts:
+            self.lockout_until = timezone.now() + datetime.timedelta(minutes=lockout_minutes)
+        self.save(update_fields=['failed_login_attempts', 'lockout_until'])
+
+    def reset_failed_login(self):
+        """Resets failed login counters upon successful authentication."""
+        if self.failed_login_attempts > 0 or self.lockout_until is not None:
+            self.failed_login_attempts = 0
+            self.lockout_until = None
+            self.save(update_fields=['failed_login_attempts', 'lockout_until'])
 
 
 class OTP(models.Model):

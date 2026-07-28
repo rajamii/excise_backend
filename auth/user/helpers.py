@@ -1,17 +1,9 @@
 from .models import CustomUser  
 
-
-'''
- Function to delete a user by their username
-
-'''
 def delete_user_by_username(username):
 
     try:
 
-        # Attempt to get the user with the given username
-        # Delete the user from the database
-       
         user = CustomUser.objects.get(username=username)
         
         user.delete()
@@ -29,10 +21,6 @@ def delete_user_by_username(username):
 
 
 
-'''
-# Function to update a user's details based on their username
-    
-'''
 def update_user_details(
     username,
     new_mobile_no=None,       
@@ -42,9 +30,6 @@ def update_user_details(
     new_password=None         
 ):
     try:
-
-        # Retrieve the user with the given username
-        # Update user fields if new values are provided
     
         user = CustomUser.objects.get(username=username)
 

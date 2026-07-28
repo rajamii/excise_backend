@@ -20,16 +20,18 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 MEDIA_URL = "/media/"
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
-
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-&9z_bt2h_b0gz8dho0u$j-g@569rl^@i071z4&j&p!qz7ez*(m'
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = ['sems.sikkim.gov.in', 'localhost', '127.0.0.1', '*']
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://sems.sikkim.gov.in",
+    "https://sems.sikkim.gov.in:8443",
+]
 
 # Application definition
 
@@ -79,7 +81,6 @@ INSTALLED_APPS = [
     'models.masters.supply_chain.transit_permit',
     'models.masters.supply_chain.vehicles',
     'models.masters.supply_chain.hologram_supplier',
-    # 'models.masters.supply_chain.status_master',
 
     # transcational models
     'models.transactional',
@@ -100,17 +101,16 @@ INSTALLED_APPS = [
     'models.transactional.supply_chain.ena_requisition_details',  
     'models.transactional.supply_chain.ena_cancellation_details',
     'models.transactional.supply_chain.hologram',
-    'models.transactional.supply_chain.brand_warehouse',
-    # auth models 
+    'models.transactional.supply_chain.brand_warehouse', 
     'auth.roles',
     'auth.user',
     'auth.workflow'
 ]
 
 MIDDLEWARE = [
-
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'csp.middleware.CSPMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -162,16 +162,13 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'eAbkari_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'postgres',  # Your PostgreSQL password
+        'PASSWORD': 'postgres',     # Your PostgreSQL password
         'HOST': 'localhost',        
-        'PORT': '5432',             # Default PostgreSQL port
-        'CONN_MAX_AGE': 300,         # Don't reuse connections — avoids aborted transaction state
+        'PORT': '5433',             # Default PostgreSQL port
+        'CONN_MAX_AGE': 300,        # Don't reuse connections — avoids aborted transaction state
     }
 }
 
-# Forgot Password Email SettingsSS
-# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-# For production, use SMTP:
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
@@ -187,9 +184,8 @@ PASSWORD_RESET_FRONTEND_URL = os.getenv(
     # "http://localhost:4200/reset-password"
 ).rstrip("/")
 
-DATA_UPLOAD_MAX_MEMORY_SIZE = 20971520 
-
-FILE_UPLOAD_MAX_MEMORY_SIZE = 2621440
+DATA_UPLOAD_MAX_MEMORY_SIZE = 20971520  # 20MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 20971520  # 20MB
 
 # OTP Configuration
 OTP_EXPIRY_SECONDS = 600  # 10 minutes
@@ -211,29 +207,6 @@ DASHBOARD_CACHE_FAILURE_COOLDOWN = int(os.getenv("DASHBOARD_CACHE_FAILURE_COOLDO
 
 AUTH_USER_MODEL = 'user.CustomUser'
 
-
-# Password validation
-# https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
-
-# AUTH_PASSWORD_VALIDATORS = [
-#    {
-#        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
-#    },
-#    {
-#        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-#    },
-#    {
-#        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
-#    },
-#    {
-#        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
-#    },
-#]
-
-
-# Internationalization
-# https://docs.djangoproject.com/en/5.1/topics/i18n/
-
 LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'UTC'
@@ -242,13 +215,17 @@ USE_I18N = True
 
 USE_TZ = True
 
-
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.1/howto/static-files/
-
 STATIC_URL = 'static/'
 
-CORS_ORIGIN_ALLOW_ALL = True
+CORS_ALLOW_ALL_ORIGINS = False
+
+CORS_ALLOWED_ORIGINS = [
+    "https://sems.sikkim.gov.in:8443",
+    "https://sems.sikkim.gov.in",
+    "http://localhost:4200", 
+]
+
+CORS_ALLOW_CREDENTIALS = True
 
 # OTP SMS gateway configuration (environment-driven)
 OTP_SMS_BASE_URL = os.getenv('OTP_SMS_BASE_URL', 'https://smsgw.sms.gov.in/failsafe/MLink')
@@ -260,22 +237,16 @@ OTP_SMS_ENTITY_ID = os.getenv('OTP_SMS_ENTITY_ID', '')
 OTP_SMS_TEMPLATE_ID = os.getenv('OTP_SMS_TEMPLATE_ID', '1007722920127309405')
 OTP_SMS_MESSAGE_TEMPLATE = os.getenv(
     'OTP_SMS_MESSAGE_TEMPLATE',
-    # Must exactly match Excise DLT-approved template text for OTP delivery.
     'From eAbkari, GoSK :\nYour OTP is {otp}\n Thanks'
 )
-OTP_SMS_VERIFY_SSL = os.getenv('OTP_SMS_VERIFY_SSL', 'false'
-).strip().lower() == 'true'
-# Optional: path to a PEM bundle for environments with custom/root CAs (proxy, enterprise certs).
-# If set, requests will verify the gateway SSL cert using this bundle.
+OTP_SMS_VERIFY_SSL = os.getenv('OTP_SMS_VERIFY_SSL', 'false').strip().lower() == 'true'
+
 OTP_SMS_CA_BUNDLE = os.getenv('OTP_SMS_CA_BUNDLE', '').strip()
 OTP_SMS_TIMEOUT_SECONDS = int(os.getenv('OTP_SMS_TIMEOUT_SECONDS', '10'))
 OTP_SMS_FORCE_SEND_IN_DEBUG = os.getenv('OTP_SMS_FORCE_SEND_IN_DEBUG', 'true').strip().lower() == 'true'
 OTP_EXPOSE_IN_RESPONSE = os.getenv('OTP_EXPOSE_IN_RESPONSE', 'false').strip().lower() == 'true'
 OTP_REQUEST_LIMIT = int(os.getenv('OTP_REQUEST_LIMIT', '15'))
 OTP_REQUEST_WINDOW_MINUTES = int(os.getenv('OTP_REQUEST_WINDOW_MINUTES', '15'))
-
-# Default primary key field type
-# https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -324,3 +295,99 @@ CAPTCHA_FILTER_FUNCTIONS = ()
 CAPTCHA_LETTER_COLOR_FUNCT = "auth.user.captcha_helpers.random_letter_color_dark"
 CAPTCHA_FOREGROUND_COLOR = "#2b2b2b"
 CAPTCHA_BACKGROUND_COLOR = "#ffffff"
+
+
+# ==============================================================================
+# SECURITY HEADERS CONFIGURATION
+# ==============================================================================
+
+# Strict-Transport-Security (HSTS)
+# Forces browsers to connect over HTTPS for 1 year
+SECURE_HSTS_SECONDS = 31536000
+SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+SECURE_HSTS_PRELOAD = True
+
+# X-Content-Type-Options
+# Prevents browsers from MIME-sniffing responses
+SECURE_CONTENT_TYPE_NOSNIFF = True
+
+# Referrer-Policy
+SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+
+# Browser XSS Filtering
+SECURE_BROWSER_XSS_FILTER = True
+
+
+# ==============================================================================
+# CONTENT SECURITY POLICY (django-csp)
+# ==============================================================================
+
+# Default policy for loading assets
+CSP_DEFAULT_SRC = ("'self'",)
+
+# Restrict allowed script origins
+CSP_SCRIPT_SRC = (
+    "'self'",
+    "'unsafe-inline'",
+    "'unsafe-eval'",
+)
+
+# Restrict allowed stylesheet origins (Includes fonts and Bootstrap CDNs)
+CSP_STYLE_SRC = (
+    "'self'",
+    "'unsafe-inline'",
+    "https://fonts.googleapis.com",
+    "https://cdn.jsdelivr.net",
+    "https://cdnjs.cloudflare.com",
+)
+
+# Restrict allowed image sources (allows base64 and blob previews)
+CSP_IMG_SRC = ("'self'", "data:", "blob:")
+
+# Fonts: Allow local fonts, Google Fonts, and Bootstrap Icon CDNs
+CSP_FONT_SRC = (
+    "'self'",
+    "data:",
+    "https://fonts.gstatic.com",
+    "https://cdn.jsdelivr.net",
+    "https://cdnjs.cloudflare.com",
+)
+
+# API Connections & Payment Gateways
+CSP_CONNECT_SRC = (
+    "'self'",
+    "https://sems.sikkim.gov.in:8443",
+    "https://sems.sikkim.gov.in",
+    "http://localhost:4200",
+    "https://*.billdesk.com",
+)
+
+# Restrict iframe embedded sources (Required for PDF/Document previews)
+CSP_FRAME_SRC = (
+    "'self'",
+    "blob:",
+    "data:",
+    "https://*.billdesk.com",
+)
+
+CSP_OBJECT_SRC = ("'none'",)
+
+# Allowed destinations for form submissions
+CSP_FORM_ACTION = (
+    "'self'",
+    "https://*.billdesk.com",
+)
+
+
+# ==============================================================================
+# PRODUCTION HTTPS, REVERSE PROXY & COOKIE SECURITY
+# ==============================================================================
+
+# Detect HTTPS header from reverse proxy (Nginx)
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
+USE_X_FORWARDED_PORT = True
+
+# Enforce secure cookies (Cookies only transmitted over HTTPS)
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True

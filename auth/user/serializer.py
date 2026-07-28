@@ -6,13 +6,13 @@ from auth.roles.models import Role
 from auth.user.captcha_services import verify_redis_captcha
 from models.masters.core.models import District, Subdivision
 from rest_framework_simplejwt.tokens import RefreshToken
+import math
 from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
 from django.db import transaction
 
 User = get_user_model()
 
-# Fields that are set once at creation and must never change afterwards
 IMMUTABLE_PROFILE_FIELDS = ('pan_number')
 
 
@@ -74,8 +74,6 @@ class UserSerializer(serializers.ModelSerializer):
             except Exception:
                 return False
 
-        # Backwards/forwards compatible: different apps used different reverse accessor names.
-        # Evaluate all known accessors without failing if one is missing.
         candidates = (
             getattr(obj, 'license_applications', None),
             getattr(obj, 'new_license_applications', None),
@@ -84,13 +82,10 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_panNumber(self, obj):
         try:
-            # Create a savepoint. If this fails, the main transaction survives!
             with transaction.atomic():
                 profile = getattr(obj, 'licensee_profile', None)
                 return getattr(profile, 'pan_number', None)
         except (DatabaseError, ProgrammingError):
-            # Older databases may not yet have the full licensee_profile schema.
-            # Do not fail /auth/users/me/ for login/session bootstrap in that case.
             return None
 
 class UserCreateSerializer(serializers.ModelSerializer):
@@ -104,6 +99,8 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         request = self.context.get('request')
+        validated_data.pop('is_superuser', None)
+        validated_data.pop('is_staff', None)
         if request and request.user and request.user.is_authenticated:
             validated_data['created_by'] = request.user
         return CustomUser.objects.create_user(**validated_data)
@@ -137,21 +134,13 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             'email', 'firstName', 'middleName', 'lastName',
             'phoneNumber', 'district', 'subdivision', 'address', 'role', 'isActive'
         ]
+        read_only_fields = ['is_superuser', 'is_staff']
 
     def to_internal_value(self, data):
-        """
-        Accept both primitive and object-shaped values from clients:
-        - role: 2 or {"id": 2}
-        - district: 11 or {"code": 11} or {"districtCode": 11}
-        - subdivision: 101 or {"code": 101} or {"subdivisionCode": 101}
-        - camelCase and snake_case keys (parser may convert to snake_case)
-        Also ignore unsupported keys in update payloads.
-        """
+        
         allowed_keys = set(self.fields.keys())
         incoming = dict(data.items()) if hasattr(data, 'items') else dict(data)
 
-        # DRF CamelCaseJSONParser can convert frontend camelCase payloads to snake_case.
-        # Normalize common snake_case aliases back to serializer field names.
         aliases = {
             'first_name': 'firstName',
             'middle_name': 'middleName',
@@ -192,7 +181,6 @@ class UserUpdateSerializer(serializers.ModelSerializer):
                 )
             )
 
-        # Support top-level districtCode/subdivisionCode payload variants.
         if incoming.get('district') is None:
             if incoming.get('districtCode') is not None:
                 incoming['district'] = incoming.get('districtCode')
@@ -214,28 +202,57 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class LoginSerializer(serializers.Serializer):
-    username = serializers.CharField(max_length=255)
-    password = serializers.CharField(write_only=True)
+    username = serializers.CharField(max_length=255, required = True)
+    password = serializers.CharField(write_only=True, required = True)
     hashkey = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     response = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    def to_internal_value(self, data):
+        allowed_fields = {'username', 'password', 'hashkey', 'response'}
+        sanitized_data = {
+            k: v for k, v in data.items() 
+            if k in allowed_fields
+        } if hasattr(data, 'items') else data
+        
+        return super().to_internal_value(sanitized_data)
 
     def validate(self, data):
         username = data.get('username')
         password = data.get('password')
 
         if not username or not password:
-            raise serializers.ValidationError("All fields are required.")
+            raise serializers.ValidationError("Username & Password are required.")
 
         existing_user = CustomUser.objects.filter(username=username).first()
         if existing_user and not existing_user.is_active:
             raise serializers.ValidationError("Your account is inactive. Contact administrator for login.")
 
-        # Authenticate user
+        if existing_user.is_locked_out():
+                remaining_seconds = (existing_user.lockout_until - timezone.now()).total_seconds()
+                remaining_minutes = math.ceil(remaining_seconds / 60)
+                raise serializers.ValidationError(
+                    f"Account locked due to multiple failed login attempts. Try again in {remaining_minutes} minute(s)."
+                )
+
         user = authenticate(username=username, password=password)
         if not user:
+            if existing_user:
+                existing_user.record_failed_login(max_attempts=5, lockout_minutes=15)
+                attempts_left = 5 - existing_user.failed_login_attempts
+                
+                if attempts_left > 0:
+                    raise serializers.ValidationError(
+                        f"Invalid login credentials. {attempts_left} attempt(s) remaining before account lockout."
+                    )
+                else:
+                    raise serializers.ValidationError(
+                        "Invalid login credentials. Your account has been locked for 15 minutes."
+                    )
+            
             raise serializers.ValidationError("Invalid login credentials.")
 
-        # Return authenticated user and data back cleanly without cache side-effects
+        existing_user.reset_failed_login()
+
         return {
             'user': user,
             'username': user.username,
@@ -243,8 +260,17 @@ class LoginSerializer(serializers.Serializer):
 
 
 class LMSDBLOGINSerializer(serializers.Serializer):
-    username = serializers.CharField(max_length=255)
-    password = serializers.CharField(write_only=True)
+    username = serializers.CharField(max_length=255, required = True)
+    password = serializers.CharField(write_only=True, required = True)
+
+    def to_internal_value(self, data):
+        allowed_fields = {'username', 'password'}
+        sanitized_data = {
+            k: v for k, v in data.items() 
+            if k in allowed_fields
+        } if hasattr(data, 'items') else data
+        
+        return super().to_internal_value(sanitized_data)
 
     def validate(self, data):
         username = data.get('username')
@@ -257,12 +283,33 @@ class LMSDBLOGINSerializer(serializers.Serializer):
         if existing_user and not existing_user.is_active:
             raise serializers.ValidationError("Your account is inactive. Contact administrator for login.")
 
-        # Authenticate user
+        if existing_user.is_locked_out():
+                remaining_seconds = (existing_user.lockout_until - timezone.now()).total_seconds()
+                remaining_minutes = math.ceil(remaining_seconds / 60)
+                raise serializers.ValidationError(
+                    f"Account locked due to multiple failed login attempts. Try again in {remaining_minutes} minute(s)."
+                )
+
         user = authenticate(username=username, password=password)
+
         if not user:
+            if existing_user:
+                existing_user.record_failed_login(max_attempts=5, lockout_minutes=15)
+                attempts_left = 5 - existing_user.failed_login_attempts
+                
+                if attempts_left > 0:
+                    raise serializers.ValidationError(
+                        f"Invalid login credentials. {attempts_left} attempt(s) remaining before account lockout."
+                    )
+                else:
+                    raise serializers.ValidationError(
+                        "Invalid login credentials. Your account has been locked for 15 minutes."
+                    )
+            
             raise serializers.ValidationError("Invalid login credentials.")
 
-        # Return authenticated user and data back cleanly
+        existing_user.reset_failed_login()
+
         return {
             'user': user,
             'username': user.username,

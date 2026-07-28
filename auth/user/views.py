@@ -841,11 +841,6 @@ class MyLicenseeProfileView(APIView):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def check_username(request):
-    """
-    Lightweight endpoint to check if a username exists before asking for password.
-    Returns 200 if the user exists (active or inactive), 404 if not found.
-    Never reveals password or any sensitive data.
-    """
     username = str(request.data.get('username') or '').strip()
     if not username:
         return Response({'error': 'Username is required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -901,7 +896,6 @@ class LoginAPI(APIView):
         except Exception:
             pass
 
-        # ─── FIX: GENERATE TOKENS HERE IN THE VIEW ───
         user = validated_data['user']
         refresh = RefreshToken.for_user(user)
 
@@ -911,8 +905,8 @@ class LoginAPI(APIView):
             'message': 'User logged in successfully',
             'authenticated_user': {
                 'username': validated_data['username'],
-                'access':   str(refresh.access_token), # Convert to string
-                'refresh':  str(refresh),              # Convert to string
+                'access':   str(refresh.access_token),
+                'refresh':  str(refresh),
             },
         })
 
