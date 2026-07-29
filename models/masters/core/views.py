@@ -1,9 +1,10 @@
+import re
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
-from auth.roles.permissions import HasAppPermission  # type: ignore
+from auth.roles.permissions import HasAppPermission
 
 from . import models as masters_model
 from .serializers.licensecategory_serializer import LicenseCategorySerializer
@@ -17,7 +18,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
-from auth.roles.permissions import HasAppPermission  # type: ignore
+from auth.roles.permissions import HasAppPermission
 
 from . import models as masters_model
 from .serializers.licensecategory_serializer import LicenseCategorySerializer
@@ -42,9 +43,6 @@ from .serializers.whatscurrent_serializer import WhatsCurrentSerializer
 from .serializers.block_serializer import BlockSerializer
 from .serializers.rural_ward_serializer import RuralWardSerializer
 
-# NOTE: LicenseeProfile views have been moved to auth.user.views.
-# Endpoints are now served under /api/users/licensee-profiles/
-
 
 @permission_classes([AllowAny])
 @authentication_classes([])
@@ -52,92 +50,125 @@ from .serializers.rural_ward_serializer import RuralWardSerializer
 def timer_config(request):
     """
     Read timer config from public.timer (SupplyChainTimerConfig) by code.
-
     Example:
       GET /masters/core/timer-config/?code=INACTIVITY_LOGOUT
     """
-    code = str(request.query_params.get('code') or '').strip()
-    if not code:
-        return Response({'error': 'code is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        code = str(request.query_params.get('code') or '').strip()
+        if not code:
+            return Response({'error': 'code is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if re.search(r'<[^>]*>', code):
+            return Response({'error': 'Invalid code format provided.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Backend fallback only; frontend should rely on DB config.
-    # Defaults vary by timer code.
-    default_seconds_by_code = {
-        'ENA_REVALIDATION_ACTIVATION': 10,
-        'INACTIVITY_LOGOUT': 4 * 60,
-        'INACTIVITY_WARNING': 30,
-        # Minutes-from-midnight (recommended): set delay_unit=minute, delay_value=1020 for 5:00 PM.
-        # Returned here as seconds only for fallback response.
-        'HOLOGRAM_DAILY_ENTRY_DEADLINE_TIME': 17 * 60 * 60,
-    }
-    default_seconds = int(default_seconds_by_code.get(code, 4 * 60))
-
-    cfg = (
-        masters_model.SupplyChainTimerConfig.objects.filter(code=code, is_active=True)
-        .order_by('-updated_at', '-id')
-        .first()
-    )
-    if not cfg:
+        default_seconds_by_code = {
+            'ENA_REVALIDATION_ACTIVATION': 10,
+            'INACTIVITY_LOGOUT': 4 * 60,
+            'INACTIVITY_WARNING': 30,
+            'HOLOGRAM_DAILY_ENTRY_DEADLINE_TIME': 17 * 60 * 60,
+        }
+        default_seconds = int(default_seconds_by_code.get(code, 4 * 60))
+        
+        cfg = (
+            masters_model.SupplyChainTimerConfig.objects.filter(code=code, is_active=True)
+            .order_by('-updated_at', '-id')
+            .first()
+        )
+        
+        if not cfg:
+            return Response(
+                {
+                    'code': code,
+                    'is_active': False,
+                    'delay_seconds': default_seconds,
+                    'delay_ms': default_seconds * 1000,
+                    'source': 'default',
+                },
+                status=status.HTTP_200_OK,
+            )
+            
+        unit = str(getattr(cfg, 'delay_unit', '') or '').lower().strip()
+        value = int(getattr(cfg, 'delay_value', 0) or 0)
+        if value < 0:
+            value = 0
+            
+        if unit.endswith('s'):
+            unit = unit[:-1]
+            
+        unit_aliases = {
+            'sec': masters_model.SupplyChainTimerConfig.TIMER_UNIT_SECOND,
+            'secs': masters_model.SupplyChainTimerConfig.TIMER_UNIT_SECOND,
+            'min': masters_model.SupplyChainTimerConfig.TIMER_UNIT_MINUTE,
+            'mins': masters_model.SupplyChainTimerConfig.TIMER_UNIT_MINUTE,
+            'hr': masters_model.SupplyChainTimerConfig.TIMER_UNIT_HOUR,
+            'hrs': masters_model.SupplyChainTimerConfig.TIMER_UNIT_HOUR,
+            'mon': masters_model.SupplyChainTimerConfig.TIMER_UNIT_MONTH,
+            'mos': masters_model.SupplyChainTimerConfig.TIMER_UNIT_MONTH,
+        }
+        unit = unit_aliases.get(unit, unit)
+        multiplier = 1
+        
+        if unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_MINUTE:
+            multiplier = 60
+        elif unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_HOUR:
+            multiplier = 60 * 60
+        elif unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_DAY:
+            multiplier = 24 * 60 * 60
+        elif unit == getattr(masters_model.SupplyChainTimerConfig, "TIMER_UNIT_WEEK", "week"):
+            multiplier = 7 * 24 * 60 * 60
+        elif unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_MONTH:
+            multiplier = 30 * 24 * 60 * 60
+        elif unit == getattr(masters_model.SupplyChainTimerConfig, "TIMER_UNIT_YEAR", "year"):
+            multiplier = 365 * 24 * 60 * 60
+            
+        seconds = max(0, value * multiplier)
+        
         return Response(
             {
-                'code': code,
-                'is_active': False,
-                'delay_seconds': default_seconds,
-                'delay_ms': default_seconds * 1000,
-                'source': 'default',
+                'code': cfg.code,
+                'description': cfg.description,
+                'delay_value': cfg.delay_value,
+                'delay_unit': cfg.delay_unit,
+                'is_active': cfg.is_active,
+                'delay_seconds': seconds,
+                'delay_ms': seconds * 1000,
+                'validity_period_days': getattr(cfg, 'validity_period_days', None),
+                'source': 'db',
             },
             status=status.HTTP_200_OK,
         )
+    except Exception:
+        return Response({'error': 'An unexpected error occurred while processing your request.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    unit = str(getattr(cfg, 'delay_unit', '') or '').lower().strip()
-    value = int(getattr(cfg, 'delay_value', 0) or 0)
-    if value < 0:
-        value = 0
 
-    # Accept common plural/alias forms stored in DB.
-    if unit.endswith('s'):
-        unit = unit[:-1]
-    unit_aliases = {
-        'sec': masters_model.SupplyChainTimerConfig.TIMER_UNIT_SECOND,
-        'secs': masters_model.SupplyChainTimerConfig.TIMER_UNIT_SECOND,
-        'min': masters_model.SupplyChainTimerConfig.TIMER_UNIT_MINUTE,
-        'mins': masters_model.SupplyChainTimerConfig.TIMER_UNIT_MINUTE,
-        'hr': masters_model.SupplyChainTimerConfig.TIMER_UNIT_HOUR,
-        'hrs': masters_model.SupplyChainTimerConfig.TIMER_UNIT_HOUR,
-        'mon': masters_model.SupplyChainTimerConfig.TIMER_UNIT_MONTH,
-        'mos': masters_model.SupplyChainTimerConfig.TIMER_UNIT_MONTH,
-    }
-    unit = unit_aliases.get(unit, unit)
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PUT'])
+def timer_config_update(request):
+    """Update a timer configuration by code."""
+    try:
+        code = request.data.get('code')
+        if not code:
+            return Response({'detail': 'code is required'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        if re.search(r'<[^>]*>', str(code)):
+            return Response({'detail': 'Invalid characters in code.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    multiplier = 1
-    if unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_MINUTE:
-        multiplier = 60
-    elif unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_HOUR:
-        multiplier = 60 * 60
-    elif unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_DAY:
-        multiplier = 24 * 60 * 60
-    elif unit == getattr(masters_model.SupplyChainTimerConfig, "TIMER_UNIT_WEEK", "week"):
-        multiplier = 7 * 24 * 60 * 60
-    elif unit == masters_model.SupplyChainTimerConfig.TIMER_UNIT_MONTH:
-        multiplier = 30 * 24 * 60 * 60
-    elif unit == getattr(masters_model.SupplyChainTimerConfig, "TIMER_UNIT_YEAR", "year"):
-        multiplier = 365 * 24 * 60 * 60
-
-    seconds = max(0, value * multiplier)
-    return Response(
-        {
-            'code': cfg.code,
-            'description': cfg.description,
-            'delay_value': cfg.delay_value,
-            'delay_unit': cfg.delay_unit,
-            'is_active': cfg.is_active,
-            'delay_seconds': seconds,
-            'delay_ms': seconds * 1000,
-            'validity_period_days': getattr(cfg, 'validity_period_days', None),
-            'source': 'db',
-        },
-        status=status.HTTP_200_OK,
-    )
+        cfg = masters_model.SupplyChainTimerConfig.objects.filter(code=code).first()
+        if not cfg:
+            return Response({'detail': f'Timer config with code {code} not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+        serializer = SupplyChainTimerConfigSerializer(
+            instance=cfg, 
+            data=request.data, 
+            partial=True, 
+            context={'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        
+        return Response(serializer.data)
+    except Exception:
+        return Response({'error': 'An unexpected error occurred while processing your request.'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 #################################################
@@ -1120,31 +1151,6 @@ def renewal_application_config_update(request):
     serializer.save()
     return Response(serializer.data)
 
-
-@permission_classes([HasAppPermission('masters', 'update')])
-@api_view(['PUT'])
-def timer_config_update(request):
-    """Update a timer configuration by code."""
-    code = request.data.get('code')
-    if not code:
-        return Response({'detail': 'code is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-    cfg = masters_model.SupplyChainTimerConfig.objects.filter(code=code).first()
-    if not cfg:
-        return Response({'detail': f'Timer config with code {code} not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    serializer = SupplyChainTimerConfigSerializer(
-        instance=cfg, 
-        data=request.data, 
-        partial=True, 
-        context={'request': request}
-    )
-    serializer.is_valid(raise_exception=True)
-    serializer.save()
-    return Response(serializer.data)
-
-
-# Additional Charge Config Views
 
 @api_view(['GET'])
 @permission_classes([HasAppPermission('masters', 'view')])
