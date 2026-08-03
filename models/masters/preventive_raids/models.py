@@ -1,6 +1,12 @@
 from django.db import models
 from django.utils import timezone
 
+from utils.file_validation import secure_upload_filename
+
+
+def upload_preventive_raid_image_path(instance, filename):
+    return secure_upload_filename(filename, 'preventive_raids/images')
+
 
 class PreventiveRaid(models.Model):
     title = models.CharField(max_length=500)
@@ -19,7 +25,7 @@ class PreventiveRaid(models.Model):
 
 class PreventiveRaidImage(models.Model):
     raid = models.ForeignKey(PreventiveRaid, related_name='images', on_delete=models.CASCADE)
-    image = models.ImageField(upload_to='preventive_raids/images/', max_length=500)
+    image = models.ImageField(upload_to=upload_preventive_raid_image_path, max_length=500)
 
     class Meta:
         db_table = 'masters_preventiveraidimage'

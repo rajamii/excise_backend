@@ -1,5 +1,11 @@
 from django.db import models
 
+from utils.file_validation import secure_upload_filename
+
+
+def upload_head_image_path(instance, filename):
+    return secure_upload_filename(filename, 'about_us/heads_of_organisations')
+
 
 '''
     Model: HeadOfOrganisation
@@ -9,7 +15,7 @@ from django.db import models
 class HeadOfOrganisation(models.Model):
     name = models.CharField(max_length=255)
     title = models.CharField(max_length=255)
-    image = models.ImageField(upload_to='about_us/heads_of_organisations/', max_length=500)
+    image = models.ImageField(upload_to=upload_head_image_path, max_length=500)
 
     def __str__(self):
         return f"{self.name} - {self.title}"
