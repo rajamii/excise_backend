@@ -4,6 +4,11 @@ from django.utils.timezone import now
 from . import helpers
 from auth.user.models import CustomUser
 from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
+from utils.file_validation import secure_upload_filename, validate_uploaded_file
+
+
+def upload_company_registration_file_path(instance, filename):
+    return secure_upload_filename(filename, 'company_registration')
 
 
 class CompanyRegistration(models.Model):
@@ -40,10 +45,10 @@ class CompanyRegistration(models.Model):
 
     # ===== Document Upload =====
     # Using simple string path instead of function reference
-    undertaking = models.FileField(upload_to='company_registration/')
-    excise_license = models.FileField(upload_to='company_registration/', blank=True, null=True)
-    deed_of_partnership = models.FileField(upload_to='company_registration/', blank=True, null=True)
-    memorandum_of_association = models.FileField(upload_to='company_registration/', blank=True, null=True)
+    undertaking = models.FileField(upload_to=upload_company_registration_file_path)
+    excise_license = models.FileField(upload_to=upload_company_registration_file_path, blank=True, null=True)
+    deed_of_partnership = models.FileField(upload_to=upload_company_registration_file_path, blank=True, null=True)
+    memorandum_of_association = models.FileField(upload_to=upload_company_registration_file_path, blank=True, null=True)
 
     # ===== Metadata =====
     created_at = models.DateTimeField(auto_now_add=True)
@@ -85,9 +90,21 @@ class CompanyRegistration(models.Model):
         if self.member_email_id:
             helpers.validate_email_field(self.member_email_id)
 
+        allowed_extensions = ['pdf', 'png', 'jpg', 'jpeg']
+        allowed_mime_types = ['application/pdf', 'image/png', 'image/jpeg']
+        for field_name in ['undertaking', 'excise_license', 'deed_of_partnership', 'memorandum_of_association']:
+            validate_uploaded_file(
+                getattr(self, field_name),
+                allowed_extensions=allowed_extensions,
+                allowed_mime_types=allowed_mime_types,
+                max_size_bytes=5 * 1024 * 1024,
+                field_label=field_name.replace('_', ' ').title()
+            )
+
     def save(self, *args, **kwargs):
         if not self.application_id:
             self.application_id = self.generate_application_id()
+        self.full_clean()
         super().save(*args, **kwargs)
 
     def generate_application_id(self):

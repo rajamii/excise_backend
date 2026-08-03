@@ -4,10 +4,11 @@ from django.utils import timezone
 
 from auth.user.models import CustomUser
 from auth.workflow.models import Objection, Transaction, Workflow, WorkflowStage
+from utils.file_validation import secure_upload_filename, validate_uploaded_file
 
 
 def upload_document_path(instance, filename):
-    return f"label_registration/{instance.application_id}/{filename}"
+    return secure_upload_filename(filename, f"label_registration/{instance.application_id}")
 
 
 class LabelRegistration(models.Model):
@@ -89,3 +90,17 @@ class LabelRegistrationDocument(models.Model):
 
     def __str__(self):
         return f"{self.application_id} - {self.document_key}"
+
+    def clean(self):
+        super().clean()
+        validate_uploaded_file(
+            self.file,
+            allowed_extensions=['pdf'],
+            allowed_mime_types=['application/pdf'],
+            max_size_bytes=5 * 1024 * 1024,
+            field_label='Label registration document'
+        )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)

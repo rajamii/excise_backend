@@ -1,13 +1,10 @@
-from pathlib import Path
-
 from django.urls import reverse
 from rest_framework import serializers
 
 from .models import Notification
+from utils.file_validation import validate_uploaded_file
 
 MAX_NOTIFICATION_FILE_SIZE = 2 * 1024 * 1024
-ALLOWED_NOTIFICATION_FILE_EXTENSIONS = {'.jpeg', '.jpg', '.pdf'}
-ALLOWED_NOTIFICATION_CONTENT_TYPES = {'image/jpeg', 'application/pdf'}
 
 
 # Serializer for Notification model
@@ -35,21 +32,13 @@ class NotificationSerializer(serializers.ModelSerializer):
         return "Active" if obj.is_active else "Inactive"
 
     def validate_notification_file(self, value):
-        if not value:
-            return value
-
-        extension = Path(value.name).suffix.lower()
-        content_type = getattr(value, 'content_type', '')
-
-        if value.size > MAX_NOTIFICATION_FILE_SIZE:
-            raise serializers.ValidationError('File size must be less than 2 MB.')
-
-        if extension not in ALLOWED_NOTIFICATION_FILE_EXTENSIONS:
-            raise serializers.ValidationError('Only JPEG, JPG, or PDF files are allowed.')
-
-        if content_type and content_type not in ALLOWED_NOTIFICATION_CONTENT_TYPES:
-            raise serializers.ValidationError('Only JPEG, JPG, or PDF files are allowed.')
-
+        validate_uploaded_file(
+            value,
+            allowed_extensions=['jpeg', 'jpg', 'pdf'],
+            allowed_mime_types=['image/jpeg', 'application/pdf'],
+            max_size_bytes=MAX_NOTIFICATION_FILE_SIZE,
+            field_label='Notification file'
+        )
         return value
 
     def get_notification_file_url(self, obj):

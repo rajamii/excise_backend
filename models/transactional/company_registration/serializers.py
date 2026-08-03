@@ -4,6 +4,7 @@ from auth.user.models import CustomUser
 from auth.roles.models import Role
 from auth.workflow.serializers import WorkflowTransactionSerializer, WorkflowObjectionSerializer
 from . import helpers
+from utils.file_validation import validate_uploaded_file
 
 
 class UserShortSerializer(serializers.ModelSerializer):
@@ -182,3 +183,43 @@ class CompanyRegistrationSerializer(serializers.ModelSerializer):
 
     def validate_pin_code(self, value):
         return helpers.validate_pin_code(value)
+
+    def validate_undertaking(self, value):
+        validate_uploaded_file(
+            value,
+            allowed_extensions=['pdf', 'png', 'jpg', 'jpeg'],
+            allowed_mime_types=['application/pdf', 'image/png', 'image/jpeg'],
+            max_size_bytes=5 * 1024 * 1024,
+            field_label='Undertaking'
+        )
+        return value
+
+    def validate_excise_license(self, value):
+        validate_uploaded_file(
+            value,
+            allowed_extensions=['pdf', 'png', 'jpg', 'jpeg'],
+            allowed_mime_types=['application/pdf', 'image/png', 'image/jpeg'],
+            max_size_bytes=5 * 1024 * 1024,
+            field_label='Excise license'
+        )
+        return value
+
+    def validate_deed_of_partnership(self, value):
+        validate_uploaded_file(
+            value,
+            allowed_extensions=['pdf', 'png', 'jpg', 'jpeg'],
+            allowed_mime_types=['application/pdf', 'image/png', 'image/jpeg'],
+            max_size_bytes=5 * 1024 * 1024,
+            field_label='Deed of partnership'
+        )
+        return value
+
+    def validate_memorandum_of_association(self, value):
+        validate_uploaded_file(
+            value,
+            allowed_extensions=['pdf', 'png', 'jpg', 'jpeg'],
+            allowed_mime_types=['application/pdf', 'image/png', 'image/jpeg'],
+            max_size_bytes=5 * 1024 * 1024,
+            field_label='Memorandum of association'
+        )
+        return value

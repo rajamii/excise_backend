@@ -1,8 +1,7 @@
 from django.db import models
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
-import os
-import uuid
+from utils.file_validation import secure_upload_filename, validate_uploaded_file
 
 
 def upload_site_image(instance, filename):
@@ -11,10 +10,10 @@ def upload_site_image(instance, filename):
     model_name = getattr(getattr(content_object, '_meta', None), 'model_name', 'site_enquiry')
     app_id = str(getattr(content_object, 'application_id', '') or getattr(instance, 'object_id', '') or 'unknown')
     safe_app_id = app_id.replace('/', '_').replace('\\', '_')
-    _, ext = os.path.splitext(str(filename or 'upload.bin'))
-    safe_ext = (ext or '.bin')[:10]
-    short_name = f"{uuid.uuid4().hex[:12]}{safe_ext.lower()}"
-    return f"site_enquiry/{app_label}/{model_name}/{safe_app_id}/{short_name}"
+    return secure_upload_filename(
+        str(filename or 'upload.bin'),
+        f"site_enquiry/{app_label}/{model_name}/{safe_app_id}"
+    )
 
 
 class SiteEnquiryReport(models.Model):
@@ -123,3 +122,17 @@ class SiteEnquiryReport(models.Model):
 
     def __str__(self):
         return f"Site Enquiry - {self.content_object.application_id}"
+
+    def clean(self):
+        super().clean()
+        validate_uploaded_file(
+            self.shop_image_document,
+            allowed_extensions=['jpg', 'jpeg', 'png', 'webp', 'pdf'],
+            allowed_mime_types=['image/jpeg', 'image/png', 'image/webp', 'application/pdf'],
+            max_size_bytes=5 * 1024 * 1024,
+            field_label='Shop image document'
+        )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
