@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from models.masters.core.models import Location
+from models.masters.core.validators import validate_name_extended
 
 class LocationSerializer(serializers.ModelSerializer):
     # Computed fields
@@ -30,6 +31,13 @@ class LocationSerializer(serializers.ModelSerializer):
             queryset = queryset.exclude(pk=self.instance.pk)
         if queryset.exists():
             raise serializers.ValidationError("Location code must be unique")
+        return value
+
+    def validate_location_description(self, value):
+        value = str(value or '').strip()
+        validate_name_extended(value)
+        if len(value) < 2:
+            raise serializers.ValidationError("Location description must be at least 2 characters")
         return value
 
     def get_status(self, obj):
