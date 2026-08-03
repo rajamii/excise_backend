@@ -497,7 +497,7 @@ def billdesk_initiate_wallet_recharge(request):
 
     merchant_id = str(gateway.merchantid or "").strip()
     security_id = str(gateway.securityid or "").strip()
-    encryption_key = str(gateway.encryption_key or "").strip()
+    encryption_key = str(getattr(settings, "BILLDESK_ENCRYPTION_KEY", "") or getattr(gateway, "encryption_key", "") or "").strip()
     if not merchant_id or not security_id or not encryption_key:
         return Response(
             {"detail": "Billdesk gateway config is missing merchantid/securityid/encryption_key."},
@@ -685,7 +685,7 @@ def billdesk_initiate_license_fee(request):
 
     merchant_id = str(gateway.merchantid or "").strip()
     security_id = str(gateway.securityid or "").strip()
-    encryption_key = str(gateway.encryption_key or "").strip()
+    encryption_key = str(getattr(settings, "BILLDESK_ENCRYPTION_KEY", "") or getattr(gateway, "encryption_key", "") or "").strip()
     if not merchant_id or not security_id or not encryption_key:
         return Response({"detail": "Billdesk gateway config is missing merchantid/securityid/encryption_key."}, status=500)
 
@@ -882,7 +882,7 @@ def billdesk_initiate_security_deposit(request):
 
     merchant_id = str(gateway.merchantid or "").strip()
     security_id = str(gateway.securityid or "").strip()
-    encryption_key = str(gateway.encryption_key or "").strip()
+    encryption_key = str(getattr(settings, "BILLDESK_ENCRYPTION_KEY", "") or getattr(gateway, "encryption_key", "") or "").strip()
     if not merchant_id or not security_id or not encryption_key:
         return Response({"detail": "Billdesk gateway config is missing merchantid/securityid/encryption_key."}, status=500)
 
@@ -1093,7 +1093,7 @@ def billdesk_initiate_new_license_application_fee(request):
 
     merchant_id = str(gateway.merchantid or "").strip()
     security_id = str(gateway.securityid or "").strip()
-    encryption_key = str(gateway.encryption_key or "").strip()
+    encryption_key = str(getattr(settings, "BILLDESK_ENCRYPTION_KEY", "") or getattr(gateway, "encryption_key", "") or "").strip()
     if not merchant_id or not security_id or not encryption_key:
         return Response(
             {"detail": "Billdesk gateway config is missing merchantid/securityid/encryption_key."},
@@ -1218,7 +1218,7 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
         payment_gateway_name__iexact="Billdesk"
     ).order_by("sl_no").first()
     
-    encryption_key = str(getattr(gateway, "encryption_key", "") or "").strip()
+    encryption_key = str(getattr(settings, "BILLDESK_ENCRYPTION_KEY", "") or getattr(gateway, "encryption_key", "") or "").strip()
 
     tx = PaymentBilldeskTransaction.objects.filter(utr=txn_ref).first()
     if tx is None and txn_ref:
