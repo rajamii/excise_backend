@@ -654,7 +654,7 @@ class RenewalApplicationConfig(models.Model):
 
 class AdditionalChargeConfig(models.Model):
     category = models.ForeignKey(LicenseCategory, on_delete=models.CASCADE, related_name='additional_charges')
-    charge_type = models.CharField(max_length=50, choices=[('pachwai', 'Pachwai'), ('draught_beer', 'Draught Beer')])
+    charge_type = models.CharField(max_length=50, choices=[('pachwai', 'Pachwai'), ('draught_beer', 'Draught Beer'), ('mini_bar', 'Mini Bar')])
     is_active = models.BooleanField(default=True)
 
     class Meta:

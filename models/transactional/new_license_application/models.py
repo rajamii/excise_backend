@@ -40,6 +40,8 @@ class NewLicenseApplication(models.Model):
     # Additional charges (selected by licensee during application)
     pachwai = models.BooleanField(default=False)
     draught_beer = models.BooleanField(default=False)
+    mini_bar = models.BooleanField(default=False)
+    mini_bar_quantity = models.PositiveIntegerField(default=0, blank=True, null=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

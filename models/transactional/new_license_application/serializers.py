@@ -22,6 +22,7 @@ from decimal import Decimal
 
 PACHWAI_MODULE_CODE = "NLI_ADD_PACHWAI"
 DRAUGHT_BEER_MODULE_CODE = "NLI_ADD_DRAUGHT_BEER"
+MINI_BAR_MODULE_CODE = "NLI_ADD_MINI_BAR"
 
 
 def _get_additional_charge_total(obj: NewLicenseApplication) -> Decimal:
@@ -36,7 +37,7 @@ def _get_additional_charge_total(obj: NewLicenseApplication) -> Decimal:
         module_fees = {
             m["fee_code"]: (m["amount"] if m["amount"] is not None else Decimal("0.00"))
             for m in MasterFixedFee.objects.filter(
-                fee_code__in=[PACHWAI_MODULE_CODE, DRAUGHT_BEER_MODULE_CODE],
+                fee_code__in=[PACHWAI_MODULE_CODE, DRAUGHT_BEER_MODULE_CODE, MINI_BAR_MODULE_CODE],
                 is_active=True,
             ).values("fee_code", "amount")
         }
@@ -44,6 +45,9 @@ def _get_additional_charge_total(obj: NewLicenseApplication) -> Decimal:
             total += module_fees.get(PACHWAI_MODULE_CODE, Decimal("0.00"))
         if getattr(obj, "draught_beer", False):
             total += module_fees.get(DRAUGHT_BEER_MODULE_CODE, Decimal("0.00"))
+        if getattr(obj, "mini_bar", False):
+            quantity = getattr(obj, "mini_bar_quantity", 0) or 0
+            total += module_fees.get(MINI_BAR_MODULE_CODE, Decimal("0.00")) * Decimal(str(quantity))
     except Exception:
         # Non-blocking: if the master table isn't configured in a deployment, fall back to 0.
         pass
