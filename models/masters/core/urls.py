@@ -171,8 +171,10 @@ additional_charge_config_patterns = [
 # Fixed Fee URLs
 fixed_fee_patterns = [
     path('',                 views.fixed_fee_list,   name='fixed-fee-list'),
+    path('create/',          views.fixed_fee_create, name='fixed-fee-create'),
     path('<str:pk>/',        views.fixed_fee_detail, name='fixed-fee-detail'),
     path('<str:pk>/update/', views.fixed_fee_update, name='fixed-fee-update'),
+    path('<str:pk>/delete/', views.fixed_fee_delete, name='fixed-fee-delete'),
 ]
 
 # Whats Current URLs

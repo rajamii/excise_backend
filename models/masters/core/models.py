@@ -672,6 +672,33 @@ class MasterFixedFee(models.Model):
     fee_desc = models.CharField(max_length=200)
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     is_active = models.BooleanField(default=True)
+    license_category = models.ForeignKey(
+        LicenseCategory,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='fixed_fees'
+    )
+    license_subcategory = models.ForeignKey(
+        LicenseSubcategory,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='fixed_fees'
+    )
+    mode = models.CharField(
+        max_length=20,
+        choices=[('rural', 'Rural'), ('urban', 'Urban'), ('non', 'Non')],
+        null=True,
+        blank=True
+    )
+    fee_type = models.CharField(
+        max_length=20,
+        choices=[('per_annum', 'Per Annum'), ('per_day', 'Per Day')],
+        null=True,
+        blank=True,
+        help_text="Whether this fee applies to annual or per-day dry day permits"
+    )
     created_date = models.DateTimeField(default=timezone.now)
     modified_date = models.DateTimeField(null=True, blank=True)
 

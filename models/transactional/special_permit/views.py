@@ -106,27 +106,64 @@ def _resolve_location_category(license_obj) -> str | None:
 def calculate_special_permit_fee_raw(license_obj: License) -> dict:
     from models.masters.core.models import MasterFixedFee
     
+    category = getattr(license_obj, 'license_category', None)
     sub_category = _resolve_sub_category(license_obj)
     location_category = _resolve_location_category(license_obj)
     
-    is_rural = False
-    if location_category and str(location_category).strip().lower() == 'rural':
-        is_rural = True
-        
+    mode = 'non'
+    if location_category:
+        loc_lower = str(location_category).strip().lower()
+        if loc_lower == 'rural':
+            mode = 'rural'
+        elif loc_lower == 'urban':
+            mode = 'urban'
+        else:
+            mode = 'non'
+            
+    is_rural = (mode == 'rural')
     dry_day_fee_type = getattr(sub_category, 'dry_day_fee_type', None)
     
+    def _lookup_fee(cat, subcat, m, ft):
+        """Try exact match with fee_type first, then fall back to null fee_type entries."""
+        qs_base = MasterFixedFee.objects.filter(mode=m, is_active=True)
+        if cat:
+            qs_base = qs_base.filter(license_category=cat)
+        if subcat:
+            qs_base = qs_base.filter(license_subcategory=subcat)
+        # Prefer fee_type-specific match, then null fee_type as generic fallback
+        if ft:
+            obj = qs_base.filter(fee_type=ft).first()
+            if obj:
+                return obj
+        return qs_base.filter(fee_type__isnull=True).first()
+
+    # Try dynamic category + subcategory + mode lookup first
+    fee_obj = None
+    if category and sub_category:
+        fee_obj = _lookup_fee(category, sub_category, mode, dry_day_fee_type)
+        
+    if not fee_obj and category:
+        fee_obj = _lookup_fee(category, None, mode, dry_day_fee_type)
+
+    if not fee_obj and sub_category:
+        fee_obj = _lookup_fee(None, sub_category, mode, dry_day_fee_type)
+        
     dry_day_fee = Decimal('0.00')
-    if dry_day_fee_type == 'per_day':
-        fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_PER_DAY', is_active=True).first()
-        if fee_obj:
-            dry_day_fee = fee_obj.amount
-    elif dry_day_fee_type == 'per_annum':
-        if is_rural:
-            fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_ANNUAL_RURAL', is_active=True).first()
-        else:
-            fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_ANNUAL_URBAN', is_active=True).first()
-        if fee_obj:
-            dry_day_fee = fee_obj.amount
+    if fee_obj:
+        dry_day_fee = fee_obj.amount
+    else:
+        # Fallback to old hardcoded/global fee codes
+        if dry_day_fee_type == 'per_day':
+            fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_PER_DAY', is_active=True).first()
+            if fee_obj:
+                dry_day_fee = fee_obj.amount
+        elif dry_day_fee_type == 'per_annum':
+            if mode == 'rural':
+                fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_ANNUAL_RURAL', is_active=True).first()
+            else:
+                fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_ANNUAL_URBAN', is_active=True).first()
+            if fee_obj:
+                dry_day_fee = fee_obj.amount
                 
     return {
         'dry_day_fee_type': dry_day_fee_type,
@@ -138,26 +175,69 @@ def calculate_special_permit_fee_raw(license_obj: License) -> dict:
 def calculate_special_permit_fee(app: SpecialPermitApplication) -> Decimal:
     from models.masters.core.models import MasterFixedFee
     
-    location_category = _resolve_location_category(app.license)
-    is_rural = False
-    if location_category and str(location_category).strip().lower() == 'rural':
-        is_rural = True
-        
-    duration = getattr(app, 'permission_duration', SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM)
+    license_obj = app.license
+    category = getattr(license_obj, 'license_category', None)
+    sub_category = _resolve_sub_category(license_obj)
+    location_category = _resolve_location_category(license_obj)
     
+    mode = 'non'
+    if location_category:
+        loc_lower = str(location_category).strip().lower()
+        if loc_lower == 'rural':
+            mode = 'rural'
+        elif loc_lower == 'urban':
+            mode = 'urban'
+        else:
+            mode = 'non'
+
+    duration = getattr(app, 'permission_duration', SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM)
+    # Map app duration to fee_type string for matching dynamic fee records
+    fee_type_filter = 'per_day' if duration == SpecialPermitApplication.PERMISSION_DURATION_PER_DAY else 'per_annum'
+
+    def _lookup_fee(cat, subcat, m, ft):
+        """Try fee_type-specific match, then generic null fee_type rows."""
+        qs_base = MasterFixedFee.objects.filter(mode=m, is_active=True)
+        if cat:
+            qs_base = qs_base.filter(license_category=cat)
+        if subcat:
+            qs_base = qs_base.filter(license_subcategory=subcat)
+        obj = qs_base.filter(fee_type=ft).first()
+        if obj:
+            return obj
+        return qs_base.filter(fee_type__isnull=True).first()
+
+    # Try dynamic category + subcategory + mode lookup first
+    fee_obj = None
+    if category and sub_category:
+        fee_obj = _lookup_fee(category, sub_category, mode, fee_type_filter)
+        
+    if not fee_obj and category:
+        fee_obj = _lookup_fee(category, None, mode, fee_type_filter)
+
+    if not fee_obj and sub_category:
+        fee_obj = _lookup_fee(None, sub_category, mode, fee_type_filter)
+    
+    if fee_obj:
+        base_fee = fee_obj.amount
+    else:
+        # Fallback to old hardcoded/global fee codes
+        if duration == SpecialPermitApplication.PERMISSION_DURATION_PER_DAY:
+            fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_PER_DAY', is_active=True).first()
+            base_fee = fee_obj.amount if fee_obj else Decimal('0.00')
+        else:
+            if mode == 'rural':
+                fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_ANNUAL_RURAL', is_active=True).first()
+            else:
+                fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_ANNUAL_URBAN', is_active=True).first()
+            base_fee = fee_obj.amount if fee_obj else Decimal('0.00')
+            
     if duration == SpecialPermitApplication.PERMISSION_DURATION_PER_DAY:
-        fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_PER_DAY', is_active=True).first()
-        base_fee = fee_obj.amount if fee_obj else Decimal('0.00')
         selected_dates = getattr(app, 'selected_dates', None)
         if isinstance(selected_dates, list) and len(selected_dates) > 0:
             return base_fee * len(selected_dates)
         return Decimal('0.00')
     else: # per_annum
-        if is_rural:
-            fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_ANNUAL_RURAL', is_active=True).first()
-        else:
-            fee_obj = MasterFixedFee.objects.filter(fee_code='DRY_DAY_ANNUAL_URBAN', is_active=True).first()
-        return fee_obj.amount if fee_obj else Decimal('0.00')
+        return base_fee
 
 
 def _serialize_license(license_obj: License) -> dict:
