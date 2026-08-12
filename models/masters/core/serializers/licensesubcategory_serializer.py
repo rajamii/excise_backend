@@ -11,6 +11,15 @@ class LicenseSubcategorySerializer(serializers.ModelSerializer):
         model = master_models.LicenseSubcategory
         fields = ['id', 'description', 'old_license_cat_code', 'old_license_scat_code', 'category', 'dry_day_fee_type', 'is_active']
 
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            data = data.copy()
+            if 'dryDayFeeType' in data and 'dry_day_fee_type' not in data:
+                data['dry_day_fee_type'] = data.pop('dryDayFeeType')
+            if 'isActive' in data and 'is_active' not in data:
+                data['is_active'] = data.pop('isActive')
+        return super().to_internal_value(data)
+
     def update(self, instance, validated_data):
         """Override update to use update_fields so model validators only run on changed fields."""
         update_fields = []
