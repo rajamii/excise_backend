@@ -10,7 +10,12 @@ from datetime import timedelta
 import logging
 from .models import EnaRevalidationDetail
 from .serializers import EnaRevalidationDetailSerializer
-from models.transactional.dashboard_cache import get_cached_api_response, set_cached_api_response, _mark_cache_response
+from models.transactional.dashboard_cache import (
+    get_cached_api_response,
+    set_cached_api_response,
+    _mark_cache_response,
+    invalidate_dashboard_counts_cache,
+)
 from models.transactional.supply_chain.ena_requisition_details.models import EnaRequisitionDetail
 from models.transactional.supply_chain.ena_requisition_details.models import EnaRevalidationActivationSchedule
 from auth.workflow.constants import WORKFLOW_IDS
@@ -288,9 +293,11 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                         schedule.save(update_fields=['status', 'activated_at', 'notes', 'updated_at'])
                         continue
 
-                    existing = self._find_existing_revalidation_for_requisition(requisition)
-                    if existing is None:
-                        self._create_revalidation_from_requisition(requisition)
+                    # Do not automatically create the revalidation record in the database;
+                    # it will be represented dynamically in the list or created when the user initiates revalidation.
+                    # existing = self._find_existing_revalidation_for_requisition(requisition)
+                    # if existing is None:
+                    #     self._create_revalidation_from_requisition(requisition)
 
                     schedule.status = EnaRevalidationActivationSchedule.STATUS_PROCESSED
                     schedule.activated_at = timezone.now()
@@ -527,6 +534,8 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = EnaRevalidationDetail.objects.all().order_by('-created_at')
+        if getattr(self, 'action', None) == 'list':
+            queryset = queryset.exclude(status_code='RV_00')
         return scope_by_profile_or_workflow(
             self.request.user,
             queryset,
@@ -546,7 +555,91 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         if cached_data is not None:
             return _mark_cache_response(Response(cached_data), "HIT")
 
-        response = super().list(request, *args, **kwargs)
+        # 1. Get submitted revalidations from database (which excludes RV_00)
+        queryset = self.filter_queryset(self.get_queryset())
+        object_list = list(queryset)
+
+        # 2. Get active revalidation schedules (PROCESSED)
+        user = request.user
+        schedules = EnaRevalidationActivationSchedule.objects.filter(
+            status=EnaRevalidationActivationSchedule.STATUS_PROCESSED
+        ).select_related('requisition')
+
+        # Scope active schedules by the user's licensee profile
+        requisition_ids = [s.requisition_id for s in schedules]
+        scoped_reqs = scope_by_profile_or_workflow(
+            user,
+            EnaRequisitionDetail.objects.filter(id__in=requisition_ids),
+            WORKFLOW_IDS['ENA_REQUISITION'],
+            licensee_field='licensee_id'
+        )
+        scoped_req_ids = set(scoped_reqs.values_list('id', flat=True))
+        schedules = [s for s in schedules if s.requisition_id in scoped_req_ids]
+
+        # Get submitted details to exclude them from the schedule list
+        submitted_details = EnaRevalidationDetail.objects.exclude(status_code='RV_00').values('details_permits_number', 'licensee_id')
+        submitted_pairs = {(d['details_permits_number'], d['licensee_id']) for d in submitted_details}
+
+        unsubmitted_schedules = []
+        for s in schedules:
+            pair = (s.requisition.details_permits_number or '', s.requisition.licensee_id)
+            if pair not in submitted_pairs:
+                unsubmitted_schedules.append(s)
+
+        in_memory_revals = []
+        for s in unsubmitted_schedules:
+            # Check if there is an existing database draft (RV_00)
+            draft = EnaRevalidationDetail.objects.filter(
+                licensee_id=s.requisition.licensee_id,
+                details_permits_number=s.requisition.details_permits_number,
+                status_code='RV_00'
+            ).order_by('-created_at').first()
+
+            if draft:
+                in_memory_revals.append(draft)
+            else:
+                # Construct an in-memory revalidation object
+                reval = EnaRevalidationDetail(
+                    id=s.requisition.id,  # Use requisition ID
+                    our_ref_no=s.requisition_ref_no,
+                    requisition_date=s.requisition.requisition_date,
+                    grain_ena_number=s.requisition.grain_ena_number,
+                    bulk_spirit_type=s.requisition.bulk_spirit_type or '',
+                    strength=s.requisition.strength or '',
+                    lifted_from=s.requisition.lifted_from or '',
+                    via_route=s.requisition.via_route or '',
+                    total_bl=s.requisition.totalbl or 0,
+                    br_amount=s.requisition.totalbl or 0,
+                    requisiton_number_of_permits=s.requisition.requisiton_number_of_permits or 0,
+                    branch_name=s.requisition.lifted_from_distillery_name or s.requisition.check_post_name or '',
+                    branch_address=s.requisition.via_route or 'N/A',
+                    branch_purpose=s.requisition.branch_purpose or s.requisition.purpose_name or '',
+                    govt_officer='N/A',
+                    state=s.requisition.state or '',
+                    revalidation_date=s.activation_due_at,
+                    status='IMPORT PERMIT EXTENDS 45 DAYS ',
+                    status_code='RV_00',
+                    revalidation_br_amount=self.REVALIDATION_FEE_AMOUNT,
+                    details_permits_number=s.requisition.details_permits_number or '',
+                    licensee_id=s.requisition.licensee_id,
+                    distillery_name=s.requisition.lifted_from_distillery_name or s.requisition.lifted_from or '',
+                )
+                reval.created_at = s.created_at
+                in_memory_revals.append(reval)
+
+        # 3. Combine both lists
+        combined_list = object_list + in_memory_revals
+        combined_list.sort(key=lambda x: x.created_at or timezone.now(), reverse=True)
+
+        # 4. Paginate and serialize the list
+        page = self.paginate_queryset(combined_list)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            response = self.get_paginated_response(serializer.data)
+        else:
+            serializer = self.get_serializer(combined_list, many=True)
+            response = Response(serializer.data)
+
         if getattr(response, "status_code", 200) < 300:
             set_cached_api_response(request, "supply_chain_ena_revalidations", response.data)
             _mark_cache_response(response, "MISS")
@@ -616,9 +709,13 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             'br_amount': requisition.totalbl or 0,
             'requisiton_number_of_permits': requisition.requisiton_number_of_permits or 0,
             'branch_name': requisition.lifted_from_distillery_name or requisition.check_post_name or '',
-            'branch_address': '',
+            'branch_address': (
+                str(getattr(requisition, 'via_route', '') or '').strip()
+                or str(getattr(requisition, 'check_post_name', '') or '').strip()
+                or 'N/A'
+            ),
             'branch_purpose': requisition.branch_purpose or requisition.purpose_name or '',
-            'govt_officer': '',
+            'govt_officer': 'N/A',
             'state': requisition.state or '',
             'revalidation_date': now,
             'status': 'IMPORT PERMIT EXTENDS 45 DAYS INVALID',
@@ -693,6 +790,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
 
                 revalidation.save()
             
+            invalidate_dashboard_counts_cache()
             serializer = self.get_serializer(revalidation)
             response_payload = {
                 'status': 'success',
@@ -773,6 +871,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                 # revalidation.status_code = ... # Removed dependency
                 revalidation.save()
 
+                invalidate_dashboard_counts_cache()
                 serializer = self.get_serializer(revalidation)
                 return Response({
                     'status': 'success',

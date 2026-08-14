@@ -108,7 +108,7 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         if hasattr(instance, 'sync_stage_backed_status'):
             _, changed_fields = instance.sync_stage_backed_status(persist=True)
-            if changed_fields:
+            if changed_fields and not instance._state.adding:
                 instance.refresh_from_db(fields=['status', 'current_stage', 'workflow'])
 
         data = super().to_representation(instance)

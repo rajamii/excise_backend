@@ -102,7 +102,7 @@ class EnaRevalidationDetail(models.Model):
                 self.status = stage.name
                 changed_fields.append('status')
 
-        if persist and changed_fields and getattr(self, 'pk', None):
+        if persist and changed_fields and getattr(self, 'pk', None) and not self._state.adding:
             update_fields = []
             if 'current_stage' in changed_fields:
                 update_fields.append('current_stage')
