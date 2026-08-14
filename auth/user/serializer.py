@@ -204,14 +204,25 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 class LoginSerializer(serializers.Serializer):
     username = serializers.CharField(max_length=255, required=True)
     password = serializers.CharField(write_only=True, required=True)
+    phoneNumber = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    phone_number = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    otp = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     hashkey = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     response = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     def to_internal_value(self, data):
-        allowed_fields = {'username', 'password', 'hashkey', 'response'}
-        incoming_keys = set(data.keys()) if hasattr(data, 'keys') else set()
-        extra_keys = incoming_keys - allowed_fields
-        if extra_keys:
+        allowed_fields = {
+            'username', 'password', 'phoneNumber', 'phone_number', 
+            'otp', 'hashkey', 'hash_key', 'response'
+        }
+        
+        blocked_injection_keys = {
+            'isadmin', 'is_admin', 'issso', 'is_sso', 'role', 'is_superuser', 'is_staff', 'groups', 'permissions'
+        }
+        
+        incoming_keys = {str(k).lower() for k in data.keys()} if hasattr(data, 'keys') else set()
+        
+        if incoming_keys & blocked_injection_keys:
             raise serializers.ValidationError("Unexpected fields provided. Mass assignment blocked.")
 
         sanitized_data = {
@@ -231,21 +242,36 @@ class LoginSerializer(serializers.Serializer):
         if not isinstance(username, str) or '\x00' in username:
             raise serializers.ValidationError("Invalid login credentials.")
 
-        existing_user = CustomUser.objects.filter(username=username).first()
+        try:
+            existing_user = CustomUser.objects.filter(username=username).first()
+        except Exception:
+            existing_user = None
+
         user = authenticate(username=username, password=password)
 
         if not user:
-            if existing_user:
-                existing_user.record_failed_login(max_attempts=5, lockout_minutes=15)
+            if existing_user and hasattr(existing_user, 'record_failed_login'):
+                try:
+                    existing_user.record_failed_login(max_attempts=5, lockout_minutes=15)
+                except Exception:
+                    pass
             raise serializers.ValidationError("Invalid login credentials.")
 
         if existing_user and not existing_user.is_active:
             raise serializers.ValidationError("Invalid login credentials.")
 
-        if existing_user and existing_user.is_locked_out():
-            raise serializers.ValidationError("Invalid login credentials.")
+        if existing_user and hasattr(existing_user, 'is_locked_out'):
+            try:
+                if existing_user.is_locked_out():
+                    raise serializers.ValidationError("Invalid login credentials.")
+            except Exception:
+                pass
 
-        existing_user.reset_failed_login()
+        if existing_user and hasattr(existing_user, 'reset_failed_login'):
+            try:
+                existing_user.reset_failed_login()
+            except Exception:
+                pass
 
         return {
             'user': user,

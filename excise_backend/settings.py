@@ -26,7 +26,7 @@ SECRET_KEY = 'django-insecure-&9z_bt2h_b0gz8dho0u$j-g@569rl^@i071z4&j&p!qz7ez*(m
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
 
-ALLOWED_HOSTS = ['sems.sikkim.gov.in', 'localhost', '127.0.0.1', '*']
+ALLOWED_HOSTS = ['sems.sikkim.gov.in', 'localhost', '127.0.0.1', 'sems.sikkim.gov.in:8443']
 
 CSRF_TRUSTED_ORIGINS = [
     "https://sems.sikkim.gov.in",
@@ -110,7 +110,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
-    'csp.middleware.CSPMiddleware',
+    # 'csp.middleware.CSPMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -164,7 +164,7 @@ DATABASES = {
         'USER': 'postgres',         # Your PostgreSQL username
         'PASSWORD': 'postgres',     # Your PostgreSQL password
         'HOST': 'localhost',        
-        'PORT': '5432',             # Default PostgreSQL port
+        'PORT': '5433',             # Default PostgreSQL port
         'CONN_MAX_AGE': 300,        # Don't reuse connections — avoids aborted transaction state
     }
 }

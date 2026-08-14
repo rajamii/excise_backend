@@ -7,7 +7,7 @@ from auth.roles.models import Role
 from models.masters.core.models import District, Subdivision
 from models.masters.core.helper import GENDER_CHOICES, MARITAL_STATUS_CHOICES, RESIDENTIAL_STATUS_CHOICES
 from django.utils import timezone
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 
 class CustomUserManager(BaseUserManager):
@@ -203,7 +203,7 @@ class CustomUser(AbstractBaseUser):
         
         self.failed_login_attempts += 1
         if self.failed_login_attempts >= max_attempts:
-            self.lockout_until = timezone.now() + datetime.timedelta(minutes=lockout_minutes)
+            self.lockout_until = timezone.now() + timedelta(minutes=lockout_minutes)
         self.save(update_fields=['failed_login_attempts', 'lockout_until'])
 
     def reset_failed_login(self):

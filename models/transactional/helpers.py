@@ -14,6 +14,26 @@ def _normalize_role(role_name):
     }
     return aliases.get(normalized, normalized)
 
+def _collect_reachable_stage_names(workflow_id: int, start_stage_names: set[str]):
+    if not start_stage_names:
+        return set()
+
+    edges = {}
+    for from_name, to_name in WorkflowTransition.objects.filter(workflow_id=workflow_id).values_list(
+        'from_stage__name', 'to_stage__name'
+    ):
+        edges.setdefault(from_name, set()).add(to_name)
+
+    visited = set(start_stage_names)
+    stack = list(start_stage_names)
+    while stack:
+        current = stack.pop()
+        for nxt in edges.get(current, set()):
+            if nxt not in visited:
+                visited.add(nxt)
+                stack.append(nxt)
+    return visited
+
 
 def _extract_level_index(stage_name):
     if not stage_name:

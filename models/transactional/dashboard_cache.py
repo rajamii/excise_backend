@@ -182,3 +182,18 @@ def dashboard_counts_cache(namespace: str):
             return response
         return wrapper
     return decorator
+
+def invalidate_dashboard_counts_cache() -> None:
+    if _dashboard_cache_available():
+        try:
+            from django_redis import get_redis_connection
+            con = get_redis_connection("default")
+            con.delete_pattern(f"{DASHBOARD_COUNTS_CACHE_PREFIX}:*")
+        except Exception as exc:
+            try:
+                from django.core.cache import cache as django_cache
+                django_cache.clear()
+                logger.info("Django cache cleared as fallback.")
+            except Exception as e2:
+                _mark_dashboard_cache_unavailable()
+                logger.info("Skipped cache invalidation; using database fallback: %s", e2)
