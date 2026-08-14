@@ -202,13 +202,18 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class LoginSerializer(serializers.Serializer):
-    username = serializers.CharField(max_length=255, required = True)
-    password = serializers.CharField(write_only=True, required = True)
+    username = serializers.CharField(max_length=255, required=True)
+    password = serializers.CharField(write_only=True, required=True)
     hashkey = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     response = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     def to_internal_value(self, data):
         allowed_fields = {'username', 'password', 'hashkey', 'response'}
+        incoming_keys = set(data.keys()) if hasattr(data, 'keys') else set()
+        extra_keys = incoming_keys - allowed_fields
+        if extra_keys:
+            raise serializers.ValidationError("Unexpected fields provided. Mass assignment blocked.")
+
         sanitized_data = {
             k: v for k, v in data.items() 
             if k in allowed_fields
@@ -221,34 +226,23 @@ class LoginSerializer(serializers.Serializer):
         password = data.get('password')
 
         if not username or not password:
-            raise serializers.ValidationError("Username & Password are required.")
+            raise serializers.ValidationError("Invalid login credentials.")
+
+        if not isinstance(username, str) or '\x00' in username:
+            raise serializers.ValidationError("Invalid login credentials.")
 
         existing_user = CustomUser.objects.filter(username=username).first()
-        if existing_user and not existing_user.is_active:
-            raise serializers.ValidationError("Your account is inactive. Contact administrator for login.")
-
-        if existing_user.is_locked_out():
-                remaining_seconds = (existing_user.lockout_until - timezone.now()).total_seconds()
-                remaining_minutes = math.ceil(remaining_seconds / 60)
-                raise serializers.ValidationError(
-                    f"Account locked due to multiple failed login attempts. Try again in {remaining_minutes} minute(s)."
-                )
-
         user = authenticate(username=username, password=password)
+
         if not user:
             if existing_user:
                 existing_user.record_failed_login(max_attempts=5, lockout_minutes=15)
-                attempts_left = 5 - existing_user.failed_login_attempts
-                
-                if attempts_left > 0:
-                    raise serializers.ValidationError(
-                        f"Invalid login credentials. {attempts_left} attempt(s) remaining before account lockout."
-                    )
-                else:
-                    raise serializers.ValidationError(
-                        "Invalid login credentials. Your account has been locked for 15 minutes."
-                    )
-            
+            raise serializers.ValidationError("Invalid login credentials.")
+
+        if existing_user and not existing_user.is_active:
+            raise serializers.ValidationError("Invalid login credentials.")
+
+        if existing_user and existing_user.is_locked_out():
             raise serializers.ValidationError("Invalid login credentials.")
 
         existing_user.reset_failed_login()
@@ -260,11 +254,17 @@ class LoginSerializer(serializers.Serializer):
 
 
 class LMSDBLOGINSerializer(serializers.Serializer):
-    username = serializers.CharField(max_length=255, required = True)
-    password = serializers.CharField(write_only=True, required = True)
+    username = serializers.CharField(max_length=255, required=True)
+    password = serializers.CharField(write_only=True, required=True)
 
     def to_internal_value(self, data):
+        # FIX: API Mass Assignment
         allowed_fields = {'username', 'password'}
+        incoming_keys = set(data.keys()) if hasattr(data, 'keys') else set()
+        extra_keys = incoming_keys - allowed_fields
+        if extra_keys:
+            raise serializers.ValidationError("Unexpected fields provided. Mass assignment blocked.")
+
         sanitized_data = {
             k: v for k, v in data.items() 
             if k in allowed_fields
@@ -277,35 +277,23 @@ class LMSDBLOGINSerializer(serializers.Serializer):
         password = data.get('password')
 
         if not username or not password:
-            raise serializers.ValidationError("Username and password are required.")
+            raise serializers.ValidationError("Invalid login credentials.")
+
+        if not isinstance(username, str) or '\x00' in username:
+            raise serializers.ValidationError("Invalid login credentials.")
 
         existing_user = CustomUser.objects.filter(username=username).first()
-        if existing_user and not existing_user.is_active:
-            raise serializers.ValidationError("Your account is inactive. Contact administrator for login.")
-
-        if existing_user.is_locked_out():
-                remaining_seconds = (existing_user.lockout_until - timezone.now()).total_seconds()
-                remaining_minutes = math.ceil(remaining_seconds / 60)
-                raise serializers.ValidationError(
-                    f"Account locked due to multiple failed login attempts. Try again in {remaining_minutes} minute(s)."
-                )
-
         user = authenticate(username=username, password=password)
 
         if not user:
             if existing_user:
                 existing_user.record_failed_login(max_attempts=5, lockout_minutes=15)
-                attempts_left = 5 - existing_user.failed_login_attempts
-                
-                if attempts_left > 0:
-                    raise serializers.ValidationError(
-                        f"Invalid login credentials. {attempts_left} attempt(s) remaining before account lockout."
-                    )
-                else:
-                    raise serializers.ValidationError(
-                        "Invalid login credentials. Your account has been locked for 15 minutes."
-                    )
-            
+            raise serializers.ValidationError("Invalid login credentials.")
+
+        if existing_user and not existing_user.is_active:
+            raise serializers.ValidationError("Invalid login credentials.")
+
+        if existing_user and existing_user.is_locked_out():
             raise serializers.ValidationError("Invalid login credentials.")
 
         existing_user.reset_failed_login()

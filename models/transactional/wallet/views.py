@@ -1,10 +1,6 @@
-import secrets
 from decimal import Decimal
-
-from django.db import transaction
 from django.db.models import Q
-from django.utils import timezone
-from rest_framework import status, serializers
+from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -13,7 +9,6 @@ from .models import (
     WalletBalance,
     WalletTransaction,
     _resolve_module_type_from_license_id,
-    _resolve_wallet_row_licensee_id,
 )
 from .serializers import WalletBalanceSerializer, WalletRechargeCreditSerializer, WalletTransactionSerializer
 from .wallet_service import credit_wallet_balance
@@ -141,7 +136,7 @@ def _safe_limit(raw_limit=None, default: int = 100, max_limit: int = 1000) -> in
         if parsed < 1:
             return default
         return min(parsed, max_limit)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 

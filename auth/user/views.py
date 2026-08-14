@@ -841,7 +841,18 @@ class MyLicenseeProfileView(APIView):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def check_username(request):
-    username = str(request.data.get('username') or '').strip()
+    allowed_keys = {'username'}
+    incoming_keys = set(request.data.keys()) if hasattr(request.data, 'keys') else set()
+    extra_keys = incoming_keys - allowed_keys
+    if extra_keys:
+        return Response({'error': 'Unexpected fields provided. Mass assignment blocked.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    raw_username = request.data.get('username')
+    
+    if not isinstance(raw_username, (str, int)) or '\x00' in str(raw_username):
+        return Response({'error': 'Invalid username format.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    username = str(raw_username).strip()
     if not username:
         return Response({'error': 'Username is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -852,6 +863,8 @@ def check_username(request):
             {'exists': False, 'error': 'No account found with this User ID. Please sign up first.'},
             status=status.HTTP_404_NOT_FOUND
         )
+    except ValueError:
+        return Response({'error': 'Invalid username format.'}, status=status.HTTP_400_BAD_REQUEST)
 
     if not user.is_active:
         return Response(

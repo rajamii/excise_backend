@@ -3066,10 +3066,12 @@ class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
             })
     
     def _extract_serial_number(self, serial: str) -> int:
-        """Extract numeric part from serial string"""
         import re
-        match = re.search(r'\d+$', serial or '')
-        return int(match.group()) if match else 0
+        try:
+            match = re.search(r'\d+$', serial or '')
+            return int(match.group()) if match else 0
+        except (TypeError, ValueError, OverflowError):
+            return 0
 
 
 
