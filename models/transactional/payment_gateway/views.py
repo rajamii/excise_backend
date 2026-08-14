@@ -1,14 +1,13 @@
-import hashlib
-import hmac
 import logging
 from decimal import Decimal
 import secrets
 from datetime import timedelta
 import json
 import base64
+from django.db import transaction
 try:
-    import requests  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover
+    import requests
+except ModuleNotFoundError:
     requests = None
 import time
 from excise_backend.settings import BILLDESK_GATEWAY_URL
@@ -25,7 +24,6 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from models.transactional.new_license_application.models import NewLicenseApplication
 from auth.user.models import CustomUser
-from auth.workflow.services import WorkflowService
 from .models import PaymentBilldeskTransaction, PaymentGatewayParameters, PaymentSendHOA, MasterPaymentModule
 from models.transactional.wallet.wallet_service import credit_wallet_balance, record_wallet_transaction
 from models.transactional.wallet.models import _resolve_wallet_row_licensee_id
@@ -80,13 +78,9 @@ def _normalize_wallet_type(wallet_type: str) -> str:
 
 
 def _resolve_wallet_head_of_account(*, licensee_id: str, wallet_type: str, user_id: str = "") -> str:
-    """
-    Resolve Head Of Account for wallet recharge initiation.
 
-    Important: the incoming licensee_id may be a username or a NA/NLI alias used by
-    different clients. Use the same resolver as wallet transaction recording to
-    map it to the actual WalletBalance.licensee_id stored in DB.
-    """
+    # Resolve Head Of Account for wallet recharge initiation.
+
     lid = str(licensee_id or "").strip()
     wtype = str(wallet_type or "").strip()
     uid = str(user_id or "").strip()
@@ -101,7 +95,6 @@ def _resolve_wallet_head_of_account(*, licensee_id: str, wallet_type: str, user_
             )
             .order_by("wallet_balance_id")
         )
-        # Prefer a non-empty/non-sentinel HOA if multiple rows exist.
         row = qs.exclude(head_of_account__isnull=True).exclude(head_of_account__exact="").exclude(head_of_account__iexact="non").first()
         if not row:
             row = qs.first()
@@ -131,10 +124,6 @@ def _active_na_license_id_for_applicant(user) -> str:
     return ""
 
 
-def _billdesk_hmac_sha256(msg: str, key: str) -> str:
-    return hmac.new(key.encode(), msg.encode(), hashlib.sha256).hexdigest().upper()
-
-
 def _normalize_amount(raw_amount) -> Decimal:
     value = Decimal(str(raw_amount or "0")).quantize(Decimal("0.01"))
     if value <= 0:
@@ -147,14 +136,12 @@ def _validate_payment_module_code(module_code: str) -> str:
     if not code:
         raise ValueError("payment_module_code is required.")
 
-    # check sems_master_module if it exists in the DB.
     try:
         if MasterPaymentModule.objects.filter(module_code=code).exists():
             return code
     except (OperationalError, ProgrammingError):
         pass
 
-    # check MasterFixedFee if it exists in the DB.
     try:
         from models.masters.core.models import MasterFixedFee
         if MasterFixedFee.objects.filter(fee_code=code).exists():
@@ -178,7 +165,6 @@ def _get_module_license_fee(module_code: str) -> Decimal | None:
         )
         fee = getattr(module, "license_fee", None) if module else None
         if fee in (None, ""):
-            # check MasterFixedFee as fallback
             from models.masters.core.models import MasterFixedFee
             fixed_fee = MasterFixedFee.objects.filter(fee_code=code).first()
             fee = getattr(fixed_fee, "amount", None) if fixed_fee else None
@@ -199,7 +185,6 @@ def get_payment_module(request, module_code: str):
 
     module = MasterPaymentModule.objects.filter(module_code=code).first()
     if not module:
-        # Check MasterFixedFee as fallback or alternative
         from models.masters.core.models import MasterFixedFee
         fixed_fee = MasterFixedFee.objects.filter(fee_code=code).first()
         if not fixed_fee:
@@ -240,14 +225,13 @@ def get_payment_module(request, module_code: str):
 def _generate_transaction_id(prefix: str = "TXN") -> str:
     return f"{prefix}{timezone.now().strftime('%Y%m%d%H%M%S')}{secrets.token_hex(4).upper()}"
 
-# Helper function to decode the JWS token payload without verifying the signature.
+
 def _decode_jws_payload(jws_token: str) -> dict:
     """Decodes the Base64URL payload of a JWS token into a Python dictionary."""
     parts = jws_token.split('.')
     if len(parts) != 3:
         return {}
     payload_b64 = parts[1]
-    # Add padding back if necessary for standard base64 decoding
     missing = (-len(payload_b64)) % 4
     padding = '=' * missing
     payload_json = base64.urlsafe_b64decode(payload_b64 + padding).decode('utf-8')
@@ -258,7 +242,6 @@ def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str
     if device_data is None:
         device_data = {}
 
-    # Safely determine the actual client IP (handling proxies/load balancers)
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
     if x_forwarded_for:
         client_ip = x_forwarded_for.split(',')[0].strip()
@@ -312,7 +295,6 @@ def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str
         bdorderid = resp_data.get("bdorderid")
         auth_token = None
         
-        # Extract the authToken from the redirect link headers
         for link in resp_data.get("links", []):
             if link.get("rel") == "redirect":
                 auth_token = link.get("headers", {}).get("authorization")
@@ -322,15 +304,13 @@ def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str
             "success": True, 
             "bdorderid": bdorderid, 
             "authorization": auth_token, 
-            "request_string": jws_token # Saving this for debugging/DB purposes
+            "request_string": jws_token
         }
     else:
         logger.error(f"BillDesk Create Order Failed: {response.text}")
         
-        # --- IMPLEMENTATION 4: DECODE ERROR JWS ---
         error_details = response.text
         try:
-            # Attempt to decode the payload if it's a JWS token
             if '.' in response.text:
                 decoded_payload = _decode_jws_payload(response.text)
                 if decoded_payload:
@@ -339,25 +319,6 @@ def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str
             logger.warning(f"Could not decode error JWS payload: {e}")
             
         return {"success": False, "error": error_details}
-
-
-def _build_billdesk_request_message(
-    *,
-    merchant_id: str,
-    transaction_id: str,
-    amount_str: str,
-    security_id: str,
-    return_url: str,
-    additional_infos: list[str],
-) -> str:
-    infos = [(str(x or "").strip() or "NA") for x in (additional_infos or [])][:7]
-    while len(infos) < 7:
-        infos.append("NA")
-
-    return (
-        f"{merchant_id}|{transaction_id}|NA|{amount_str}|NA|NA|NA|INR|NA|R|{security_id}|NA|NA|F|"
-        f"{infos[0]}|{infos[1]}|{infos[2]}|{infos[3]}|{infos[4]}|{infos[5]}|{infos[6]}|{return_url}"
-    )
 
 
 def _build_full_name_from_user(user) -> str:
@@ -371,7 +332,6 @@ def _build_full_name_from_user(user) -> str:
     full = " ".join(parts).strip()
     if full:
         return full
-    # Fallbacks commonly present on custom user/profile models.
     for key in ("name", "full_name", "fullname"):
         value = str(getattr(user, key, "") or "").strip()
         if value:
@@ -398,7 +358,6 @@ def billdesk_initiate_wallet_recharge(request):
         return Response({"detail": "wallet_type is required."}, status=status.HTTP_400_BAD_REQUEST)
 
     if not licensee_id:
-        # Backward compat: try to resolve the active NA license for the logged-in applicant.
         licensee_id = str(_active_na_license_id_for_applicant(request.user) or "").strip()[:50]
 
     resolved_hoa = ""
@@ -420,21 +379,16 @@ def billdesk_initiate_wallet_recharge(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-
-    # When provided, it should map to the master module table; otherwise store a stable default.
     if payment_module_code:
         try:
             payment_module_code = _validate_payment_module_code(payment_module_code)
         except Exception:
-            # Do not block recharge initiation for legacy clients.
             logger.warning("Unknown payment_module_code=%s for wallet recharge; storing as-is.", payment_module_code)
     else:
-        # eabgari_master_module: 999 = Advance Payment to e-Wallet
         payment_module_code = DEFAULT_WALLET_ADVANCE_MODULE_CODE
         try:
             payment_module_code = _validate_payment_module_code(payment_module_code)
         except Exception:
-            # If the master table isn't available in this environment, still store something stable.
             payment_module_code = DEFAULT_WALLET_ADVANCE_MODULE_CODE
 
     try:
@@ -518,7 +472,6 @@ def billdesk_initiate_wallet_recharge(request):
         "additional_info7": "NA",
     }
 
-    # Call the Create Order API
     api_result = _create_billdesk_order(
         merchant_id=merchant_id,
         client_id=client_id,
@@ -534,12 +487,10 @@ def billdesk_initiate_wallet_recharge(request):
     if not api_result.get("success"):
         return Response({"detail": "Failed to initiate transaction with gateway.", "error": api_result.get("error")}, status=status.HTTP_502_BAD_GATEWAY)
 
-    # 3. Extract the SDK variables
     bd_order_id = api_result["bdorderid"]
     auth_token = api_result["authorization"]
     request_msg = api_result["request_string"]
 
-    # 4. Save to DB (update your update_or_create call)
     PaymentBilldeskTransaction.objects.update_or_create(
         utr=transaction_id,
         defaults={
@@ -597,7 +548,6 @@ def billdesk_initiate_wallet_recharge(request):
     except Exception as exc:
         logger.warning("Failed to record pending wallet transaction for txn_id=%s: %s", transaction_id, exc)
 
-   # 5. Return SDK tokens to Frontend
     return Response(
         {
             "bd_order_id": bd_order_id,
@@ -701,7 +651,6 @@ def billdesk_initiate_license_fee(request):
         "additional_info7": "NA",
     }
 
-    # Call the Create Order API
     api_result = _create_billdesk_order(
         merchant_id=merchant_id,
         client_id=merchant_id.lower(),
@@ -898,7 +847,6 @@ def billdesk_initiate_security_deposit(request):
         "additional_info7": "NA",
     }
 
-    # Call the Create Order API
     api_result = _create_billdesk_order(
         merchant_id=merchant_id,
         client_id=merchant_id.lower(),
@@ -990,13 +938,7 @@ def billdesk_initiate_security_deposit(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def billdesk_initiate_new_license_application_fee(request):
-    """
-    New license application fee payment via BillDesk.
-
-    - payment_module_code: 001 (New Licensee Application) from master module table
-    - payer_id: application_id (NLI/...)
-    - AdditionalInfo2/3: SIKPAY (legacy mapping expected by BillDesk integrations)
-    """
+    # New license application fee payment via BillDesk.
     data = request.data or {}
     device_data = data.get("device_data", {})
     application_id = str(data.get("application_id") or data.get("payer_id") or "").strip()[:50]
@@ -1028,7 +970,6 @@ def billdesk_initiate_new_license_application_fee(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # If frontend sent an amount, ensure it matches DB (prevents tampering).
         if raw_amount not in (None, ""):
             client_amount = _normalize_amount(raw_amount)
             if client_amount != module_fee:
@@ -1111,7 +1052,6 @@ def billdesk_initiate_new_license_application_fee(request):
         "additional_info7": "NA",
     }
 
-    # Call the Create Order API
     api_result = _create_billdesk_order(
         merchant_id=merchant_id,
         client_id=merchant_id.lower(),
@@ -1276,10 +1216,8 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
         module_code = str(getattr(tx, "payment_module_code", "") or "").strip()
 
         if module_code == DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE:
-            # New license application fee: auto-submit application on success.
             if status_code == "S":
                 try:                 
-                    # WorkflowStage import is intentionally inside try-block for environments where workflow tables differ.
                     application_id = str(getattr(tx, "payer_id", "") or "").strip()
                     app = (
                         NewLicenseApplication.objects.select_related("workflow", "current_stage", "applicant")
@@ -1289,7 +1227,6 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                     if not app:
                         raise ValueError(f"NewLicenseApplication not found for application_id={application_id}")
 
-                    # Persist application-fee payment status on the application row.
                     try:
                         if not getattr(app, "is_application_fee_paid", False):
                             app.is_application_fee_paid = True
@@ -1297,8 +1234,6 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                     except Exception:
                         pass
 
-                    # If a previous attempt incorrectly pushed the application into a rejected/final stage,
-                    # restore it back to the workflow initial stage so it can be submitted.
                     try:
                         stage = getattr(app, "current_stage", None)
                         stage_name = str(getattr(stage, "name", "") or "").strip().lower()
@@ -1347,7 +1282,6 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                             if not init:
                                 raise ValueError("No initial stage found for SALESMAN_BARMAN workflow.")
 
-                            # Find existing SB record created during the draft save, or build a new one.
                             sb = (
                                 SalesmanBarmanModel.objects.select_related("workflow", "current_stage", "applicant")
                                 .filter(new_license_application=app)
@@ -1355,7 +1289,6 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                             )
 
                             if not sb:
-                                # SB record was not pre-created — build it now with available data.
                                 sb = SalesmanBarmanModel(
                                     workflow=wf,
                                     current_stage=init,
@@ -1367,7 +1300,6 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                                     role=getattr(app, "mode_of_operation", None),
                                 )
                             else:
-                                # Ensure required FK fields are set on the existing record.
                                 if not getattr(sb, "workflow_id", None):
                                     sb.workflow = wf
                                 if not getattr(sb, "current_stage_id", None):
@@ -1380,15 +1312,11 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                                     sb.license_category = app.license_category
                                 if getattr(app, "mode_of_operation", None) in {"Salesman", "Barman"}:
                                     sb.role = app.mode_of_operation
-
-                            # Save in its own transaction so generate_application_id()'s nested
-                            # atomic() doesn't interfere with any surrounding transaction state.
                             with db_transaction.atomic():
                                 sb.save()
 
                             sbm_application_id = str(getattr(sb, "application_id", "") or "").strip()
 
-                            # Refresh to get the current_stage from DB after save.
                             sb.refresh_from_db()
                             if getattr(getattr(sb, "current_stage", None), "is_initial", False):
                                 try:
@@ -1414,24 +1342,14 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                             _sbm_exc,
                         )
                         sbm_submit_error = "sbm_auto_submit_failed"
-
-                    # bubble up to redirect query params (defined later)
-                    # transaction_response._sbm_submitted = sbm_submitted
-                    # transaction_response._sbm_application_id = sbm_application_id
-                    # transaction_response._sbm_submit_error = sbm_submit_error
-                    # INSTEAD, LOG OR STORE THEM IN A DICTIONARY:
                     logger.info(
                         f"SB auto-submit complete. Submitted: {sbm_submitted}, "
                         f"ID: {sbm_application_id}, Error: {sbm_submit_error}"
                     )
-                    auto_submitted = True
 
                 except Exception as exc:
-                    auto_submit_error = str(exc)
                     logger.exception("Failed to auto-submit new license application for txn_ref=%s: %s", txn_ref, exc)
             elif status_code == "F":
-                # Do not mark the application as rejected on application-fee payment failure.
-                # The licensee should be able to retry "Pay Now" later while the application remains unsubmitted.
                 try:
                     application_id = str(getattr(tx, "payer_id", "") or "").strip()
                     app = (
@@ -1639,44 +1557,89 @@ def billdesk_webhook(request):
     if request.method != "POST":
         return HttpResponseBadRequest("Invalid method")
 
-    # Webhooks might send data as form data OR as a raw body string
     transaction_response = request.POST.get("transaction_response")
     if not transaction_response:
         transaction_response = request.body.decode('utf-8').strip()
 
     if not transaction_response:
-        # Acknowledge with 200 so BillDesk stops retrying a malformed request
         return HttpResponse("Missing payload", status=200)
 
-    # Process the transaction idempotently
     _process_billdesk_transaction(transaction_response)
 
-    # BillDesk mandates returning a 2xx status code immediately to acknowledge the event
     return HttpResponse("Webhook Received", status=200)
+
+import urllib.parse
 
 @csrf_exempt
 def billdesk_response(request):
     if request.method != "POST":
         return HttpResponseBadRequest("Invalid method")
 
-    # 1. Fetch the encrypted response parameter
     transaction_response = request.POST.get("transaction_response")
     if not transaction_response:
         return HttpResponseBadRequest("Missing transaction_response parameter")
 
-    # Call the shared processor
     _process_billdesk_transaction(transaction_response)
 
-    # 2. Fetch the frontend success URL from the database
+    try:
+        resp_data = _decode_jws_payload(transaction_response)
+        txn_ref = resp_data.get("orderid", "")
+    except Exception:
+        txn_ref = ""
+
+    tx = None
+    if txn_ref:
+        tx = PaymentBilldeskTransaction.objects.filter(utr=txn_ref).first() or \
+             PaymentBilldeskTransaction.objects.filter(transaction_id_no_hoa=txn_ref).first()
+
     gateway = PaymentGatewayParameters.objects.filter(
         is_active=True, 
         payment_gateway_name__iexact="Billdesk"
     ).order_by("sl_no").first()
     
-    # Fallback to the root domain if frontend_success_url is not set
-    redirect_url = getattr(gateway, "frontend_success_url", "/") or "/"
+    base_redirect_url = getattr(gateway, "frontend_success_url", "/") or "/"
 
-    # 3. Generate dynamic HTML with the robust popup-closing logic
+    if tx:
+        amount_val = str(tx.response_txnamount or tx.transaction_amount or "0")
+        wallet_type_val = str(tx.request_additionalinfo3 or "").strip()
+        hoa_val = str(tx.request_additionalinfo1 or "").strip()
+        status_val = "success" if tx.payment_status == "S" else "failed"
+        credit_time = (tx.response_txndate or tx.opr_date or timezone.now()).strftime("%d-%m-%Y %I:%M %p")
+        credit_time_iso = (tx.response_txndate or tx.opr_date or timezone.now()).isoformat()
+
+        params = {
+            "transaction_id": tx.utr or tx.transaction_id_no_hoa or txn_ref,
+            "transactionId": tx.utr or tx.transaction_id_no_hoa or txn_ref,
+            "amount": amount_val,
+            "wallet_type": wallet_type_val,
+            "walletType": wallet_type_val,
+            "hoa": hoa_val,
+            "head_of_account": hoa_val,
+            "status": status_val,
+            "payment_status": tx.payment_status,
+            "createdAt": credit_time,
+            "created_at": credit_time,
+            "creditedAt": credit_time,
+            "credited_at": credit_time,
+            "date": credit_time,
+            "txnDate": credit_time_iso,
+        }
+
+        url_parts = urllib.parse.urlparse(base_redirect_url)
+        query_dict = dict(urllib.parse.parse_qsl(url_parts.query))
+        query_dict.update(params)
+        new_query = urllib.parse.urlencode(query_dict)
+        redirect_url = urllib.parse.urlunparse((
+            url_parts.scheme,
+            url_parts.netloc,
+            url_parts.path,
+            url_parts.params,
+            new_query,
+            url_parts.fragment
+        ))
+    else:
+        redirect_url = base_redirect_url
+
     dynamic_html = f"""
     <!DOCTYPE html>
     <html>
@@ -1701,19 +1664,25 @@ def billdesk_response(request):
                     var targetUrl = "{redirect_url}";
                     
                     try {{
-                        // 1. Attempt to redirect the parent window if it exists and is accessible
                         if (window.opener && !window.opener.closed) {{
-                            window.opener.location.href = targetUrl;
+                            if (window.opener.top) {{
+                                window.opener.top.location.href = targetUrl;
+                            }} else {{
+                                window.opener.location.href = targetUrl;
+                            }}
+                            window.close();
+                            return;
+                        }}
+
+                        if (window.top && window.top !== window) {{
+                            window.top.location.href = targetUrl;
+                            return;
                         }}
                     }} catch (error) {{
-                        console.warn("Could not access parent window due to browser security:", error);
+                        console.warn("Could not access parent/opener window:", error);
                     }}
 
-                    // 2. Always attempt to close this popup window immediately
                     window.close();
-
-                    // 3. Fallback: If the browser refuses to close the window 
-                    // (e.g., if it wasn't opened via a script), redirect this window as a last resort.
                     setTimeout(function() {{
                         if (!window.closed) {{
                             window.location.href = targetUrl;
@@ -1721,179 +1690,13 @@ def billdesk_response(request):
                     }}, 500);
                 }}
 
-                // Wait 3 seconds before executing
-                setTimeout(executeRedirect, 3000);
+                setTimeout(executeRedirect, 2500);
             </script>
         </body>
     </html>
     """
     
     return HttpResponse(dynamic_html, content_type="text/html")
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def sbi_epay_mock_process(request):
-    """
-    Simulates the SBI ePay payment processing.
-    In a real scenario, this would generate an encrypted payload and redirect to SBI.
-    For this test kit, we will mock a successful transaction response directly.
-    """
-    data = request.data
-    amount = data.get("amount")
-    transaction_id = data.get("transaction_id")
-    head_of_account = data.get("head_of_account")
-
-    if not amount or not transaction_id:
-        return Response(
-            {"detail": "Amount and Transaction ID are required."}, 
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
-
-#     incoming = str(request.POST.get("msg") or request.POST.get("MSG") or "").strip()
-#     if not incoming:
-#         return HttpResponseBadRequest("Missing msg")
-
-#     if getattr(settings, "BILLDESK_MOCK_SIMULATE_PENDING", False):
-#         return HttpResponse(
-#             """
-#             <html>
-#               <head><title>BillDesk Mock - Pending</title></head>
-#               <body style="font-family: Arial, sans-serif; padding: 24px;">
-#                 <h3>BillDesk Mock</h3>
-#                 <p><strong>Simulating a stuck/pending payment:</strong> no callback will be sent to the server.</p>
-#                 <p>You can close this page and check wallet history status as <code>Pending</code>.</p>
-#               </body>
-#             </html>
-#             """
-#         )
-
-#     req_parts = incoming.split("|")
-#     if len(req_parts) < 5:
-#         return HttpResponseBadRequest("Invalid request msg format")
-
-#     merchant_id = req_parts[0].strip()
-#     txn_ref = req_parts[1].strip()
-#     amount = req_parts[3].strip()
-
-#     gateway = (
-#         PaymentGatewayParameters.objects.filter(is_active=True, payment_gateway_name__iexact="Billdesk")
-#         .order_by("sl_no")
-#         .first()
-#     )
-#     encryption_key = str(getattr(gateway, "encryption_key", "") or "").strip()
-#     if not encryption_key:
-#         return HttpResponseBadRequest("Missing encryption key")
-
-#     auth_status = str(getattr(settings, "BILLDESK_MOCK_AUTH_STATUS", "0300") or "0300").strip()
-#     error_status = "NA" if auth_status == "0300" else "ERR"
-#     error_desc = "NA" if auth_status == "0300" else "MOCK_FAILED"
-
-#     # Build a realistic BillDesk response string (checksum appended at end).
-#     # MerchantID|CustomerID|TxnReferenceNo|BankReferenceNo|TxnAmount|BankID|BankMerchantID|TxnType|CurrencyName|ItemCode|
-#     # SecurityType|SecurityID|SecurityPassword|TxnDate|AuthStatus|SettlementType|AdditionalInfo1..7|ErrorStatus|ErrorDescription|Checksum
-#     customer_id = "NA"
-#     bank_ref = f"MOCK{timezone.now().strftime('%Y%m%d%H%M%S')}"
-#     bank_id = "NA"
-#     bank_merchant_id = "NA"
-#     txn_type = "NA"
-#     currency = "INR"
-#     item_code = "NA"
-#     security_type = "NA"
-#     security_id = str(getattr(gateway, "securityid", "") or "").strip() or "NA"
-#     security_password = "NA"
-#     txn_date = timezone.now().strftime("%Y-%m-%d %H:%M:%S")
-#     settlement_type = "NA"
-
-#     # Try to echo back additional info from our stored request (if present).
-#     tx = PaymentBilldeskTransaction.objects.filter(utr=txn_ref).first()
-#     add = [
-#         str(getattr(tx, "request_additionalinfo1", "") or "NA"),
-#         str(getattr(tx, "request_additionalinfo2", "") or "NA"),
-#         str(getattr(tx, "request_additionalinfo3", "") or "NA"),
-#         str(getattr(tx, "request_additionalinfo4", "") or "NA"),
-#         str(getattr(tx, "request_additionalinfo5", "") or "NA"),
-#         str(getattr(tx, "request_additionalinfo6", "") or "NA"),
-#         str(getattr(tx, "request_additionalinfo7", "") or "NA"),
-#     ]
-
-#     resp_without_checksum = (
-#         f"{merchant_id}|{customer_id}|{txn_ref}|{bank_ref}|{amount}|{bank_id}|{bank_merchant_id}|{txn_type}|"
-#         f"{currency}|{item_code}|{security_type}|{security_id}|{security_password}|{txn_date}|{auth_status}|"
-#         f"{settlement_type}|{add[0]}|{add[1]}|{add[2]}|{add[3]}|{add[4]}|{add[5]}|{add[6]}|{error_status}|{error_desc}"
-#     )
-#     resp_checksum = _billdesk_hmac_sha256(resp_without_checksum, encryption_key)
-#     response_msg = f"{resp_without_checksum}|{resp_checksum}"
-
-#     fail_auth_status = "0399"
-#     fail_error_status = "ERR"
-#     fail_error_desc = "MOCK_FAILED"
-#     resp_without_checksum_fail = (
-#         f"{merchant_id}|{customer_id}|{txn_ref}|{bank_ref}|{amount}|{bank_id}|{bank_merchant_id}|{txn_type}|"
-#         f"{currency}|{item_code}|{security_type}|{security_id}|{security_password}|{txn_date}|{fail_auth_status}|"
-#         f"{settlement_type}|{add[0]}|{add[1]}|{add[2]}|{add[3]}|{add[4]}|{add[5]}|{add[6]}|{fail_error_status}|{fail_error_desc}"
-#     )
-#     resp_checksum_fail = _billdesk_hmac_sha256(resp_without_checksum_fail, encryption_key)
-#     response_msg_fail = f"{resp_without_checksum_fail}|{resp_checksum_fail}"
-
-#     callback_url = reverse("payment_gateway:billdesk-response")
-
-#     escaped_msg = html.escape(response_msg, quote=True)
-#     escaped_msg_fail = html.escape(response_msg_fail, quote=True)
-#     escaped_txn = html.escape(txn_ref, quote=True)
-#     escaped_amount = html.escape(amount, quote=True)
-#     escaped_status = html.escape(auth_status, quote=True)
-
-#     # Show a simple BillDesk-like page so testers can actually "see" the payment step.
-#     page = f"""
-# <!doctype html>
-# <html>
-#   <head>
-#     <meta charset="utf-8">
-#     <title>BillDesk Mock Payment</title>
-#     <meta name="viewport" content="width=device-width, initial-scale=1">
-#     <style>
-#       body {{ font-family: Arial, sans-serif; margin: 24px; background: #f6f7fb; }}
-#       .card {{ max-width: 720px; margin: 0 auto; background: #fff; border: 1px solid #e6e8f0; border-radius: 10px; padding: 18px 18px 14px; }}
-#       .hdr {{ font-size: 18px; font-weight: 700; margin-bottom: 8px; }}
-#       .sub {{ color: #556; margin-bottom: 18px; }}
-#       .row {{ display: flex; gap: 12px; margin: 8px 0; }}
-#       .k {{ width: 220px; color: #334; font-weight: 600; }}
-#       .v {{ flex: 1; color: #111; word-break: break-all; }}
-#       .btns {{ display: flex; gap: 10px; margin-top: 18px; }}
-#       button {{ border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; font-weight: 700; }}
-#       .pay {{ background: #16a34a; color: #fff; }}
-#       .fail {{ background: #dc2626; color: #fff; }}
-#       .note {{ margin-top: 14px; color: #667; font-size: 12px; }}
-#     </style>
-#   </head>
-#   <body>
-#     <div class="card">
-#       <div class="hdr">BillDesk Mock Payment Page</div>
-#       <div class="sub">This page is shown only when <code>BILLDESK_USE_MOCK=1</code> for localhost testing.</div>
-
-#       <div class="row"><div class="k">Transaction</div><div class="v">{escaped_txn}</div></div>
-#       <div class="row"><div class="k">Amount</div><div class="v">{escaped_amount}</div></div>
-#       <div class="row"><div class="k">AuthStatus (mock)</div><div class="v">{escaped_status}</div></div>
-
-#       <div class="btns">
-#         <form method="POST" action="{callback_url}">
-#           <input type="hidden" name="msg" value="{escaped_msg}">
-#           <button type="submit" class="pay">Pay (Post Response)</button>
-#         </form>
-#         <form method="POST" action="{callback_url}">
-#           <input type="hidden" name="msg" value="{escaped_msg_fail}">
-#           <button type="submit" class="fail">Fail</button>
-#         </form>
-#       </div>
-
-#       <div class="note">Tip: set <code>BILLDESK_MOCK_AUTH_STATUS</code> to control the default success status (0300).</div>
-#     </div>
-#   </body>
-# </html>
-# """.strip()
-#     return HttpResponse(page, content_type="text/html")
 
 
 @api_view(["GET"])

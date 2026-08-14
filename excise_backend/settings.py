@@ -161,7 +161,7 @@ DATABASES = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'sems_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'sameer123',  # Your PostgreSQL password
+        'PASSWORD': 'postgres',  # Your PostgreSQL password
         'HOST': 'localhost',        
         'PORT': '5432',             # Default PostgreSQL port
         'CONN_MAX_AGE': 300,         # Don't reuse connections — avoids aborted transaction state
@@ -230,9 +230,6 @@ AUTH_USER_MODEL = 'user.CustomUser'
 #]
 
 
-# Internationalization
-# https://docs.djangoproject.com/en/5.1/topics/i18n/
-
 LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'UTC'
@@ -241,16 +238,9 @@ USE_I18N = True
 
 USE_TZ = True
 
-
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.1/howto/static-files/
-
 STATIC_URL = 'static/'
 
 CORS_ORIGIN_ALLOW_ALL = True
-
-# Default primary key field type
-# https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -274,30 +264,18 @@ BILLDESK_GATEWAY_URL = os.getenv(
 ).strip()
 BILLDESK_ENCRYPTION_KEY = os.getenv("BILLDESK_ENCRYPTION_KEY", "").strip()
 
-# # Local testing: simulate BillDesk ProcessPayment and callback without hitting BillDesk servers.
-# # Default to mock in DEBUG to avoid hanging redirects to external UAT/Prod gateways during local dev.
-# _billdesk_use_mock_raw = os.getenv("BILLDESK_USE_MOCK")
-# if _billdesk_use_mock_raw is None:
-#     BILLDESK_USE_MOCK = bool(DEBUG)
-# else:
-#     BILLDESK_USE_MOCK = _billdesk_use_mock_raw.strip() in ("1", "true", "True", "YES", "yes")
-# BILLDESK_MOCK_AUTH_STATUS = os.getenv("BILLDESK_MOCK_AUTH_STATUS", "0300").strip()  # 0300=success
-# _billdesk_mock_pending_raw = os.getenv("BILLDESK_MOCK_SIMULATE_PENDING", "0")
-# BILLDESK_MOCK_SIMULATE_PENDING = str(_billdesk_mock_pending_raw or "").strip() in ("1", "true", "True", "YES", "yes")
-
 # Where Django redirects the user after BillDesk response is validated.
 PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL = os.getenv(
     "PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL",
-    # "https://sems.sikkim.gov.in/dashboard/wallet-recharge/success",
-    "http://localhost:4200/dashboard/wallet-recharge/success",
+    "https://sems.sikkim.gov.in/dashboard/wallet-recharge/success",
+    # "http://localhost:4200/dashboard/wallet-recharge/success",
 ).strip()
 PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL = os.getenv(
     "PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL",
-    # "https://sems.sikkim.gov.in/dashboard/new-license/application-fee/receipt",
-    "http://localhost:4200/dashboard/new-license/application-fee/receipt",
+    "https://sems.sikkim.gov.in/dashboard/new-license/application-fee/receipt",
+    # "http://localhost:4200/dashboard/new-license/application-fee/receipt",
 ).strip()
 
-# Captcha tuning: keep it readable with only light line noise.
 CAPTCHA_LENGTH = 5
 CAPTCHA_TIMEOUT = 300  # minutes
 CAPTCHA_FONT_SIZE = 30
