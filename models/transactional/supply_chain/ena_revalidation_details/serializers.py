@@ -286,19 +286,21 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
         return configs
 
     def create(self, validated_data):
-        validated_data.pop('our_ref_no', None)
+        our_ref_no = validated_data.pop('our_ref_no', None)
+        if not our_ref_no:
+            existing_refs = EnaRevalidationDetail.objects.values_list('our_ref_no', flat=True)
+            pattern = r'REV/(\d+)/EXCISE'
+            numbers = []
 
-        existing_refs = EnaRevalidationDetail.objects.values_list('our_ref_no', flat=True)
-        pattern = r'REV/(\d+)/EXCISE'
-        numbers = []
+            for ref in existing_refs:
+                match = re.match(pattern, str(ref or ''))
+                if match:
+                    numbers.append(int(match.group(1)))
 
-        for ref in existing_refs:
-            match = re.match(pattern, str(ref or ''))
-            if match:
-                numbers.append(int(match.group(1)))
-
-        next_number = (max(numbers) + 1) if numbers else 1
-        validated_data['our_ref_no'] = f"REV/{next_number:02d}/EXCISE"
+            next_number = (max(numbers) + 1) if numbers else 1
+            our_ref_no = f"REV/{next_number:02d}/EXCISE"
+        
+        validated_data['our_ref_no'] = our_ref_no
 
         request = self.context.get('request')
         if request:

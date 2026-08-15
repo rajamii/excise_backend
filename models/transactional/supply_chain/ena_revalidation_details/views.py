@@ -697,8 +697,18 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                 'data': serializer.data
             }, status=status.HTTP_200_OK)
 
+        import re
+        req_ref = requisition.our_ref_no
+        match = re.search(r'/(\d+)/', req_ref)
+        if match:
+            num = match.group(1)
+            our_ref_no = f"REV/{num}/EXCISE"
+        else:
+            our_ref_no = f"REV-{requisition.id}"
+
         now = timezone.now()
         payload = {
+            'our_ref_no': our_ref_no,
             'requisition_date': requisition.requisition_date,
             'grain_ena_number': requisition.grain_ena_number,
             'bulk_spirit_type': requisition.bulk_spirit_type or '',
