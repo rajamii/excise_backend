@@ -39,6 +39,26 @@ def _is_commissioner_user(user):
     }
 
 
+def _is_permit_under_revalidation(permit_no: str) -> bool:
+    from models.transactional.supply_chain.ena_revalidation_details.models import EnaRevalidationDetail
+    p_no = str(permit_no or '').strip()
+    if not p_no:
+        return False
+    
+    # Active revalidations
+    revals = EnaRevalidationDetail.objects.exclude(
+        models.Q(status__icontains='reject') |
+        models.Q(status__icontains='invalid') |
+        models.Q(status__icontains='expire')
+    )
+    for r in revals:
+        r_permits = [p.strip() for p in str(r.details_permits_number or '').split(',') if p.strip()]
+        if p_no in r_permits:
+            return True
+            
+    return False
+
+
 def _is_oic_user(user):
     role_token = _normalize_role_token(getattr(getattr(user, 'role', None), 'name', ''))
     return (
@@ -486,6 +506,16 @@ class RequisitionArrivalBulkLiterDetailAPIView(APIView):
                         return Response({
                             'status': 'error',
                             'message': f"Permit(s) cancellation already requested: {', '.join(cancel_requested_overlap)}."
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+                    reval_blocked = []
+                    for p in incoming_permits:
+                        if _is_permit_under_revalidation(p):
+                            reval_blocked.append(p)
+                    if reval_blocked:
+                        return Response({
+                            'status': 'error',
+                            'message': f"Permit(s) are currently under revalidation: {', '.join(reval_blocked)}. Cannot update arrival details."
                         }, status=status.HTTP_400_BAD_REQUEST)
 
                     blocked = set()
