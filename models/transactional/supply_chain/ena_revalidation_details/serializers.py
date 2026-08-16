@@ -124,6 +124,11 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
             data['approval_date'] = approval_anchor.isoformat()
             data['expiry_date'] = (approval_anchor + timedelta(days=validity_days)).isoformat()
 
+        requisition_ref_no = getattr(instance, 'requisition_ref_no', None)
+        if not requisition_ref_no and instance.our_ref_no and str(instance.our_ref_no).startswith('REV/'):
+            requisition_ref_no = str(instance.our_ref_no).replace('REV/', 'REQ/')
+        data['requisition_ref_no'] = requisition_ref_no or instance.our_ref_no
+
         return data
 
     def _get_revalidation_validity_period_days(self) -> int:
