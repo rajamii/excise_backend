@@ -35,6 +35,20 @@ def _role_token_matches_cond(user_role_token, cond_role_token):
     if user_role_token in permit_aliases and cond_role_token in permit_aliases:
         return True
 
+    commissioner_aliases = {
+        'commissioner',
+        'excisecommissioner',
+        'deputycommissioner',
+        'jointcommissioner',
+        'level1',
+        'level2',
+        'level3',
+        'level4',
+        'level5',
+    }
+    if user_role_token in commissioner_aliases and cond_role_token in commissioner_aliases:
+        return True
+
     return False
 
 

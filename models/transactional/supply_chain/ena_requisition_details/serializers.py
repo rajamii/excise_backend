@@ -485,7 +485,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         role = None
         
         # Commissioner roles (add more aliases if needed)
-        if cleaned_role_name in ['commissioner', 'level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'site_admin', 'site-admin']:
+        if cleaned_role_name in ['commissioner', 'level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'site_admin', 'site-admin'] or 'commissioner' in cleaned_role_name:
             role = 'commissioner'
         # Permit Section roles
         elif cleaned_role_name in ['permit-section', 'permit section', 'permit_section']:

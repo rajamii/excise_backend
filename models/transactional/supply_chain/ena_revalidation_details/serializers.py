@@ -221,21 +221,16 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
         if not user_role_name:
             return []
 
-        user_role_name = user_role_name.strip()
+        cleaned_role_name = user_role_name.lower().strip()
 
         role = None
-        commissioner_roles = ['level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'Site-Admin', 'site_admin', 'commissioner', 'Commissioner']
-        permit_roles = ['permit-section', 'Permit-Section', 'Permit Section', 'permit section']
-        oic_roles = ['officer-in-charge', 'Officer-in-Charge', 'OIC', 'oic']
-        licensee_roles = ['licensee', 'Licensee']
-
-        if user_role_name in commissioner_roles:
+        if cleaned_role_name in ['commissioner', 'level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'site_admin', 'site-admin'] or 'commissioner' in cleaned_role_name:
             role = 'commissioner'
-        elif user_role_name in permit_roles:
+        elif cleaned_role_name in ['permit-section', 'permit section', 'permit_section']:
             role = 'permit-section'
-        elif user_role_name in oic_roles:
+        elif cleaned_role_name in ['officer-in-charge', 'officer in charge', 'officer_in_charge', 'oic']:
             role = 'officer-in-charge'
-        elif user_role_name in licensee_roles:
+        elif cleaned_role_name in ['licensee', 'license user', 'license_user']:
             role = 'licensee'
 
         if not role:

@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import EnaCancellationDetail
 from auth.workflow.constants import WORKFLOW_IDS
+from models.transactional.supply_chain.access_control import condition_role_matches
 import logging
 import re
 
@@ -82,22 +83,17 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
         if not user_role_name:
             return []
             
-        user_role_name = user_role_name.strip()
+        cleaned_role_name = user_role_name.lower().strip()
         
         # Determine role and normalize it to match WorkflowRule expected values
         role = None
-        commissioner_roles = ['level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'Site-Admin', 'site_admin', 'commissioner', 'Commissioner']
-        permit_roles = ['permit-section', 'Permit-Section', 'Permit Section', 'permit section']
-        oic_roles = ['officer-in-charge', 'Officer-in-Charge', 'OIC', 'oic']
-        licensee_roles = ['licensee', 'Licensee']
-        
-        if user_role_name in commissioner_roles:
+        if cleaned_role_name in ['commissioner', 'level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'site_admin', 'site-admin'] or 'commissioner' in cleaned_role_name:
             role = 'commissioner'
-        elif user_role_name in permit_roles:
+        elif cleaned_role_name in ['permit-section', 'permit section', 'permit_section']:
             role = 'permit-section'
-        elif user_role_name in oic_roles:
+        elif cleaned_role_name in ['officer-in-charge', 'officer in charge', 'officer_in_charge', 'oic']:
             role = 'officer-in-charge'
-        elif user_role_name in licensee_roles:
+        elif cleaned_role_name in ['licensee', 'license user', 'license_user']:
             role = 'licensee'
         
         logger.debug("ENA cancellation allowed_actions: determined_role=%r", role)
@@ -129,10 +125,10 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
         actions = []
         for t in transitions:
             cond = t.condition or {}
-            if cond.get('role') == role:
+            if condition_role_matches(cond, request.user) or cond.get('role') == role:
                 action = cond.get('action')
                 if action:
-                    actions.append(action)
+                    actions.append(str(action).strip().upper())
 
         # Add VIEW_PERMIT_SLIP using stage semantics instead of hardcoded stage id.
         current_stage_obj = obj.current_stage
