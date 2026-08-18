@@ -568,27 +568,37 @@ def dashboard_counts(request):
 
     # ── Permit Section ───────────────────────────────────────────────────
     if role == 'permit_section':
+        pending = base_qs.filter(current_stage__name__in=[STAGE_PERMIT_SECTION, STAGE_PERMIT_SECTION_OBJECTION]).count()
+        approved = base_qs.filter(current_stage__name__in=[
+            STAGE_COMMISSIONER, STAGE_COMMISSIONER_OBJECTION, 
+            STAGE_AWAITING_PAYMENT, STAGE_FINAL_COMMISSIONER_REVIEW, STAGE_APPROVED
+        ]).count()
+        rejected = base_qs.filter(current_stage__name=STAGE_REJECTED).count()
+        objection = base_qs.filter(current_stage__name=STAGE_PERMIT_SECTION_OBJECTION).count()
+        awaiting_payment = base_qs.filter(current_stage__name=STAGE_AWAITING_PAYMENT).count()
         counts = {
-            'applied': base_qs.count(),
-            'pending':  base_qs.filter(current_stage__name__in=[STAGE_PERMIT_SECTION, STAGE_PERMIT_SECTION_OBJECTION]).count(),
-            'approved': base_qs.filter(current_stage__name__in=[
-                STAGE_COMMISSIONER, STAGE_COMMISSIONER_OBJECTION, 
-                STAGE_AWAITING_PAYMENT, STAGE_FINAL_COMMISSIONER_REVIEW, STAGE_APPROVED
-            ]).count(),
-            'rejected': base_qs.filter(current_stage__name=STAGE_REJECTED).count(),
-            'objection': base_qs.filter(current_stage__name=STAGE_PERMIT_SECTION_OBJECTION).count(),
-            'awaiting_payment': base_qs.filter(current_stage__name=STAGE_AWAITING_PAYMENT).count(),
+            'applied': pending + approved + rejected,
+            'pending':  pending,
+            'approved': approved,
+            'rejected': rejected,
+            'objection': objection,
+            'awaiting_payment': awaiting_payment,
         }
 
     # ── Commissioner ─────────────────────────────────────────────────────
     elif role == 'commissioner':
+        pending = base_qs.filter(current_stage__name__in=[STAGE_COMMISSIONER, STAGE_COMMISSIONER_OBJECTION, STAGE_FINAL_COMMISSIONER_REVIEW]).count()
+        approved = base_qs.filter(current_stage__name__in=[STAGE_AWAITING_PAYMENT, STAGE_APPROVED]).count()
+        rejected = base_qs.filter(current_stage__name=STAGE_REJECTED).count()
+        objection = base_qs.filter(current_stage__name=STAGE_COMMISSIONER_OBJECTION).count()
+        awaiting_payment = base_qs.filter(current_stage__name=STAGE_AWAITING_PAYMENT).count()
         counts = {
-            'applied': base_qs.count(),
-            'pending':  base_qs.filter(current_stage__name__in=[STAGE_COMMISSIONER, STAGE_COMMISSIONER_OBJECTION, STAGE_FINAL_COMMISSIONER_REVIEW]).count(),
-            'approved': base_qs.filter(current_stage__name__in=[STAGE_AWAITING_PAYMENT, STAGE_APPROVED]).count(),
-            'rejected': base_qs.filter(current_stage__name=STAGE_REJECTED).count(),
-            'objection': base_qs.filter(current_stage__name=STAGE_COMMISSIONER_OBJECTION).count(),
-            'awaiting_payment': base_qs.filter(current_stage__name=STAGE_AWAITING_PAYMENT).count(),
+            'applied': pending + approved + rejected,
+            'pending':  pending,
+            'approved': approved,
+            'rejected': rejected,
+            'objection': objection,
+            'awaiting_payment': awaiting_payment,
         }
 
     # ── Applicant / licensee ─────────────────────────────────────────────
