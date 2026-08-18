@@ -35,7 +35,7 @@ def _canonical_role_token(role_name):
         return 'permitsection'
     if token in {'itcell', 'it_cell', 'it-cell'}:
         return 'itcell'
-    if token in {'jointcommissioner', 'commissioner'}:
+    if 'commissioner' in token:
         return 'commissioner'
     return token
 
