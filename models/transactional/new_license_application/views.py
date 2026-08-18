@@ -36,7 +36,7 @@ from django.core import signing
 from urllib.parse import quote
 import secrets
 import hashlib
-from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_role_stage_names
+from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_role_stage_names, _filter_by_user_district, _is_district_scoped_role
 from models.transactional.dashboard_cache import dashboard_counts_cache
 from models.masters.core.models import LicenseFee, SupplyChainTimerConfig
 from models.transactional.wallet.wallet_service import debit_wallet_balance
@@ -706,6 +706,7 @@ def list_license_applications(request):
             current_stage__stagepermission__can_process=True
         ).distinct()
 
+    applications = _filter_by_user_district(applications, request.user, 'site_district')
     applications = _with_application_fee_payment_annotations(applications)
     serializer = NewLicenseApplicationSerializer(applications, many=True)
     return Response(serializer.data)
@@ -1523,6 +1524,7 @@ def dashboard_counts(request):
     workflow_id = WORKFLOW_IDS['LICENSE_APPROVAL']
     stage_sets = _get_stage_sets(workflow_id)
     all_qs = NewLicenseApplication.objects.all()
+    all_qs = _filter_by_user_district(all_qs, request.user, 'site_district')
 
     month = request.query_params.get('month')
     year = request.query_params.get('year')
@@ -1639,7 +1641,7 @@ def application_group(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['LICENSE_APPROVAL']
     stage_sets = _get_stage_sets(workflow_id)
-    all_qs = NewLicenseApplication.objects.all()
+    all_qs = _filter_by_user_district(NewLicenseApplication.objects.all(), request.user, 'site_district')
 
     if role == 'licensee':
         base_qs = _with_site_enquiry_revert_annotations(

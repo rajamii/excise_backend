@@ -33,6 +33,7 @@ from django.contrib.contenttypes.models import ContentType
 from models.transactional.payment_gateway.models import MasterPaymentModule
 from models.transactional.wallet.wallet_service import debit_wallet_balance
 from models.transactional.dashboard_cache import dashboard_counts_cache
+from models.transactional.helpers import _filter_by_user_district, _is_district_scoped_role
 
 
 def _normalize_role(role_name):
@@ -700,6 +701,7 @@ def list_salesman_barman(request):
             current_stage__stagepermission__can_process=True
         ).distinct()
 
+    applications = _filter_by_user_district(applications, request.user, 'excise_district')
     serializer = SalesmanBarmanSerializer(applications, many=True)
     return Response(serializer.data)
 
@@ -863,7 +865,7 @@ def dashboard_counts(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['SALESMAN_BARMAN']
     stage_sets = _get_stage_sets(workflow_id)
-    all_qs = SalesmanBarmanModel.objects.all()
+    all_qs = _filter_by_user_district(SalesmanBarmanModel.objects.all(), request.user, 'excise_district')
 
     month = request.query_params.get('month')
     year = request.query_params.get('year')
@@ -973,7 +975,7 @@ def application_group(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['SALESMAN_BARMAN']
     stage_sets = _get_stage_sets(workflow_id)
-    all_qs = SalesmanBarmanModel.objects.all()
+    all_qs = _filter_by_user_district(SalesmanBarmanModel.objects.all(), request.user, 'excise_district')
 
     if role == 'licensee':
         base_qs = SalesmanBarmanModel.objects.filter(applicant=request.user)

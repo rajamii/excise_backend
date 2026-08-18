@@ -19,6 +19,7 @@ from models.transactional.license_renewal_application.models import LicenseAppli
 from models.transactional.new_license_application.models import NewLicenseApplication
 from models.transactional.salesman_barman.models import SalesmanBarmanModel
 from models.transactional.dashboard_cache import dashboard_counts_cache
+from models.transactional.helpers import _filter_by_user_district, _is_district_scoped_role
 import logging
 
 def _normalized_role_token(user):
@@ -195,8 +196,71 @@ def stage_permission_delete(request, pk):
 # Next Stages
 @api_view(['GET'])
 @permission_classes([HasStagePermission])
+def pay_license_fee(request, application_id):
+    application = _get_application_by_id(application_id, user=request.user)
+    if not application:
+        return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
+        
+    # Enforce stage-level processing permission for action discovery.
+    # Without this, non-processing users can still fetch next actions on GET.
+    if not request.user.is_superuser:
+        if not getattr(request.user, 'role', None):
+            return Response([])
+        if not StagePermission.objects.filter(
+            stage=application.current_stage,
+            role=request.user.role,
+            can_process=True
+        ).exists():
+            return Response([])
+
+    current_stage = application.current_stage
+    transitions = WorkflowTransition.objects.filter(
+        workflow=application.workflow,
+        from_stage=current_stage
+    ).order_by('id')
+
+    # New-license: Commissioner approval should move to awaiting_payment (stage 23).
+    # If both Commissioner -> Secretary and Commissioner -> awaiting_payment transitions exist,
+    # hide the Secretary option to avoid mis-routing.
+    try:
+        is_new_license_application = application.__class__.__name__.lower() == "newlicenseapplication"
+        current_stage_name = str(getattr(current_stage, "name", "") or "").strip().lower()
+        if is_new_license_application and current_stage_name in {"commissioner", "commisioner"}:
+            has_awaiting_payment = transitions.filter(to_stage__name__iexact="awaiting_payment").exists()
+            if has_awaiting_payment:
+                transitions = transitions.exclude(to_stage__name__iexact="Secretary")
+    except Exception:
+        # Keep action discovery resilient; fallback to showing configured transitions.
+        pass
+
+    # Hide actions that don't match the current user's transition role condition.
+    if not request.user.is_superuser:
+        transitions = [
+            transition for transition in transitions
+            if WorkflowService._condition_role_matches(transition.condition or {}, request.user)
+        ]
+
+    data = [{
+            'id': t.to_stage.id,
+            'name': t.to_stage.name,
+            'description': t.to_stage.description or "",
+            'condition': t.condition or {},
+            # Frontend expects `action` at top-level; we keep condition too.
+            # Most deployments store action as condition["action"] for validation.
+            'action': (
+                str((t.condition or {}).get("action") or (t.condition or {}).get("Action") or "")
+                .strip()
+                .upper()
+                or None
+            ),
+            'transition_id': t.id,
+        } for t in transitions]
+    return Response(data)
+
+@api_view(['GET'])
+@permission_classes([HasStagePermission])
 def get_next_stages(request, application_id):
-    application = _get_application_by_id(application_id)
+    application = _get_application_by_id(application_id, user=request.user)
     if not application:
         return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
         
@@ -259,7 +323,7 @@ def get_next_stages(request, application_id):
 @api_view(['POST'])
 @permission_classes([HasStagePermission])
 def advance_application(request, application_id, stage_id):  # request is here
-    application = _get_application_by_id(application_id)
+    application = _get_application_by_id(application_id, user=request.user)
     if not application:
         return Response({"detail": "Application not found"}, status=404)
 
@@ -290,7 +354,7 @@ def advance_application(request, application_id, stage_id):  # request is here
 @api_view(['POST'])
 @permission_classes([HasStagePermission])
 def raise_objection(request, application_id):
-    application = _get_application_by_id(application_id)
+    application = _get_application_by_id(application_id, user=request.user)
     if not application:
         return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -340,7 +404,7 @@ def raise_objection(request, application_id):
 @api_view(['GET'])
 @permission_classes([HasStagePermission])
 def get_objections(request, application_id):
-    application = _get_application_by_id(application_id)
+    application = _get_application_by_id(application_id, user=request.user)
     if not application:
         return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -358,7 +422,7 @@ def get_objections(request, application_id):
 @api_view(['POST'])
 @permission_classes([HasStagePermission])
 def resolve_objections(request, application_id):
-    application = _get_application_by_id(application_id)
+    application = _get_application_by_id(application_id, user=request.user)
     if not application:
         return Response({"detail": "Application not found"}, status=404)
 
@@ -410,7 +474,7 @@ def resolve_objections(request, application_id):
 @api_view(['POST'])
 @permission_classes([HasStagePermission])
 def reject_application(request, application_id):
-    application = _get_application_by_id(application_id)
+    application = _get_application_by_id(application_id, user=request.user)
     if not application:
         return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -454,7 +518,7 @@ def reject_application(request, application_id):
 @api_view(['GET'])
 @permission_classes([HasStagePermission])
 def get_rejections(request, application_id):
-    application = _get_application_by_id(application_id)
+    application = _get_application_by_id(application_id, user=request.user)
     if not application:
         return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -580,12 +644,12 @@ def application_group(request):
 
     return Response(serialized)
 
-def _get_application_by_id(application_id):
+def _get_application_by_id(application_id, user=None):
     """
-    Find an application by application_id (string PK) in either:
-      - license_application.LicenseApplication
-      - new_license_application.NewLicenseApplication
-    Returns the instance or None
+    Find an application by application_id (string PK) in:
+      - company_registration, company_collaboration, license_application,
+        new_license_application, salesman_barman, special_permit
+    Returns the instance or None (filtered by user district if district-scoped role)
     """
     model_configs = [
         ("company_registration", "CompanyRegistration"),
@@ -600,12 +664,14 @@ def _get_application_by_id(application_id):
     for app_label, model_name in model_configs:
         try:
             Model = apps.get_model(app_label=app_label, model_name=model_name)
-            # This will raise DoesNotExist if not found → we catch it
-            return Model.objects.select_related('current_stage', 'workflow').get(
-                application_id=application_id
-            )
+            qs = Model.objects.select_related('current_stage', 'workflow').filter(application_id=application_id)
+            if user and _is_district_scoped_role(user):
+                qs = _filter_by_user_district(qs, user)
+            obj = qs.first()
+            if obj:
+                return obj
         except (LookupError, Model.DoesNotExist):
-            continue  # Try next model
+            continue
 
     return None
 

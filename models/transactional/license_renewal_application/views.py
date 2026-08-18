@@ -12,7 +12,7 @@ from .serializers import LicenseApplicationSerializer
 from auth.workflow.models import Workflow
 from auth.workflow.services import WorkflowService
 from models.masters.license.models import License
-from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_role_stage_names
+from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_role_stage_names, _filter_by_user_district, _is_district_scoped_role
 from models.transactional.dashboard_cache import dashboard_counts_cache
 from models.masters.core.models import SupplyChainTimerConfig
 from models.transactional.wallet.wallet_initializer import _resolve_hoa_code
@@ -1104,6 +1104,7 @@ def list_license_applications(request):
     qs = LicenseApplication.objects.all()
     if not getattr(request.user, "is_staff", False) and not getattr(request.user, "is_superuser", False):
         qs = qs.filter(applicant=request.user)
+    qs = _filter_by_user_district(qs, request.user, 'applicant__district')
     data = [_serialize_renewal_application(obj) for obj in qs.order_by("-application_id")]
     return Response(data, status=status.HTTP_200_OK)
 
@@ -1139,7 +1140,7 @@ def dashboard_counts(request):
 
     role = _normalize_role(request.user.role.name if request.user.role else None)
     stage_sets = _get_stage_sets(wf.id)
-    all_qs = LicenseApplication.objects.filter(workflow_id=wf.id)
+    all_qs = _filter_by_user_district(LicenseApplication.objects.filter(workflow_id=wf.id), request.user, 'applicant__district')
 
     month = request.query_params.get('month')
     year = request.query_params.get('year')
@@ -1224,7 +1225,11 @@ def application_group(request):
 
     role = _normalize_role(request.user.role.name if request.user.role else None)
     stage_sets = _get_stage_sets(wf.id)
-    all_qs = LicenseApplication.objects.filter(workflow_id=wf.id).select_related("current_stage", "workflow")
+    all_qs = _filter_by_user_district(
+        LicenseApplication.objects.filter(workflow_id=wf.id).select_related("current_stage", "workflow"),
+        request.user,
+        'applicant__district'
+    )
 
     applied_stages = set(stage_sets["initial"])
     objection_stages = set(stage_sets["objection"])

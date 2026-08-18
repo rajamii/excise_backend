@@ -54,8 +54,21 @@ class UserSerializer(serializers.ModelSerializer):
         return obj.created_by.role.id if obj.created_by and obj.created_by.role else None
 
     def get_district(self, obj):
-        district = obj.district
-        return {'name': district.district, 'code': district.district_code} if district else None
+        try:
+            district = obj.district
+            if not district:
+                return None
+            district_name = getattr(district, 'district', None) or str(district)
+            district_code = getattr(district, 'district_code', None)
+            return {
+                'id': getattr(district, 'id', None),
+                'district': district_name,
+                'name': district_name,
+                'code': district_code,
+                'districtCode': district_code,
+            }
+        except Exception:
+            return None
 
     def get_subdivision(self, obj):
         subdivision = obj.subdivision

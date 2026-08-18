@@ -12,7 +12,7 @@ from rest_framework.response import Response
 from auth.workflow.models import Workflow
 from auth.workflow.services import WorkflowService
 from models.masters.license.models import License
-from models.transactional.helpers import _get_role_stage_names, _get_stage_sets, _normalize_role, _collect_reachable_stage_names
+from models.transactional.helpers import _get_role_stage_names, _get_stage_sets, _normalize_role, _collect_reachable_stage_names, _filter_by_user_district, _is_district_scoped_role
 from models.transactional.dashboard_cache import dashboard_counts_cache
 
 from .models import SpecialPermitApplication, MasterDryDay
@@ -305,8 +305,7 @@ def _visible_queryset(request):
     if role == 'licensee':
         return qs.filter(applicant=request.user)
 
-    if role == 'district_user' and getattr(request.user, 'district', None):
-        return qs.filter(excise_district=request.user.district)
+    return _filter_by_user_district(qs, request.user, 'excise_district')
 
     if role and 'commissioner' in role:
         return qs.exclude(current_stage__name__in=['Applied', 'District User'])
