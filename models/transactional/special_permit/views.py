@@ -302,15 +302,35 @@ def _visible_queryset(request):
         'current_stage',
     )
 
+    if role in ['site_admin', 'admin']:
+        return qs
+
     if role == 'licensee':
         return qs.filter(applicant=request.user)
 
+    workflow = _get_special_permit_workflow()
+    if workflow:
+        role_stage_names = _get_role_stage_names(request.user, workflow.id)
+        role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+        from django.contrib.contenttypes.models import ContentType
+        from django.db.models import OuterRef, Exists, Q
+
+        content_type = ContentType.objects.get_for_model(SpecialPermitApplication)
+        acted_by_role = Exists(
+            WorkflowTransaction.objects.filter(
+                content_type=content_type,
+                object_id=OuterRef('application_id'),
+                performed_by__role_id=role_id
+            )
+        )
+
+        qs = qs.filter(
+            Q(current_stage__name__in=role_stage_names) |
+            Q(current_stage__stagepermission__role=request.user.role, current_stage__stagepermission__can_process=True) |
+            acted_by_role
+        ).distinct()
+
     return _filter_by_user_district(qs, request.user, 'excise_district')
-
-    if role and 'commissioner' in role:
-        return qs.exclude(current_stage__name__in=['Applied', 'District User'])
-
-    return qs
 
 
 def _status_sets(workflow):

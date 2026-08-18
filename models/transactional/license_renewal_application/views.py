@@ -1102,8 +1102,34 @@ def reject_renewal_application(request, application_id):
 @permission_classes([IsAuthenticated])
 def list_license_applications(request):
     qs = LicenseApplication.objects.all()
-    if not getattr(request.user, "is_staff", False) and not getattr(request.user, "is_superuser", False):
+    role = _normalize_role(request.user.role.name if getattr(request.user, 'role', None) else None)
+    if role in ["site_admin", "admin"]:
+        pass
+    elif role == "licensee":
         qs = qs.filter(applicant=request.user)
+    else:
+        wf = _get_renewal_workflow()
+        if wf:
+            role_stage_names = _renewal_role_stage_names(request.user, wf.id)
+            role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+            from django.contrib.contenttypes.models import ContentType
+            from django.db.models import OuterRef, Exists, Q
+
+            content_type = ContentType.objects.get_for_model(LicenseApplication)
+            acted_by_role = Exists(
+                WorkflowTransaction.objects.filter(
+                    content_type=content_type,
+                    object_id=OuterRef('application_id'),
+                    performed_by__role_id=role_id
+                )
+            )
+
+            qs = qs.filter(
+                Q(current_stage__name__in=role_stage_names) |
+                Q(current_stage__stagepermission__role=request.user.role, current_stage__stagepermission__can_process=True) |
+                acted_by_role
+            ).distinct()
+
     qs = _filter_by_user_district(qs, request.user, 'applicant__district')
     data = [_serialize_renewal_application(obj) for obj in qs.order_by("-application_id")]
     return Response(data, status=status.HTTP_200_OK)

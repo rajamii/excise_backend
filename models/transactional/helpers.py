@@ -115,48 +115,45 @@ def _filter_by_user_district(qs, user, primary_field=None):
     from django.db.models import Q
     model_fields = [f.name for f in qs.model._meta.get_fields()]
 
-    possible_fields = []
-    if primary_field:
-        possible_fields.append(primary_field)
-    possible_fields.extend(['site_district', 'excise_district', 'district'])
+    # 1. Primary district field on the application model (site_district, excise_district, or district)
+    target_field = None
+    if primary_field and primary_field in model_fields:
+        target_field = primary_field
+    else:
+        for f in ['site_district', 'excise_district', 'district']:
+            if f in model_fields:
+                target_field = f
+                break
 
-    q_filter = Q()
-    matched = False
-    for field_name in possible_fields:
-        if field_name in model_fields:
-            q_filter |= (
-                Q(**{f"{field_name}__district_code": district_code}) |
-                Q(**{f"{field_name}_id": district_code}) |
-                Q(**{f"{field_name}__id": district_code})
-            )
-            matched = True
-            break
-
-    if 'applicant' in model_fields:
-        q_filter |= (
-            Q(applicant__district__district_code=district_code) |
-            Q(applicant__district_id=district_code)
+    if target_field:
+        q_filter = (
+            Q(**{f"{target_field}__district_code": district_code}) |
+            Q(**{f"{target_field}_id": district_code}) |
+            Q(**{f"{target_field}__id": district_code})
         )
-        matched = True
+        district_obj = getattr(user, 'district', None)
+        if district_obj:
+            q_filter |= Q(**{target_field: district_obj})
+        return qs.filter(q_filter).distinct()
 
+    # 2. Relation via license / old_license if application doesn't store district directly
     if 'license' in model_fields:
-        q_filter |= (
+        return qs.filter(
             Q(license__excise_district__district_code=district_code) |
             Q(license__excise_district_id=district_code)
-        )
-        matched = True
+        ).distinct()
 
     if 'old_license' in model_fields:
-        q_filter |= (
+        return qs.filter(
             Q(old_license__excise_district__district_code=district_code) |
             Q(old_license__excise_district_id=district_code)
-        )
-        matched = True
+        ).distinct()
 
-    if not matched and primary_field:
-        q_filter = (
-            Q(**{f"{primary_field}__district_code": district_code}) |
-            Q(**{f"{primary_field}_id": district_code})
-        )
+    # 3. Fallback to applicant's district only if model has no direct site/excise district field
+    if 'applicant' in model_fields:
+        return qs.filter(
+            Q(applicant__district__district_code=district_code) |
+            Q(applicant__district_id=district_code)
+        ).distinct()
 
-    return qs.filter(q_filter).distinct()
+    return qs

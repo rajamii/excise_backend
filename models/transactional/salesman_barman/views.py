@@ -696,9 +696,26 @@ def list_salesman_barman(request):
     elif role == "licensee":
         applications = SalesmanBarmanModel.objects.filter(applicant=request.user)
     else:
+        workflow_id = WORKFLOW_IDS['SALESMAN_BARMAN']
+        role_stage_names = _get_role_stage_names(request.user, workflow_id)
+        role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+
+        from django.contrib.contenttypes.models import ContentType
+        from django.db.models import OuterRef, Exists, Q
+
+        content_type = ContentType.objects.get_for_model(SalesmanBarmanModel)
+        acted_by_role = Exists(
+            WorkflowTransaction.objects.filter(
+                content_type=content_type,
+                object_id=OuterRef('application_id'),
+                performed_by__role_id=role_id
+            )
+        )
+
         applications = SalesmanBarmanModel.objects.filter(
-            current_stage__stagepermission__role=request.user.role,
-            current_stage__stagepermission__can_process=True
+            Q(current_stage__name__in=role_stage_names) |
+            Q(current_stage__stagepermission__role=request.user.role, current_stage__stagepermission__can_process=True) |
+            acted_by_role
         ).distinct()
 
     applications = _filter_by_user_district(applications, request.user, 'excise_district')
