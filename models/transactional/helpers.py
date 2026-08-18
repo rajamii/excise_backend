@@ -113,15 +113,15 @@ def _filter_by_user_district(qs, user, primary_field=None):
         return qs.none()
 
     from django.db.models import Q
-    model_fields = [f.name for f in qs.model._meta.get_fields()]
+    model_fields = {f.name: f for f in qs.model._meta.get_fields()}
 
     # 1. Primary district field on the application model (site_district, excise_district, or district)
     target_field = None
-    if primary_field and primary_field in model_fields:
+    if primary_field and primary_field in model_fields and getattr(model_fields[primary_field], 'is_relation', False):
         target_field = primary_field
     else:
         for f in ['site_district', 'excise_district', 'district']:
-            if f in model_fields:
+            if f in model_fields and getattr(model_fields[f], 'is_relation', False):
                 target_field = f
                 break
 
@@ -136,21 +136,21 @@ def _filter_by_user_district(qs, user, primary_field=None):
             q_filter |= Q(**{target_field: district_obj})
         return qs.filter(q_filter).distinct()
 
-    # 2. Relation via license / old_license if application doesn't store district directly
-    if 'license' in model_fields:
+    # 2. Relation via license / old_license if application relates to License model
+    if 'license' in model_fields and getattr(model_fields['license'], 'is_relation', False):
         return qs.filter(
             Q(license__excise_district__district_code=district_code) |
             Q(license__excise_district_id=district_code)
         ).distinct()
 
-    if 'old_license' in model_fields:
+    if 'old_license' in model_fields and getattr(model_fields['old_license'], 'is_relation', False):
         return qs.filter(
             Q(old_license__excise_district__district_code=district_code) |
             Q(old_license__excise_district_id=district_code)
         ).distinct()
 
     # 3. Fallback to applicant's district only if model has no direct site/excise district field
-    if 'applicant' in model_fields:
+    if 'applicant' in model_fields and getattr(model_fields['applicant'], 'is_relation', False):
         return qs.filter(
             Q(applicant__district__district_code=district_code) |
             Q(applicant__district_id=district_code)

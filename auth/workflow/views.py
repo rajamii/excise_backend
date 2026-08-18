@@ -654,7 +654,6 @@ def _get_application_by_id(application_id, user=None):
     model_configs = [
         ("company_registration", "CompanyRegistration"),
         ("company_collaboration", "CompanyCollaboration"),
-        ("license_application", "LicenseApplication"),
         ("license_renewal_application", "LicenseApplication"),
         ("new_license_application", "NewLicenseApplication"),
         ("salesman_barman", "SalesmanBarmanModel"),
