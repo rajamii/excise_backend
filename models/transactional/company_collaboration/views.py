@@ -676,9 +676,9 @@ def application_group(request):
     if role == 'licensee':
         mine = base_qs.filter(applicant=request.user)
         return Response({
-            'applied':   _serialize(mine.filter(current_stage__name__in=OFFICER_PENDING_STAGES)),
+            'applied':   _serialize(mine.filter(current_stage__name__in=[STAGE_APPLICANT_APPLIED] + OFFICER_PENDING_STAGES)),
             'objection': _serialize(mine.filter(current_stage__name__in=OBJECTION_STAGES)),
-            'approved':  _serialize(mine.filter(current_stage__name=STAGE_APPROVED)),
+            'approved':  _serialize(mine.filter(current_stage__name=STAGE_APPROVED, is_approved=True)),
             'rejected':  _serialize(mine.filter(current_stage__name=STAGE_REJECTED)),
         })
 
