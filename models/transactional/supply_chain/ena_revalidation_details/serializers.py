@@ -129,6 +129,15 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
             requisition_ref_no = str(instance.our_ref_no).replace('REV/', 'REQ/')
         data['requisition_ref_no'] = requisition_ref_no or instance.our_ref_no
 
+        try:
+            from models.transactional.supply_chain.ena_requisition_details.models import EnaRequisitionDetail
+            req = EnaRequisitionDetail.objects.filter(our_ref_no=data['requisition_ref_no']).first()
+            if req and req.valid_up_to:
+                data['valid_up_to'] = req.valid_up_to.isoformat()
+                data['expiry_date'] = req.valid_up_to.isoformat()
+        except Exception:
+            pass
+
         return data
 
     def _get_revalidation_validity_period_days(self) -> int:

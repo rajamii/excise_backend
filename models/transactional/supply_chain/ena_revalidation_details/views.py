@@ -892,8 +892,42 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             return Response(response_payload, status=status.HTTP_200_OK)
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    def _update_requisition_validity_on_revalidation_approval(self, revalidation):
+        try:
+            req_ref = str(getattr(revalidation, 'our_ref_no', '') or '').strip()
+            if req_ref.startswith('REV/'):
+                req_ref = req_ref.replace('REV/', 'REQ/')
+
+            requisition = EnaRequisitionDetail.objects.filter(our_ref_no=req_ref).first()
+            if not requisition:
+                permits = str(getattr(revalidation, 'details_permits_number', '') or '').strip()
+                lic_id = str(getattr(revalidation, 'licensee_id', '') or '').strip()
+                if permits and lic_id:
+                    requisition = EnaRequisitionDetail.objects.filter(
+                        details_permits_number=permits,
+                        licensee_id=lic_id
+                    ).order_by('-created_at').first()
+
+            if requisition:
+                now = timezone.now()
+                delay_seconds = self._resolve_revalidation_activation_delay_seconds()
+                new_valid_up_to = now + timedelta(seconds=delay_seconds)
+                requisition.valid_up_to = new_valid_up_to
+                requisition.save(update_fields=['valid_up_to', 'updated_at'])
+
+                # Reset revalidation activation schedule so auto-revalidation counts down to the new valid_up_to
+                EnaRevalidationActivationSchedule.objects.update_or_create(
+                    requisition=requisition,
+                    defaults={
+                        'requisition_ref_no': str(getattr(requisition, 'our_ref_no', '') or ''),
+                        'approval_date': now,
+                        'activation_due_at': new_valid_up_to,
+                        'status': EnaRevalidationActivationSchedule.STATUS_PENDING,
+                        'notes': 'Rescheduled after revalidation approval',
+                    }
+                )
+        except Exception as exc:
+            logger.exception("Error updating requisition validity on revalidation approval: %s", exc)
 
     @action(detail=True, methods=['post'])
     def perform_action(self, request, pk=None):
@@ -960,6 +994,11 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                 revalidation.status = target_transition.to_stage.name
                 # revalidation.status_code = ... # Removed dependency
                 revalidation.save()
+
+                if action_type == 'APPROVE':
+                    stage_token = self._normalize_token(getattr(target_transition.to_stage, 'name', ''))
+                    if 'approv' in stage_token:
+                        self._update_requisition_validity_on_revalidation_approval(revalidation)
 
                 invalidate_dashboard_counts_cache()
                 serializer = self.get_serializer(revalidation)

@@ -48,6 +48,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         
         # Explicitly ensure critical fields are included with proper values
+        data['valid_up_to'] = instance.valid_up_to.isoformat() if instance.valid_up_to else None
         data['our_ref_no'] = instance.our_ref_no or ''
         data['lifted_from'] = instance.lifted_from or ''
         data['via_route'] = instance.via_route or ''

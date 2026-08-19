@@ -1158,6 +1158,8 @@ class PerformRequisitionActionAPIView(APIView):
     def _schedule_revalidation_activation(self, requisition, approved_at):
         delay_seconds = self._resolve_revalidation_activation_delay_seconds()
         due_at = approved_at + timedelta(seconds=delay_seconds)
+        requisition.valid_up_to = due_at
+        requisition.save(update_fields=['valid_up_to', 'updated_at'])
         EnaRevalidationActivationSchedule.objects.update_or_create(
             requisition=requisition,
             defaults={

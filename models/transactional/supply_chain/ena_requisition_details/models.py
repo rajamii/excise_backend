@@ -22,6 +22,7 @@ class EnaRequisitionDetail(models.Model):
     status_code = models.CharField(max_length=50, default='RQ_00')
     totalbl = models.DecimalField(max_digits=18, decimal_places=2)
     approval_date = models.DateTimeField()
+    valid_up_to = models.DateTimeField(null=True, blank=True)
     lifted_from = models.CharField(max_length=255)
     purpose_name = models.CharField(max_length=255)
     check_post_name = models.CharField(max_length=255)
