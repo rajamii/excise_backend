@@ -45,11 +45,13 @@ def _is_permit_under_revalidation(permit_no: str) -> bool:
     if not p_no:
         return False
     
-    # Active revalidations
+    # Active (unapproved/pending) revalidations only
     revals = EnaRevalidationDetail.objects.exclude(
         models.Q(status__icontains='reject') |
         models.Q(status__icontains='invalid') |
-        models.Q(status__icontains='expire')
+        models.Q(status__icontains='expire') |
+        models.Q(status__icontains='approv') |
+        models.Q(status_code__iexact='RV_09')
     )
     for r in revals:
         r_permits = [p.strip() for p in str(r.details_permits_number or '').split(',') if p.strip()]
