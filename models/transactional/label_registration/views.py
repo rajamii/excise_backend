@@ -83,6 +83,7 @@ def _normalize_role(role_name):
     aliases = {
         'license_user': 'licensee',
         'licensee_user': 'licensee',
+        'distributor': 'licensee',
         'singlewindow': 'single_window',
         'siteadmin': 'site_admin',
         'permitsection': 'permit_section',

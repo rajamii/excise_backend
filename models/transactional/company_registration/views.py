@@ -97,15 +97,12 @@ def create_company_registration(request):
 @permission_classes([HasAppPermission('company_registration', 'view'), HasStagePermission])
 @api_view(['GET'])
 def list_company_registrations(request):
-    role = request.user.role.name if request.user.role else None
+    role = _normalize_role(request.user.role.name if request.user.role else None)
 
-    if role in ["single_window","site_admin"]:
+    if role in ["single_window", "site_admin"]:
         applications = CompanyRegistration.objects.all()
     elif role == "licensee":
-        applications = CompanyRegistration.objects.filter(
-            applicant=request.user,
-            current_stage__name__in=[ "level_1", "awaiting_payment", "level_1_objection", "level_2_objection", "level_3_objection", "level_4_objection", "level_5_objection", "approved"]
-        )
+        applications = CompanyRegistration.objects.filter(applicant=request.user)
     else:
         applications = CompanyRegistration.objects.filter(
             current_stage__stagepermission__role=request.user.role,
