@@ -98,7 +98,7 @@ class DistributorPermitLineItem(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'distributor_permit_line_item'
+        db_table = 'imfl_brands'
         ordering = ['id']
         indexes = [
             models.Index(fields=['application']),
