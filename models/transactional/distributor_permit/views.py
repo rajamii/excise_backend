@@ -25,6 +25,16 @@ def _is_distributor_user(user) -> bool:
     return role_name == 'distributor'
 
 
+def _is_officer_user(user) -> bool:
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+    if getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False):
+        return True
+    role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').strip().lower().replace('-', '_').replace(' ', '_')
+    officer_keywords = ['commissioner', 'permit_section', 'permitsection', 'joint_commissioner', 'deputy_commissioner', 'assistant_commissioner', 'inspector', 'sub_inspector', 'officer', 'admin', 'site_admin', 'single_window']
+    return any(k in role_name for k in officer_keywords)
+
+
 def _is_admin_user(user) -> bool:
     return bool(getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False))
 
@@ -65,7 +75,7 @@ class DistributorRoleRequiredMixin:
 
     def check_permissions(self, request):
         super().check_permissions(request)
-        if _is_distributor_user(request.user) or _is_admin_user(request.user):
+        if _is_distributor_user(request.user) or _is_admin_user(request.user) or _is_officer_user(request.user):
             return
         self.permission_denied(request, message='Distributor role required.')
 
@@ -75,7 +85,7 @@ class DistributorPermitListCreateView(DistributorRoleRequiredMixin, APIView):
 
     def get_queryset(self, request):
         qs = DistributorPermitApplication.objects.prefetch_related('line_items', 'documents')
-        if _is_admin_user(request.user):
+        if _is_admin_user(request.user) or _is_officer_user(request.user):
             return qs
         return qs.filter(applicant=request.user)
 
