@@ -106,10 +106,17 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
     total_bulk_litres = serializers.SerializerMethodField()
     allowed_actions = serializers.SerializerMethodField()
     allowedActions = serializers.SerializerMethodField()
+    current_stage_id = serializers.SerializerMethodField()
+    current_stage_name = serializers.SerializerMethodField()
+    currentStageName = serializers.SerializerMethodField()
+    current_stage_is_final = serializers.SerializerMethodField()
+    # expose reference_no also as 'id' so the frontend can use item.id for perform-action URL
+    id = serializers.SerializerMethodField()
 
     class Meta:
         model = DistributorPermitApplication
         fields = [
+            'id',
             'reference_no',
             'applicant',
             'applicant_name',
@@ -135,6 +142,10 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
             'total_bulk_litres',
             'allowed_actions',
             'allowedActions',
+            'current_stage_id',
+            'current_stage_name',
+            'currentStageName',
+            'current_stage_is_final',
         ]
         read_only_fields = [
             'reference_no',
@@ -145,6 +156,21 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
+
+    def get_id(self, obj):
+        return obj.reference_no
+
+    def get_current_stage_id(self, obj):
+        return getattr(obj.current_stage, 'id', None)
+
+    def get_current_stage_name(self, obj):
+        return getattr(obj.current_stage, 'name', '') or ''
+
+    def get_currentStageName(self, obj):
+        return self.get_current_stage_name(obj)
+
+    def get_current_stage_is_final(self, obj):
+        return bool(getattr(obj.current_stage, 'is_final', False))
 
     def to_internal_value(self, data):
         data = data.copy() if hasattr(data, 'copy') else dict(data)
@@ -292,27 +318,48 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
     def get_allowed_actions(self, obj):
         request = self.context.get('request')
         user = request.user if request else None
-        role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').strip().lower()
-        role_id = getattr(getattr(user, 'role', None), 'id', 0)
-        status = str(obj.status or '').upper()
+        if not user or not obj.current_stage:
+            return []
 
-        # If user is the applicant (Licensee), they only get PAY at payment stage
+        from auth.workflow.models import WorkflowTransition
+        from models.transactional.supply_chain.access_control import transition_matches
+
+        # If this application is at a final stage, no actions available
+        if obj.current_stage.is_final:
+            return []
+
+        # The applicant (distributor/licensee who submitted the application):
+        # - can SUBMIT when at the Pending (objection) stage 149
+        # - can PAY when at awaiting payment stage 154
         if obj.applicant_id == getattr(user, 'id', None):
-            if 'PAYMENT' in status or 'AWAITING_PAYMENT' in status:
+            stage_id = obj.current_stage_id
+            if stage_id == 149:
+                return ['SUBMIT']
+            if stage_id == 154:
                 return ['PAY']
             return []
 
-        if role_id in (10, 12) or 'commissioner' in role_name:
-            if status in ('DRAFT', 'SUBMITTED'):
-                return []
-            if 'PAYSLIP' in status or 'VERIF' in status or 'FINAL' in status:
-                return ['APPROVE', 'REJECT']
-            return ['APPROVE', 'FORWARD', 'REJECT', 'RAISE_OBJECTION']
-        elif role_id == 5 or 'permit' in role_name:
-            if 'PAYSLIP' in status or 'PAYMENT' in status:
-                return ['VERIFY', 'FORWARD', 'REJECT']
-            return ['FORWARD', 'REJECT', 'RAISE_OBJECTION']
-        return []
+        # For all admin roles: look up actual outgoing transitions from current stage
+        # and filter to only those the current user's role can perform
+        transitions = WorkflowTransition.objects.filter(
+            workflow=obj.workflow,
+            from_stage=obj.current_stage,
+        ).exclude(
+            condition__action='VIEW'
+        ).select_related('to_stage')
+
+        actions = []
+        for t in transitions:
+            cond = t.condition or {}
+            cond_action = str(cond.get('action') or '').upper()
+            if not cond_action or cond_action == 'VIEW':
+                continue
+            # Check if this user's role matches
+            if transition_matches(t, user, cond_action):
+                if cond_action not in actions:
+                    actions.append(cond_action)
+
+        return actions
 
     def get_allowedActions(self, obj):
         return self.get_allowed_actions(obj)
