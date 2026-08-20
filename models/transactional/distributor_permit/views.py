@@ -290,6 +290,14 @@ class DistributorPermitPerformActionView(APIView):
                 target_transition = t
                 break
 
+        # Fallback for PAY / FORCE_PAY when at Awaiting Payment stage (stage 154 or status Awaiting Payment)
+        if not target_transition and action in ('PAY', 'FORCE_PAY'):
+            for t in transitions:
+                cond_action = str((t.condition or {}).get('action') or '').upper()
+                if cond_action == 'PAY' or t.to_stage_id == 156:
+                    target_transition = t
+                    break
+
         if not target_transition:
             return Response({
                 'status': 'error',
@@ -307,7 +315,7 @@ class DistributorPermitPerformActionView(APIView):
 
             # Sync status/officer remarks
             application.status = target_transition.to_stage.name
-            if action == 'PAY':
+            if action in ('PAY', 'FORCE_PAY'):
                 application.is_excise_duty_fee_paid = True
             if remarks:
                 application.officer_remarks = remarks

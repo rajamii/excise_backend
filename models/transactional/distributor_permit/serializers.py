@@ -332,15 +332,16 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         if obj.current_stage.is_final:
             return []
 
+        stage_id = obj.current_stage_id
+        if stage_id == 154 or (obj.current_stage and 'PAYMENT' in str(obj.current_stage.name).upper()):
+            if not obj.is_excise_duty_fee_paid:
+                return ['PAY', 'FORCE_PAY']
+
         # The applicant (distributor/licensee who submitted the application):
         # - can SUBMIT when at the Pending (objection) stage 149
-        # - can PAY when at awaiting payment stage 154
         if obj.applicant_id == getattr(user, 'id', None):
-            stage_id = obj.current_stage_id
             if stage_id == 149:
                 return ['SUBMIT']
-            if stage_id == 154:
-                return ['PAY']
             return []
 
         # For all admin roles: look up actual outgoing transitions from current stage

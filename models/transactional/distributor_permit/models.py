@@ -27,7 +27,7 @@ class DistributorPermitApplication(models.Model):
     route_details = models.TextField(blank=True, default='')
     declaration_accepted = models.BooleanField(default=False)
     is_excise_duty_fee_paid = models.BooleanField(default=False)
-    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default=STATUS_SUBMITTED)
+    status = models.CharField(max_length=100, default=STATUS_SUBMITTED)
     officer_remarks = models.TextField(blank=True, default='')
     submitted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
