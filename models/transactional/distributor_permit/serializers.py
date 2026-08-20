@@ -336,6 +336,7 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         if stage_id == 154 or (obj.current_stage and 'PAYMENT' in str(obj.current_stage.name).upper()):
             if not obj.is_excise_duty_fee_paid:
                 return ['PAY', 'FORCE_PAY']
+            return []
 
         # The applicant (distributor/licensee who submitted the application):
         # - can SUBMIT when at the Pending (objection) stage 149
