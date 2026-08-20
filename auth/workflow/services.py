@@ -156,6 +156,7 @@ SERIALIZER_MAPPING = {
     ('ena_revalidation_details', 'enarevalidationdetail'): 'models.transactional.supply_chain.ena_revalidation_details.serializers.EnaRevalidationDetailSerializer',
     ('ena_cancellation_details', 'enacancellationdetail'): 'models.transactional.supply_chain.ena_cancellation_details.serializers.EnaCancellationDetailSerializer',
     ('special_permit', 'specialpermitapplication'): 'models.transactional.special_permit.serializers.SpecialPermitApplicationSerializer',
+    ('distributor_permit', 'distributorpermitapplication'): 'models.transactional.distributor_permit.serializers.DistributorPermitApplicationSerializer',
 }
 
 class WorkflowService:

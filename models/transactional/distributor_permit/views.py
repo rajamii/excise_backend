@@ -80,14 +80,27 @@ class DistributorRoleRequiredMixin:
         self.permission_denied(request, message='Distributor role required.')
 
 
+def scope_permit_queryset(qs, user):
+    role_id = getattr(getattr(user, 'role', None), 'id', 0)
+    role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').strip().lower()
+
+    if _is_admin_user(user):
+        return qs
+    if role_id in (10, 12) or 'commissioner' in role_name:
+        # Commissioner only sees applications that are at or past Forwarded Commissioner (153)
+        return qs.filter(current_stage_id__in=[153, 154, 156, 157, 151, 152])
+    if role_id == 5 or 'permit' in role_name:
+        return qs
+    # Licensee/distributor applicant only sees their own applications
+    return qs.filter(applicant=user)
+
+
 class DistributorPermitListCreateView(DistributorRoleRequiredMixin, APIView):
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def get_queryset(self, request):
         qs = DistributorPermitApplication.objects.prefetch_related('line_items', 'documents')
-        if _is_admin_user(request.user) or _is_officer_user(request.user):
-            return qs
-        return qs.filter(applicant=request.user)
+        return scope_permit_queryset(qs, request.user)
 
     def get(self, request):
         queryset = self.get_queryset(request)
@@ -118,8 +131,7 @@ class DistributorPermitListCreateView(DistributorRoleRequiredMixin, APIView):
 class DistributorPermitDetailView(DistributorRoleRequiredMixin, APIView):
     def get_object(self, request, reference_no):
         qs = DistributorPermitApplication.objects.prefetch_related('line_items', 'documents')
-        if not _is_admin_user(request.user) and not _is_officer_user(request.user):
-            qs = qs.filter(applicant=request.user)
+        qs = scope_permit_queryset(qs, request.user)
         return qs.filter(reference_no=reference_no).first()
 
     def get(self, request, reference_no):
@@ -227,4 +239,84 @@ class DistributorPermitPremisesView(DistributorRoleRequiredMixin, APIView):
     def get(self, request):
         return Response({
             'destination': _resolve_destination(request.user),
+        })
+
+
+class DistributorPermitPerformActionView(APIView):
+    def post(self, request, reference_no):
+        action = str(request.data.get('action') or '').strip().upper()
+        remarks = str(
+            request.data.get('remarks')
+            or request.data.get('reason')
+            or request.data.get('cancellation_reason')
+            or request.data.get('cancellationReason')
+            or request.data.get('reason_for_cancellation')
+            or request.data.get('reasonForCancellation')
+            or ''
+        ).strip()
+
+        if not action:
+            return Response({'status': 'error', 'message': 'Action is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if action in ('REJECT', 'RAISE_OBJECTION') and not remarks:
+            return Response({
+                'status': 'error',
+                'message': f'Remarks/reason is required while performing {action}.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Get application
+        application = DistributorPermitApplication.objects.filter(reference_no=reference_no).first()
+        if not application:
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Retrieve next transition matching our user and action
+        from auth.workflow.services import WorkflowService
+        from models.transactional.supply_chain.access_control import transition_matches
+
+        # Auto-initialize stage if missing
+        if not application.current_stage:
+            from auth.workflow.models import WorkflowStage
+            initial_stage = WorkflowStage.objects.filter(id=148).first() or WorkflowStage.objects.filter(workflow_id=15).first()
+            if initial_stage:
+                application.current_stage = initial_stage
+                application.workflow = initial_stage.workflow
+                application.save(update_fields=['current_stage', 'workflow'])
+
+        transitions = WorkflowService.get_next_stages(application)
+        target_transition = None
+        for t in transitions:
+            if transition_matches(t, request.user, action):
+                target_transition = t
+                break
+
+        if not target_transition:
+            return Response({
+                'status': 'error',
+                'message': f'No valid transition for Action: {action} on Stage: {application.current_stage.name if application.current_stage else "None"}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            WorkflowService.advance_stage(
+                application=application,
+                user=request.user,
+                target_stage=target_transition.to_stage,
+                context={'action': action},
+                remarks=remarks or f"Action: {action}"
+            )
+
+            # Sync status/officer remarks
+            application.status = target_transition.to_stage.name
+            if remarks:
+                application.officer_remarks = remarks
+            
+            if action == 'APPROVE' and target_transition.to_stage.is_final:
+                application.submitted_at = timezone.now()
+
+            application.save()
+
+        serializer = DistributorPermitApplicationSerializer(application, context={'request': request})
+        return Response({
+            'status': 'success',
+            'message': f'Action {action} performed successfully.',
+            'data': serializer.data
         })

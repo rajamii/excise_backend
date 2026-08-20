@@ -32,6 +32,21 @@ class DistributorPermitApplication(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    workflow = models.ForeignKey(
+        'workflow.Workflow',
+        on_delete=models.PROTECT,
+        related_name='distributor_permit_applications',
+        null=True,
+        blank=True,
+    )
+    current_stage = models.ForeignKey(
+        'workflow.WorkflowStage',
+        on_delete=models.PROTECT,
+        related_name='distributor_permit_applications',
+        null=True,
+        blank=True,
+    )
+
     class Meta:
         db_table = 'distributor_permit_application'
         ordering = ['-created_at']

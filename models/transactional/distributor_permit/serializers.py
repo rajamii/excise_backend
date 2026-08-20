@@ -179,6 +179,20 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         validated_data['status'] = DistributorPermitApplication.STATUS_SUBMITTED
         validated_data['submitted_at'] = timezone_now()
         validated_data['origin'] = validated_data.get('origin') or validated_data.get('source_address') or ''
+        
+        # Set initial workflow (15) and stage (148 - Forwarded Permit Section )
+        try:
+            from auth.workflow.models import WorkflowStage
+            initial_stage = WorkflowStage.objects.filter(id=148).first()
+            if initial_stage:
+                validated_data['workflow_id'] = initial_stage.workflow_id
+                validated_data['current_stage_id'] = 148
+            else:
+                validated_data['workflow_id'] = 15
+                validated_data['current_stage_id'] = 148
+        except Exception:
+            validated_data['workflow_id'] = 15
+            validated_data['current_stage_id'] = 148
 
         from django.db import transaction
 
@@ -282,17 +296,22 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         role_id = getattr(getattr(user, 'role', None), 'id', 0)
         status = str(obj.status or '').upper()
 
+        # If user is the applicant (Licensee), they only get PAY at payment stage
+        if obj.applicant_id == getattr(user, 'id', None):
+            if 'PAYMENT' in status or 'AWAITING_PAYMENT' in status:
+                return ['PAY']
+            return []
+
         if role_id in (10, 12) or 'commissioner' in role_name:
+            if status in ('DRAFT', 'SUBMITTED'):
+                return []
             if 'PAYSLIP' in status or 'VERIF' in status or 'FINAL' in status:
                 return ['APPROVE', 'REJECT']
             return ['APPROVE', 'FORWARD', 'REJECT', 'RAISE_OBJECTION']
-        elif role_id == 5 or 'permit' in role_name or 'officer' in role_name or getattr(user, 'is_staff', False):
+        elif role_id == 5 or 'permit' in role_name:
             if 'PAYSLIP' in status or 'PAYMENT' in status:
                 return ['VERIFY', 'FORWARD', 'REJECT']
             return ['FORWARD', 'REJECT', 'RAISE_OBJECTION']
-        elif obj.applicant_id == getattr(user, 'id', None):
-            if 'PAYMENT' in status or 'AWAITING_PAYMENT' in status:
-                return ['PAY']
         return []
 
     def get_allowedActions(self, obj):
