@@ -127,6 +127,7 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
             'destination',
             'route_details',
             'declaration_accepted',
+            'is_excise_duty_fee_paid',
             'status',
             'officer_remarks',
             'submitted_at',
@@ -304,7 +305,10 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         return sum(int(item.cases or 0) for item in obj.line_items.all())
 
     def get_total_import_value(self, obj):
-        return sum((item.total_import or Decimal('0.00')) for item in obj.line_items.all())
+        val = sum((item.total_import or Decimal('0.00')) for item in obj.line_items.all())
+        if not val or val <= Decimal('0.00'):
+            return Decimal('1.00')
+        return val
 
     def get_total_education_cess(self, obj):
         return sum((item.total_education_cess or Decimal('0.00')) for item in obj.line_items.all())

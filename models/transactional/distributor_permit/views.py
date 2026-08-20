@@ -307,6 +307,8 @@ class DistributorPermitPerformActionView(APIView):
 
             # Sync status/officer remarks
             application.status = target_transition.to_stage.name
+            if action == 'PAY':
+                application.is_excise_duty_fee_paid = True
             if remarks:
                 application.officer_remarks = remarks
             
