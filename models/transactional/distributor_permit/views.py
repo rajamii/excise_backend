@@ -118,7 +118,7 @@ class DistributorPermitListCreateView(DistributorRoleRequiredMixin, APIView):
 class DistributorPermitDetailView(DistributorRoleRequiredMixin, APIView):
     def get_object(self, request, reference_no):
         qs = DistributorPermitApplication.objects.prefetch_related('line_items', 'documents')
-        if not _is_admin_user(request.user):
+        if not _is_admin_user(request.user) and not _is_officer_user(request.user):
             qs = qs.filter(applicant=request.user)
         return qs.filter(reference_no=reference_no).first()
 

@@ -104,6 +104,8 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
     total_education_cess = serializers.SerializerMethodField()
     total_additional_ed = serializers.SerializerMethodField()
     total_bulk_litres = serializers.SerializerMethodField()
+    allowed_actions = serializers.SerializerMethodField()
+    allowedActions = serializers.SerializerMethodField()
 
     class Meta:
         model = DistributorPermitApplication
@@ -131,6 +133,8 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
             'total_education_cess',
             'total_additional_ed',
             'total_bulk_litres',
+            'allowed_actions',
+            'allowedActions',
         ]
         read_only_fields = [
             'reference_no',
@@ -270,6 +274,29 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
 
     def get_total_bulk_litres(self, obj):
         return sum((item.bulk_litres or Decimal('0.000')) for item in obj.line_items.all())
+
+    def get_allowed_actions(self, obj):
+        request = self.context.get('request')
+        user = request.user if request else None
+        role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').strip().lower()
+        role_id = getattr(getattr(user, 'role', None), 'id', 0)
+        status = str(obj.status or '').upper()
+
+        if role_id in (10, 12) or 'commissioner' in role_name:
+            if 'PAYSLIP' in status or 'VERIF' in status or 'FINAL' in status:
+                return ['APPROVE', 'REJECT']
+            return ['APPROVE', 'FORWARD', 'REJECT', 'RAISE_OBJECTION']
+        elif role_id == 5 or 'permit' in role_name or 'officer' in role_name or getattr(user, 'is_staff', False):
+            if 'PAYSLIP' in status or 'PAYMENT' in status:
+                return ['VERIFY', 'FORWARD', 'REJECT']
+            return ['FORWARD', 'REJECT', 'RAISE_OBJECTION']
+        elif obj.applicant_id == getattr(user, 'id', None):
+            if 'PAYMENT' in status or 'AWAITING_PAYMENT' in status:
+                return ['PAY']
+        return []
+
+    def get_allowedActions(self, obj):
+        return self.get_allowed_actions(obj)
 
 
 class DistributorSupplierSerializer(serializers.Serializer):
