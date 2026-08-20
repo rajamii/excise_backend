@@ -186,9 +186,20 @@ whatscurrent_patterns = [
     path('<int:pk>/delete/', views.whatscurrent_delete, name='whatscurrent-delete'),
 ]
 
+# Timer Config URLs
+timer_config_patterns = [
+    path('',                 views.timer_config_list,          name='timer-config-list'),
+    path('create/',          views.timer_config_create,        name='timer-config-create'),
+    path('<int:pk>/',        views.timer_config_detail_by_id,  name='timer-config-detail-by-id'),
+    path('<int:pk>/update/', views.timer_config_update_by_id,  name='timer-config-update-by-id'),
+    path('<int:pk>/delete/', views.timer_config_delete,        name='timer-config-delete'),
+    path('<int:pk>/toggle-active/', views.timer_config_toggle_active, name='timer-config-toggle-active'),
+]
+
 urlpatterns = [
     path('timer-config/',          views.timer_config,          name='timer-config'),
     path('timer-config/update/',   views.timer_config_update,   name='timer-config-update'),
+    path('timer-configs/',         include(timer_config_patterns)),
     path('license-categories/',     include(license_category_patterns)),
     path('license-types/',          include(license_type_patterns)),
     path('states/',                 include(state_patterns)),

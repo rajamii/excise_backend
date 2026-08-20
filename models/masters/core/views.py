@@ -1144,6 +1144,76 @@ def timer_config_update(request):
     return Response(serializer.data)
 
 
+@api_view(['GET'])
+@permission_classes([AllowAny])
+@authentication_classes([])
+def timer_config_list(request):
+    """List all timer configurations."""
+    queryset = masters_model.SupplyChainTimerConfig.objects.all().order_by('id')
+    serializer = SupplyChainTimerConfigSerializer(queryset, many=True)
+    return Response(serializer.data)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+@authentication_classes([])
+def timer_config_create(request):
+    """Create a new timer configuration."""
+    serializer = SupplyChainTimerConfigSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+@authentication_classes([])
+def timer_config_detail_by_id(request, pk):
+    """Retrieve a timer configuration by ID."""
+    cfg = get_object_or_404(masters_model.SupplyChainTimerConfig, pk=pk)
+    serializer = SupplyChainTimerConfigSerializer(cfg)
+    return Response(serializer.data)
+
+
+@api_view(['PUT', 'PATCH'])
+@permission_classes([AllowAny])
+@authentication_classes([])
+def timer_config_update_by_id(request, pk):
+    """Update a timer configuration by ID."""
+    cfg = get_object_or_404(masters_model.SupplyChainTimerConfig, pk=pk)
+    serializer = SupplyChainTimerConfigSerializer(
+        instance=cfg,
+        data=request.data,
+        partial=True,
+        context={'request': request}
+    )
+    serializer.is_valid(raise_exception=True)
+    serializer.save()
+    return Response(serializer.data)
+
+
+@api_view(['DELETE'])
+@permission_classes([AllowAny])
+@authentication_classes([])
+def timer_config_delete(request, pk):
+    """Delete a timer configuration."""
+    cfg = get_object_or_404(masters_model.SupplyChainTimerConfig, pk=pk)
+    cfg.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(['PATCH'])
+@permission_classes([AllowAny])
+@authentication_classes([])
+def timer_config_toggle_active(request, pk):
+    """Toggle is_active status of a timer configuration."""
+    cfg = get_object_or_404(masters_model.SupplyChainTimerConfig, pk=pk)
+    cfg.is_active = not cfg.is_active
+    cfg.save(update_fields=['is_active'])
+    serializer = SupplyChainTimerConfigSerializer(cfg)
+    return Response(serializer.data, status=status.HTTP_200_OK)
+
+
 # Additional Charge Config Views
 
 @api_view(['GET'])

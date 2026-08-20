@@ -416,6 +416,7 @@ class IMFLRevalidationSerializer(serializers.ModelSerializer):
     class Meta:
         model = IMFLRevalidation
         fields = '__all__'
+        read_only_fields = ('reference_no', 'applicant', 'submitted_at', 'workflow', 'current_stage', 'status')
 
     def get_applicant_name(self, obj):
         if not obj.applicant:
@@ -431,6 +432,7 @@ class IMFLCancellationSerializer(serializers.ModelSerializer):
     class Meta:
         model = IMFLCancellation
         fields = '__all__'
+        read_only_fields = ('reference_no', 'applicant', 'submitted_at', 'workflow', 'current_stage', 'status')
 
     def get_applicant_name(self, obj):
         if not obj.applicant:
