@@ -55,6 +55,17 @@ class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
             'bulk_litres',
         ]
 
+    def to_internal_value(self, data):
+        data = data.copy() if hasattr(data, 'copy') else dict(data)
+        mappings = {
+            'brandId': 'brand_id',
+            'sizeMl': 'size_ml',
+        }
+        for camel, snake in mappings.items():
+            if camel in data and snake not in data:
+                data[snake] = data[camel]
+        return super().to_internal_value(data)
+
     def validate_cases(self, value):
         if value <= 0:
             raise serializers.ValidationError('Cases must be greater than zero.')
@@ -130,6 +141,21 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
+
+    def to_internal_value(self, data):
+        data = data.copy() if hasattr(data, 'copy') else dict(data)
+        mappings = {
+            'supplierCompanyName': 'supplier_company_name',
+            'logisticsPartner': 'logistics_partner',
+            'sourceAddress': 'source_address',
+            'routeDetails': 'route_details',
+            'declarationAccepted': 'declaration_accepted',
+            'lineItems': 'line_items',
+        }
+        for camel, snake in mappings.items():
+            if camel in data and snake not in data:
+                data[snake] = data[camel]
+        return super().to_internal_value(data)
 
     def validate(self, attrs):
         if not attrs.get('declaration_accepted'):
