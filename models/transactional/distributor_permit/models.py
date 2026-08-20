@@ -52,9 +52,17 @@ class DistributorPermitApplication(models.Model):
         return f'{d.year - 1}-{str(d.year)[2:]}'
 
     @classmethod
-    def generate_reference_no(cls, today=None) -> str:
+    def generate_reference_no(cls, app_type='requisition', today=None) -> str:
         fin_year = cls.generate_financial_year(today)
-        prefix = f'DP/{fin_year}'
+        t = str(app_type or '').lower()
+        if 'reval' in t:
+            prefix_code = 'IMFLREV'
+        elif 'canc' in t:
+            prefix_code = 'IMFLCAN'
+        else:
+            prefix_code = 'IMFLREQ'
+
+        prefix = f'{prefix_code}/{fin_year}'
         with transaction.atomic():
             last_app = (
                 cls.objects.select_for_update()

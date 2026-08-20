@@ -169,6 +169,8 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         line_items = validated_data.pop('line_items', [])
         request = self.context.get('request')
         user = request.user if request else None
+        raw_data = getattr(request, 'data', {}) or {}
+        app_type = validated_data.pop('application_type', None) or raw_data.get('applicationType') or raw_data.get('application_type') or 'requisition'
         validated_data['applicant'] = user
         validated_data['status'] = DistributorPermitApplication.STATUS_SUBMITTED
         validated_data['submitted_at'] = timezone_now()
@@ -178,7 +180,7 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
 
         with transaction.atomic():
             application = DistributorPermitApplication.objects.create(
-                reference_no=DistributorPermitApplication.generate_reference_no(),
+                reference_no=DistributorPermitApplication.generate_reference_no(app_type=app_type),
                 **validated_data,
             )
             for item in line_items:
