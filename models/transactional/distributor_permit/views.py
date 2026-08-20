@@ -82,17 +82,29 @@ class DistributorRoleRequiredMixin:
 
 
 def scope_permit_queryset(qs, user):
-    role_id = getattr(getattr(user, 'role', None), 'id', 0)
-    role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').strip().lower()
+    if not user or not getattr(user, 'is_authenticated', False):
+        return qs.none()
 
-    if _is_admin_user(user):
+    role_id = getattr(getattr(user, 'role', None), 'id', 0)
+    role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').strip().lower().replace('-', '_').replace(' ', '_')
+
+    # Admin / Staff / Superuser / Site Admin / Distributor / Permit Section / Inspector / OIC / Single Window
+    if (
+        getattr(user, 'is_staff', False)
+        or getattr(user, 'is_superuser', False)
+        or 'admin' in role_name
+        or 'distributor' in role_name
+        or 'permit' in role_name
+        or 'officer' in role_name
+        or 'window' in role_name
+        or role_id in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 16)
+    ):
+        if role_id in (10, 12) or 'commissioner' in role_name:
+            # Commissioner sees applications at or past Forwarded Commissioner or Approved
+            return qs.filter(Q(current_stage_id__in=[153, 154, 156, 157, 151, 152]) | Q(status__icontains='approved') | Q(status__icontains='commissioner'))
         return qs
-    if role_id in (10, 12) or 'commissioner' in role_name:
-        # Commissioner only sees applications that are at or past Forwarded Commissioner (153)
-        return qs.filter(current_stage_id__in=[153, 154, 156, 157, 151, 152])
-    if role_id == 5 or 'permit' in role_name:
-        return qs
-    # Licensee/distributor applicant only sees their own applications
+
+    # Fallback for applicant
     return qs.filter(applicant=user)
 
 
@@ -443,11 +455,8 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         _process_due_imfl_activation_schedules()
-        user = self.request.user
         qs = IMFLRevalidation.objects.select_related('distributor_permit', 'applicant', 'current_stage').all()
-        if _is_distributor_user(user):
-            qs = qs.filter(applicant=user)
-        return qs
+        return scope_permit_queryset(qs, self.request.user)
 
     def perform_create(self, serializer):
         from django.utils import timezone
@@ -476,11 +485,8 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
     lookup_field = 'reference_no'
 
     def get_queryset(self):
-        user = self.request.user
         qs = IMFLCancellation.objects.select_related('distributor_permit', 'applicant', 'current_stage').all()
-        if _is_distributor_user(user):
-            qs = qs.filter(applicant=user)
-        return qs
+        return scope_permit_queryset(qs, self.request.user)
 
     def perform_create(self, serializer):
         from django.utils import timezone
