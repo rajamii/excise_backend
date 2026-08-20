@@ -325,9 +325,180 @@ class DistributorPermitPerformActionView(APIView):
 
             application.save()
 
+            if target_transition.to_stage.id == 151 or (action == 'APPROVE' and target_transition.to_stage.is_final):
+                _schedule_imfl_revalidation_activation(application, timezone.now())
+
         serializer = DistributorPermitApplicationSerializer(application, context={'request': request})
         return Response({
             'status': 'success',
             'message': f'Action {action} performed successfully.',
             'data': serializer.data
         })
+
+
+def _resolve_imfl_revalidation_activation_delay_seconds() -> int:
+    default_seconds = 600
+    try:
+        from models.masters.core.models import SupplyChainTimerConfig
+        cfg = SupplyChainTimerConfig.objects.filter(code='IMFL_REVALIDATION_ACTIVATION', is_active=True).order_by('-updated_at', '-id').first()
+        if not cfg:
+            return default_seconds
+        unit = str(getattr(cfg, 'delay_unit', '') or '').lower().strip()
+        value = int(getattr(cfg, 'delay_value', 0) or 0)
+        if value < 0:
+            value = 0
+        if unit.endswith('s'):
+            unit = unit[:-1]
+        multipliers = {
+            'second': 1, 'sec': 1,
+            'minute': 60, 'min': 60,
+            'hour': 3600, 'hr': 3600,
+            'day': 86400,
+        }
+        multiplier = multipliers.get(unit, 60)
+        return max(0, value * multiplier)
+    except Exception:
+        return default_seconds
+
+
+def _resolve_imfl_validity_days() -> int:
+    default_days = 45
+    try:
+        from models.masters.core.models import SupplyChainTimerConfig
+        cfg = SupplyChainTimerConfig.objects.filter(code='IMFL_REVALIDATION_ACTIVATION', is_active=True).order_by('-updated_at', '-id').first()
+        if cfg and cfg.validity_period_days:
+            return int(cfg.validity_period_days)
+    except Exception:
+        pass
+    return default_days
+
+
+def _schedule_imfl_revalidation_activation(application, approved_at=None):
+    from datetime import timedelta
+    from django.utils import timezone
+    from .models import IMFLRevalidationActivationSchedule
+
+    approved_at = approved_at or timezone.now()
+    validity_days = _resolve_imfl_validity_days()
+    valid_until = approved_at + timedelta(days=validity_days)
+    application.approval_date = approved_at
+    application.valid_up_to = valid_until
+    application.save(update_fields=['approval_date', 'valid_up_to', 'updated_at'])
+
+    delay_seconds = _resolve_imfl_revalidation_activation_delay_seconds()
+    activation_due = approved_at + timedelta(seconds=delay_seconds)
+
+    IMFLRevalidationActivationSchedule.objects.update_or_create(
+        distributor_permit=application,
+        defaults={
+            'distributor_permit_ref_no': str(application.reference_no),
+            'approval_date': approved_at,
+            'activation_due_at': activation_due,
+            'status': IMFLRevalidationActivationSchedule.STATUS_PENDING,
+            'notes': '',
+        }
+    )
+
+
+def _process_due_imfl_activation_schedules():
+    from django.utils import timezone
+    from .models import IMFLRevalidationActivationSchedule
+    now = timezone.now()
+    schedules = IMFLRevalidationActivationSchedule.objects.filter(
+        status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
+        activation_due_at__lte=now
+    )
+    for schedule in schedules:
+        schedule.status = IMFLRevalidationActivationSchedule.STATUS_PROCESSED
+        schedule.activated_at = now
+        schedule.save(update_fields=['status', 'activated_at', 'updated_at'])
+
+
+from rest_framework import viewsets
+from .models import IMFLRevalidation, IMFLCancellation, IMFLRevalidationActivationSchedule
+from .serializers import (
+    IMFLRevalidationSerializer,
+    IMFLCancellationSerializer,
+    IMFLRevalidationActivationScheduleSerializer,
+)
+
+
+class IMFLRevalidationActivationScheduleViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = IMFLRevalidationActivationScheduleSerializer
+
+    def get_queryset(self):
+        _process_due_imfl_activation_schedules()
+        user = self.request.user
+        qs = IMFLRevalidationActivationSchedule.objects.select_related('distributor_permit').all()
+        if _is_distributor_user(user):
+            qs = qs.filter(distributor_permit__applicant=user)
+        return qs.filter(status=IMFLRevalidationActivationSchedule.STATUS_PROCESSED)
+
+
+class IMFLRevalidationViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = IMFLRevalidationSerializer
+    lookup_field = 'reference_no'
+
+    def get_queryset(self):
+        _process_due_imfl_activation_schedules()
+        user = self.request.user
+        qs = IMFLRevalidation.objects.select_related('distributor_permit', 'applicant', 'current_stage').all()
+        if _is_distributor_user(user):
+            qs = qs.filter(applicant=user)
+        return qs
+
+    def perform_create(self, serializer):
+        from django.utils import timezone
+        from auth.workflow.models import Workflow, WorkflowStage
+        from auth.workflow.constants import WORKFLOW_IDS
+
+        ref_no = DistributorPermitApplication.generate_reference_no(app_type='revalidation')
+        workflow_id = WORKFLOW_IDS.get('IMFL_REVALIDATION', 16)
+        workflow = Workflow.objects.filter(id=workflow_id).first()
+        initial_stage = WorkflowStage.objects.filter(id=160).first() or (workflow.stages.filter(is_initial=True).first() if workflow else None)
+        status_name = initial_stage.name if initial_stage else 'Forwarded To Commissioner'
+
+        serializer.save(
+            reference_no=ref_no,
+            applicant=self.request.user,
+            submitted_at=timezone.now(),
+            workflow=workflow,
+            current_stage=initial_stage,
+            status=status_name
+        )
+
+
+class IMFLCancellationViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = IMFLCancellationSerializer
+    lookup_field = 'reference_no'
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = IMFLCancellation.objects.select_related('distributor_permit', 'applicant', 'current_stage').all()
+        if _is_distributor_user(user):
+            qs = qs.filter(applicant=user)
+        return qs
+
+    def perform_create(self, serializer):
+        from django.utils import timezone
+        from auth.workflow.models import Workflow, WorkflowStage
+        from auth.workflow.constants import WORKFLOW_IDS
+
+        ref_no = DistributorPermitApplication.generate_reference_no(app_type='cancellation')
+        workflow_id = WORKFLOW_IDS.get('IMFL_CANCELLATION', 17)
+        workflow = Workflow.objects.filter(id=workflow_id).first()
+        initial_stage = WorkflowStage.objects.filter(id=162).first() or (workflow.stages.filter(is_initial=True).first() if workflow else None)
+        status_name = initial_stage.name if initial_stage else 'Forwarded To Commissioner'
+
+        serializer.save(
+            reference_no=ref_no,
+            applicant=self.request.user,
+            submitted_at=timezone.now(),
+            workflow=workflow,
+            current_stage=initial_stage,
+            status=status_name
+        )
+

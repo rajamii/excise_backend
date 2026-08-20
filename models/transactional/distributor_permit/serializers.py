@@ -9,6 +9,9 @@ from .models import (
     DistributorPermitApplication,
     DistributorPermitDocument,
     DistributorPermitLineItem,
+    IMFLRevalidation,
+    IMFLCancellation,
+    IMFLRevalidationActivationSchedule,
 )
 
 
@@ -131,6 +134,8 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
             'status',
             'officer_remarks',
             'submitted_at',
+            'approval_date',
+            'valid_up_to',
             'created_at',
             'updated_at',
             'line_items',
@@ -396,3 +401,40 @@ def timezone_now():
     from django.utils import timezone
 
     return timezone.now()
+
+
+class IMFLRevalidationActivationScheduleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = IMFLRevalidationActivationSchedule
+        fields = '__all__'
+
+
+class IMFLRevalidationSerializer(serializers.ModelSerializer):
+    applicant_name = serializers.SerializerMethodField()
+    distributor_permit_detail = DistributorPermitApplicationSerializer(source='distributor_permit', read_only=True)
+
+    class Meta:
+        model = IMFLRevalidation
+        fields = '__all__'
+
+    def get_applicant_name(self, obj):
+        if not obj.applicant:
+            return ''
+        name = getattr(obj.applicant, 'get_full_name', lambda: '')() or obj.applicant.username
+        return name.strip() or obj.applicant.username
+
+
+class IMFLCancellationSerializer(serializers.ModelSerializer):
+    applicant_name = serializers.SerializerMethodField()
+    distributor_permit_detail = DistributorPermitApplicationSerializer(source='distributor_permit', read_only=True)
+
+    class Meta:
+        model = IMFLCancellation
+        fields = '__all__'
+
+    def get_applicant_name(self, obj):
+        if not obj.applicant:
+            return ''
+        name = getattr(obj.applicant, 'get_full_name', lambda: '')() or obj.applicant.username
+        return name.strip() or obj.applicant.username
+

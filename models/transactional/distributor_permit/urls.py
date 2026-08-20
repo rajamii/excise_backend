@@ -15,6 +15,13 @@ class EverythingConverter:
 
 register_converter(EverythingConverter, 'everything')
 
+from rest_framework.routers import DefaultRouter
+
+router = DefaultRouter()
+router.register(r'revalidation-schedules', views.IMFLRevalidationActivationScheduleViewSet, basename='revalidation-schedules')
+router.register(r'revalidation', views.IMFLRevalidationViewSet, basename='revalidation')
+router.register(r'cancellation', views.IMFLCancellationViewSet, basename='cancellation')
+
 app_name = 'distributor_permit'
 
 urlpatterns = [
@@ -25,4 +32,4 @@ urlpatterns = [
     path('<everything:reference_no>/perform-action/', views.DistributorPermitPerformActionView.as_view(), name='perform-action'),
     path('<everything:reference_no>/documents/', views.DistributorPermitDocumentUploadView.as_view(), name='documents'),
     path('<everything:reference_no>/', views.DistributorPermitDetailView.as_view(), name='detail'),
-]
+] + router.urls
