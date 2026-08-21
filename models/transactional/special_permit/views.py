@@ -9,7 +9,7 @@ from rest_framework.parsers import JSONParser
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 
-from auth.workflow.models import Workflow
+from auth.workflow.models import Workflow, Transaction as WorkflowTransaction
 from auth.workflow.services import WorkflowService
 from models.masters.license.models import License
 from models.transactional.helpers import _get_role_stage_names, _get_stage_sets, _normalize_role, _collect_reachable_stage_names, _filter_by_user_district, _is_district_scoped_role
