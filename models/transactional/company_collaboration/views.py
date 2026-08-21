@@ -553,7 +553,7 @@ def workflow_action(request, application_id):
 # ---------------------------------------------------------------------------
 
 @api_view(['GET'])
-@permission_classes([HasCompanyCollaborationViewPermission, HasStagePermission])
+@permission_classes([permissions.IsAuthenticated])
 @dashboard_counts_cache("company_collaboration")
 def dashboard_counts(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)

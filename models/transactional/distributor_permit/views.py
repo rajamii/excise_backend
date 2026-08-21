@@ -459,8 +459,18 @@ def _resolve_imfl_validity_days() -> int:
     try:
         from models.masters.core.models import SupplyChainTimerConfig
         cfg = SupplyChainTimerConfig.objects.filter(code='IMFL_REVALIDATION_ACTIVATION', is_active=True).order_by('-updated_at', '-id').first()
-        if cfg and cfg.validity_period_days:
-            return int(cfg.validity_period_days)
+        if cfg and cfg.delay_value:
+            val = int(cfg.delay_value)
+            unit = (cfg.delay_unit or 'day').lower()
+            if unit == 'day':
+                return val
+            elif unit == 'month':
+                return val * 30
+            elif unit == 'year':
+                return val * 365
+            elif unit == 'week':
+                return val * 7
+            return val
     except Exception:
         pass
     return default_days

@@ -148,26 +148,26 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
         default_days = 45
         resolved_days = default_days
         try:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT COALESCE(validity_period_days, %s)
-                    FROM public.timer
-                    WHERE code = %s
-                      AND is_active = TRUE
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    [default_days, 'ENA_REVALIDATION_ACTIVATION']
-                )
-                row = cursor.fetchone()
-                if row and row[0] is not None:
-                    candidate = int(row[0])
-                    if candidate >= 0:
-                        resolved_days = candidate
+            from models.masters.core.models import SupplyChainTimerConfig
+            cfg = SupplyChainTimerConfig.objects.filter(
+                code='ENA_REVALIDATION_ACTIVATION', is_active=True
+            ).order_by('-updated_at', '-id').first()
+            if cfg and cfg.delay_value:
+                val = int(cfg.delay_value)
+                unit = (cfg.delay_unit or 'day').lower()
+                if unit == 'day':
+                    resolved_days = val
+                elif unit == 'month':
+                    resolved_days = val * 30
+                elif unit == 'year':
+                    resolved_days = val * 365
+                elif unit == 'week':
+                    resolved_days = val * 7
+                else:
+                    resolved_days = val
         except Exception as exc:
             logger.warning(
-                "Unable to resolve revalidation validity_period_days from public.timer. Using default=%s. Error=%s",
+                "Unable to resolve revalidation validity_period_days from SupplyChainTimerConfig. Using default=%s. Error=%s",
                 default_days,
                 exc,
             )
