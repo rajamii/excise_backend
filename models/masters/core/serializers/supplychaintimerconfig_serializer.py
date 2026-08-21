@@ -12,7 +12,6 @@ class SupplyChainTimerConfigSerializer(serializers.ModelSerializer):
             'delay_unit', 
             'is_active', 
             'created_at', 
-            'updated_at', 
-            'validity_period_days'
+            'updated_at'
         ]
         read_only_fields = ['id', 'code', 'created_at', 'updated_at']
