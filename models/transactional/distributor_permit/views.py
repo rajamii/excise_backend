@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -358,8 +359,12 @@ class DistributorPermitPerformActionView(APIView):
                 'message': f'Remarks/reason is required while performing {action}.'
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Get application
-        application = DistributorPermitApplication.objects.filter(reference_no=reference_no).first()
+        # Get application (check Cancellation, Revalidation, or Permit Application)
+        application = (
+            IMFLCancellation.objects.filter(reference_no=reference_no).first()
+            or IMFLRevalidation.objects.filter(reference_no=reference_no).first()
+            or DistributorPermitApplication.objects.filter(reference_no=reference_no).first()
+        )
         if not application:
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -370,7 +375,7 @@ class DistributorPermitPerformActionView(APIView):
         # Auto-initialize stage if missing
         if not application.current_stage:
             from auth.workflow.models import WorkflowStage
-            initial_stage = WorkflowStage.objects.filter(id=148).first() or WorkflowStage.objects.filter(workflow_id=15).first()
+            initial_stage = WorkflowStage.objects.filter(id=162 if isinstance(application, IMFLCancellation) else 148).first()
             if initial_stage:
                 application.current_stage = initial_stage
                 application.workflow = initial_stage.workflow
@@ -379,7 +384,8 @@ class DistributorPermitPerformActionView(APIView):
         transitions = WorkflowService.get_next_stages(application)
         target_transition = None
         for t in transitions:
-            if transition_matches(t, request.user, action):
+            cond_act = str((t.condition or {}).get('action') or '').upper()
+            if cond_act == action or transition_matches(t, request.user, action) or (action == 'APPROVE' and cond_act in ('APPROVE', 'APPROVEPAYSLIP')):
                 target_transition = t
                 break
 
@@ -390,6 +396,18 @@ class DistributorPermitPerformActionView(APIView):
                 if cond_action == 'PAY' or t.to_stage_id == 156:
                     target_transition = t
                     break
+
+        # Fallback transition for Commissioner APPROVE on Cancellation (stage 162 -> 165)
+        if not target_transition and action == 'APPROVE' and isinstance(application, IMFLCancellation):
+            from auth.workflow.models import WorkflowStage, WorkflowTransition
+            stage_165 = WorkflowStage.objects.filter(id=165).first() or WorkflowStage.objects.filter(name='Approved By Commissioner', workflow_id=17).first()
+            if stage_165:
+                target_transition = WorkflowTransition(
+                    workflow=application.workflow,
+                    from_stage=application.current_stage,
+                    to_stage=stage_165,
+                    condition={'role': 'commissioner', 'action': 'APPROVE'}
+                )
 
         if not target_transition:
             return Response({
@@ -408,24 +426,24 @@ class DistributorPermitPerformActionView(APIView):
 
             # Sync status/officer remarks
             application.status = target_transition.to_stage.name
-            if action in ('PAY', 'FORCE_PAY'):
+            if action in ('PAY', 'FORCE_PAY') and hasattr(application, 'is_excise_duty_fee_paid'):
                 application.is_excise_duty_fee_paid = True
-            if remarks:
+            if remarks and hasattr(application, 'officer_remarks'):
                 application.officer_remarks = remarks
-            
-            if action == 'APPROVE' and target_transition.to_stage.is_final:
+
+            if action == 'APPROVE' and target_transition.to_stage.is_final and hasattr(application, 'submitted_at'):
                 application.submitted_at = timezone.now()
 
             application.save()
 
             if target_transition.to_stage.id == 151 or (action == 'APPROVE' and target_transition.to_stage.is_final):
-                _schedule_imfl_revalidation_activation(application, timezone.now())
+                if isinstance(application, DistributorPermitApplication):
+                    _schedule_imfl_revalidation_activation(application, timezone.now())
 
-        serializer = DistributorPermitApplicationSerializer(application, context={'request': request})
         return Response({
             'status': 'success',
-            'message': f'Action {action} performed successfully.',
-            'data': serializer.data
+            'message': f'Action {action} performed successfully. Stage updated to {target_transition.to_stage.name}.',
+            'current_stage': target_transition.to_stage.name
         })
 
 

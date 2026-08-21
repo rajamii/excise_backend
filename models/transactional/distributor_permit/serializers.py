@@ -412,6 +412,8 @@ class IMFLRevalidationActivationScheduleSerializer(serializers.ModelSerializer):
 class IMFLRevalidationSerializer(serializers.ModelSerializer):
     applicant_name = serializers.SerializerMethodField()
     distributor_permit_detail = DistributorPermitApplicationSerializer(source='distributor_permit', read_only=True)
+    allowed_actions = serializers.SerializerMethodField()
+    allowedActions = serializers.SerializerMethodField()
 
     class Meta:
         model = IMFLRevalidation
@@ -424,10 +426,45 @@ class IMFLRevalidationSerializer(serializers.ModelSerializer):
         name = getattr(obj.applicant, 'get_full_name', lambda: '')() or obj.applicant.username
         return name.strip() or obj.applicant.username
 
+    def get_allowed_actions(self, obj):
+        request = self.context.get('request')
+        user = getattr(request, 'user', None) if request else None
+        if not user or not user.is_authenticated:
+            return []
+
+        from auth.workflow.services import WorkflowService
+        from models.transactional.supply_chain.access_control import transition_matches
+
+        if not obj.workflow or not obj.current_stage:
+            return []
+
+        transitions = WorkflowService.get_next_stages(obj)
+        actions = []
+        for t in transitions:
+            cond = t.condition or {}
+            cond_action = str(cond.get('action') or '').upper()
+            if not cond_action or cond_action == 'VIEW':
+                continue
+            if transition_matches(t, user, cond_action):
+                if cond_action not in actions:
+                    actions.append(cond_action)
+
+        if not actions and getattr(getattr(user, 'role', None), 'name', '').lower() == 'commissioner':
+            stage_id = getattr(obj.current_stage, 'id', None)
+            if stage_id in (160, 161) or 'COMMISSIONER' in str(obj.status or '').upper():
+                actions = ['APPROVE', 'REJECT']
+
+        return actions
+
+    def get_allowedActions(self, obj):
+        return self.get_allowed_actions(obj)
+
 
 class IMFLCancellationSerializer(serializers.ModelSerializer):
     applicant_name = serializers.SerializerMethodField()
     distributor_permit_detail = DistributorPermitApplicationSerializer(source='distributor_permit', read_only=True)
+    allowed_actions = serializers.SerializerMethodField()
+    allowedActions = serializers.SerializerMethodField()
 
     class Meta:
         model = IMFLCancellation
@@ -439,4 +476,37 @@ class IMFLCancellationSerializer(serializers.ModelSerializer):
             return ''
         name = getattr(obj.applicant, 'get_full_name', lambda: '')() or obj.applicant.username
         return name.strip() or obj.applicant.username
+
+    def get_allowed_actions(self, obj):
+        request = self.context.get('request')
+        user = getattr(request, 'user', None) if request else None
+        if not user or not user.is_authenticated:
+            return []
+
+        from auth.workflow.services import WorkflowService
+        from models.transactional.supply_chain.access_control import transition_matches
+
+        if not obj.workflow or not obj.current_stage:
+            return []
+
+        transitions = WorkflowService.get_next_stages(obj)
+        actions = []
+        for t in transitions:
+            cond = t.condition or {}
+            cond_action = str(cond.get('action') or '').upper()
+            if not cond_action or cond_action == 'VIEW':
+                continue
+            if transition_matches(t, user, cond_action):
+                if cond_action not in actions:
+                    actions.append(cond_action)
+
+        if not actions and getattr(getattr(user, 'role', None), 'name', '').lower() == 'commissioner':
+            stage_id = getattr(obj.current_stage, 'id', None)
+            if stage_id in (162, 163) or 'COMMISSIONER' in str(obj.status or '').upper():
+                actions = ['APPROVE', 'REJECT']
+
+        return actions
+
+    def get_allowedActions(self, obj):
+        return self.get_allowed_actions(obj)
 
