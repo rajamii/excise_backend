@@ -32,6 +32,7 @@ class DistributorPermitApplication(models.Model):
     submitted_at = models.DateTimeField(null=True, blank=True)
     approval_date = models.DateTimeField(null=True, blank=True)
     valid_up_to = models.DateTimeField(null=True, blank=True)
+    permit_wise_details = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -111,16 +112,14 @@ class DistributorPermitLineItem(models.Model):
     brand_name = models.CharField(max_length=255)
     size_ml = models.PositiveIntegerField()
     pieces_per_case = models.PositiveIntegerField(default=0)
-    cases = models.PositiveIntegerField()
     edp_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
     import_pass_fee_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
     mrp_per_bottle = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
     additional_ed_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
     education_cess_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
-    total_import = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
-    total_education_cess = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
     total_additional_ed = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
     bulk_litres = models.DecimalField(max_digits=15, decimal_places=3, default=Decimal('0.000'))
+    permit_number = models.CharField(max_length=100, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -22,6 +22,7 @@ class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
         write_only=True,
     )
     brand_master_id = serializers.IntegerField(source='brand_id', read_only=True)
+    cases = serializers.IntegerField(write_only=True, required=False, default=1)
 
     class Meta:
         model = DistributorPermitLineItem
@@ -38,10 +39,9 @@ class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
             'mrp_per_bottle',
             'additional_ed_per_case',
             'education_cess_per_case',
-            'total_import',
-            'total_education_cess',
             'total_additional_ed',
             'bulk_litres',
+            'permit_number',
         ]
         read_only_fields = [
             'id',
@@ -52,8 +52,6 @@ class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
             'mrp_per_bottle',
             'additional_ed_per_case',
             'education_cess_per_case',
-            'total_import',
-            'total_education_cess',
             'total_additional_ed',
             'bulk_litres',
         ]
@@ -146,6 +144,7 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
             'total_education_cess',
             'total_additional_ed',
             'total_bulk_litres',
+            'permit_wise_details',
             'allowed_actions',
             'allowedActions',
             'current_stage_id',
@@ -212,7 +211,6 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         validated_data['submitted_at'] = timezone_now()
         validated_data['origin'] = validated_data.get('origin') or validated_data.get('source_address') or ''
         
-        # Set initial workflow (15) and stage (148 - Forwarded Permit Section )
         try:
             from auth.workflow.models import WorkflowStage
             initial_stage = WorkflowStage.objects.filter(id=148).first()
@@ -233,41 +231,117 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
                 reference_no=DistributorPermitApplication.generate_reference_no(app_type=app_type),
                 **validated_data,
             )
-            for item in line_items:
-                self._create_line_item(application, item)
+            self._process_and_save_line_items(application, line_items)
         return application
 
-    def _create_line_item(self, application, item):
-        brand = item['brand']
-        size_ml = int(item['size_ml'])
-        cases = int(item['cases'])
-        brand_name = str(brand.brand_name or '').strip()
-        rates = self._resolve_rates(brand_name, size_ml)
-        pieces_per_case = self._resolve_pieces_per_case(size_ml)
+    def _process_and_save_line_items(self, application, line_items):
+        expanded_items = []
+        for item in line_items:
+            brand = item['brand']
+            size_ml = int(item['size_ml'])
+            cases = int(item['cases'])
+            brand_name = str(brand.brand_name or '').strip()
+            rates = self._resolve_rates(brand_name, size_ml)
+            pieces_per_case = self._resolve_pieces_per_case(size_ml)
 
-        edp = rates['edp_per_case']
-        import_fee = rates['import_pass_fee_per_case']
-        mrp = rates['mrp_per_bottle']
-        additional_ed = rates['additional_ed_per_case']
-        education_cess = rates['education_cess_per_case']
+            expanded_items.append({
+                'brand': brand,
+                'brand_name': brand_name,
+                'size_ml': size_ml,
+                'cases': cases,
+                'pieces_per_case': pieces_per_case,
+                'edp': rates['edp_per_case'],
+                'import_fee': rates['import_pass_fee_per_case'],
+                'mrp': rates['mrp_per_bottle'],
+                'additional_ed': rates['additional_ed_per_case'],
+                'education_cess': rates['education_cess_per_case'],
+            })
 
-        return DistributorPermitLineItem.objects.create(
-            application=application,
-            brand=brand,
-            brand_name=brand_name,
-            size_ml=size_ml,
-            pieces_per_case=pieces_per_case,
-            cases=cases,
-            edp_per_case=edp,
-            import_pass_fee_per_case=import_fee,
-            mrp_per_bottle=mrp,
-            additional_ed_per_case=additional_ed,
-            education_cess_per_case=education_cess,
-            total_import=import_fee * cases,
-            total_education_cess=education_cess * cases,
-            total_additional_ed=additional_ed * cases,
-            bulk_litres=(Decimal(size_ml) * Decimal(pieces_per_case) * Decimal(cases) / Decimal('1000')),
-        )
+        permits = []
+        current_permit_index = 1
+        current_permit_cases = 0
+        current_permit_items = []
+
+        for item in expanded_items:
+            rem_cases = item['cases']
+            while rem_cases > 0:
+                available_space = 600 - current_permit_cases
+                if available_space <= 0:
+                    permits.append((current_permit_index, current_permit_items))
+                    current_permit_index += 1
+                    current_permit_cases = 0
+                    current_permit_items = []
+                    available_space = 600
+
+                allocated_cases = min(rem_cases, available_space)
+
+                sub_item = dict(item)
+                sub_item['allocated_cases'] = allocated_cases
+                sub_item['permit_number'] = f"{application.reference_no}-P{current_permit_index}"
+                current_permit_items.append(sub_item)
+
+                current_permit_cases += allocated_cases
+                rem_cases -= allocated_cases
+
+        if current_permit_items:
+            permits.append((current_permit_index, current_permit_items))
+
+        permit_wise_details = []
+        for seq_num, items in permits:
+            p_num = f"{application.reference_no}-P{seq_num}"
+            p_cases = sum(i['allocated_cases'] for i in items)
+            p_import_fee = sum(i['import_fee'] * i['allocated_cases'] for i in items)
+            p_additional_ed = sum(i['additional_ed'] * i['allocated_cases'] for i in items)
+            p_edu_cess = sum(i['education_cess'] * i['allocated_cases'] for i in items)
+            p_bl = sum((Decimal(i['size_ml']) * Decimal(i['pieces_per_case']) * Decimal(i['allocated_cases']) / Decimal('1000')) for i in items)
+
+            permit_wise_details.append({
+                'permit_number': p_num,
+                'permit_sequence': seq_num,
+                'total_cases': p_cases,
+                'total_import_fee': float(p_import_fee),
+                'total_additional_ed': float(p_additional_ed),
+                'total_education_cess': float(p_edu_cess),
+                'total_bulk_litres': float(p_bl),
+                'line_items': [
+                    {
+                        'brand_name': i['brand_name'],
+                        'size_ml': i['size_ml'],
+                        'pieces_per_case': i['pieces_per_case'],
+                        'cases': i['allocated_cases'],
+                        'edp_per_case': float(i['edp']),
+                        'import_pass_fee_per_case': float(i['import_fee']),
+                        'total_import': float(i['import_fee'] * i['allocated_cases']),
+                        'additional_ed_per_case': float(i['additional_ed']),
+                        'total_additional_ed': float(i['additional_ed'] * i['allocated_cases']),
+                        'education_cess_per_case': float(i['education_cess']),
+                        'total_education_cess': float(i['education_cess'] * i['allocated_cases']),
+                        'mrp_per_bottle': float(i['mrp']),
+                        'bulk_litres': float(Decimal(i['size_ml']) * Decimal(i['pieces_per_case']) * Decimal(i['allocated_cases']) / Decimal('1000')),
+                        'permit_number': p_num,
+                    } for i in items
+                ]
+            })
+
+            for i in items:
+                DistributorPermitLineItem.objects.create(
+                    application=application,
+                    brand=i['brand'],
+                    brand_name=i['brand_name'],
+                    size_ml=i['size_ml'],
+                    pieces_per_case=i['pieces_per_case'],
+                    edp_per_case=i['edp'],
+                    import_pass_fee_per_case=i['import_fee'],
+                    mrp_per_bottle=i['mrp'],
+                    additional_ed_per_case=i['additional_ed'],
+                    education_cess_per_case=i['education_cess'],
+                    total_additional_ed=i['additional_ed'] * i['allocated_cases'],
+                    bulk_litres=(Decimal(i['size_ml']) * Decimal(i['pieces_per_case']) * Decimal(i['allocated_cases']) / Decimal('1000')),
+                    permit_number=p_num,
+                )
+
+        application.permit_wise_details = permit_wise_details
+        application.save(update_fields=['permit_wise_details'])
 
     def _resolve_rates(self, brand_name: str, size_ml: int) -> dict:
         row = (
