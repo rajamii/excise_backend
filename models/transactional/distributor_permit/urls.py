@@ -26,6 +26,7 @@ app_name = 'distributor_permit'
 
 urlpatterns = [
     path('', views.DistributorPermitListCreateView.as_view(), name='list-create'),
+    path('dashboard-counts/', views.dashboard_counts, name='dashboard-counts'),
     path('suppliers/', views.DistributorPermitSuppliersView.as_view(), name='suppliers'),
     path('brand-master/', views.DistributorPermitBrandMasterView.as_view(), name='brand-master'),
     path('premises/', views.DistributorPermitPremisesView.as_view(), name='premises'),

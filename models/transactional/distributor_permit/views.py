@@ -3,17 +3,19 @@ from decimal import Decimal
 from django.db import transaction
 from django.db.models import Q
 from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from models.transactional.dashboard_cache import dashboard_counts_cache
 from models.masters.supply_chain.hologram_supplier.models import MasterHologramSupplier
 from models.masters.supply_chain.liquor_data.models import LiquorData, MasterBrandList
 from models.masters.supply_chain.transit_permit.models import BrandMlInCases
 from models.masters.license.models import License
 
-from .models import DistributorPermitApplication, DistributorPermitDocument
+from .models import DistributorPermitApplication, DistributorPermitDocument, IMFLRevalidation, IMFLCancellation
 from .serializers import (
     DistributorPermitApplicationSerializer,
     DistributorPermitDocumentSerializer,
@@ -139,6 +141,85 @@ class DistributorPermitListCreateView(DistributorRoleRequiredMixin, APIView):
             context={'request': request},
         )
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+
+def _normalize_imfl_dashboard_tab(raw_tab):
+    tab = str(raw_tab or 'requisition').strip().lower().replace('_', '-')
+    if tab in ('revalidation', 'imfl-revalidation', 'distributor-permit-revalidation'):
+        return 'revalidation'
+    if tab in ('cancellation', 'imfl-cancellation', 'distributor-permit-cancellation'):
+        return 'cancellation'
+    return 'requisition'
+
+
+def _imfl_dashboard_queryset(request, tab):
+    if tab == 'revalidation':
+        qs = IMFLRevalidation.objects.select_related('applicant', 'current_stage', 'distributor_permit')
+    elif tab == 'cancellation':
+        qs = IMFLCancellation.objects.select_related('applicant', 'current_stage', 'distributor_permit')
+    else:
+        qs = DistributorPermitApplication.objects.select_related('applicant', 'current_stage').all()
+    return scope_permit_queryset(qs, request.user)
+
+
+def _stage_text(item):
+    stage_name = getattr(getattr(item, 'current_stage', None), 'name', '') or ''
+    return f"{getattr(item, 'status', '') or ''} {stage_name}".strip().lower()
+
+
+def _is_final_imfl_item(item):
+    text = _stage_text(item)
+    return any(token in text for token in ('approved', 'rejected', 'cancelled', 'canceled', 'completed'))
+
+
+def _is_objection_imfl_item(item):
+    return 'objection' in _stage_text(item)
+
+
+def _is_awaiting_payment_imfl_item(item):
+    text = _stage_text(item).replace('_', ' ')
+    return 'awaiting payment' in text or ('payment' in text and 'completed' not in text and 'paid' not in text)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+@dashboard_counts_cache("distributor_permit")
+def dashboard_counts(request):
+    tab = _normalize_imfl_dashboard_tab(request.query_params.get('tab'))
+    qs = _imfl_dashboard_queryset(request, tab)
+
+    month = request.query_params.get('month')
+    year = request.query_params.get('year')
+    date_field = 'submitted_at' if tab in ('revalidation', 'cancellation') else 'created_at'
+    if month:
+        qs = qs.filter(**{f'{date_field}__month': month})
+    if year:
+        qs = qs.filter(**{f'{date_field}__year': year})
+
+    items = list(qs)
+    approved = sum(1 for item in items if 'approved' in _stage_text(item))
+    rejected = sum(1 for item in items if 'rejected' in _stage_text(item))
+    objection = sum(1 for item in items if _is_objection_imfl_item(item))
+    awaiting_payment = sum(1 for item in items if _is_awaiting_payment_imfl_item(item))
+    pending = sum(
+        1
+        for item in items
+        if not _is_final_imfl_item(item)
+        and not _is_objection_imfl_item(item)
+        and not _is_awaiting_payment_imfl_item(item)
+    )
+
+    return Response({
+        'tab': tab,
+        'applied': len(items),
+        'total': len(items),
+        'pending': pending,
+        'objection': objection,
+        'approved': approved,
+        'rejected': rejected,
+        'awaiting_payment': awaiting_payment,
+        'awaitingPayment': awaiting_payment,
+    }, status=status.HTTP_200_OK)
 
 
 class DistributorPermitDetailView(DistributorRoleRequiredMixin, APIView):
