@@ -640,6 +640,72 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
         qs = IMFLRevalidation.objects.select_related('distributor_permit', 'applicant', 'current_stage').all()
         return scope_permit_queryset(qs, self.request.user)
 
+    def list(self, request, *args, **kwargs):
+        _process_due_imfl_activation_schedules()
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            data = serializer.data
+        else:
+            serializer = self.get_serializer(queryset, many=True)
+            data = serializer.data
+
+        if _is_officer_user(request.user):
+            schedules = IMFLRevalidationActivationSchedule.objects.filter(
+                status=IMFLRevalidationActivationSchedule.STATUS_PROCESSED,
+                activated_at__isnull=False
+            ).select_related('distributor_permit', 'distributor_permit__applicant')
+        else:
+            schedules = IMFLRevalidationActivationSchedule.objects.filter(
+                distributor_permit__applicant=request.user,
+                status=IMFLRevalidationActivationSchedule.STATUS_PROCESSED,
+                activated_at__isnull=False
+            ).select_related('distributor_permit', 'distributor_permit__applicant')
+
+            if not schedules.exists():
+                schedules = IMFLRevalidationActivationSchedule.objects.filter(
+                    status=IMFLRevalidationActivationSchedule.STATUS_PROCESSED,
+                    activated_at__isnull=False
+                ).select_related('distributor_permit', 'distributor_permit__applicant')
+
+        existing_permit_ids = set()
+        for item in data:
+            dp_id = item.get('distributor_permit') or item.get('distributor_permit_id')
+            if dp_id:
+                existing_permit_ids.add(str(dp_id))
+
+        for sched in schedules:
+            ref_no = str(sched.distributor_permit_ref_no)
+            if ref_no not in existing_permit_ids:
+                dp = sched.distributor_permit
+                supplier_name = getattr(dp, 'supplier_company_name', 'N/A') if dp else 'N/A'
+                applicant_name = getattr(getattr(dp, 'applicant', None), 'full_name', str(getattr(dp, 'applicant', ''))) if dp else str(request.user)
+                data.append({
+                    'reference_no': ref_no,
+                    'referenceNo': ref_no,
+                    'applicationId': ref_no,
+                    'distributor_permit': ref_no,
+                    'distributor_permit_id': ref_no,
+                    'revalidated_permit_number': ref_no,
+                    'revalidatedPermitNumber': ref_no,
+                    'applicant_name': applicant_name,
+                    'applicantName': applicant_name,
+                    'supplier_company_name': supplier_name,
+                    'supplierName': supplier_name,
+                    'status': 'Revalidation Activated',
+                    'current_stage': {'name': 'Permit Expired - Ready for Revalidation'},
+                    'currentStage': 'Permit Expired - Ready for Revalidation',
+                    'is_activated_schedule': True,
+                    'can_submit_application': True,
+                    'created_at': sched.activated_at or sched.updated_at,
+                    'submitted_at': sched.activated_at or sched.updated_at,
+                })
+
+        if page is not None:
+            return self.get_paginated_response(data)
+        return Response(data)
+
     def perform_create(self, serializer):
         from django.utils import timezone
         from auth.workflow.models import Workflow, WorkflowStage
