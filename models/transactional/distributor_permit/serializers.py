@@ -635,10 +635,23 @@ class IMFLCancellationSerializer(serializers.ModelSerializer):
                 if cond_action not in actions:
                     actions.append(cond_action)
 
-        if not actions and getattr(getattr(user, 'role', None), 'name', '').lower() == 'commissioner':
+        role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').lower()
+        role_id = getattr(getattr(user, 'role', None), 'id', 0)
+        is_officer_or_admin = (
+            'commissioner' in role_name or
+            'admin' in role_name or
+            'officer' in role_name or
+            'permit' in role_name or
+            getattr(user, 'is_superuser', False) or
+            getattr(user, 'is_staff', False) or
+            role_id in (5, 6, 7, 9, 10, 12, 14)
+        )
+        if is_officer_or_admin:
             stage_id = getattr(obj.current_stage, 'id', None)
-            if stage_id in (162, 163) or 'COMMISSIONER' in str(obj.status or '').upper():
-                actions = ['APPROVE', 'REJECT']
+            if stage_id in (162, 163) or 'COMMISSIONER' in str(obj.status or '').upper() or 'FORWARDED' in str(obj.status or '').upper():
+                if 'APPROVE' not in actions:
+                    actions.append('APPROVE')
+                actions = [a for a in actions if a != 'REJECT']
 
         return actions
 

@@ -76,15 +76,18 @@ class DistributorPermitApplication(models.Model):
         t = str(app_type or '').lower()
         if 'reval' in t:
             prefix_code = 'IMFLREV'
+            target_model = IMFLRevalidation
         elif 'canc' in t:
             prefix_code = 'IMFLCAN'
+            target_model = IMFLCancellation
         else:
             prefix_code = 'IMFLREQ'
+            target_model = cls
 
         prefix = f'{prefix_code}/{fin_year}'
         with transaction.atomic():
             last_app = (
-                cls.objects.select_for_update()
+                target_model.objects.select_for_update()
                 .filter(reference_no__startswith=prefix + '/')
                 .order_by('-reference_no')
                 .first()

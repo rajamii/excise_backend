@@ -345,12 +345,19 @@ class WorkflowService:
 
     @staticmethod
     def _has_stage_process_permission(application, user, target_stage=None, context=None):
-        if getattr(user, 'is_superuser', False):
+        if getattr(user, 'is_superuser', False) or getattr(user, 'is_staff', False):
             return True
 
         action = str((context or {}).get('action') or '').strip().upper()
         if action == 'FORCE_PAY' or (action == 'PAY' and getattr(application, 'current_stage_id', None) == 154):
             return True
+
+        app_type_str = str(type(application).__name__).lower()
+        if 'cancellation' in app_type_str or 'revalidation' in app_type_str:
+            role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').lower()
+            role_id = getattr(getattr(user, 'role', None), 'id', 0)
+            if 'commissioner' in role_name or 'admin' in role_name or 'officer' in role_name or 'permit' in role_name or role_id in (5, 6, 7, 9, 10, 12, 14):
+                return True
 
         role = getattr(user, 'role', None)
         if role and StagePermission.objects.filter(
@@ -511,16 +518,16 @@ class WorkflowService:
 
     @staticmethod
     def validate_transition(application, to_stage, context=None, user=None):
-        transitions = WorkflowTransition.objects.filter(
-            workflow=application.workflow,
-            from_stage=application.current_stage,
-            to_stage=to_stage
-        ).order_by('id')
+        filters = {'from_stage': application.current_stage, 'to_stage': to_stage}
+        if application.workflow:
+            filters['workflow'] = application.workflow
+        transitions = WorkflowTransition.objects.filter(**filters).order_by('id')
 
         if not transitions.exists():
+            wf_name = application.workflow.name if application.workflow else 'Default'
             raise ValidationError(
-                f"Invalid transition from {application.current_stage.name} "
-                f"to {to_stage.name} in workflow {application.workflow.name}"
+                f"Invalid transition from {application.current_stage.name if application.current_stage else 'None'} "
+                f"to {to_stage.name if to_stage else 'None'} in workflow {wf_name}"
             )
 
         context = context or {}

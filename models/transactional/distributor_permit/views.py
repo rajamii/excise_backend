@@ -372,14 +372,19 @@ class DistributorPermitPerformActionView(APIView):
         from auth.workflow.services import WorkflowService
         from models.transactional.supply_chain.access_control import transition_matches
 
-        # Auto-initialize stage if missing
-        if not application.current_stage:
-            from auth.workflow.models import WorkflowStage
-            initial_stage = WorkflowStage.objects.filter(id=162 if isinstance(application, IMFLCancellation) else 148).first()
-            if initial_stage:
-                application.current_stage = initial_stage
-                application.workflow = initial_stage.workflow
-                application.save(update_fields=['current_stage', 'workflow'])
+        # Auto-initialize stage/workflow if missing
+        if not application.current_stage or not application.workflow:
+            from auth.workflow.models import Workflow, WorkflowStage
+            from auth.workflow.constants import WORKFLOW_IDS
+            wf_key = 'IMFL_CANCELLATION' if isinstance(application, IMFLCancellation) else ('IMFL_REVALIDATION' if isinstance(application, IMFLRevalidation) else 'IMFL_REQUISITION')
+            wf = Workflow.objects.filter(id=WORKFLOW_IDS.get(wf_key, 17)).first()
+            if wf and not application.workflow:
+                application.workflow = wf
+            if not application.current_stage:
+                initial_stage = WorkflowStage.objects.filter(id=162 if isinstance(application, IMFLCancellation) else 148).first()
+                if initial_stage:
+                    application.current_stage = initial_stage
+            application.save(update_fields=['current_stage', 'workflow'])
 
         transitions = WorkflowService.get_next_stages(application)
         target_transition = None
@@ -536,6 +541,7 @@ def _process_due_imfl_activation_schedules():
 
 
 from rest_framework import viewsets
+from rest_framework.decorators import action
 from .models import IMFLRevalidation, IMFLCancellation, IMFLRevalidationActivationSchedule
 from .serializers import (
     IMFLRevalidationSerializer,
@@ -561,6 +567,7 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = IMFLRevalidationSerializer
     lookup_field = 'reference_no'
+    lookup_value_regex = '.+'
 
     def get_queryset(self):
         _process_due_imfl_activation_schedules()
@@ -592,6 +599,7 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = IMFLCancellationSerializer
     lookup_field = 'reference_no'
+    lookup_value_regex = '.+'
 
     def get_queryset(self):
         qs = IMFLCancellation.objects.select_related('distributor_permit', 'applicant', 'current_stage').all()
@@ -630,4 +638,14 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
             current_stage=initial_stage,
             status=status_name
         )
+
+    @action(detail=True, methods=['post'], url_path='perform_action')
+    def perform_action(self, request, reference_no=None):
+        handler = DistributorPermitPerformActionView()
+        return handler.post(request, reference_no=reference_no)
+
+    @action(detail=True, methods=['post'], url_path='perform-action')
+    def perform_action_hyphen(self, request, reference_no=None):
+        handler = DistributorPermitPerformActionView()
+        return handler.post(request, reference_no=reference_no)
 

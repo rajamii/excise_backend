@@ -30,6 +30,10 @@ urlpatterns = [
     path('suppliers/', views.DistributorPermitSuppliersView.as_view(), name='suppliers'),
     path('brand-master/', views.DistributorPermitBrandMasterView.as_view(), name='brand-master'),
     path('premises/', views.DistributorPermitPremisesView.as_view(), name='premises'),
+    path('cancellation/<everything:reference_no>/perform_action/', views.DistributorPermitPerformActionView.as_view(), name='cancellation-perform-action-1'),
+    path('cancellation/<everything:reference_no>/perform-action/', views.DistributorPermitPerformActionView.as_view(), name='cancellation-perform-action-2'),
+    path('revalidation/<everything:reference_no>/perform_action/', views.DistributorPermitPerformActionView.as_view(), name='revalidation-perform-action-1'),
+    path('revalidation/<everything:reference_no>/perform-action/', views.DistributorPermitPerformActionView.as_view(), name='revalidation-perform-action-2'),
 ] + router.urls + [
     path('<everything:reference_no>/perform-action/', views.DistributorPermitPerformActionView.as_view(), name='perform-action'),
     path('<everything:reference_no>/documents/', views.DistributorPermitDocumentUploadView.as_view(), name='documents'),
