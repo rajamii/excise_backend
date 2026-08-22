@@ -350,16 +350,57 @@ def oic_approved_establishments(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def oic_approved_distributors(request):
+    _ensure_site_admin_or_commissioner(request)
+
+    distributors = CustomUser.objects.filter(
+        role__name__icontains='distributor',
+        is_active=True
+    ).select_related('district', 'subdivision').order_by('first_name', 'username')
+
+    rows = []
+    for d in distributors:
+        first_name = str(getattr(d, 'first_name', '') or '').strip()
+        last_name = str(getattr(d, 'last_name', '') or '').strip()
+        full_name = f"{first_name} {last_name}".strip() or d.username
+
+        est_name = (
+            str(getattr(d, 'company_name', '') or '').strip()
+            or str(getattr(d, 'establishment_name', '') or '').strip()
+            or f"{full_name} ({d.username})"
+        )
+
+        rows.append({
+            'id': d.id,
+            'username': d.username,
+            'fullName': full_name,
+            'establishmentName': est_name,
+            'email': d.email,
+            'phoneNumber': d.phone_number,
+            'districtCode': str(getattr(d.district, 'district_code', '') or ''),
+            'subdivisionCode': str(getattr(d.subdivision, 'subdivision_code', '') or ''),
+        })
+
+    return Response(rows, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def oic_officer_list(request):
     _ensure_site_admin_or_commissioner(request)
 
-    assignments = OICOfficerAssignment.objects.select_related(
+    queryset = OICOfficerAssignment.objects.select_related(
         'officer',
         'approved_application',
         'license',
+        'distributor_user',
     ).order_by('-created_at')
 
-    serializer = OICOfficerAssignmentSerializer(assignments, many=True)
+    assignment_type = request.query_params.get('type') or request.query_params.get('assignment_type')
+    if assignment_type in ['manufacturing', 'distributor']:
+        queryset = queryset.filter(assignment_type=assignment_type)
+
+    serializer = OICOfficerAssignmentSerializer(queryset, many=True)
     return Response(serializer.data, status=status.HTTP_200_OK)
 
 

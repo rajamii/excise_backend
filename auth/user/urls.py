@@ -25,6 +25,7 @@ from .views import (
     LicenseeProfileDeleteView,
     MyLicenseeProfileView,
     oic_approved_establishments,
+    oic_approved_distributors,
     oic_officer_list,
     oic_officer_create,
     oic_officer_update,
@@ -75,6 +76,7 @@ urlpatterns = [
     # LicenseeProfile CRUD  ← moved from core
     path('licensee-profiles/', include(licenseeprofile_patterns)),
     path('oic/approved-establishments/', oic_approved_establishments, name='oic-approved-establishments'),
+    path('oic/approved-distributors/', oic_approved_distributors, name='oic-approved-distributors'),
     path('oic/officers/', oic_officer_list, name='oic-officer-list'),
     path('oic/officers/create/', oic_officer_create, name='oic-officer-create'),
     path('oic/officers/<int:assignment_id>/update/', oic_officer_update, name='oic-officer-update'),
