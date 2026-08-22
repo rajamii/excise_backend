@@ -715,6 +715,7 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
             dp = sched.distributor_permit
             supplier_name = getattr(dp, 'supplier_company_name', 'N/A') if dp else 'N/A'
             applicant_name = getattr(getattr(dp, 'applicant', None), 'full_name', str(getattr(dp, 'applicant', ''))) if dp else str(request.user)
+            dp_pdetails = getattr(dp, 'permit_wise_details', []) if dp else []
             data.append({
                 'reference_no': ref_no,
                 'referenceNo': ref_no,
@@ -732,6 +733,8 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                 'currentStage': 'Permit Expired - Ready for Revalidation',
                 'is_activated_schedule': True,
                 'can_submit_application': True,
+                'permit_wise_details': dp_pdetails,
+                'permitWiseDetails': dp_pdetails,
                 'created_at': sched.activated_at or sched.updated_at,
                 'submitted_at': sched.activated_at or sched.updated_at,
             })
