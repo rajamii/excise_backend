@@ -636,11 +636,12 @@ def _process_due_imfl_activation_schedules():
 
 from rest_framework import viewsets
 from rest_framework.decorators import action
-from .models import IMFLRevalidation, IMFLCancellation, IMFLRevalidationActivationSchedule
+from .models import IMFLRevalidation, IMFLCancellation, IMFLRevalidationActivationSchedule, IMFLArrival
 from .serializers import (
     IMFLRevalidationSerializer,
     IMFLCancellationSerializer,
     IMFLRevalidationActivationScheduleSerializer,
+    IMFLArrivalSerializer,
 )
 
 
@@ -865,4 +866,48 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
     def perform_action_hyphen(self, request, reference_no=None):
         handler = DistributorPermitPerformActionView()
         return handler.post(request, reference_no=reference_no)
+
+
+class IMFLArrivalViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = IMFLArrivalSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = IMFLArrival.objects.select_related('distributor_permit', 'arrived_by').all()
+
+        permit_no = self.request.query_params.get('permit_number') or self.request.query_params.get('permitNumber')
+        dist_permit = self.request.query_params.get('distributor_permit') or self.request.query_params.get('distributorPermit')
+
+        if permit_no:
+            qs = qs.filter(permit_number__iexact=str(permit_no).strip())
+        if dist_permit:
+            qs = qs.filter(
+                models.Q(distributor_permit__reference_no__iexact=str(dist_permit).strip()) |
+                models.Q(distributor_permit_id=str(dist_permit).strip())
+            )
+
+        if not _is_officer_user(user):
+            qs = qs.filter(
+                models.Q(arrived_by=user) |
+                models.Q(distributor_permit__applicant=user)
+            )
+        return qs
+
+    def perform_create(self, serializer):
+        from django.utils import timezone
+        dp_id = self.request.data.get('distributor_permit') or self.request.data.get('distributorPermit') or self.request.data.get('distributor_permit_id')
+        dp = None
+        if dp_id:
+            if isinstance(dp_id, dict):
+                dp_ref = dp_id.get('reference_no') or dp_id.get('referenceNo') or dp_id.get('id')
+                dp = DistributorPermitApplication.objects.filter(reference_no=str(dp_ref)).first()
+            else:
+                dp = DistributorPermitApplication.objects.filter(reference_no=str(dp_id)).first()
+
+        serializer.save(
+            arrived_by=self.request.user,
+            arrived_at=timezone.now(),
+            distributor_permit=dp or serializer.validated_data.get('distributor_permit')
+        )
 

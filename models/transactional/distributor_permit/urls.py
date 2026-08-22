@@ -21,6 +21,7 @@ router = DefaultRouter()
 router.register(r'revalidation-schedules', views.IMFLRevalidationActivationScheduleViewSet, basename='revalidation-schedules')
 router.register(r'revalidation', views.IMFLRevalidationViewSet, basename='revalidation')
 router.register(r'cancellation', views.IMFLCancellationViewSet, basename='cancellation')
+router.register(r'arrival', views.IMFLArrivalViewSet, basename='arrival')
 
 app_name = 'distributor_permit'
 

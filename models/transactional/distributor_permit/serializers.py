@@ -12,6 +12,7 @@ from .models import (
     IMFLRevalidation,
     IMFLCancellation,
     IMFLRevalidationActivationSchedule,
+    IMFLArrival,
 )
 
 
@@ -682,4 +683,19 @@ class IMFLCancellationSerializer(serializers.ModelSerializer):
 
     def get_allowedActions(self, obj):
         return self.get_allowed_actions(obj)
+
+
+class IMFLArrivalSerializer(serializers.ModelSerializer):
+    arrived_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = IMFLArrival
+        fields = '__all__'
+        read_only_fields = ('arrived_by', 'arrived_at', 'created_at', 'updated_at')
+
+    def get_arrived_by_name(self, obj):
+        if not obj.arrived_by:
+            return ''
+        name = getattr(obj.arrived_by, 'get_full_name', lambda: '')() or obj.arrived_by.username
+        return name.strip() or obj.arrived_by.username
 
