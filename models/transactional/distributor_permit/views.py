@@ -571,6 +571,7 @@ def _schedule_imfl_revalidation_activation(application, approved_at=None):
             'distributor_permit_ref_no': str(application.reference_no),
             'approval_date': approved_at,
             'activation_due_at': valid_until,
+            'activated_at': None,
             'status': IMFLRevalidationActivationSchedule.STATUS_PENDING,
             'notes': '',
         }
@@ -578,11 +579,8 @@ def _schedule_imfl_revalidation_activation(application, approved_at=None):
 
 
 def _process_due_imfl_activation_schedules():
-    from datetime import timedelta
     from django.utils import timezone
-    from auth.workflow.models import Workflow, WorkflowStage
-    from auth.workflow.constants import WORKFLOW_IDS
-    from .models import IMFLRevalidationActivationSchedule, IMFLRevalidation, IMFLCancellation, DistributorPermitApplication
+    from .models import IMFLRevalidationActivationSchedule, IMFLCancellation
 
     now = timezone.now()
     schedules = IMFLRevalidationActivationSchedule.objects.filter(
@@ -591,10 +589,6 @@ def _process_due_imfl_activation_schedules():
     ).select_related('distributor_permit', 'distributor_permit__applicant')
 
     for schedule in schedules:
-        schedule.status = IMFLRevalidationActivationSchedule.STATUS_PROCESSED
-        schedule.activated_at = now
-        schedule.save(update_fields=['status', 'activated_at', 'updated_at'])
-
         dp = schedule.distributor_permit
         if not dp:
             continue
@@ -607,33 +601,9 @@ def _process_due_imfl_activation_schedules():
         if has_cancellation:
             continue
 
-        # Skip if revalidation is already in progress
-        active_rev = IMFLRevalidation.objects.filter(
-            distributor_permit=dp
-        ).exclude(status__in=['Approved', 'Approved By Commissioner', 'Rejected']).exists()
-
-        if not active_rev:
-            ref_no = DistributorPermitApplication.generate_reference_no(app_type='revalidation')
-            workflow_id = WORKFLOW_IDS.get('IMFL_REVALIDATION', 16)
-            workflow = Workflow.objects.filter(id=workflow_id).first()
-            initial_stage = WorkflowStage.objects.filter(id=160).first() or (workflow.stages.filter(is_initial=True).first() if workflow else None)
-            status_name = initial_stage.name if initial_stage else 'Forwarded To Commissioner'
-
-            p_details = getattr(dp, 'permit_wise_details', []) or []
-            target_permit_no = p_details[0].get('permit_number') if (isinstance(p_details, list) and len(p_details) > 0 and isinstance(p_details[0], dict)) else dp.reference_no
-
-            IMFLRevalidation.objects.create(
-                reference_no=ref_no,
-                distributor_permit=dp,
-                applicant=dp.applicant,
-                revalidated_permit_number=target_permit_no,
-                permit_wise_details=p_details if isinstance(p_details, list) else [],
-                revalidation_reason='Permit Validity Expired - Automatic Revalidation Triggered',
-                status=status_name,
-                workflow=workflow,
-                current_stage=initial_stage,
-                submitted_at=now
-            )
+        schedule.status = IMFLRevalidationActivationSchedule.STATUS_PROCESSED
+        schedule.activated_at = schedule.activation_due_at or now
+        schedule.save(update_fields=['status', 'activated_at', 'updated_at'])
 
 
 from rest_framework import viewsets
