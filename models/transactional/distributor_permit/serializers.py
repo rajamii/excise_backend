@@ -600,8 +600,9 @@ class IMFLRevalidationSerializer(serializers.ModelSerializer):
             if stage_id in (160, 161) or 'COMMISSIONER' in str(obj.status or '').upper() or 'FORWARDED' in str(obj.status or '').upper():
                 if 'APPROVE' not in actions:
                     actions.append('APPROVE')
-                if 'REJECT' not in actions:
-                    actions.append('REJECT')
+
+        # Remove REJECT action for IMFL Revalidation
+        actions = [a for a in actions if a.upper() != 'REJECT']
 
         return actions
 
