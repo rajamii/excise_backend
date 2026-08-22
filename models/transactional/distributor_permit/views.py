@@ -646,10 +646,10 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
-            data = serializer.data
+            data = list(serializer.data)
         else:
             serializer = self.get_serializer(queryset, many=True)
-            data = serializer.data
+            data = list(serializer.data)
 
         if _is_officer_user(request.user):
             schedules = IMFLRevalidationActivationSchedule.objects.filter(
