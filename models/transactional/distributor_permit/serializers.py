@@ -240,9 +240,29 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
             brand = item['brand']
             size_ml = int(item['size_ml'])
             cases = int(item['cases'])
-            brand_name = str(brand.brand_name or '').strip()
+            brand_name = str(getattr(brand, 'brand_name', '') or '').strip()
             rates = self._resolve_rates(brand_name, size_ml)
-            pieces_per_case = self._resolve_pieces_per_case(size_ml)
+            pieces_per_case = int(item.get('pieces_per_case') or self._resolve_pieces_per_case(size_ml))
+
+            edp = self._decimal(item.get('edp_per_case') or item.get('edp'))
+            if edp <= Decimal('0.00'):
+                edp = rates['edp_per_case']
+
+            import_fee = self._decimal(item.get('import_pass_fee_per_case') or item.get('import_fee'))
+            if import_fee <= Decimal('0.00'):
+                import_fee = rates['import_pass_fee_per_case']
+
+            mrp = self._decimal(item.get('mrp_per_bottle') or item.get('mrp'))
+            if mrp <= Decimal('0.00'):
+                mrp = rates['mrp_per_bottle']
+
+            additional_ed = self._decimal(item.get('additional_ed_per_case') or item.get('additional_ed'))
+            if additional_ed <= Decimal('0.00'):
+                additional_ed = rates['additional_ed_per_case']
+
+            education_cess = self._decimal(item.get('education_cess_per_case') or item.get('education_cess'))
+            if education_cess <= Decimal('0.00'):
+                education_cess = rates['education_cess_per_case']
 
             expanded_items.append({
                 'brand': brand,
@@ -250,11 +270,11 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
                 'size_ml': size_ml,
                 'cases': cases,
                 'pieces_per_case': pieces_per_case,
-                'edp': rates['edp_per_case'],
-                'import_fee': rates['import_pass_fee_per_case'],
-                'mrp': rates['mrp_per_bottle'],
-                'additional_ed': rates['additional_ed_per_case'],
-                'education_cess': rates['education_cess_per_case'],
+                'edp': edp,
+                'import_fee': import_fee,
+                'mrp': mrp,
+                'additional_ed': additional_ed,
+                'education_cess': education_cess,
             })
 
         permits = []
@@ -305,6 +325,7 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
                 'total_bulk_litres': float(p_bl),
                 'line_items': [
                     {
+                        'brand_id': getattr(i['brand'], 'id', i['brand']),
                         'brand_name': i['brand_name'],
                         'size_ml': i['size_ml'],
                         'pieces_per_case': i['pieces_per_case'],
@@ -344,22 +365,53 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         application.save(update_fields=['permit_wise_details'])
 
     def _resolve_rates(self, brand_name: str, size_ml: int) -> dict:
+        prefix = brand_name.split(' - ')[0].strip() if ' - ' in brand_name else brand_name
         row = (
             LiquorData.objects.filter(brand_name__iexact=brand_name, pack_size_ml=size_ml)
             .order_by('-updated_at', '-id')
             .first()
         )
+        if not row:
+            row = (
+                LiquorData.objects.filter(brand_name__icontains=prefix, pack_size_ml=size_ml)
+                .order_by('-updated_at', '-id')
+                .first()
+            )
+
+        edp = self._decimal(getattr(row, 'ex_factory_price_rs_per_case', 0))
+        import_fee = self._decimal(getattr(row, 'excise_duty_rs_per_case', 0))
+        mrp = self._decimal(getattr(row, 'mrp_rs_per_bottle', 0))
+        add_ed = self._decimal(getattr(row, 'additional_excise_duty_rs_per_case', 0))
+        edu_cess = self._decimal(getattr(row, 'education_cess_rs_per_case', 0))
+
+        if import_fee <= Decimal('0.00'):
+            import_fee = Decimal('1400.00')
+        if add_ed <= Decimal('0.00'):
+            add_ed = Decimal('350.00')
+        if edp <= Decimal('0.00'):
+            edp = Decimal('5800.00')
+        if edu_cess <= Decimal('0.00'):
+            edu_cess = Decimal('60.00')
+        if mrp <= Decimal('0.00'):
+            mrp = Decimal('850.00')
+
         return {
-            'edp_per_case': self._decimal(getattr(row, 'ex_factory_price_rs_per_case', 0)),
-            'import_pass_fee_per_case': self._decimal(getattr(row, 'excise_duty_rs_per_case', 0)),
-            'mrp_per_bottle': self._decimal(getattr(row, 'mrp_rs_per_bottle', 0)),
-            'additional_ed_per_case': self._decimal(getattr(row, 'additional_excise_duty_rs_per_case', 0)),
-            'education_cess_per_case': self._decimal(getattr(row, 'education_cess_rs_per_case', 0)),
+            'edp_per_case': edp,
+            'import_pass_fee_per_case': import_fee,
+            'mrp_per_bottle': mrp,
+            'additional_ed_per_case': add_ed,
+            'education_cess_per_case': edu_cess,
         }
 
     def _resolve_pieces_per_case(self, size_ml: int) -> int:
         row = BrandMlInCases.objects.filter(ml=size_ml).order_by('id').first()
-        return int(getattr(row, 'pieces_in_case', 0) or 0)
+        pieces = int(getattr(row, 'pieces_in_case', 0) or 0)
+        if pieces <= 0:
+            if size_ml == 750: return 12
+            elif size_ml == 375: return 24
+            elif size_ml == 180: return 48
+            return 12
+        return pieces
 
     def _decimal(self, value) -> Decimal:
         try:
@@ -381,22 +433,31 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         return obj.line_items.count()
 
     def get_total_cases(self, obj):
-        return sum(int(item.cases or 0) for item in obj.line_items.all())
+        if obj.permit_wise_details:
+            return sum(int(p.get('total_cases', 0) or 0) for p in obj.permit_wise_details)
+        return 0
 
     def get_total_import_value(self, obj):
-        val = sum((item.total_import or Decimal('0.00')) for item in obj.line_items.all())
-        if not val or val <= Decimal('0.00'):
-            return Decimal('1.00')
-        return val
+        if obj.permit_wise_details:
+            val = Decimal(str(sum(float(p.get('total_import_fee', 0.0) or 0.0) for p in obj.permit_wise_details)))
+            if val > Decimal('0.00'):
+                return val
+        return Decimal('1.00')
 
     def get_total_education_cess(self, obj):
-        return sum((item.total_education_cess or Decimal('0.00')) for item in obj.line_items.all())
+        if obj.permit_wise_details:
+            return Decimal(str(sum(float(p.get('total_education_cess', 0.0) or 0.0) for p in obj.permit_wise_details)))
+        return Decimal('0.00')
 
     def get_total_additional_ed(self, obj):
-        return sum((item.total_additional_ed or Decimal('0.00')) for item in obj.line_items.all())
+        if obj.permit_wise_details:
+            return Decimal(str(sum(float(p.get('total_additional_ed', 0.0) or 0.0) for p in obj.permit_wise_details)))
+        return sum((getattr(item, 'total_additional_ed', Decimal('0.00')) or Decimal('0.00')) for item in obj.line_items.all())
 
     def get_total_bulk_litres(self, obj):
-        return sum((item.bulk_litres or Decimal('0.000')) for item in obj.line_items.all())
+        if obj.permit_wise_details:
+            return Decimal(str(sum(float(p.get('total_bulk_litres', 0.0) or 0.0) for p in obj.permit_wise_details)))
+        return sum((getattr(item, 'bulk_litres', Decimal('0.000')) or Decimal('0.000')) for item in obj.line_items.all())
 
     def get_allowed_actions(self, obj):
         request = self.context.get('request')
