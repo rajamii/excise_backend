@@ -32,12 +32,13 @@ class UserSerializer(serializers.ModelSerializer):
     panNumber = serializers.SerializerMethodField()
     hasActiveLicense = serializers.SerializerMethodField()
     isActive = serializers.BooleanField(source='is_active', read_only=True)
+    oicAssignment = serializers.SerializerMethodField()
     
     class Meta:
         model = CustomUser
         fields = ['id', 'email', 'username', 'firstName', 'middleName', 'lastName',
                  'phoneNumber', 'panNumber', 'district', 'subdivision', 'address', 'role',
-                 'created_by', 'hasActiveLicense', 'isActive'
+                 'created_by', 'hasActiveLicense', 'isActive', 'oicAssignment'
         ]
         extra_kwargs = {
             'password': {'write_only': True},
@@ -105,6 +106,22 @@ class UserSerializer(serializers.ModelSerializer):
             # Older databases may not yet have the full licensee_profile schema.
             # Do not fail /auth/users/me/ for login/session bootstrap in that case.
             return None
+
+    def get_oicAssignment(self, obj):
+        try:
+            assignment = getattr(obj, 'oic_assignment', None)
+            if not assignment:
+                return None
+            return {
+                'assignmentType': getattr(assignment, 'assignment_type', 'manufacturing'),
+                'establishmentName': getattr(assignment, 'establishment_name', ''),
+                'licenseeId': getattr(assignment, 'licensee_id', ''),
+                'distributorUserId': getattr(assignment, 'distributor_user_id', None),
+                'distributorUsername': getattr(assignment.distributor_user, 'username', None) if getattr(assignment, 'distributor_user', None) else None,
+            }
+        except Exception:
+            return None
+
 
 class UserCreateSerializer(serializers.ModelSerializer):
     class Meta:
