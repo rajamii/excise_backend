@@ -240,6 +240,8 @@ class IMFLCancellation(models.Model):
         on_delete=models.PROTECT,
         related_name='imfl_cancellations',
     )
+    cancelled_permit_number = models.CharField(max_length=100, blank=True, default='')
+    permit_wise_details = models.JSONField(default=list, blank=True)
     cancellation_reason = models.TextField(blank=True, default='')
     status = models.CharField(max_length=100, default='Submitted')
     officer_remarks = models.TextField(blank=True, default='')

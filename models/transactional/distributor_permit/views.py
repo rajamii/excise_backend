@@ -608,9 +608,23 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
         initial_stage = WorkflowStage.objects.filter(id=162).first() or (workflow.stages.filter(is_initial=True).first() if workflow else None)
         status_name = initial_stage.name if initial_stage else 'Forwarded To Commissioner'
 
+        target_permit_no = self.request.data.get('cancelled_permit_number') or self.request.data.get('cancelledPermitNumber') or ''
+        p_details = self.request.data.get('permit_wise_details') or self.request.data.get('permitWiseDetails') or []
+
+        distributor_permit = serializer.validated_data.get('distributor_permit')
+        if distributor_permit and not p_details:
+            app_pdetails = getattr(distributor_permit, 'permit_wise_details', []) or []
+            if target_permit_no:
+                matched = [p for p in app_pdetails if str(p.get('permit_number', '')).lower() == str(target_permit_no).lower()]
+                p_details = matched if matched else app_pdetails
+            else:
+                p_details = app_pdetails
+
         serializer.save(
             reference_no=ref_no,
             applicant=self.request.user,
+            cancelled_permit_number=target_permit_no,
+            permit_wise_details=p_details,
             submitted_at=timezone.now(),
             workflow=workflow,
             current_stage=initial_stage,
