@@ -10,7 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from models.transactional.dashboard_cache import dashboard_counts_cache
+from models.transactional.dashboard_cache import dashboard_counts_cache, invalidate_dashboard_counts_cache
 from models.masters.supply_chain.hologram_supplier.models import MasterHologramSupplier
 from models.masters.supply_chain.liquor_data.models import LiquorData, MasterBrandList
 from models.masters.supply_chain.transit_permit.models import BrandMlInCases
@@ -440,6 +440,7 @@ class DistributorPermitPerformActionView(APIView):
                 application.submitted_at = timezone.now()
 
             application.save()
+            invalidate_dashboard_counts_cache()
 
             if target_transition.to_stage.id == 151 or (action == 'APPROVE' and target_transition.to_stage.is_final):
                 if isinstance(application, DistributorPermitApplication):
