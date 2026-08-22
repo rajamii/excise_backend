@@ -166,10 +166,10 @@ class IMFLRevalidationActivationSchedule(models.Model):
         (STATUS_CANCELLED, 'Cancelled'),
     ]
 
-    distributor_permit = models.OneToOneField(
+    distributor_permit = models.ForeignKey(
         DistributorPermitApplication,
         on_delete=models.CASCADE,
-        related_name='revalidation_activation_schedule'
+        related_name='revalidation_activation_schedules'
     )
     distributor_permit_ref_no = models.CharField(max_length=50, db_index=True)
     approval_date = models.DateTimeField()

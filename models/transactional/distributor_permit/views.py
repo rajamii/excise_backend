@@ -488,14 +488,21 @@ class DistributorPermitPerformActionView(APIView):
                         application.distributor_permit.valid_up_to = new_valid_until
                         application.distributor_permit.save(update_fields=['valid_up_to', 'updated_at'])
 
+                        # Cancel any leftover pending schedule entries for this permit
                         IMFLRevalidationActivationSchedule.objects.filter(
-                            distributor_permit=application.distributor_permit
-                        ).update(
-                            status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
+                            distributor_permit=application.distributor_permit,
+                            status=IMFLRevalidationActivationSchedule.STATUS_PENDING
+                        ).update(status=IMFLRevalidationActivationSchedule.STATUS_CANCELLED)
+
+                        # Create a NEW ROW for the new revalidation activation cycle
+                        IMFLRevalidationActivationSchedule.objects.create(
+                            distributor_permit=application.distributor_permit,
+                            distributor_permit_ref_no=str(application.distributor_permit.reference_no),
                             approval_date=timezone.now(),
                             activation_due_at=new_valid_until,
                             activated_at=None,
-                            updated_at=timezone.now()
+                            status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
+                            notes=f"Revalidation cycle schedule for {application.reference_no}"
                         )
 
         return Response({
@@ -565,16 +572,14 @@ def _schedule_imfl_revalidation_activation(application, approved_at=None):
     application.valid_up_to = valid_until
     application.save(update_fields=['approval_date', 'valid_up_to', 'updated_at'])
 
-    IMFLRevalidationActivationSchedule.objects.update_or_create(
+    IMFLRevalidationActivationSchedule.objects.create(
         distributor_permit=application,
-        defaults={
-            'distributor_permit_ref_no': str(application.reference_no),
-            'approval_date': approved_at,
-            'activation_due_at': valid_until,
-            'activated_at': None,
-            'status': IMFLRevalidationActivationSchedule.STATUS_PENDING,
-            'notes': '',
-        }
+        distributor_permit_ref_no=str(application.reference_no),
+        approval_date=approved_at,
+        activation_due_at=valid_until,
+        activated_at=None,
+        status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
+        notes=f"Initial revalidation schedule for {application.reference_no}"
     )
 
 
@@ -655,52 +660,81 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
             schedules = IMFLRevalidationActivationSchedule.objects.filter(
                 status=IMFLRevalidationActivationSchedule.STATUS_PROCESSED,
                 activated_at__isnull=False
-            ).select_related('distributor_permit', 'distributor_permit__applicant')
+            ).select_related('distributor_permit', 'distributor_permit__applicant').order_by('-activated_at', '-id')
         else:
             schedules = IMFLRevalidationActivationSchedule.objects.filter(
                 distributor_permit__applicant=request.user,
                 status=IMFLRevalidationActivationSchedule.STATUS_PROCESSED,
                 activated_at__isnull=False
-            ).select_related('distributor_permit', 'distributor_permit__applicant')
+            ).select_related('distributor_permit', 'distributor_permit__applicant').order_by('-activated_at', '-id')
 
             if not schedules.exists():
                 schedules = IMFLRevalidationActivationSchedule.objects.filter(
                     status=IMFLRevalidationActivationSchedule.STATUS_PROCESSED,
                     activated_at__isnull=False
-                ).select_related('distributor_permit', 'distributor_permit__applicant')
+                ).select_related('distributor_permit', 'distributor_permit__applicant').order_by('-activated_at', '-id')
 
-        existing_permit_ids = set()
+        pending_permit_refs = set()
         for item in data:
-            dp_id = item.get('distributor_permit') or item.get('distributor_permit_id')
-            if dp_id:
-                existing_permit_ids.add(str(dp_id))
+            status_str = str(item.get('status') or '').upper()
+            stage_dict = item.get('current_stage') or {}
+            is_final = False
+            if isinstance(stage_dict, dict):
+                is_final = bool(stage_dict.get('is_final'))
 
+            # Only mark permit as "pending" if it has an unapproved revalidation in progress
+            if not is_final and 'APPROVED' not in status_str:
+                dp_id = item.get('distributor_permit') or item.get('distributor_permit_id')
+                if isinstance(dp_id, dict):
+                    ref = dp_id.get('reference_no') or dp_id.get('referenceNo')
+                    if ref:
+                        pending_permit_refs.add(str(ref))
+                    dp_pk = dp_id.get('id')
+                    if dp_pk:
+                        pending_permit_refs.add(str(dp_pk))
+                elif dp_id:
+                    pending_permit_refs.add(str(dp_id))
+
+                dp_ref = item.get('distributor_permit_ref_no') or item.get('distributor_permit_ref')
+                if dp_ref:
+                    pending_permit_refs.add(str(dp_ref))
+
+        processed_by_ref = {}
         for sched in schedules:
             ref_no = str(sched.distributor_permit_ref_no)
-            if ref_no not in existing_permit_ids:
-                dp = sched.distributor_permit
-                supplier_name = getattr(dp, 'supplier_company_name', 'N/A') if dp else 'N/A'
-                applicant_name = getattr(getattr(dp, 'applicant', None), 'full_name', str(getattr(dp, 'applicant', ''))) if dp else str(request.user)
-                data.append({
-                    'reference_no': ref_no,
-                    'referenceNo': ref_no,
-                    'applicationId': ref_no,
-                    'distributor_permit': ref_no,
-                    'distributor_permit_id': ref_no,
-                    'revalidated_permit_number': ref_no,
-                    'revalidatedPermitNumber': ref_no,
-                    'applicant_name': applicant_name,
-                    'applicantName': applicant_name,
-                    'supplier_company_name': supplier_name,
-                    'supplierName': supplier_name,
-                    'status': 'Revalidation Activated',
-                    'current_stage': {'name': 'Permit Expired - Ready for Revalidation'},
-                    'currentStage': 'Permit Expired - Ready for Revalidation',
-                    'is_activated_schedule': True,
-                    'can_submit_application': True,
-                    'created_at': sched.activated_at or sched.updated_at,
-                    'submitted_at': sched.activated_at or sched.updated_at,
-                })
+            if ref_no not in processed_by_ref:
+                processed_by_ref[ref_no] = sched
+
+        for ref_no, sched in processed_by_ref.items():
+            dp_pk = str(sched.distributor_permit_id) if sched.distributor_permit_id else None
+
+            # Skip if there is an active unapproved revalidation application currently in progress
+            if ref_no in pending_permit_refs or (dp_pk and dp_pk in pending_permit_refs):
+                continue
+
+            dp = sched.distributor_permit
+            supplier_name = getattr(dp, 'supplier_company_name', 'N/A') if dp else 'N/A'
+            applicant_name = getattr(getattr(dp, 'applicant', None), 'full_name', str(getattr(dp, 'applicant', ''))) if dp else str(request.user)
+            data.append({
+                'reference_no': ref_no,
+                'referenceNo': ref_no,
+                'applicationId': ref_no,
+                'distributor_permit': ref_no,
+                'distributor_permit_id': ref_no,
+                'revalidated_permit_number': ref_no,
+                'revalidatedPermitNumber': ref_no,
+                'applicant_name': applicant_name,
+                'applicantName': applicant_name,
+                'supplier_company_name': supplier_name,
+                'supplierName': supplier_name,
+                'status': 'Revalidation Activated',
+                'current_stage': {'name': 'Permit Expired - Ready for Revalidation'},
+                'currentStage': 'Permit Expired - Ready for Revalidation',
+                'is_activated_schedule': True,
+                'can_submit_application': True,
+                'created_at': sched.activated_at or sched.updated_at,
+                'submitted_at': sched.activated_at or sched.updated_at,
+            })
 
         if page is not None:
             return self.get_paginated_response(data)
@@ -721,6 +755,11 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
         p_details = self.request.data.get('permit_wise_details') or self.request.data.get('permitWiseDetails') or []
 
         distributor_permit = serializer.validated_data.get('distributor_permit')
+        if not distributor_permit:
+            dp_ref = self.request.data.get('distributor_permit') or self.request.data.get('distributorPermit')
+            if dp_ref:
+                distributor_permit = DistributorPermitApplication.objects.filter(reference_no=str(dp_ref)).first()
+
         if distributor_permit and not p_details:
             app_pdetails = getattr(distributor_permit, 'permit_wise_details', []) or []
             if target_permit_no:
@@ -732,11 +771,12 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
         serializer.save(
             reference_no=ref_no,
             applicant=self.request.user,
+            distributor_permit=distributor_permit,
             submitted_at=timezone.now(),
             workflow=workflow,
             current_stage=initial_stage,
             status=status_name,
-            revalidated_permit_number=target_permit_no,
+            revalidated_permit_number=target_permit_no or (distributor_permit.reference_no if distributor_permit else ''),
             permit_wise_details=p_details
         )
         invalidate_dashboard_counts_cache()

@@ -547,6 +547,8 @@ class IMFLRevalidationActivationScheduleSerializer(serializers.ModelSerializer):
 class IMFLRevalidationSerializer(serializers.ModelSerializer):
     applicant_name = serializers.SerializerMethodField()
     distributor_permit_detail = DistributorPermitApplicationSerializer(source='distributor_permit', read_only=True)
+    distributor_permit_ref_no = serializers.SerializerMethodField()
+    distributorPermitRefNo = serializers.SerializerMethodField()
     allowed_actions = serializers.SerializerMethodField()
     allowedActions = serializers.SerializerMethodField()
 
@@ -554,6 +556,14 @@ class IMFLRevalidationSerializer(serializers.ModelSerializer):
         model = IMFLRevalidation
         fields = '__all__'
         read_only_fields = ('reference_no', 'applicant', 'submitted_at', 'workflow', 'current_stage', 'status')
+
+    def get_distributor_permit_ref_no(self, obj):
+        if obj.distributor_permit:
+            return str(obj.distributor_permit.reference_no)
+        return ''
+
+    def get_distributorPermitRefNo(self, obj):
+        return self.get_distributor_permit_ref_no(obj)
 
     def get_applicant_name(self, obj):
         if not obj.applicant:
