@@ -52,11 +52,15 @@ def create_oic_officer_service(payload: dict, created_by_user: CustomUser):
     Raises ValidationError if business rules are violated.
     """
     try:
-        application = NewLicenseApplication.objects.get(
+        application = NewLicenseApplication.objects.select_related('license_category').get(
             application_id=payload['approved_application_id']
         )
     except NewLicenseApplication.DoesNotExist:
         raise ValidationError("Approved application not found.")
+
+    cat_name = str(getattr(getattr(application, 'license_category', None), 'license_category', '') or '').strip().lower()
+    if not ('manufacturing' in cat_name or 'brewery' in cat_name or 'distiller' in cat_name):
+        raise ValidationError("Officer in Charge (OIC) can only be assigned to Manufacturing category establishments.")
 
     content_type = ContentType.objects.get_for_model(NewLicenseApplication)
     license_obj = (

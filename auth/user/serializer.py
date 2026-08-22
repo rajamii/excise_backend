@@ -475,6 +475,7 @@ class OICApprovedEstablishmentSerializer(serializers.Serializer):
     licenseeId = serializers.CharField()
     districtCode = serializers.CharField(allow_blank=True)
     subdivisionCode = serializers.CharField(allow_blank=True)
+    categoryName = serializers.CharField(allow_blank=True, default='')
 
 
 class OICOfficerCreateSerializer(serializers.Serializer):

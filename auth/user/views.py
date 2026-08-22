@@ -288,16 +288,16 @@ def oic_approved_establishments(request):
     _ensure_site_admin_or_commissioner(request)
 
     content_type = ContentType.objects.get_for_model(NewLicenseApplication)
-    
+
     application_prefetch = Prefetch(
         'source_application',
         queryset=NewLicenseApplication.objects.select_related(
-            'site_district', 
-            'site_subdivision'
+            'site_district',
+            'site_subdivision',
+            'license_category',
         )
     )
 
-    
     licenses = (
         License.objects.filter(
             source_type='new_license_application',
@@ -313,19 +313,25 @@ def oic_approved_establishments(request):
     seen_applications = set()
 
     for license_obj in licenses:
-        
-        application = license_obj.source_application 
-        
+        application = license_obj.source_application
+
         if not isinstance(application, NewLicenseApplication):
             continue
         if application.application_id in seen_applications:
             continue
+
+        cat_name = str(getattr(getattr(application, 'license_category', None), 'license_category', '') or '').strip()
+        cat_lower = cat_name.lower()
+
+        # OIC assignment is only applicable for Manufacturing category establishments
+        if not ('manufacturing' in cat_lower or 'brewery' in cat_lower or 'distiller' in cat_lower):
+            continue
+
         seen_applications.add(application.application_id)
 
         licensee_id = _derive_licensee_id(application, license_obj)
-        
-        district_code = str(getattr(application.site_district, 'district_code', '') or '')
 
+        district_code = str(getattr(application.site_district, 'district_code', '') or '')
         subdivision_code = str(getattr(application.site_subdivision, 'subdivision_code', '') or '')
 
         rows.append({
@@ -335,6 +341,7 @@ def oic_approved_establishments(request):
             'licenseeId': licensee_id,
             'districtCode': district_code,
             'subdivisionCode': subdivision_code,
+            'categoryName': cat_name,
         })
 
     serializer = OICApprovedEstablishmentSerializer(rows, many=True)
