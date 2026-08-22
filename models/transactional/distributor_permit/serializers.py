@@ -13,6 +13,7 @@ from .models import (
     IMFLCancellation,
     IMFLRevalidationActivationSchedule,
     IMFLArrival,
+    IMFLCasesProcessed,
 )
 
 
@@ -698,4 +699,28 @@ class IMFLArrivalSerializer(serializers.ModelSerializer):
             return ''
         name = getattr(obj.arrived_by, 'get_full_name', lambda: '')() or obj.arrived_by.username
         return name.strip() or obj.arrived_by.username
+
+
+class IMFLCasesProcessedSerializer(serializers.ModelSerializer):
+    submitted_by_name = serializers.SerializerMethodField()
+    oic_officer_name = serializers.SerializerMethodField()
+    application_ref = serializers.CharField(source='distributor_permit.reference_no', read_only=True)
+
+    class Meta:
+        model = IMFLCasesProcessed
+        fields = '__all__'
+        read_only_fields = ('submitted_by', 'submitted_at', 'reviewed_at', 'created_at', 'updated_at')
+
+    def get_submitted_by_name(self, obj):
+        if not obj.submitted_by:
+            return ''
+        name = getattr(obj.submitted_by, 'get_full_name', lambda: '')() or obj.submitted_by.username
+        return name.strip() or obj.submitted_by.username
+
+    def get_oic_officer_name(self, obj):
+        if not obj.oic_officer:
+            return ''
+        name = getattr(obj.oic_officer, 'get_full_name', lambda: '')() or obj.oic_officer.username
+        return name.strip() or obj.oic_officer.username
+
 

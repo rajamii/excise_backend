@@ -22,6 +22,7 @@ router.register(r'revalidation-schedules', views.IMFLRevalidationActivationSched
 router.register(r'revalidation', views.IMFLRevalidationViewSet, basename='revalidation')
 router.register(r'cancellation', views.IMFLCancellationViewSet, basename='cancellation')
 router.register(r'arrival', views.IMFLArrivalViewSet, basename='arrival')
+router.register(r'cases-processed', views.IMFLCasesProcessedViewSet, basename='cases-processed')
 
 app_name = 'distributor_permit'
 

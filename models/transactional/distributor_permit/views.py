@@ -16,11 +16,13 @@ from models.masters.supply_chain.liquor_data.models import LiquorData, MasterBra
 from models.masters.supply_chain.transit_permit.models import BrandMlInCases
 from models.masters.license.models import License
 
-from .models import DistributorPermitApplication, DistributorPermitDocument, IMFLRevalidation, IMFLCancellation
+from .models import DistributorPermitApplication, DistributorPermitDocument, IMFLRevalidation, IMFLCancellation, IMFLArrival, IMFLCasesProcessed
 from .serializers import (
     DistributorPermitApplicationSerializer,
     DistributorPermitDocumentSerializer,
     DistributorSupplierSerializer,
+    IMFLArrivalSerializer,
+    IMFLCasesProcessedSerializer,
 )
 
 
@@ -34,8 +36,11 @@ def _is_officer_user(user) -> bool:
         return False
     if getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False):
         return True
+    role_id = getattr(getattr(user, 'role', None), 'id', 0)
+    if role_id in (5, 6, 7, 8, 9, 10, 12):
+        return True
     role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').strip().lower().replace('-', '_').replace(' ', '_')
-    officer_keywords = ['commissioner', 'permit_section', 'permitsection', 'joint_commissioner', 'deputy_commissioner', 'assistant_commissioner', 'inspector', 'sub_inspector', 'officer', 'admin', 'site_admin', 'single_window']
+    officer_keywords = ['commissioner', 'permit_section', 'permitsection', 'joint_commissioner', 'deputy_commissioner', 'assistant_commissioner', 'inspector', 'sub_inspector', 'officer', 'offcier', 'oic', 'admin', 'site_admin', 'single_window']
     return any(k in role_name for k in officer_keywords)
 
 
@@ -91,6 +96,11 @@ def scope_permit_queryset(qs, user):
     role_id = getattr(getattr(user, 'role', None), 'id', 0)
     role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').strip().lower().replace('-', '_').replace(' ', '_')
 
+    # If Officer is a Distributor OIC with an assigned distributor user, scope applications to that distributor
+    assignment = getattr(user, 'oic_assignment', None)
+    if assignment and getattr(assignment, 'assignment_type', '') == 'distributor' and getattr(assignment, 'distributor_user', None):
+        return qs.filter(applicant=assignment.distributor_user)
+
     # Admin / Staff / Superuser / Site Admin / Distributor / Permit Section / Inspector / OIC / Single Window
     if (
         getattr(user, 'is_staff', False)
@@ -99,6 +109,8 @@ def scope_permit_queryset(qs, user):
         or 'distributor' in role_name
         or 'permit' in role_name
         or 'officer' in role_name
+        or 'offcier' in role_name
+        or 'oic' in role_name
         or 'window' in role_name
         or role_id in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 16)
     ):
@@ -902,12 +914,262 @@ class IMFLArrivalViewSet(viewsets.ModelViewSet):
             if isinstance(dp_id, dict):
                 dp_ref = dp_id.get('reference_no') or dp_id.get('referenceNo') or dp_id.get('id')
                 dp = DistributorPermitApplication.objects.filter(reference_no=str(dp_ref)).first()
+            elif isinstance(dp_id, int):
+                dp = DistributorPermitApplication.objects.filter(id=dp_id).first()
             else:
                 dp = DistributorPermitApplication.objects.filter(reference_no=str(dp_id)).first()
 
         serializer.save(
+            distributor_permit=dp or serializer.validated_data.get('distributor_permit'),
             arrived_by=self.request.user,
-            arrived_at=timezone.now(),
-            distributor_permit=dp or serializer.validated_data.get('distributor_permit')
+            arrived_at=timezone.now()
         )
 
+    def perform_create(self, serializer):
+        from django.utils import timezone
+        from auth.workflow.models import Workflow, WorkflowStage
+        from auth.workflow.constants import WORKFLOW_IDS
+
+        ref_no = DistributorPermitApplication.generate_reference_no(app_type='revalidation')
+        workflow_id = WORKFLOW_IDS.get('IMFL_REVALIDATION', 16)
+        workflow = Workflow.objects.filter(id=workflow_id).first()
+        initial_stage = WorkflowStage.objects.filter(id=160).first() or (workflow.stages.filter(is_initial=True).first() if workflow else None)
+        status_name = initial_stage.name if initial_stage else 'Forwarded To Commissioner'
+
+        target_permit_no = self.request.data.get('revalidated_permit_number') or self.request.data.get('original_permit_no') or self.request.data.get('revalidatedPermitNumber') or ''
+        p_details = self.request.data.get('permit_wise_details') or self.request.data.get('permitWiseDetails') or []
+
+        distributor_permit = serializer.validated_data.get('distributor_permit')
+        if not distributor_permit:
+            dp_ref = self.request.data.get('distributor_permit') or self.request.data.get('distributorPermit')
+            if dp_ref:
+                distributor_permit = DistributorPermitApplication.objects.filter(reference_no=str(dp_ref)).first()
+
+        if distributor_permit and not p_details:
+            app_pdetails = getattr(distributor_permit, 'permit_wise_details', []) or []
+            if target_permit_no:
+                matched = [p for p in app_pdetails if str(p.get('permit_number', '')).lower() == str(target_permit_no).lower()]
+                p_details = matched if matched else app_pdetails
+            else:
+                p_details = app_pdetails
+
+        serializer.save(
+            reference_no=ref_no,
+            applicant=self.request.user,
+            distributor_permit=distributor_permit,
+            submitted_at=timezone.now(),
+            workflow=workflow,
+            current_stage=initial_stage,
+            status=status_name,
+            revalidated_permit_number=target_permit_no or (distributor_permit.reference_no if distributor_permit else ''),
+            permit_wise_details=p_details
+        )
+        invalidate_dashboard_counts_cache()
+
+    @action(detail=True, methods=['post'], url_path='perform_action')
+    def perform_action(self, request, reference_no=None):
+        return DistributorPermitPerformActionView().post(request, reference_no=reference_no)
+
+    @action(detail=True, methods=['post'], url_path='perform-action')
+    def perform_action_hyphen(self, request, reference_no=None):
+        return DistributorPermitPerformActionView().post(request, reference_no=reference_no)
+
+
+class IMFLCancellationViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = IMFLCancellationSerializer
+    lookup_field = 'reference_no'
+    lookup_value_regex = '.+'
+
+    def get_queryset(self):
+        qs = IMFLCancellation.objects.select_related('distributor_permit', 'applicant', 'current_stage').all()
+        return scope_permit_queryset(qs, self.request.user)
+
+    def perform_create(self, serializer):
+        from django.utils import timezone
+        from auth.workflow.models import Workflow, WorkflowStage
+        from auth.workflow.constants import WORKFLOW_IDS
+
+        ref_no = DistributorPermitApplication.generate_reference_no(app_type='cancellation')
+        workflow_id = WORKFLOW_IDS.get('IMFL_CANCELLATION', 17)
+        workflow = Workflow.objects.filter(id=workflow_id).first()
+        initial_stage = WorkflowStage.objects.filter(id=162).first() or (workflow.stages.filter(is_initial=True).first() if workflow else None)
+        status_name = initial_stage.name if initial_stage else 'Forwarded To Commissioner'
+
+        target_permit_no = self.request.data.get('cancelled_permit_number') or self.request.data.get('cancelledPermitNumber') or ''
+        p_details = self.request.data.get('permit_wise_details') or self.request.data.get('permitWiseDetails') or []
+
+        distributor_permit = serializer.validated_data.get('distributor_permit')
+        if distributor_permit and not p_details:
+            app_pdetails = getattr(distributor_permit, 'permit_wise_details', []) or []
+            if target_permit_no:
+                matched = [p for p in app_pdetails if str(p.get('permit_number', '')).lower() == str(target_permit_no).lower()]
+                p_details = matched if matched else app_pdetails
+            else:
+                p_details = app_pdetails
+
+        serializer.save(
+            reference_no=ref_no,
+            applicant=self.request.user,
+            cancelled_permit_number=target_permit_no,
+            permit_wise_details=p_details,
+            submitted_at=timezone.now(),
+            workflow=workflow,
+            current_stage=initial_stage,
+            status=status_name
+        )
+
+    @action(detail=True, methods=['post'], url_path='perform_action')
+    def perform_action(self, request, reference_no=None):
+        handler = DistributorPermitPerformActionView()
+        return handler.post(request, reference_no=reference_no)
+
+    @action(detail=True, methods=['post'], url_path='perform-action')
+    def perform_action_hyphen(self, request, reference_no=None):
+        handler = DistributorPermitPerformActionView()
+        return handler.post(request, reference_no=reference_no)
+
+
+class IMFLArrivalViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = IMFLArrivalSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = IMFLArrival.objects.select_related('distributor_permit', 'arrived_by').all()
+
+        permit_no = self.request.query_params.get('permit_number') or self.request.query_params.get('permitNumber')
+        dist_permit = self.request.query_params.get('distributor_permit') or self.request.query_params.get('distributorPermit')
+
+        if permit_no:
+            qs = qs.filter(permit_number__iexact=str(permit_no).strip())
+        if dist_permit:
+            qs = qs.filter(
+                models.Q(distributor_permit__reference_no__iexact=str(dist_permit).strip()) |
+                models.Q(distributor_permit_id=str(dist_permit).strip())
+            )
+
+        if not _is_officer_user(user):
+            qs = qs.filter(
+                models.Q(arrived_by=user) |
+                models.Q(distributor_permit__applicant=user)
+            )
+        return qs
+
+    def perform_create(self, serializer):
+        from django.utils import timezone
+        dp_id = self.request.data.get('distributor_permit') or self.request.data.get('distributorPermit') or self.request.data.get('distributor_permit_id')
+        dp = None
+        if dp_id:
+            if isinstance(dp_id, dict):
+                dp_ref = dp_id.get('reference_no') or dp_id.get('referenceNo') or dp_id.get('id')
+                dp = DistributorPermitApplication.objects.filter(reference_no=str(dp_ref)).first()
+            elif isinstance(dp_id, int):
+                dp = DistributorPermitApplication.objects.filter(id=dp_id).first()
+            else:
+                dp = DistributorPermitApplication.objects.filter(reference_no=str(dp_id)).first()
+
+        serializer.save(
+            distributor_permit=dp or serializer.validated_data.get('distributor_permit'),
+            arrived_by=self.request.user,
+            arrived_at=timezone.now()
+        )
+
+
+class IMFLCasesProcessedViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = IMFLCasesProcessedSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = IMFLCasesProcessed.objects.select_related('distributor_permit', 'submitted_by', 'oic_officer').all()
+
+        status_param = self.request.query_params.get('status')
+        if status_param:
+            qs = qs.filter(status__iexact=str(status_param).strip())
+
+        if _is_officer_user(user):
+            from auth.user.models import OICOfficerAssignment
+            assignment = OICOfficerAssignment.objects.filter(officer=user).first()
+            if assignment and getattr(assignment, 'distributor_user', None):
+                qs = qs.filter(
+                    Q(oic_officer=user) |
+                    Q(submitted_by=assignment.distributor_user) |
+                    Q(distributor_permit__applicant=assignment.distributor_user)
+                )
+            else:
+                qs = qs.filter(Q(oic_officer=user) | Q(oic_officer__isnull=True))
+        else:
+            qs = qs.filter(Q(submitted_by=user) | Q(distributor_permit__applicant=user))
+
+        return qs
+
+    def perform_create(self, serializer):
+        from django.utils import timezone
+        user = self.request.user
+        dp_id = self.request.data.get('distributor_permit') or self.request.data.get('distributorPermit')
+        dp = None
+        if dp_id:
+            if isinstance(dp_id, dict):
+                dp_ref = dp_id.get('reference_no') or dp_id.get('referenceNo') or dp_id.get('id')
+                dp = DistributorPermitApplication.objects.filter(reference_no=str(dp_ref)).first()
+            elif isinstance(dp_id, int):
+                dp = DistributorPermitApplication.objects.filter(id=dp_id).first()
+            else:
+                dp = DistributorPermitApplication.objects.filter(reference_no=str(dp_id)).first()
+
+        oic_user = None
+        from auth.user.models import OICOfficerAssignment
+        assignment = OICOfficerAssignment.objects.filter(distributor_user=user, assignment_type='distributor').first()
+        if assignment:
+            oic_user = assignment.officer
+
+        serializer.save(
+            distributor_permit=dp or serializer.validated_data.get('distributor_permit'),
+            submitted_by=user,
+            oic_officer=oic_user,
+            status='under_review',
+            submitted_at=timezone.now()
+        )
+
+    @action(detail=True, methods=['post'], url_path='action')
+    def action(self, request, pk=None):
+        from django.utils import timezone
+        instance = self.get_object()
+        user = request.user
+        action_val = str(request.data.get('action') or '').strip().lower()
+        remarks = str(request.data.get('remarks') or '').strip()
+
+        if action_val not in ('approve', 'approved', 'reject', 'rejected'):
+            return Response({'detail': 'Invalid action. Must be approve or reject.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if action_val in ('approve', 'approved'):
+            instance.status = 'approved'
+            instance.reviewed_at = timezone.now()
+            instance.officer_remarks = remarks
+            instance.save()
+
+            # Create or update corresponding record in imfl_cases (IMFLArrival) table
+            IMFLArrival.objects.get_or_create(
+                distributor_permit=instance.distributor_permit,
+                permit_number=instance.permit_number,
+                vehicle_number=instance.vehicle_number,
+                brand_name=instance.brand_name,
+                defaults={
+                    'size_ml': instance.size_ml,
+                    'expected_cases': instance.expected_cases,
+                    'arrived_cases': instance.arrived_cases,
+                    'remarks': instance.remarks,
+                    'arrived_by': instance.submitted_by,
+                    'arrived_at': timezone.now(),
+                    'status': 'Approved',
+                }
+            )
+            return Response({'message': 'Stock arrival approved successfully and stored in IMFL cases register.', 'status': 'approved'})
+
+        elif action_val in ('reject', 'rejected'):
+            instance.status = 'rejected'
+            instance.reviewed_at = timezone.now()
+            instance.officer_remarks = remarks
+            instance.save()
+            return Response({'message': 'Stock arrival rejected.', 'status': 'rejected'})

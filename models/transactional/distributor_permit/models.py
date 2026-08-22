@@ -310,3 +310,55 @@ class IMFLArrival(models.Model):
         return f"{self.permit_number} - {self.vehicle_number} ({self.arrived_cases} cases)"
 
 
+class IMFLCasesProcessed(models.Model):
+    distributor_permit = models.ForeignKey(
+        DistributorPermitApplication,
+        on_delete=models.CASCADE,
+        related_name='processed_arrivals'
+    )
+    permit_number = models.CharField(max_length=100, db_index=True)
+    vehicle_number = models.CharField(max_length=100)
+    brand_name = models.CharField(max_length=255)
+    size_ml = models.IntegerField(default=750)
+    expected_cases = models.IntegerField(default=0)
+    arrived_cases = models.IntegerField(default=0)
+    remarks = models.TextField(blank=True, default='')
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='submitted_imfl_cases_processed',
+        null=True,
+        blank=True
+    )
+    oic_officer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name='assigned_imfl_cases_processed',
+        null=True,
+        blank=True
+    )
+    status = models.CharField(
+        max_length=50,
+        default='under_review',
+        choices=[
+            ('under_review', 'Under Review'),
+            ('approved', 'Approved'),
+            ('rejected', 'Rejected'),
+        ],
+        db_index=True
+    )
+    officer_remarks = models.TextField(blank=True, default='')
+    submitted_at = models.DateTimeField(default=timezone.now)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'imfl_cases_processed'
+        ordering = ['-submitted_at', '-id']
+
+    def __str__(self):
+        return f"{self.permit_number} - {self.vehicle_number} ({self.status})"
+
+
+
