@@ -182,6 +182,32 @@ def _is_awaiting_payment_imfl_item(item):
     return 'awaiting payment' in text or ('payment' in text and 'completed' not in text and 'paid' not in text)
 
 
+def _is_item_pending_for_user(item, user):
+    role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').lower()
+    role_id = getattr(getattr(user, 'role', None), 'id', 0)
+    is_commissioner = 'commissioner' in role_name or role_id == 10
+    is_permit_section = 'permit' in role_name or 'oic' in role_name or role_id in (5, 6)
+
+    text = _stage_text(item)
+    stage_id = getattr(item, 'current_stage_id', None) or getattr(getattr(item, 'current_stage', None), 'id', None)
+
+    is_commissioner_stage = stage_id in (153, 157, 160, 162, 163) or 'commissioner' in text
+    is_permit_section_stage = stage_id in (148, 147, 149, 155, 156) or 'permit' in text or 'oic' in text
+
+    if is_permit_section:
+        if is_commissioner_stage:
+            return False  # Under Process for Permit Section
+        if is_permit_section_stage:
+            return True   # Pending for Permit Section
+    elif is_commissioner:
+        if is_permit_section_stage or stage_id == 154 or 'payment' in text or 'awaiting' in text:
+            return False  # Under Process for Commissioner
+        if is_commissioner_stage:
+            return True   # Pending for Commissioner
+
+    return True
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 @dashboard_counts_cache("distributor_permit")
@@ -198,23 +224,28 @@ def dashboard_counts(request):
         qs = qs.filter(**{f'{date_field}__year': year})
 
     items = list(qs)
-    approved = sum(1 for item in items if 'approved' in _stage_text(item))
+    approved = sum(1 for item in items if _is_final_imfl_item(item) and 'approved' in _stage_text(item))
     rejected = sum(1 for item in items if 'rejected' in _stage_text(item))
     objection = sum(1 for item in items if _is_objection_imfl_item(item))
     awaiting_payment = sum(1 for item in items if _is_awaiting_payment_imfl_item(item))
-    pending = sum(
-        1
-        for item in items
-        if not _is_final_imfl_item(item)
-        and not _is_objection_imfl_item(item)
-        and not _is_awaiting_payment_imfl_item(item)
-    )
+
+    pending = 0
+    under_process = 0
+    for item in items:
+        if _is_final_imfl_item(item) or _is_objection_imfl_item(item):
+            continue
+        if _is_item_pending_for_user(item, request.user):
+            pending += 1
+        else:
+            under_process += 1
 
     return Response({
         'tab': tab,
         'applied': len(items),
         'total': len(items),
         'pending': pending,
+        'under_process': under_process,
+        'underProcess': under_process,
         'objection': objection,
         'approved': approved,
         'rejected': rejected,
@@ -442,9 +473,30 @@ class DistributorPermitPerformActionView(APIView):
             application.save()
             invalidate_dashboard_counts_cache()
 
-            if target_transition.to_stage.id == 151 or (action == 'APPROVE' and target_transition.to_stage.is_final):
+            if target_transition.to_stage.id == 151 or (action == 'APPROVE' and (target_transition.to_stage.is_final or 'APPROVE' in action.upper())):
                 if isinstance(application, DistributorPermitApplication):
                     _schedule_imfl_revalidation_activation(application, timezone.now())
+                elif isinstance(application, IMFLRevalidation):
+                    from datetime import timedelta
+                    delay_seconds = _resolve_imfl_revalidation_activation_delay_seconds()
+                    new_valid_until = timezone.now() + timedelta(seconds=delay_seconds)
+
+                    application.valid_up_to = new_valid_until
+                    application.save(update_fields=['valid_up_to'])
+
+                    if application.distributor_permit:
+                        application.distributor_permit.valid_up_to = new_valid_until
+                        application.distributor_permit.save(update_fields=['valid_up_to', 'updated_at'])
+
+                        IMFLRevalidationActivationSchedule.objects.filter(
+                            distributor_permit=application.distributor_permit
+                        ).update(
+                            status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
+                            approval_date=timezone.now(),
+                            activation_due_at=new_valid_until,
+                            activated_at=None,
+                            updated_at=timezone.now()
+                        )
 
         return Response({
             'status': 'success',
@@ -506,21 +558,19 @@ def _schedule_imfl_revalidation_activation(application, approved_at=None):
     from .models import IMFLRevalidationActivationSchedule
 
     approved_at = approved_at or timezone.now()
-    validity_days = _resolve_imfl_validity_days()
-    valid_until = approved_at + timedelta(days=validity_days)
+    delay_seconds = _resolve_imfl_revalidation_activation_delay_seconds()
+    valid_until = approved_at + timedelta(seconds=delay_seconds)
+
     application.approval_date = approved_at
     application.valid_up_to = valid_until
     application.save(update_fields=['approval_date', 'valid_up_to', 'updated_at'])
-
-    delay_seconds = _resolve_imfl_revalidation_activation_delay_seconds()
-    activation_due = approved_at + timedelta(seconds=delay_seconds)
 
     IMFLRevalidationActivationSchedule.objects.update_or_create(
         distributor_permit=application,
         defaults={
             'distributor_permit_ref_no': str(application.reference_no),
             'approval_date': approved_at,
-            'activation_due_at': activation_due,
+            'activation_due_at': valid_until,
             'status': IMFLRevalidationActivationSchedule.STATUS_PENDING,
             'notes': '',
         }
@@ -528,17 +578,62 @@ def _schedule_imfl_revalidation_activation(application, approved_at=None):
 
 
 def _process_due_imfl_activation_schedules():
+    from datetime import timedelta
     from django.utils import timezone
-    from .models import IMFLRevalidationActivationSchedule
+    from auth.workflow.models import Workflow, WorkflowStage
+    from auth.workflow.constants import WORKFLOW_IDS
+    from .models import IMFLRevalidationActivationSchedule, IMFLRevalidation, IMFLCancellation, DistributorPermitApplication
+
     now = timezone.now()
     schedules = IMFLRevalidationActivationSchedule.objects.filter(
         status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
         activation_due_at__lte=now
-    )
+    ).select_related('distributor_permit', 'distributor_permit__applicant')
+
     for schedule in schedules:
         schedule.status = IMFLRevalidationActivationSchedule.STATUS_PROCESSED
         schedule.activated_at = now
         schedule.save(update_fields=['status', 'activated_at', 'updated_at'])
+
+        dp = schedule.distributor_permit
+        if not dp:
+            continue
+
+        # Skip if permit is cancelled
+        has_cancellation = IMFLCancellation.objects.filter(
+            distributor_permit=dp
+        ).filter(status__icontains='approved').exists()
+
+        if has_cancellation:
+            continue
+
+        # Skip if revalidation is already in progress
+        active_rev = IMFLRevalidation.objects.filter(
+            distributor_permit=dp
+        ).exclude(status__in=['Approved', 'Approved By Commissioner', 'Rejected']).exists()
+
+        if not active_rev:
+            ref_no = DistributorPermitApplication.generate_reference_no(app_type='revalidation')
+            workflow_id = WORKFLOW_IDS.get('IMFL_REVALIDATION', 16)
+            workflow = Workflow.objects.filter(id=workflow_id).first()
+            initial_stage = WorkflowStage.objects.filter(id=160).first() or (workflow.stages.filter(is_initial=True).first() if workflow else None)
+            status_name = initial_stage.name if initial_stage else 'Forwarded To Commissioner'
+
+            p_details = getattr(dp, 'permit_wise_details', []) or []
+            target_permit_no = p_details[0].get('permit_number') if (isinstance(p_details, list) and len(p_details) > 0 and isinstance(p_details[0], dict)) else dp.reference_no
+
+            IMFLRevalidation.objects.create(
+                reference_no=ref_no,
+                distributor_permit=dp,
+                applicant=dp.applicant,
+                revalidated_permit_number=target_permit_no,
+                permit_wise_details=p_details if isinstance(p_details, list) else [],
+                revalidation_reason='Permit Validity Expired - Automatic Revalidation Triggered',
+                status=status_name,
+                workflow=workflow,
+                current_stage=initial_stage,
+                submitted_at=now
+            )
 
 
 from rest_framework import viewsets
@@ -586,14 +681,37 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
         initial_stage = WorkflowStage.objects.filter(id=160).first() or (workflow.stages.filter(is_initial=True).first() if workflow else None)
         status_name = initial_stage.name if initial_stage else 'Forwarded To Commissioner'
 
+        target_permit_no = self.request.data.get('revalidated_permit_number') or self.request.data.get('original_permit_no') or self.request.data.get('revalidatedPermitNumber') or ''
+        p_details = self.request.data.get('permit_wise_details') or self.request.data.get('permitWiseDetails') or []
+
+        distributor_permit = serializer.validated_data.get('distributor_permit')
+        if distributor_permit and not p_details:
+            app_pdetails = getattr(distributor_permit, 'permit_wise_details', []) or []
+            if target_permit_no:
+                matched = [p for p in app_pdetails if str(p.get('permit_number', '')).lower() == str(target_permit_no).lower()]
+                p_details = matched if matched else app_pdetails
+            else:
+                p_details = app_pdetails
+
         serializer.save(
             reference_no=ref_no,
             applicant=self.request.user,
             submitted_at=timezone.now(),
             workflow=workflow,
             current_stage=initial_stage,
-            status=status_name
+            status=status_name,
+            revalidated_permit_number=target_permit_no,
+            permit_wise_details=p_details
         )
+        invalidate_dashboard_counts_cache()
+
+    @action(detail=True, methods=['post'], url_path='perform_action')
+    def perform_action(self, request, reference_no=None):
+        return DistributorPermitPerformActionView().post(request, reference_no=reference_no)
+
+    @action(detail=True, methods=['post'], url_path='perform-action')
+    def perform_action_hyphen(self, request, reference_no=None):
+        return DistributorPermitPerformActionView().post(request, reference_no=reference_no)
 
 
 class IMFLCancellationViewSet(viewsets.ModelViewSet):
