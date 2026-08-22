@@ -473,7 +473,13 @@ class DistributorPermitPerformActionView(APIView):
             application.save()
             invalidate_dashboard_counts_cache()
 
-            if target_transition.to_stage.id == 151 or (action == 'APPROVE' and (target_transition.to_stage.is_final or 'APPROVE' in action.upper())):
+            is_approved_stage = (
+                target_transition.to_stage.id in (151, 165) or
+                getattr(target_transition.to_stage, 'is_final', False) or
+                str(getattr(target_transition.to_stage, 'name', '')).lower() in ('approved', 'approved by commissioner')
+            )
+
+            if is_approved_stage:
                 if isinstance(application, DistributorPermitApplication):
                     _schedule_imfl_revalidation_activation(application, timezone.now())
                 elif isinstance(application, IMFLRevalidation):
@@ -488,22 +494,27 @@ class DistributorPermitPerformActionView(APIView):
                         application.distributor_permit.valid_up_to = new_valid_until
                         application.distributor_permit.save(update_fields=['valid_up_to', 'updated_at'])
 
-                        # Cancel any leftover pending schedule entries for this permit
-                        IMFLRevalidationActivationSchedule.objects.filter(
+                        existing_pending = IMFLRevalidationActivationSchedule.objects.filter(
                             distributor_permit=application.distributor_permit,
                             status=IMFLRevalidationActivationSchedule.STATUS_PENDING
-                        ).update(status=IMFLRevalidationActivationSchedule.STATUS_CANCELLED)
+                        ).order_by('-id').first()
 
-                        # Create a NEW ROW for the new revalidation activation cycle
-                        IMFLRevalidationActivationSchedule.objects.create(
-                            distributor_permit=application.distributor_permit,
-                            distributor_permit_ref_no=str(application.distributor_permit.reference_no),
-                            approval_date=timezone.now(),
-                            activation_due_at=new_valid_until,
-                            activated_at=None,
-                            status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
-                            notes=f"Revalidation cycle schedule for {application.reference_no}"
-                        )
+                        if existing_pending:
+                            existing_pending.approval_date = timezone.now()
+                            existing_pending.activation_due_at = new_valid_until
+                            existing_pending.activated_at = None
+                            existing_pending.notes = f"Revalidation cycle schedule for {application.reference_no}"
+                            existing_pending.save()
+                        else:
+                            IMFLRevalidationActivationSchedule.objects.create(
+                                distributor_permit=application.distributor_permit,
+                                distributor_permit_ref_no=str(application.distributor_permit.reference_no),
+                                approval_date=timezone.now(),
+                                activation_due_at=new_valid_until,
+                                activated_at=None,
+                                status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
+                                notes=f"Revalidation cycle schedule for {application.reference_no}"
+                            )
 
         return Response({
             'status': 'success',
@@ -572,15 +583,27 @@ def _schedule_imfl_revalidation_activation(application, approved_at=None):
     application.valid_up_to = valid_until
     application.save(update_fields=['approval_date', 'valid_up_to', 'updated_at'])
 
-    IMFLRevalidationActivationSchedule.objects.create(
+    existing_pending = IMFLRevalidationActivationSchedule.objects.filter(
         distributor_permit=application,
-        distributor_permit_ref_no=str(application.reference_no),
-        approval_date=approved_at,
-        activation_due_at=valid_until,
-        activated_at=None,
-        status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
-        notes=f"Initial revalidation schedule for {application.reference_no}"
-    )
+        status=IMFLRevalidationActivationSchedule.STATUS_PENDING
+    ).order_by('-id').first()
+
+    if existing_pending:
+        existing_pending.approval_date = approved_at
+        existing_pending.activation_due_at = valid_until
+        existing_pending.activated_at = None
+        existing_pending.notes = f"Initial revalidation schedule for {application.reference_no}"
+        existing_pending.save()
+    else:
+        IMFLRevalidationActivationSchedule.objects.create(
+            distributor_permit=application,
+            distributor_permit_ref_no=str(application.reference_no),
+            approval_date=approved_at,
+            activation_due_at=valid_until,
+            activated_at=None,
+            status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
+            notes=f"Initial revalidation schedule for {application.reference_no}"
+        )
 
 
 def _process_due_imfl_activation_schedules():
@@ -656,23 +679,21 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
             serializer = self.get_serializer(queryset, many=True)
             data = list(serializer.data)
 
+        # Query all schedules ordered by newest first (-id) to find the LATEST schedule state per permit
         if _is_officer_user(request.user):
-            schedules = IMFLRevalidationActivationSchedule.objects.filter(
-                status=IMFLRevalidationActivationSchedule.STATUS_PROCESSED,
-                activated_at__isnull=False
-            ).select_related('distributor_permit', 'distributor_permit__applicant').order_by('-activated_at', '-id')
+            all_schedules = IMFLRevalidationActivationSchedule.objects.all().select_related('distributor_permit', 'distributor_permit__applicant').order_by('-id')
         else:
-            schedules = IMFLRevalidationActivationSchedule.objects.filter(
-                distributor_permit__applicant=request.user,
-                status=IMFLRevalidationActivationSchedule.STATUS_PROCESSED,
-                activated_at__isnull=False
-            ).select_related('distributor_permit', 'distributor_permit__applicant').order_by('-activated_at', '-id')
+            all_schedules = IMFLRevalidationActivationSchedule.objects.filter(
+                distributor_permit__applicant=request.user
+            ).select_related('distributor_permit', 'distributor_permit__applicant').order_by('-id')
+            if not all_schedules.exists():
+                all_schedules = IMFLRevalidationActivationSchedule.objects.all().select_related('distributor_permit', 'distributor_permit__applicant').order_by('-id')
 
-            if not schedules.exists():
-                schedules = IMFLRevalidationActivationSchedule.objects.filter(
-                    status=IMFLRevalidationActivationSchedule.STATUS_PROCESSED,
-                    activated_at__isnull=False
-                ).select_related('distributor_permit', 'distributor_permit__applicant').order_by('-activated_at', '-id')
+        latest_schedules_by_ref = {}
+        for sched in all_schedules:
+            ref_no = str(sched.distributor_permit_ref_no)
+            if ref_no not in latest_schedules_by_ref:
+                latest_schedules_by_ref[ref_no] = sched
 
         pending_permit_refs = set()
         for item in data:
@@ -699,13 +720,11 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                 if dp_ref:
                     pending_permit_refs.add(str(dp_ref))
 
-        processed_by_ref = {}
-        for sched in schedules:
-            ref_no = str(sched.distributor_permit_ref_no)
-            if ref_no not in processed_by_ref:
-                processed_by_ref[ref_no] = sched
+        for ref_no, sched in latest_schedules_by_ref.items():
+            # Check if the latest schedule entry is actually PROCESSED and has activated_at set
+            if sched.status != IMFLRevalidationActivationSchedule.STATUS_PROCESSED or not sched.activated_at:
+                continue
 
-        for ref_no, sched in processed_by_ref.items():
             dp_pk = str(sched.distributor_permit_id) if sched.distributor_permit_id else None
 
             # Skip if there is an active unapproved revalidation application currently in progress

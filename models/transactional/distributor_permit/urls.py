@@ -35,6 +35,7 @@ urlpatterns = [
     path('revalidation/<everything:reference_no>/perform_action/', views.DistributorPermitPerformActionView.as_view(), name='revalidation-perform-action-1'),
     path('revalidation/<everything:reference_no>/perform-action/', views.DistributorPermitPerformActionView.as_view(), name='revalidation-perform-action-2'),
 ] + router.urls + [
+    path('<everything:reference_no>/perform_action/', views.DistributorPermitPerformActionView.as_view(), name='perform-action-underscore'),
     path('<everything:reference_no>/perform-action/', views.DistributorPermitPerformActionView.as_view(), name='perform-action'),
     path('<everything:reference_no>/documents/', views.DistributorPermitDocumentUploadView.as_view(), name='documents'),
     path('<everything:reference_no>/', views.DistributorPermitDetailView.as_view(), name='detail'),
