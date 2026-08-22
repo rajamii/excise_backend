@@ -103,7 +103,8 @@ INSTALLED_APPS = [
     # auth models 
     'auth.roles',
     'auth.user',
-    'auth.workflow'
+    'auth.workflow',
+    'secretary'
 ]
 
 MIDDLEWARE = [
