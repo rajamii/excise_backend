@@ -945,6 +945,9 @@ def secretary_revenue_overview(request):
         unit_n = wb.manufacturing_unit or wb.licensee_name or u_id
         u_key = f"{wb.licensee_name or u_id}::{unit_n}"
         
+        dt_str = wb.last_updated_at.strftime('%Y-%m-%d') if wb.last_updated_at else '2026-08-01'
+        m_str = wb.last_updated_at.strftime('%m') if wb.last_updated_at else '08'
+
         if u_key not in user_totals:
             unit_lower = unit_n.lower()
             cat_name = 'Manufacturing' if any(k in unit_lower for k in ['distiller', 'brew', 'albrew', 'spirt']) else ('Distributor' if 'dist' in unit_lower else 'Retail')
@@ -959,7 +962,10 @@ def secretary_revenue_overview(request):
                 'total_revenue_contributed': 0.0,
                 'total_fd_amount': 0.0,
                 'current_balance': 0.0,
-                'wallets_count': 0
+                'wallets_count': 0,
+                'updated_at': dt_str,
+                'month': m_str,
+                'financial_year': '2026-2027'
             }
         
         user_totals[u_key]['total_revenue_contributed'] += credit
@@ -978,7 +984,9 @@ def secretary_revenue_overview(request):
                 'fd_credit_amount': credit,
                 'fd_current_balance': curr_bal,
                 'status': 'Verified & Locked FD',
-                'updated_at': wb.last_updated_at.strftime('%Y-%m-%d') if wb.last_updated_at else '2026-08-01'
+                'updated_at': dt_str,
+                'month': m_str,
+                'financial_year': '2026-2027'
             })
 
     # Sort top contributors by total_revenue_contributed descending
