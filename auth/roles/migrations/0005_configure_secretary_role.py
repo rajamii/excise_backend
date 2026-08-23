@@ -36,7 +36,8 @@ def configure_secretary_role(apps, schema_editor):
             'navigation': [
                 {'label': 'Dashboard', 'route': '/dashboard', 'icon': 'dashboard'},
                 {'label': 'Bulk Spirit Overview', 'route': '/dashboard?section=secretary-bulk-spirit', 'section': 'secretary-bulk-spirit', 'icon': 'water_drop'},
-                {'label': 'Admin Activity', 'route': '/dashboard?section=officer-activity', 'section': 'officer-activity', 'icon': 'assignment'}
+                {'label': 'Admin Activity', 'route': '/dashboard?section=officer-activity', 'section': 'officer-activity', 'icon': 'assignment'},
+                {'label': 'Monthly View Details', 'route': '/dashboard?section=commissioner-monthly-view-details', 'section': 'commissioner-monthly-view-details', 'icon': 'calendar_month'}
             ],
             'permissions': [
                 'dashboard.view'
