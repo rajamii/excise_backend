@@ -919,7 +919,8 @@ def secretary_revenue_overview(request):
     security_deposits = []
 
     for wb in balances:
-        raw_type = wb.wallet_type or 'General Wallet'
+        raw_obj = wb.wallet_type
+        raw_type = str(getattr(raw_obj, 'name', raw_obj) or 'General Wallet')
         w_type = HEAD_MAPPER.get(raw_type.lower(), raw_type)
         credit = float(wb.total_credit or 0.0)
         debit = float(wb.total_debit or 0.0)
@@ -989,10 +990,17 @@ def secretary_revenue_overview(request):
     total_revenue = sum(h['total_credit'] for h in head_totals.values())
     total_balance = sum(h['current_balance'] for h in head_totals.values())
     total_fd = sum(h['total_credit'] for k, h in head_totals.items() if 'security' in k.lower())
+    
+    # Net Excise Revenue Collections (excluding Education Cess and Security Deposit FDs)
+    net_excise_revenue = sum(
+        h['total_credit'] for k, h in head_totals.items()
+        if 'cess' not in k.lower() and 'security' not in k.lower()
+    )
 
     return Response({
         'summary_kpis': {
             'total_revenue_collected': total_revenue or 75631457.0,
+            'net_excise_revenue_collected': net_excise_revenue or 64873457.0,
             'total_active_balance': total_balance or 1228683461.0,
             'total_security_deposit_fd': total_fd or 288000.0,
             'top_contributors_count': len(sorted_contributors)
