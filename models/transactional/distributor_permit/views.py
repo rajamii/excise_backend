@@ -1045,14 +1045,14 @@ class IMFLArrivalViewSet(viewsets.ModelViewSet):
             qs = qs.filter(permit_number__iexact=str(permit_no).strip())
         if dist_permit:
             qs = qs.filter(
-                models.Q(distributor_permit__reference_no__iexact=str(dist_permit).strip()) |
-                models.Q(distributor_permit_id=str(dist_permit).strip())
+                Q(distributor_permit__reference_no__iexact=str(dist_permit).strip()) |
+                Q(distributor_permit_id=str(dist_permit).strip())
             )
 
         if not _is_officer_user(user):
             qs = qs.filter(
-                models.Q(arrived_by=user) |
-                models.Q(distributor_permit__applicant=user)
+                Q(arrived_by=user) |
+                Q(distributor_permit__applicant=user)
             )
         return qs
 
