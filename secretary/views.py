@@ -1214,6 +1214,146 @@ def secretary_revenue_overview(request):
     })
 
 
+def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_approved, created_date_str, updated_date_str):
+    """
+    Generates the complete 7-stage Excise License Workflow Audit Trail:
+    1. Application Submitted Online
+    2. District User & Nodal Scrutiny
+    3. Site Enquiry & Field Survey Officer
+    4. Joint Commissioner Recommendation
+    5. Excise Commissioner Grant Approval
+    6. License Fee & Security Deposit Payment
+    7. Final License Certificate Issued
+    """
+    stage_lower = (stage_name or '').lower()
+
+    if is_approved or 'approved' in stage_lower or 'issue' in stage_lower:
+        active_step_idx = 7
+    elif 'payment' in stage_lower or 'fee' in stage_lower or 'demand' in stage_lower:
+        active_step_idx = 6
+    elif 'commissioner' in stage_lower:
+        active_step_idx = 5
+    elif 'joint' in stage_lower or 'jc' in stage_lower:
+        active_step_idx = 4
+    elif 'site' in stage_lower or 'inspect' in stage_lower or 'enquiry' in stage_lower or 'survey' in stage_lower:
+        active_step_idx = 3
+    elif 'district' in stage_lower or 'nodal' in stage_lower or 'user' in stage_lower:
+        active_step_idx = 2
+    else:
+        active_step_idx = 2
+
+    stages_definition = [
+        {
+            'step_no': 1,
+            'title': 'Application Submitted Online',
+            'desc': f'Online application form submitted for {est_name} with identity proof & initial fees.',
+            'user': f'{applicant} (Applicant)',
+            'time': 'Day 1'
+        },
+        {
+            'step_no': 2,
+            'title': 'Stage: District User & Nodal Scrutiny',
+            'desc': f'District Excise Desk & Nodal Officer document scrutiny, land NOC verification & identity audit.',
+            'user': 'District User / Nodal Officer',
+            'time': 'Day 1 - Day 2'
+        },
+        {
+            'step_no': 3,
+            'title': 'Stage: Site Enquiry & Field Survey Officer',
+            'desc': f'Excise Inspector physical premises measurement, safety audit, and site inspection report.',
+            'user': 'Site Enquiry & Survey Officer',
+            'time': 'Day 2 - Day 3'
+        },
+        {
+            'step_no': 4,
+            'title': 'Stage: Joint Commissioner Recommendation',
+            'desc': f'Detailed file evaluation, capacity verification, and formal recommendation by Joint Commissioner.',
+            'user': 'Joint Commissioner of Excise',
+            'time': 'Day 3 - Day 4'
+        },
+        {
+            'step_no': 5,
+            'title': 'Stage: Excise Commissioner Grant Approval',
+            'desc': f'Excise Commissioner (IAS) approval for license grant and issue of official Demand Note.',
+            'user': 'Excise Commissioner (IAS)',
+            'time': 'Day 4 - Day 5'
+        },
+        {
+            'step_no': 6,
+            'title': 'Stage: License Fee & Security Deposit Payment',
+            'desc': f'Applicant completes prescribed License Grant Fee & Security FD Payment online.',
+            'user': f'{applicant} (Applicant)',
+            'time': 'Day 5 - Day 6'
+        },
+        {
+            'step_no': 7,
+            'title': 'Stage: Final License Certificate Issued',
+            'desc': f'Final QR-coded License Certificate generated, signed by Excise Authority, and issued to licensee.',
+            'user': 'Excise Licensing Authority',
+            'time': 'Final Order'
+        }
+    ]
+
+    steps = []
+    for s in stages_definition:
+        step_num = s['step_no']
+        if step_num < active_step_idx:
+            steps.append({
+                'step_no': step_num,
+                'icon': '✓',
+                'status_class': 'completed',
+                'badge_class': 'status-completed',
+                'event_title': s['title'],
+                'event_date': created_date_str if step_num == 1 else updated_date_str,
+                'event_description': s['desc'],
+                'user_details': s['user'],
+                'time_taken': s['time'],
+                'status_text': 'Completed'
+            })
+        elif step_num == active_step_idx:
+            if is_approved or active_step_idx == 7:
+                steps.append({
+                    'step_no': step_num,
+                    'icon': '👑',
+                    'status_class': 'final-approved',
+                    'badge_class': 'status-final-approved',
+                    'event_title': s['title'],
+                    'event_date': updated_date_str,
+                    'event_description': s['desc'],
+                    'user_details': s['user'],
+                    'time_taken': s['time'],
+                    'status_text': 'FINAL APPROVED'
+                })
+            else:
+                steps.append({
+                    'step_no': step_num,
+                    'icon': '⏳',
+                    'status_class': 'final-pending',
+                    'badge_class': 'status-final-pending',
+                    'event_title': s['title'],
+                    'event_date': updated_date_str,
+                    'event_description': f"Current status: {stage_name}. Active officer review at stage: {s['title']}.",
+                    'user_details': stage_name,
+                    'time_taken': 'Ongoing',
+                    'status_text': 'In Progress'
+                })
+        else:
+            steps.append({
+                'step_no': step_num,
+                'icon': '⏳',
+                'status_class': 'pending',
+                'badge_class': 'status-pending',
+                'event_title': f"Upcoming: {s['title']}",
+                'event_date': 'Awaiting Previous Clearances',
+                'event_description': f"Workflow stage awaiting completion of preceding steps.",
+                'user_details': s['user'],
+                'time_taken': s['time'],
+                'status_text': 'Pending'
+            })
+
+    return steps
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def secretary_timeline_overview(request):
@@ -1256,46 +1396,7 @@ def secretary_timeline_overview(request):
             created_date_str = app.created_at.strftime('%Y-%m-%d %H:%M') if getattr(app, 'created_at', None) else '2026-05-28 11:59'
             updated_date_str = app.updated_at.strftime('%Y-%m-%d %H:%M') if getattr(app, 'updated_at', None) else created_date_str
 
-            steps = [
-                {
-                    'step_no': 1,
-                    'icon': '✓',
-                    'status_class': 'completed',
-                    'badge_class': 'status-completed',
-                    'event_title': 'Application Submitted Online',
-                    'event_date': created_date_str,
-                    'event_description': f'New license application submitted online for {est_name}.',
-                    'user_details': f'{applicant} (Applicant)',
-                    'time_taken': 'Day 1',
-                    'status_text': 'Completed'
-                },
-                {
-                    'step_no': 2,
-                    'icon': '✓' if app.is_approved else '⏳',
-                    'status_class': 'completed' if app.is_approved else 'final-pending',
-                    'badge_class': 'status-completed' if app.is_approved else 'status-final-pending',
-                    'event_title': f'Stage: {stage_name}',
-                    'event_date': updated_date_str,
-                    'event_description': f'Current status: {stage_name}. Active officer review.',
-                    'user_details': stage_name,
-                    'time_taken': 'Ongoing',
-                    'status_text': 'Completed' if app.is_approved else 'In Progress'
-                }
-            ]
-
-            if app.is_approved:
-                steps.append({
-                    'step_no': 3,
-                    'icon': '👑',
-                    'status_class': 'final-approved',
-                    'badge_class': 'status-final-approved',
-                    'event_title': 'Final Approval by Excise Commissioner',
-                    'event_date': updated_date_str,
-                    'event_description': 'License grant approved by Excise Commissioner (IAS).',
-                    'user_details': 'Excise Commissioner (IAS)',
-                    'time_taken': 'Final Order',
-                    'status_text': 'FINAL APPROVED'
-                })
+            steps = _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, app.is_approved, created_date_str, updated_date_str)
 
             record = {
                 'application_id': app_id,
@@ -1360,32 +1461,7 @@ def secretary_timeline_overview(request):
             created_date_str = '2026-05-28 12:00'
             updated_date_str = created_date_str
 
-            steps = [
-                {
-                    'step_no': 1,
-                    'icon': '✓',
-                    'status_class': 'completed',
-                    'badge_class': 'status-completed',
-                    'event_title': 'Salesman/Barman Application Filed',
-                    'event_date': created_date_str,
-                    'event_description': f'Application for {role_str} badge submitted by {full_name}.',
-                    'user_details': f'{full_name} ({role_str})',
-                    'time_taken': 'Day 1',
-                    'status_text': 'Completed'
-                },
-                {
-                    'step_no': 2,
-                    'icon': '✓' if app.is_approved else '⏳',
-                    'status_class': 'completed' if app.is_approved else 'final-pending',
-                    'badge_class': 'status-completed' if app.is_approved else 'status-final-pending',
-                    'event_title': f'Verification: {stage_name}',
-                    'event_date': updated_date_str,
-                    'event_description': f'Background verification & police NOC for {role_str} badge.',
-                    'user_details': stage_name,
-                    'time_taken': 'Ongoing',
-                    'status_text': 'Approved' if app.is_approved else 'In Progress'
-                }
-            ]
+            steps = _build_complete_workflow_steps(app_id, full_name, f"{role_str} Badge Registration", stage_name, app.is_approved, created_date_str, updated_date_str)
 
             record = {
                 'application_id': app_id,
