@@ -7,4 +7,5 @@ urlpatterns = [
     path('licenses/', views.secretary_licenses_overview, name='secretary_licenses_overview'),
     path('imfl/', views.secretary_imfl_overview, name='secretary_imfl_overview'),
     path('revenue/', views.secretary_revenue_overview, name='secretary_revenue_overview'),
+    path('timeline/', views.secretary_timeline_overview, name='secretary_timeline_overview'),
 ]
