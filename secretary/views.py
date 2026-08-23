@@ -593,6 +593,10 @@ def secretary_imfl_overview(request):
         supplier = dp.supplier_company_name or 'Sikkim Himalayan Bottlers Pvt Ltd'
         if supplier in ['sa', 'a', 'sd', 'test', 'DD01881001']:
             supplier = 'Sikkim Himalayan Bottlers Pvt Ltd'
+        
+        dist_user = getattr(dp.applicant, 'username', 'DD01881001')
+        dist_name = f"{dist_user} (Distributor User)" if dist_user else "DD01881001 (Distributor User)"
+
         orig = dp.origin or 'Gangtok Central Spirits Depot'
         if orig in ['sa', 'a', 'sd', 'test']:
             orig = 'Gangtok Central Spirits Depot'
@@ -610,7 +614,9 @@ def secretary_imfl_overview(request):
         raw_requisitions.append({
             'reference_no': ref_no,
             'our_ref_no': ref_no,
-            'distillery_name': supplier,
+            'distributor_name': dist_name,
+            'distributor_username': dist_user,
+            'distillery_name': dist_name,
             'supplier_name': supplier,
             'lifted_from': orig,
             'origin': orig,
@@ -710,15 +716,16 @@ def secretary_imfl_overview(request):
     # IMFL Revalidations
     for idx, ir in enumerate(IMFLRevalidation.objects.all().order_by('-created_at')):
         ref_no = ir.reference_no or f"IMFLREV/2026-27/{idx+1:04d}"
-        dist_n = 'Yuksom Breweries Limited'
-        if idx == 1:
-            dist_n = 'Sikkim Himalayan Bottlers Pvt Ltd'
+        dist_user = getattr(ir.applicant, 'username', 'DD01881001')
+        dist_name = f"{dist_user} (Distributor User)" if dist_user else "DD01881001 (Distributor User)"
 
         raw_revalidations.append({
             'reference_no': ref_no,
             'our_ref_no': ref_no,
-            'distillery_name': dist_n,
-            'establishment_name': dist_n,
+            'distributor_name': dist_name,
+            'distributor_username': dist_user,
+            'distillery_name': dist_name,
+            'establishment_name': dist_name,
             'spirit_type': 'IMFL Premium Cases',
             'total_bl': 12000.0 - (idx * 2500.0),
             'revalidation_date': str(ir.valid_up_to)[:10] if ir.valid_up_to else f"2026-09-{20+idx}",
@@ -803,15 +810,18 @@ def secretary_imfl_overview(request):
     # IMFL Cancellations
     for idx, ic in enumerate(IMFLCancellation.objects.all().order_by('-created_at')):
         ref_no = ic.reference_no or f"IMFLCAN/2026-27/{idx+1:04d}"
-        dist_n = 'Sikkim Himalayan Bottlers Pvt Ltd'
+        dist_user = getattr(ic.applicant, 'username', 'DD01881001')
+        dist_name = f"{dist_user} (Distributor User)" if dist_user else "DD01881001 (Distributor User)"
 
         raw_cancellations.append({
             'reference_no': ref_no,
             'our_ref_no': ref_no,
             'requisition_ref': getattr(ic.distributor_permit, 'reference_no', 'IMFLREQ/2026-27/0001'),
             'requisition_ref_no': getattr(ic.distributor_permit, 'reference_no', 'IMFLREQ/2026-27/0001'),
-            'distillery_name': dist_n,
-            'establishment_name': dist_n,
+            'distributor_name': dist_name,
+            'distributor_username': dist_user,
+            'distillery_name': dist_name,
+            'establishment_name': dist_name,
             'spirit_type': 'IMFL Premium Cases',
             'cancelled_bl': 6500.0,
             'total_bl': 6500.0,
