@@ -9,6 +9,41 @@ from models.transactional.supply_chain.ena_requisition_details.models import Ena
 from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
 
 
+import datetime
+from decimal import Decimal
+
+def _to_json_safe(val):
+    if val is None:
+        return None
+    if isinstance(val, (int, float, bool, str)):
+        return val
+    if isinstance(val, Decimal):
+        return float(val)
+    if isinstance(val, (datetime.date, datetime.datetime)):
+        return val.strftime('%Y-%m-%d %H:%M') if isinstance(val, datetime.datetime) else val.strftime('%Y-%m-%d')
+    if isinstance(val, dict):
+        return {str(k): _to_json_safe(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple, set)):
+        return [_to_json_safe(v) for v in val]
+    if hasattr(val, 'name') and getattr(val, 'name'):
+        return str(getattr(val, 'name'))
+    if hasattr(val, 'district') and getattr(val, 'district'):
+        return str(getattr(val, 'district'))
+    if hasattr(val, 'title') and getattr(val, 'title'):
+        return str(getattr(val, 'title'))
+    if hasattr(val, 'code') and getattr(val, 'code'):
+        return str(getattr(val, 'code'))
+    return str(val)
+
+
+def _normalize_district(dist):
+    if not dist:
+        return 'Gangtok (East Sikkim)'
+    if hasattr(dist, 'district') and getattr(dist, 'district'):
+        return str(getattr(dist, 'district'))
+    return str(dist)
+
+
 def _get_factories_data(subcat_filter='', search_q=''):
     """
     Helper function to query and compile complete, rich real-time factory data for Distilleries & Breweries,
@@ -183,10 +218,10 @@ def secretary_bulk_spirit_factories(request):
     search_q = request.GET.get('search', '').strip().lower()
 
     factories = _get_factories_data(subcat_filter, search_q)
-    return Response({
+    return Response(_to_json_safe({
         'count': len(factories),
         'factories': factories
-    })
+    }))
 
 
 @api_view(['GET'])
@@ -205,7 +240,7 @@ def secretary_bulk_spirit_summary(request):
     total_dispatched_bl = sum(f['dispatched_bl'] for f in factories)
     total_requisitions = sum(f['total_requisitions_count'] for f in factories)
 
-    return Response({
+    return Response(_to_json_safe({
         'total_units': total_units,
         'distilleries_count': distilleries_count,
         'breweries_count': breweries_count,
@@ -213,7 +248,7 @@ def secretary_bulk_spirit_summary(request):
         'total_requested_bl': round(total_requested_bl, 2),
         'total_dispatched_bl': round(total_dispatched_bl, 2),
         'total_requisitions': total_requisitions,
-    })
+    }))
 
 
 @api_view(['GET'])
@@ -252,7 +287,7 @@ def secretary_licenses_overview(request):
             'applicant_name': full_name,
             'role': sb.role or 'Barman',
             'establishment_name': est_name,
-            'excise_district': sb.excise_district or 'Gangtok (East Sikkim)',
+            'excise_district': _normalize_district(sb.excise_district),
             'mobile_number': str(sb.mobileNumber) if sb.mobileNumber else '9800012345',
             'email': sb.emailId or 'applicant@excise.sikkim.gov.in',
             'gender': sb.gender or 'Male',
@@ -458,7 +493,7 @@ def secretary_licenses_overview(request):
         dry_day_list.append({
             'application_id': sp.application_id or f"DDP/2026-27/000{sp.id}",
             'applicant_name': getattr(sp.applicant, 'username', 'Mount Distilleries Limited'),
-            'excise_district': sp.excise_district or 'Gangtok (East Sikkim)',
+            'excise_district': _normalize_district(sp.excise_district),
             'reason_remarks': sp.remarks or 'Special Event / National Dry Day Exemption Request',
             'duration_days': sp.permission_duration or '1 Day',
             'dates_requested': sp.selected_dates or '2026-08-15 (Independence Day)',
@@ -514,7 +549,7 @@ def secretary_licenses_overview(request):
 
     total_licenses_count = len(dry_day_list) + len(salesman_barman_list) + len(company_reg_list) + len(company_collab_list)
 
-    return Response({
+    return Response(_to_json_safe({
         'summary_kpis': {
             'dry_day_permits_count': len(dry_day_list),
             'salesman_barman_count': len(salesman_barman_list),
@@ -526,7 +561,7 @@ def secretary_licenses_overview(request):
         'salesman_barman_applications': salesman_barman_list,
         'company_registrations': company_reg_list,
         'company_collaborations': company_collab_list
-    })
+    }))
 
 
 @api_view(['GET'])
@@ -879,7 +914,7 @@ def secretary_imfl_overview(request):
             seen_cnc_refs.add(item['reference_no'])
             cancellations.append(item)
 
-    return Response({
+    return Response(_to_json_safe({
         'summary_kpis': {
             'requisitions_count': len(requisitions),
             'revalidations_count': len(revalidations),
@@ -889,7 +924,7 @@ def secretary_imfl_overview(request):
         'requisitions': requisitions,
         'revalidations': revalidations,
         'cancellations': cancellations
-    })
+    }))
 
 
 @api_view(['GET'])
@@ -1200,7 +1235,7 @@ def secretary_revenue_overview(request):
         if 'cess' not in k.lower() and 'security' not in k.lower()
     )
 
-    return Response({
+    return Response(_to_json_safe({
         'summary_kpis': {
             'total_revenue_collected': total_revenue or 75631457.0,
             'net_excise_revenue_collected': net_excise_revenue or 64873457.0,
@@ -1211,7 +1246,7 @@ def secretary_revenue_overview(request):
         'revenue_heads': list(head_totals.values()),
         'top_contributors': sorted_contributors[:15],
         'security_deposits': security_deposits[:20]
-    })
+    }))
 
 
 def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_approved, created_date_str, updated_date_str):
@@ -1691,7 +1726,7 @@ def secretary_timeline_overview(request):
     approved_count = len([r for r in timeline_records if r.get('approval_status') == 'APPROVED'])
     rejected_count = len([r for r in timeline_records if r.get('approval_status') in ['REJECTED', 'OBJECTION']])
 
-    return Response({
+    return Response(_to_json_safe({
         'summary_kpis': {
             'total_applications': total_count,
             'pending_applications': pending_count,
@@ -1701,4 +1736,4 @@ def secretary_timeline_overview(request):
         },
         'timeline_records': timeline_records,
         'pending_queue': pending_queue
-    })
+    }))
