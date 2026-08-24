@@ -169,7 +169,7 @@ DATABASES = {
     }
 }
 
-# Forgot Password Email SettingsSS
+# Forgot Password Email Settings
 # EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # For production, use SMTP:
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
