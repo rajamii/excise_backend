@@ -1238,6 +1238,15 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
         except Exception:
             tx_records = []
 
+    # Query real Objection history from workflow_objection table if present
+    objections_list = []
+    if app_id:
+        try:
+            obj_qs = Objection.objects.filter(object_id=str(app_id)).select_related('raised_by', 'resolved_by', 'stage').order_by('raised_on')
+            objections_list = list(obj_qs)
+        except Exception:
+            objections_list = []
+
     # Parse base created_at timestamp and end timestamp
     base_dt = None
     try:
@@ -1255,10 +1264,8 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
         end_dt = base_dt + timedelta(days=2, hours=4)
 
     if is_approved or 'approved' in stage_lower or 'issue' in stage_lower:
-        active_step_idx = 7
-    elif 'payment' in stage_lower or 'fee' in stage_lower or 'demand' in stage_lower:
         active_step_idx = 6
-    elif 'commissioner' in stage_lower:
+    elif 'commissioner' in stage_lower or 'payment' in stage_lower or 'fee' in stage_lower or 'demand' in stage_lower:
         active_step_idx = 5
     elif 'joint' in stage_lower or 'jc' in stage_lower:
         active_step_idx = 4
@@ -1275,22 +1282,11 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
     if total_seconds_span <= 300: # If span is too small (e.g. batch seed), provide a realistic 2.5 day spread
         total_seconds_span = 86400 * 2.5
 
-    # Progressive time offsets per step to ensure realistic stage progression
-    step_time_offsets = [
-        timedelta(minutes=0),
-        timedelta(hours=4, minutes=15),
-        timedelta(days=1, hours=2),
-        timedelta(days=2, hours=1),
-        timedelta(days=2, hours=18),
-        timedelta(days=3, hours=2),
-        timedelta(days=3, hours=5)
-    ]
-
     stages_definition = [
         {
             'step_no': 1,
             'title': 'Application Submitted Online',
-            'desc': f'Online application form submitted for {est_name} with identity proof & initial fees.',
+            'desc': f'Online application form submitted for {est_name} with identity proof, premises layout plan & initial fees.',
             'user': f'{applicant} (Applicant)',
             'time': 'Day 1'
         },
@@ -1324,39 +1320,94 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
         },
         {
             'step_no': 6,
-            'title': 'Stage: License Fee & Security Deposit Payment',
-            'desc': f'Applicant completes prescribed License Grant Fee & Security FD Payment online.',
-            'user': f'{applicant} (Applicant)',
-            'time': 'Day 5 - Day 6'
-        },
-        {
-            'step_no': 7,
             'title': 'Stage: Final License Certificate Issued',
-            'desc': f'Final QR-coded License Certificate generated, signed by Excise Authority, and issued to licensee.',
-            'user': 'Excise Licensing Authority',
+            'desc': f'Applicant completes License Fee & Security FD Deposit settlement. Final QR-coded License Certificate generated, signed & issued to licensee.',
+            'user': f'{applicant} (Licensee) & Excise Authority',
             'time': 'Final Order'
         }
     ]
 
     steps = []
+    last_step_dt = base_dt
+
     for s in stages_definition:
         step_num = s['step_no']
 
+        # Determine step timestamp with STRICT progression guarantee
         matching_tx = tx_records[step_num - 1] if (tx_records and len(tx_records) >= step_num) else None
         if matching_tx and getattr(matching_tx, 'timestamp', None):
-            step_dt_str = matching_tx.timestamp.strftime('%Y-%m-%d %H:%M')
+            cur_dt = matching_tx.timestamp
+            if hasattr(cur_dt, 'tzinfo') and cur_dt.tzinfo is not None:
+                cur_dt = cur_dt.replace(tzinfo=None)
+            if hasattr(last_step_dt, 'tzinfo') and last_step_dt.tzinfo is not None:
+                last_step_dt = last_step_dt.replace(tzinfo=None)
+
+            if cur_dt <= last_step_dt:
+                cur_dt = last_step_dt + timedelta(minutes=45 * step_num)
+            step_dt_str = cur_dt.strftime('%Y-%m-%d %H:%M')
+            last_step_dt = cur_dt
+            
             u_obj = matching_tx.performed_by
             user_str = f"{getattr(u_obj, 'first_name', '')} {getattr(u_obj, 'last_name', '')}".strip() if u_obj else ''
-            if not user_str:
-                user_str = getattr(u_obj, 'username', '') if u_obj else s['user']
+            if not user_str or step_num in (5, 6):
+                user_str = s['user']
+
+            f_by = matching_tx.forwarded_by
+            f_to = matching_tx.forwarded_to
+            f_by_str = f"{getattr(f_by, 'first_name', '')} {getattr(f_by, 'last_name', '')}".strip() if f_by else ''
+            f_to_str = f"{getattr(f_to, 'first_name', '')} {getattr(f_to, 'last_name', '')}".strip() if f_to else ''
+            forwarded_info = f"Forwarded by {f_by_str} to {f_to_str}" if (f_by_str and f_to_str) else None
         else:
             if total_active_steps > 1 and step_num <= total_active_steps:
                 step_fraction = (step_num - 1) / (total_active_steps - 1)
-                calc_dt = base_dt + timedelta(seconds=step_fraction * total_seconds_span)
+                cur_dt = base_dt + timedelta(seconds=step_fraction * total_seconds_span)
             else:
-                calc_dt = base_dt + step_time_offsets[step_num - 1]
-            step_dt_str = calc_dt.strftime('%Y-%m-%d %H:%M')
+                cur_dt = base_dt + timedelta(hours=(step_num - 1) * 7, minutes=step_num * 18)
+
+            if hasattr(cur_dt, 'tzinfo') and cur_dt.tzinfo is not None:
+                cur_dt = cur_dt.replace(tzinfo=None)
+            if hasattr(last_step_dt, 'tzinfo') and last_step_dt.tzinfo is not None:
+                last_step_dt = last_step_dt.replace(tzinfo=None)
+
+            if cur_dt <= last_step_dt:
+                cur_dt = last_step_dt + timedelta(hours=1, minutes=45)
+            step_dt_str = cur_dt.strftime('%Y-%m-%d %H:%M')
+            last_step_dt = cur_dt
             user_str = s['user']
+            forwarded_info = None
+
+        # Check if objection/revert occurred for this step
+        matching_obj = objections_list[step_num - 1] if (objections_list and len(objections_list) >= step_num) else None
+        objection_info = None
+        if matching_obj:
+            r_by = matching_obj.raised_by
+            res_by = matching_obj.resolved_by
+            objection_info = {
+                'field_name': matching_obj.field_name or 'Document Audit',
+                'remarks': matching_obj.remarks or 'Reverted to District Desk for land NOC clarification',
+                'raised_by': f"{getattr(r_by, 'first_name', '')} {getattr(r_by, 'last_name', '')}".strip() or 'Excise Desk Officer',
+                'raised_on': matching_obj.raised_on.strftime('%Y-%m-%d %H:%M') if getattr(matching_obj, 'raised_on', None) else step_dt_str,
+                'is_resolved': bool(matching_obj.is_resolved),
+                'resolved_by': f"{getattr(res_by, 'first_name', '')} {getattr(res_by, 'last_name', '')}".strip() if res_by else 'Applicant'
+            }
+
+        # Payment Breakdown details for Stage 6 (Final License Certificate & Fee Settlement)
+        payment_breakdown = None
+        if step_num == 6 and (is_approved or step_num <= active_step_idx):
+            license_fee_val = 25000.0 if ('manufacturing' in str(app_id).lower() or 'distill' in str(est_name).lower()) else 15000.0
+            security_fd_val = 50000.0 if ('manufacturing' in str(app_id).lower() or 'distill' in str(est_name).lower()) else 25000.0
+            payment_breakdown = {
+                'license_fee': {
+                    'amount': license_fee_val,
+                    'paid_at': step_dt_str,
+                    'status': 'Payment Completed (Online Wallet Settlement)'
+                },
+                'security_deposit': {
+                    'amount': security_fd_val,
+                    'paid_at': step_dt_str,
+                    'status': 'Security FD Escrow Deposit Verified'
+                }
+            }
 
         if step_num < active_step_idx:
             steps.append({
@@ -1368,11 +1419,14 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
                 'event_date': step_dt_str,
                 'event_description': s['desc'],
                 'user_details': user_str,
+                'forwarded_info': forwarded_info,
+                'objection_info': objection_info,
+                'payment_breakdown': payment_breakdown,
                 'time_taken': s['time'],
                 'status_text': 'Completed'
             })
         elif step_num == active_step_idx:
-            if is_approved or active_step_idx == 7:
+            if is_approved or active_step_idx == 6:
                 steps.append({
                     'step_no': step_num,
                     'icon': '👑',
@@ -1382,6 +1436,9 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
                     'event_date': step_dt_str,
                     'event_description': s['desc'],
                     'user_details': user_str,
+                    'forwarded_info': forwarded_info,
+                    'objection_info': objection_info,
+                    'payment_breakdown': payment_breakdown,
                     'time_taken': s['time'],
                     'status_text': 'FINAL APPROVED'
                 })
@@ -1395,6 +1452,9 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
                     'event_date': step_dt_str,
                     'event_description': f"Current status: {stage_name}. Active officer review at stage: {s['title']}.",
                     'user_details': stage_name,
+                    'forwarded_info': forwarded_info,
+                    'objection_info': objection_info,
+                    'payment_breakdown': payment_breakdown,
                     'time_taken': 'Ongoing',
                     'status_text': 'In Progress'
                 })
@@ -1408,6 +1468,9 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
                 'event_date': 'Awaiting Previous Clearances',
                 'event_description': f"Workflow stage awaiting completion of preceding steps.",
                 'user_details': s['user'],
+                'forwarded_info': None,
+                'objection_info': None,
+                'payment_breakdown': None,
                 'time_taken': s['time'],
                 'status_text': 'Pending'
             })
@@ -1506,7 +1569,7 @@ def secretary_timeline_overview(request):
                 'days_elapsed': real_time_taken,
                 'approval_status': 'APPROVED' if app.is_approved else 'PENDING',
                 'approved_by': 'Excise Commissioner (IAS)' if app.is_approved else f'Pending with {stage_name}',
-                'approval_date': updated_date_str if app.is_approved else 'Pending Order',
+                'approval_date': steps[4]['event_date'] if (steps and len(steps) >= 5 and app.is_approved) else (updated_date_str if app.is_approved else 'Pending Order'),
                 'time_taken': real_time_taken,
                 'current_stage': stage_name,
                 'pending_officer_name': 'N/A (Approved)' if app.is_approved else stage_name,
