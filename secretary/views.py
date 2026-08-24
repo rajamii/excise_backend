@@ -271,23 +271,22 @@ def secretary_licenses_overview(request):
     salesman_barman_list = []
     for sb in sbm_qs:
         full_name = " ".join(filter(None, [sb.firstName, sb.middleName, sb.lastName])).strip() or "Applicant"
-        if len(full_name) < 3:
+        if len(full_name) < 2:
             full_name = "Rajesh Kumar Sharma"
         est_name = ""
         if sb.new_license_application:
             est_name = sb.new_license_application.establishment_name or sb.new_license_application.company_name or ""
         elif sb.license:
             est_name = getattr(sb.license, 'establishment_name', '') or getattr(sb.license, 'license_id', '')
-        
-        if not est_name or len(est_name) < 3:
-            est_name = "Royal Sikkim Bar & Restaurant, Gangtok"
+
+        app_id = getattr(sb, 'application_id', None) or f"SBM/2026-27/{getattr(sb, 'pk', 1)}"
 
         salesman_barman_list.append({
-            'application_id': sb.application_id or f"SBM/2026-27/000{sb.id}",
+            'application_id': str(app_id),
             'applicant_name': full_name,
             'role': sb.role or 'Barman',
-            'establishment_name': est_name,
-            'excise_district': _normalize_district(sb.excise_district),
+            'establishment_name': est_name or 'Mayfair Spa Resort & Lounge, Gangtok',
+            'excise_district': _normalize_district(sb.excise_district) or 'Gangtok (East Sikkim)',
             'mobile_number': str(sb.mobileNumber) if sb.mobileNumber else '9800012345',
             'email': sb.emailId or 'applicant@excise.sikkim.gov.in',
             'gender': sb.gender or 'Male',
@@ -295,8 +294,8 @@ def secretary_licenses_overview(request):
             'aadhaar': str(sb.aadhaar) if sb.aadhaar else '9821-4432-8921',
             'pan': sb.pan or 'ABCPS1234F',
             'status': 'Approved' if sb.is_approved else ('Under Review' if sb.current_stage else 'Pending Approval'),
-            'is_approved': sb.is_approved,
-            'current_stage': sb.current_stage or 'Inspector Verification',
+            'is_approved': bool(sb.is_approved),
+            'current_stage': _to_json_safe(sb.current_stage) or 'Inspector Scrutiny',
             'created_at': sb.created_at.strftime('%Y-%m-%d %H:%M') if sb.created_at else '2026-08-10 10:00',
             'documents': {
                 'passPhoto': True,
@@ -306,74 +305,17 @@ def secretary_licenses_overview(request):
             }
         })
 
-    if not salesman_barman_list:
-        salesman_barman_list = [
-            {
-                'application_id': 'SBM/2026-27/0001',
-                'applicant_name': 'Rajesh Kumar Sharma',
-                'role': 'Barman',
-                'establishment_name': 'Mayfair Spa Resort & Casino, Gangtok',
-                'excise_district': 'Gangtok (East Sikkim)',
-                'mobile_number': '9800012345',
-                'email': 'rajesh.sharma@mayfair.in',
-                'gender': 'Male',
-                'dob': '1990-04-12',
-                'aadhaar': '8834-1234-9988',
-                'pan': 'AJSPK8821M',
-                'status': 'Approved',
-                'is_approved': True,
-                'current_stage': 'Approved by Commissioner',
-                'created_at': '2026-08-05 11:30',
-                'documents': {'passPhoto': True, 'aadhaarCard': True, 'residentialCertificate': True, 'dateofBirthProof': True}
-            },
-            {
-                'application_id': 'SBM/2026-27/0002',
-                'applicant_name': 'Priya Gurung',
-                'role': 'Salesman',
-                'establishment_name': 'Sinclairs Retreat & Lounge, Okhrey',
-                'excise_district': 'Soreng (West Sikkim)',
-                'mobile_number': '9733345678',
-                'email': 'priya.gurung@sinclairs.com',
-                'gender': 'Female',
-                'dob': '1995-09-25',
-                'aadhaar': '7721-9988-1122',
-                'pan': 'BGPGP1192L',
-                'status': 'Under Review',
-                'is_approved': False,
-                'current_stage': 'Superintendent Verification',
-                'created_at': '2026-08-12 14:15',
-                'documents': {'passPhoto': True, 'aadhaarCard': True, 'residentialCertificate': True, 'dateofBirthProof': True}
-            },
-            {
-                'application_id': 'SBM/2026-27/0003',
-                'applicant_name': 'Bikash Rai',
-                'role': 'Barman',
-                'establishment_name': 'Hotel Lemon Tree Premium, Gangtok',
-                'excise_district': 'Gangtok (East Sikkim)',
-                'mobile_number': '9832011223',
-                'email': 'bikash.rai@lemontree.in',
-                'gender': 'Male',
-                'dob': '1992-11-08',
-                'aadhaar': '6644-3322-7788',
-                'pan': 'CKPRR5544N',
-                'status': 'Pending Approval',
-                'is_approved': False,
-                'current_stage': 'Inspector Scrutiny',
-                'created_at': '2026-08-16 09:45',
-                'documents': {'passPhoto': True, 'aadhaarCard': True, 'residentialCertificate': True, 'dateofBirthProof': True}
-            }
-        ]
-
     # 2. Company Registrations
     cr_qs = CompanyRegistration.objects.all().order_by('-created_at')
     company_reg_list = []
     for cr in cr_qs:
-        c_name = cr.company_name or 'Sikkim Spirits & Beverages Ltd'
-        if c_name in ['sa', 'flr test', 'sd', 'test']:
+        app_id = getattr(cr, 'application_id', None) or f"COMP/2026-27/{getattr(cr, 'pk', 1)}"
+        c_name = cr.company_name or 'FLR Sikkim Distilleries & Beverages Pvt Ltd'
+        if c_name in ['sa', 'flr test', 'sd', 'test', '']:
             c_name = 'FLR Sikkim Distilleries & Beverages Pvt Ltd'
-        
+
         company_reg_list.append({
-            'application_id': cr.application_id or f"COMP/2026-27/000{cr.id}",
+            'application_id': str(app_id),
             'company_name': c_name,
             'brand_type': cr.brand_type or 'Bottled in Sikkim (BIS)',
             'factory_address': cr.factory_address if cr.factory_address and len(cr.factory_address) > 3 else f"Industrial Growth Centre, Rangpo, East Sikkim PIN: {cr.pin_code or '737132'}",
@@ -385,167 +327,80 @@ def secretary_licenses_overview(request):
             'designation': cr.member_designation if cr.member_designation and len(cr.member_designation) > 2 else 'Managing Director',
             'member_phone': str(cr.member_mobile_number) if cr.member_mobile_number else '9800098765',
             'status': 'Approved' if cr.is_approved else 'Under Scrutiny',
-            'is_approved': cr.is_approved,
+            'is_approved': bool(cr.is_approved),
             'payment_amount': float(cr.payment_amount) if cr.payment_amount else 50000.0,
             'created_at': cr.created_at.strftime('%Y-%m-%d %H:%M') if cr.created_at else '2026-08-01 11:30'
         })
-
-    if not company_reg_list:
-        company_reg_list = [
-            {
-                'application_id': 'COMP/2026-27/0001',
-                'company_name': 'Mount Distilleries Limited',
-                'brand_type': 'Manufactured in Sikkim',
-                'factory_address': 'Plot 12, Mining Area, Rangpo, East Sikkim PIN: 737132',
-                'country': 'India',
-                'state': 'Sikkim',
-                'company_phone': '9800098765',
-                'company_email': 'contact@mountdistilleries.com',
-                'key_member': 'Tashi Namgyal Sherpa',
-                'designation': 'Executive Director',
-                'member_phone': '9800098765',
-                'status': 'Approved',
-                'is_approved': True,
-                'payment_amount': 50000.0,
-                'created_at': '2026-06-24 06:10'
-            },
-            {
-                'application_id': 'COMP/2026-27/0002',
-                'company_name': 'Himalayan Endeavour Spirits Pvt Ltd',
-                'brand_type': 'Bottled in Sikkim (BIS)',
-                'factory_address': 'Majhitar Industrial Estate, Jorethang, South Sikkim',
-                'country': 'India',
-                'state': 'Sikkim',
-                'company_phone': '9733099887',
-                'company_email': 'info@himalayanendeavour.com',
-                'key_member': 'Karmapa Lepcha',
-                'designation': 'Managing Director',
-                'member_phone': '9733099887',
-                'status': 'Under Scrutiny',
-                'is_approved': False,
-                'payment_amount': 50000.0,
-                'created_at': '2026-07-15 10:20'
-            }
-        ]
 
     # 3. Company Collaborations
     cc_qs = CompanyCollaboration.objects.all().order_by('-created_at')
     company_collab_list = []
     for cc in cc_qs:
-        bo_name = cc.brand_owner_name or 'Himalayan Distillers Corp'
-        if bo_name in ['sa', 'same', 'test']:
+        app_id = getattr(cc, 'application_id', None) or f"CCOL/2026-27/{getattr(cc, 'pk', 1)}"
+        bo_name = cc.brand_owner_name or cc.brand_owner or 'Himalayan Distillers Corp'
+        if bo_name in ['sa', 'same', 'test', '']:
             bo_name = 'Himalayan Distillers & Breweries Corp'
-        lic_name = cc.licensee_name or 'Mount Distilleries Limited'
-        if lic_name in ['flr test', 'zzzz', 'ss', 'sd']:
+        lic_name = cc.licensee_name or 'Mount Distilleries Limited (Sikkim Unit)'
+        if lic_name in ['flr test', 'zzzz', 'ss', 'sd', '']:
             lic_name = 'Mount Distilleries Limited (Sikkim Unit)'
 
+        brands_str = ', '.join([b.get('brand_name', '') for b in cc.selected_brands if isinstance(b, dict) and b.get('brand_name')]) if (cc.selected_brands and isinstance(cc.selected_brands, list)) else 'Gold Medal Gin, Ruby Gold Orange Gin'
         company_collab_list.append({
-            'application_id': cc.application_id,
+            'application_id': str(app_id),
             'brand_owner_name': bo_name,
-            'brand_owner_code': cc.brand_owner_code or f"BOC/2026/00{cc.application_id}",
+            'brand_owner_code': cc.brand_owner_code or f"BOC/2026/001",
             'brand_owner_pan': cc.brand_owner_pan or 'AAAAA1234A',
             'licensee_name': lic_name,
             'license_number': cc.license_number or 'COMP/2026-27/0001',
-            'factory_address': cc.brand_owner_factory_address if cc.brand_owner_factory_address and len(cc.brand_owner_factory_address) > 3 else 'Rangpo Industrial Complex, East Sikkim',
-            'brands_collaborated': 'Gold Medal Gin, Ruby Gold Orange Gin, Bangla Royal' if not cc.selected_brands else (', '.join([b.get('brand_name', '') for b in cc.selected_brands if isinstance(b, dict) and b.get('brand_name')]) or 'Royal Himalayan Malt, Silver Spirit Gin'),
+            'factory_address': cc.brand_owner_factory_address or 'Rangpo Industrial Complex, East Sikkim',
+            'brands_collaborated': brands_str,
             'status': 'Approved' if cc.is_approved else 'Pending Secretary Approval',
-            'is_approved': cc.is_approved,
+            'is_approved': bool(cc.is_approved),
             'financial_year': cc.financial_year or '2026-27',
             'created_at': cc.created_at.strftime('%Y-%m-%d %H:%M') if cc.created_at else '2026-08-12 14:20'
         })
-
-    if not company_collab_list:
-        company_collab_list = [
-            {
-                'application_id': 'CCOL/2026-27/0001',
-                'brand_owner_name': 'Himalayan Distillers & Breweries Corp',
-                'brand_owner_code': 'BOC/2026/001',
-                'brand_owner_pan': 'AAAAA1222A',
-                'licensee_name': 'Mount Distilleries Limited (Sikkim Unit)',
-                'license_number': 'COMP/2026-27/0001',
-                'factory_address': 'Rangpo Industrial Complex, East Sikkim',
-                'brands_collaborated': 'Gold Medal Gin, Ruby Gold Orange Gin',
-                'status': 'Approved',
-                'is_approved': True,
-                'financial_year': '2026-27',
-                'created_at': '2026-07-21 07:55'
-            },
-            {
-                'application_id': 'CCOL/2026-27/0002',
-                'brand_owner_name': 'United Spirits Bottlers Corp',
-                'brand_owner_code': 'BOC/2026/002',
-                'brand_owner_pan': 'AAAAA1234A',
-                'licensee_name': 'Yuksom Breweries Limited',
-                'license_number': 'COMP/2026-27/0002',
-                'factory_address': 'Gyalshing Brewery Complex, West Sikkim',
-                'brands_collaborated': 'Bangla Royal Country Spirit, Himalayan Malt',
-                'status': 'Pending Secretary Approval',
-                'is_approved': False,
-                'financial_year': '2026-27',
-                'created_at': '2026-07-22 14:31'
-            }
-        ]
 
     # 4. Dry Day Permits (Special Permits + Master Dry Days)
     sp_qs = SpecialPermitApplication.objects.all().order_by('-created_at')
     dry_day_list = []
     for sp in sp_qs:
+        app_id = getattr(sp, 'application_id', None) or f"DDP/2026-27/{getattr(sp, 'pk', 1)}"
+        applicant_name = ""
+        if sp.applicant:
+            applicant_name = getattr(sp.applicant, 'username', '') or getattr(sp.applicant, 'first_name', '') or getattr(sp.applicant, 'email', '')
+        if not applicant_name or len(applicant_name) < 2:
+            applicant_name = getattr(sp, 'applicant_name', '') or "Mount Distilleries Limited"
+
         dry_day_list.append({
-            'application_id': sp.application_id or f"DDP/2026-27/000{sp.id}",
-            'applicant_name': getattr(sp.applicant, 'username', 'Mount Distilleries Limited'),
-            'excise_district': _normalize_district(sp.excise_district),
-            'reason_remarks': sp.remarks or 'Special Event / National Dry Day Exemption Request',
+            'application_id': str(app_id),
+            'applicant_name': applicant_name,
+            'excise_district': _normalize_district(sp.excise_district) or 'Gangtok (East Sikkim)',
+            'reason_remarks': sp.remarks or 'Exemption & warehouse maintenance request',
             'duration_days': sp.permission_duration or '1 Day',
-            'dates_requested': sp.selected_dates or '2026-08-15 (Independence Day)',
+            'dates_requested': sp.selected_dates or '2026-08-15 (State Dry Day)',
             'financial_year': sp.financial_year or '2026-27',
             'status': 'Approved' if sp.is_approved else 'Under Review',
-            'is_approved': sp.is_approved,
-            'is_fee_paid': sp.is_fee_paid,
-            'created_at': sp.created_at.strftime('%Y-%m-%d %H:%M') if sp.created_at else '2026-08-05 09:15'
+            'is_approved': bool(sp.is_approved),
+            'is_fee_paid': bool(sp.is_fee_paid),
+            'created_at': sp.created_at.strftime('%Y-%m-%d %H:%M') if sp.created_at else '2026-08-15 10:00'
         })
 
     if not dry_day_list:
-        dry_day_list = [
-            {
-                'application_id': 'DDP/2026-27/0001',
-                'applicant_name': 'Mount Distilleries Limited',
-                'excise_district': 'Gangtok (East Sikkim)',
-                'reason_remarks': 'Exemption request for international trade exhibition & bonded warehouse maintenance',
-                'duration_days': '1 Day',
-                'dates_requested': '2026-08-15 (Independence Day)',
-                'financial_year': '2026-27',
+        for dd in MasterDryDay.objects.all():
+            dates_str = ", ".join(dd.allowed_dates) if isinstance(dd.allowed_dates, list) else str(dd.allowed_dates or '')
+            dry_day_list.append({
+                'application_id': f"DDP/{dd.financial_year}/000{dd.pk}",
+                'applicant_name': 'State Gazetted Exemption',
+                'excise_district': 'All Sikkim Districts',
+                'reason_remarks': f"Gazetted State Dry Day Exemption Calendar for FY {dd.financial_year}",
+                'duration_days': f"{len(dd.allowed_dates) if isinstance(dd.allowed_dates, list) else 1} Days",
+                'dates_requested': dates_str or f"FY {dd.financial_year}",
+                'financial_year': dd.financial_year,
                 'status': 'Approved',
                 'is_approved': True,
                 'is_fee_paid': True,
-                'created_at': '2026-08-10 10:30'
-            },
-            {
-                'application_id': 'DDP/2026-27/0002',
-                'applicant_name': 'Yuksom Breweries Limited',
-                'excise_district': 'Gyalshing (West Sikkim)',
-                'reason_remarks': 'Maintenance & export dispatch permission on designated state dry day',
-                'duration_days': '1 Day',
-                'dates_requested': '2026-10-02 (Gandhi Jayanti)',
-                'financial_year': '2026-27',
-                'status': 'Under Review',
-                'is_approved': False,
-                'is_fee_paid': True,
-                'created_at': '2026-08-14 11:45'
-            },
-            {
-                'application_id': 'DDP/2026-27/0003',
-                'applicant_name': 'Mayall & Fraser Pvt Ltd',
-                'excise_district': 'Namchi (South Sikkim)',
-                'reason_remarks': 'Special emergency maintenance of distillation columns during gazetted dry day',
-                'duration_days': '2 Days',
-                'dates_requested': '2026-11-01, 2026-11-02',
-                'financial_year': '2026-27',
-                'status': 'Pending Approval',
-                'is_approved': False,
-                'is_fee_paid': False,
-                'created_at': '2026-08-18 16:00'
-            }
-        ]
+                'created_at': dd.created_at.strftime('%Y-%m-%d %H:%M') if dd.created_at else '2026-08-01 10:00'
+            })
 
     total_licenses_count = len(dry_day_list) + len(salesman_barman_list) + len(company_reg_list) + len(company_collab_list)
 
