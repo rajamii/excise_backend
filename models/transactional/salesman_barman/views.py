@@ -909,10 +909,10 @@ def dashboard_counts(request):
             "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
         })
 
-    if role in ['site_admin', 'single_window', 'secretary', 'commissioner', 'joint_commissioner', 'executive']:
+    if role in ['site_admin', 'single_window', 'secretary']:
         applied_stages = set(stage_sets['initial'])
-        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
-        pending_for_ui = pending_stages | applied_stages
+        payment_stages = set(stage_sets.get('payment', []))
+        pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages - payment_stages
 
         content_type = ContentType.objects.get_for_model(SalesmanBarmanModel)
         acted_by_admin = Exists(
@@ -929,7 +929,7 @@ def dashboard_counts(request):
 
         return Response({
             "applied": all_qs.filter(current_stage__name__in=applied_stages).count(),
-            "pending": all_qs.filter(current_stage__name__in=pending_for_ui).count(),
+            "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
             "approved": approved_count,
             "rejected": all_qs.filter(current_stage__name__in=stage_sets['rejected']).count(),
         })
