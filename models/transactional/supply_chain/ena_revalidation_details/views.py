@@ -99,6 +99,24 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
 
     REVALIDATION_FEE_AMOUNT = Decimal('1000.00')
 
+    def get_object(self):
+        lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
+        pk = self.kwargs.get(lookup_url_kwarg) or self.kwargs.get('pk')
+        if pk:
+            pk_str = str(pk).strip()
+            if pk_str.isdigit():
+                obj = self.get_queryset().filter(pk=int(pk_str)).first()
+                if obj:
+                    return obj
+            obj = self.get_queryset().filter(
+                models.Q(our_ref_no__iexact=pk_str) |
+                models.Q(our_ref_no__iexact=pk_str.replace('-', '/')) |
+                models.Q(our_ref_no__iexact=pk_str.replace('/', '-'))
+            ).first()
+            if obj:
+                return obj
+        return super().get_object()
+
     def _normalize_token(self, value: str) -> str:
         return ''.join(ch for ch in str(value or '').lower() if ch.isalnum())
 
@@ -349,14 +367,14 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                     )
                     if requisition is None or not self._looks_final_approved_requisition(requisition):
                         schedule.status = EnaRevalidationActivationSchedule.STATUS_CANCELLED
-                        schedule.activated_at = timezone.now()
+                        schedule.activated_at = schedule.activation_due_at or timezone.now()
                         schedule.notes = (schedule.notes or '') + ' Not eligible for activation'
                         schedule.save(update_fields=['status', 'activated_at', 'notes', 'updated_at'])
                         continue
 
                     if not str(getattr(requisition, 'licensee_id', '') or '').strip():
                         schedule.status = EnaRevalidationActivationSchedule.STATUS_CANCELLED
-                        schedule.activated_at = timezone.now()
+                        schedule.activated_at = schedule.activation_due_at or timezone.now()
                         schedule.notes = (schedule.notes or '') + ' Missing requisition.licensee_id'
                         schedule.save(update_fields=['status', 'activated_at', 'notes', 'updated_at'])
                         continue
@@ -368,7 +386,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                     #     self._create_revalidation_from_requisition(requisition)
 
                     schedule.status = EnaRevalidationActivationSchedule.STATUS_PROCESSED
-                    schedule.activated_at = timezone.now()
+                    schedule.activated_at = schedule.activation_due_at or timezone.now()
                     schedule.save(update_fields=['status', 'activated_at', 'updated_at'])
             except Exception as exc:
                 try:
