@@ -32,12 +32,13 @@ class UserSerializer(serializers.ModelSerializer):
     panNumber = serializers.SerializerMethodField()
     hasActiveLicense = serializers.SerializerMethodField()
     isActive = serializers.BooleanField(source='is_active', read_only=True)
+    oicAssignment = serializers.SerializerMethodField()
     
     class Meta:
         model = CustomUser
         fields = ['id', 'email', 'username', 'firstName', 'middleName', 'lastName',
                  'phoneNumber', 'panNumber', 'district', 'subdivision', 'address', 'role',
-                 'created_by', 'hasActiveLicense', 'isActive'
+                 'created_by', 'hasActiveLicense', 'isActive', 'oicAssignment'
         ]
         extra_kwargs = {
             'password': {'write_only': True},
@@ -54,8 +55,21 @@ class UserSerializer(serializers.ModelSerializer):
         return obj.created_by.role.id if obj.created_by and obj.created_by.role else None
 
     def get_district(self, obj):
-        district = obj.district
-        return {'name': district.district, 'code': district.district_code} if district else None
+        try:
+            district = obj.district
+            if not district:
+                return None
+            district_name = getattr(district, 'district', None) or str(district)
+            district_code = getattr(district, 'district_code', None)
+            return {
+                'id': getattr(district, 'id', None),
+                'district': district_name,
+                'name': district_name,
+                'code': district_code,
+                'districtCode': district_code,
+            }
+        except Exception:
+            return None
 
     def get_subdivision(self, obj):
         subdivision = obj.subdivision
@@ -92,6 +106,22 @@ class UserSerializer(serializers.ModelSerializer):
             # Older databases may not yet have the full licensee_profile schema.
             # Do not fail /auth/users/me/ for login/session bootstrap in that case.
             return None
+
+    def get_oicAssignment(self, obj):
+        try:
+            assignment = getattr(obj, 'oic_assignment', None)
+            if not assignment:
+                return None
+            return {
+                'assignmentType': getattr(assignment, 'assignment_type', 'manufacturing'),
+                'establishmentName': getattr(assignment, 'establishment_name', ''),
+                'licenseeId': getattr(assignment, 'licensee_id', ''),
+                'distributorUserId': getattr(assignment, 'distributor_user_id', None),
+                'distributorUsername': getattr(assignment.distributor_user, 'username', None) if getattr(assignment, 'distributor_user', None) else None,
+            }
+        except Exception:
+            return None
+
 
 class UserCreateSerializer(serializers.ModelSerializer):
     class Meta:
@@ -462,12 +492,13 @@ class OICApprovedEstablishmentSerializer(serializers.Serializer):
     licenseeId = serializers.CharField()
     districtCode = serializers.CharField(allow_blank=True)
     subdivisionCode = serializers.CharField(allow_blank=True)
+    categoryName = serializers.CharField(allow_blank=True, default='')
 
 
 class OICOfficerCreateSerializer(serializers.Serializer):
-    # Incoming JSON is camelCase from frontend, but CamelCaseJSONParser
-    # converts request keys to snake_case before serializer validation.
-    approved_application_id = serializers.CharField()
+    approved_application_id = serializers.CharField(required=False, allow_blank=True, default='')
+    distributor_user_id = serializers.CharField(required=False, allow_blank=True, default='')
+    assignment_type = serializers.CharField(required=False, default='manufacturing')
     name = serializers.CharField(max_length=150)
     email = serializers.EmailField()
     phone_number = serializers.CharField(max_length=10)
@@ -484,7 +515,9 @@ class OICOfficerCreateSerializer(serializers.Serializer):
 
 
 class OICOfficerUpdateSerializer(serializers.Serializer):
-    approved_application_id = serializers.CharField()
+    approved_application_id = serializers.CharField(required=False, allow_blank=True, default='')
+    distributor_user_id = serializers.CharField(required=False, allow_blank=True, default='')
+    assignment_type = serializers.CharField(required=False, default='manufacturing')
     name = serializers.CharField(max_length=150)
     email = serializers.EmailField()
     phone_number = serializers.CharField(max_length=10)
@@ -512,8 +545,12 @@ class OICOfficerAssignmentSerializer(serializers.ModelSerializer):
     name = serializers.SerializerMethodField()
     email = serializers.CharField(source='officer.email', read_only=True)
     phoneNumber = serializers.CharField(source='officer.phone_number', read_only=True)
-    applicationId = serializers.CharField(source='approved_application.application_id', read_only=True)
-    licenseId = serializers.CharField(source='license.license_id', read_only=True)
+    applicationId = serializers.SerializerMethodField()
+    licenseId = serializers.SerializerMethodField()
+    assignmentType = serializers.CharField(source='assignment_type', read_only=True)
+    distributorUserId = serializers.IntegerField(source='distributor_user.id', read_only=True)
+    distributorUsername = serializers.CharField(source='distributor_user.username', read_only=True)
+    distributorName = serializers.SerializerMethodField()
     officer_created_at = serializers.DateTimeField(source='officer.date_joined', read_only=True)
     isActive = serializers.BooleanField(source='officer.is_active', read_only=True)
 
@@ -530,6 +567,10 @@ class OICOfficerAssignmentSerializer(serializers.ModelSerializer):
             'licenseId',
             'licensee_id',
             'establishment_name',
+            'assignmentType',
+            'distributorUserId',
+            'distributorUsername',
+            'distributorName',
             'created_at',
             'officer_created_at',
             'isActive',
@@ -539,6 +580,24 @@ class OICOfficerAssignmentSerializer(serializers.ModelSerializer):
         first_name = str(getattr(obj.officer, 'first_name', '') or '').strip()
         last_name = str(getattr(obj.officer, 'last_name', '') or '').strip()
         return f"{first_name} {last_name}".strip()
+
+    def get_applicationId(self, obj):
+        if obj.approved_application:
+            return obj.approved_application.application_id
+        return ''
+
+    def get_licenseId(self, obj):
+        if obj.license:
+            return obj.license.license_id
+        return ''
+
+    def get_distributorName(self, obj):
+        if not obj.distributor_user:
+            return ''
+        first_name = str(getattr(obj.distributor_user, 'first_name', '') or '').strip()
+        last_name = str(getattr(obj.distributor_user, 'last_name', '') or '').strip()
+        name = f"{first_name} {last_name}".strip()
+        return name or obj.distributor_user.username
     
 class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()

@@ -83,6 +83,7 @@ def _normalize_role(role_name):
     aliases = {
         'license_user': 'licensee',
         'licensee_user': 'licensee',
+        'distributor': 'licensee',
         'singlewindow': 'single_window',
         'siteadmin': 'site_admin',
         'permitsection': 'permit_section',
@@ -262,7 +263,7 @@ def dashboard_counts(request):
             'approved': mine.filter(current_stage__name=STAGE_APPROVED, is_approved=True).count(),
             'rejected': mine.filter(current_stage__name=STAGE_REJECTED).count(),
         }
-    elif role in ['site_admin', 'single_window']:
+    elif role in ['site_admin', 'single_window', 'secretary', 'commissioner', 'joint_commissioner', 'executive']:
         counts = {
             'total': base_qs.count(),
             'applied': base_qs.filter(current_stage__name=STAGE_APPLICANT_APPLIED).count(),

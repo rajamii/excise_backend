@@ -82,3 +82,78 @@ def _get_role_stage_names(user, workflow_id: int):
             stagepermission__can_process=True
         ).values_list('name', flat=True).distinct()
     )
+
+def _is_district_scoped_role(user):
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+    role_id = getattr(user, 'role_id', None) or getattr(getattr(user, 'role', None), 'id', None)
+    if role_id in [4, 8]:
+        return True
+    role_name = _normalize_role(getattr(getattr(user, 'role', None), 'name', None))
+    return role_name in [
+        'district_user', 'district_collector', 'district_admin',
+        'sub_enquiry_officer', 'site_inquiry_officer', 'site_enquiry_officer', 'site_inquiry'
+    ]
+
+def _get_user_district_code(user):
+    if not user or not getattr(user, 'is_authenticated', False):
+        return None
+    district_obj = getattr(user, 'district', None)
+    if district_obj:
+        code = getattr(district_obj, 'district_code', None) or getattr(district_obj, 'pk', None)
+        if code:
+            return code
+    return getattr(user, 'district_id', None)
+
+def _filter_by_user_district(qs, user, primary_field=None):
+    if not _is_district_scoped_role(user):
+        return qs
+    district_code = _get_user_district_code(user)
+    if not district_code:
+        return qs.none()
+
+    from django.db.models import Q
+    model_fields = {f.name: f for f in qs.model._meta.get_fields()}
+
+    # 1. Primary district field on the application model (site_district, excise_district, or district)
+    target_field = None
+    if primary_field and primary_field in model_fields and getattr(model_fields[primary_field], 'is_relation', False):
+        target_field = primary_field
+    else:
+        for f in ['site_district', 'excise_district', 'district']:
+            if f in model_fields and getattr(model_fields[f], 'is_relation', False):
+                target_field = f
+                break
+
+    if target_field:
+        q_filter = (
+            Q(**{f"{target_field}__district_code": district_code}) |
+            Q(**{f"{target_field}_id": district_code}) |
+            Q(**{f"{target_field}__id": district_code})
+        )
+        district_obj = getattr(user, 'district', None)
+        if district_obj:
+            q_filter |= Q(**{target_field: district_obj})
+        return qs.filter(q_filter).distinct()
+
+    # 2. Relation via license / old_license if application relates to License model
+    if 'license' in model_fields and getattr(model_fields['license'], 'is_relation', False):
+        return qs.filter(
+            Q(license__excise_district__district_code=district_code) |
+            Q(license__excise_district_id=district_code)
+        ).distinct()
+
+    if 'old_license' in model_fields and getattr(model_fields['old_license'], 'is_relation', False):
+        return qs.filter(
+            Q(old_license__excise_district__district_code=district_code) |
+            Q(old_license__excise_district_id=district_code)
+        ).distinct()
+
+    # 3. Fallback to applicant's district only if model has no direct site/excise district field
+    if 'applicant' in model_fields and getattr(model_fields['applicant'], 'is_relation', False):
+        return qs.filter(
+            Q(applicant__district__district_code=district_code) |
+            Q(applicant__district_id=district_code)
+        ).distinct()
+
+    return qs

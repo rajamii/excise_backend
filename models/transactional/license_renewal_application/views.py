@@ -12,7 +12,7 @@ from .serializers import LicenseApplicationSerializer
 from auth.workflow.models import Workflow
 from auth.workflow.services import WorkflowService
 from models.masters.license.models import License
-from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_role_stage_names
+from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_role_stage_names, _filter_by_user_district, _is_district_scoped_role
 from models.transactional.dashboard_cache import dashboard_counts_cache
 from models.masters.core.models import SupplyChainTimerConfig
 from models.transactional.wallet.wallet_initializer import _resolve_hoa_code
@@ -1102,8 +1102,35 @@ def reject_renewal_application(request, application_id):
 @permission_classes([IsAuthenticated])
 def list_license_applications(request):
     qs = LicenseApplication.objects.all()
-    if not getattr(request.user, "is_staff", False) and not getattr(request.user, "is_superuser", False):
+    role = _normalize_role(request.user.role.name if getattr(request.user, 'role', None) else None)
+    if role in ["site_admin", "admin"]:
+        pass
+    elif role == "licensee":
         qs = qs.filter(applicant=request.user)
+    else:
+        wf = _get_renewal_workflow()
+        if wf:
+            role_stage_names = _renewal_role_stage_names(request.user, wf.id)
+            role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+            from django.contrib.contenttypes.models import ContentType
+            from django.db.models import OuterRef, Exists, Q
+
+            content_type = ContentType.objects.get_for_model(LicenseApplication)
+            acted_by_role = Exists(
+                WorkflowTransaction.objects.filter(
+                    content_type=content_type,
+                    object_id=OuterRef('application_id'),
+                    performed_by__role_id=role_id
+                )
+            )
+
+            qs = qs.filter(
+                Q(current_stage__name__in=role_stage_names) |
+                Q(current_stage__stagepermission__role=request.user.role, current_stage__stagepermission__can_process=True) |
+                acted_by_role
+            ).distinct()
+
+    qs = _filter_by_user_district(qs, request.user, 'applicant__district')
     data = [_serialize_renewal_application(obj) for obj in qs.order_by("-application_id")]
     return Response(data, status=status.HTTP_200_OK)
 
@@ -1139,7 +1166,7 @@ def dashboard_counts(request):
 
     role = _normalize_role(request.user.role.name if request.user.role else None)
     stage_sets = _get_stage_sets(wf.id)
-    all_qs = LicenseApplication.objects.filter(workflow_id=wf.id)
+    all_qs = _filter_by_user_district(LicenseApplication.objects.filter(workflow_id=wf.id), request.user, 'applicant__district')
 
     month = request.query_params.get('month')
     year = request.query_params.get('year')
@@ -1168,49 +1195,45 @@ def dashboard_counts(request):
             }
         )
 
-    if role in ['site_admin', 'single_window']:
-        from django.contrib.contenttypes.models import ContentType
-        from django.db.models import Exists, OuterRef, Q
-        from auth.workflow.models import Transaction as WorkflowTransaction
-
-        content_type = ContentType.objects.get_for_model(LicenseApplication)
-        acted_by_admin = Exists(
-            WorkflowTransaction.objects.filter(
-                content_type=content_type,
-                object_id=OuterRef('application_id')
-            ).exclude(performed_by__role_id=2)
-        )
-        all_qs_annotated = all_qs.annotate(_acted_by_admin=acted_by_admin)
-
-        approved_count = all_qs_annotated.filter(
-            Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True)
-        ).count()
-
+    role_stage_names = _renewal_role_stage_names(request.user, wf.id)
+    if role_stage_names:
+        visible_qs = _renewal_queryset_visible_to_role(all_qs, request.user, role_stage_names)
+        pending_for_role = set(role_stage_names)
         return Response(
             {
-                "applied": all_qs.filter(current_stage__name__in=applied_stages).count(),
-                "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
-                "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
-                "approved": approved_count,
-                "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
+                "applied": all_qs.count(),
+                "pending": visible_qs.filter(current_stage__name__in=pending_for_role).count(),
+                "objection": visible_qs.filter(current_stage__name__in=objection_stages).count(),
+                "approved": visible_qs.filter(current_stage__name__in=approved_stages).count(),
+                "rejected": visible_qs.filter(current_stage__name__in=rejected_stages).count(),
             }
         )
 
-    role_stage_names = _renewal_role_stage_names(request.user, wf.id)
-    if not role_stage_names:
-        return Response({"applied": 0, "pending": 0, "objection": 0, "approved": 0, "rejected": 0})
+    # Site admin / global fallback
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Exists, OuterRef, Q
+    from auth.workflow.models import Transaction as WorkflowTransaction
 
-    visible_qs = _renewal_queryset_visible_to_role(all_qs, request.user, role_stage_names)
-    pending_for_role = set(role_stage_names)
+    content_type = ContentType.objects.get_for_model(LicenseApplication)
+    acted_by_admin = Exists(
+        WorkflowTransaction.objects.filter(
+            content_type=content_type,
+            object_id=OuterRef('application_id')
+        ).exclude(performed_by__role_id=2)
+    )
+    all_qs_annotated = all_qs.annotate(_acted_by_admin=acted_by_admin)
+
+    approved_count = all_qs_annotated.filter(
+        Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True)
+    ).count()
+
     return Response(
         {
-            "applied": 0,
-            "pending": visible_qs.filter(current_stage__name__in=pending_for_role).count(),
-            "objection": visible_qs.filter(current_stage__name__in=objection_stages).count(),
-            "approved": visible_qs.exclude(
-                current_stage__name__in=pending_for_role | objection_stages | rejected_stages
-            ).count(),
-            "rejected": visible_qs.filter(current_stage__name__in=rejected_stages).count(),
+            "applied": all_qs.count(),
+            "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
+            "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
+            "approved": approved_count,
+            "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
         }
     )
 
@@ -1224,7 +1247,11 @@ def application_group(request):
 
     role = _normalize_role(request.user.role.name if request.user.role else None)
     stage_sets = _get_stage_sets(wf.id)
-    all_qs = LicenseApplication.objects.filter(workflow_id=wf.id).select_related("current_stage", "workflow")
+    all_qs = _filter_by_user_district(
+        LicenseApplication.objects.filter(workflow_id=wf.id).select_related("current_stage", "workflow"),
+        request.user,
+        'applicant__district'
+    )
 
     applied_stages = set(stage_sets["initial"])
     objection_stages = set(stage_sets["objection"])

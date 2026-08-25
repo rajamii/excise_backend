@@ -26,11 +26,30 @@ class DistributorPermitApplication(models.Model):
     destination = models.TextField(blank=True, default='')
     route_details = models.TextField(blank=True, default='')
     declaration_accepted = models.BooleanField(default=False)
-    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default=STATUS_SUBMITTED)
+    is_excise_duty_fee_paid = models.BooleanField(default=False)
+    status = models.CharField(max_length=100, default=STATUS_SUBMITTED)
     officer_remarks = models.TextField(blank=True, default='')
     submitted_at = models.DateTimeField(null=True, blank=True)
+    approval_date = models.DateTimeField(null=True, blank=True)
+    valid_up_to = models.DateTimeField(null=True, blank=True)
+    permit_wise_details = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    workflow = models.ForeignKey(
+        'workflow.Workflow',
+        on_delete=models.PROTECT,
+        related_name='distributor_permit_applications',
+        null=True,
+        blank=True,
+    )
+    current_stage = models.ForeignKey(
+        'workflow.WorkflowStage',
+        on_delete=models.PROTECT,
+        related_name='distributor_permit_applications',
+        null=True,
+        blank=True,
+    )
 
     class Meta:
         db_table = 'distributor_permit_application'
@@ -52,12 +71,23 @@ class DistributorPermitApplication(models.Model):
         return f'{d.year - 1}-{str(d.year)[2:]}'
 
     @classmethod
-    def generate_reference_no(cls, today=None) -> str:
+    def generate_reference_no(cls, app_type='requisition', today=None) -> str:
         fin_year = cls.generate_financial_year(today)
-        prefix = f'DP/{fin_year}'
+        t = str(app_type or '').lower()
+        if 'reval' in t:
+            prefix_code = 'IMFLREV'
+            target_model = IMFLRevalidation
+        elif 'canc' in t:
+            prefix_code = 'IMFLCAN'
+            target_model = IMFLCancellation
+        else:
+            prefix_code = 'IMFLREQ'
+            target_model = cls
+
+        prefix = f'{prefix_code}/{fin_year}'
         with transaction.atomic():
             last_app = (
-                cls.objects.select_for_update()
+                target_model.objects.select_for_update()
                 .filter(reference_no__startswith=prefix + '/')
                 .order_by('-reference_no')
                 .first()
@@ -85,16 +115,14 @@ class DistributorPermitLineItem(models.Model):
     brand_name = models.CharField(max_length=255)
     size_ml = models.PositiveIntegerField()
     pieces_per_case = models.PositiveIntegerField(default=0)
-    cases = models.PositiveIntegerField()
     edp_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
     import_pass_fee_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
     mrp_per_bottle = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
     additional_ed_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
     education_cess_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
-    total_import = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
-    total_education_cess = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
     total_additional_ed = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
     bulk_litres = models.DecimalField(max_digits=15, decimal_places=3, default=Decimal('0.000'))
+    permit_number = models.CharField(max_length=100, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -125,3 +153,212 @@ class DistributorPermitDocument(models.Model):
 
     def __str__(self):
         return f'{self.application_id} - {self.document_type}'
+
+
+class IMFLRevalidationActivationSchedule(models.Model):
+    STATUS_PENDING = 'pending'
+    STATUS_PROCESSED = 'processed'
+    STATUS_CANCELLED = 'cancelled'
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_PROCESSED, 'Processed'),
+        (STATUS_CANCELLED, 'Cancelled'),
+    ]
+
+    distributor_permit = models.ForeignKey(
+        DistributorPermitApplication,
+        on_delete=models.CASCADE,
+        related_name='revalidation_activation_schedules'
+    )
+    distributor_permit_ref_no = models.CharField(max_length=50, db_index=True)
+    approval_date = models.DateTimeField()
+    activation_due_at = models.DateTimeField(db_index=True)
+    activated_at = models.DateTimeField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
+    notes = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'imfl_revalidation_activation_schedule'
+        ordering = ['activation_due_at', '-updated_at']
+
+    def __str__(self) -> str:
+        return f"{self.distributor_permit_ref_no} -> {self.activation_due_at}"
+
+
+class IMFLRevalidation(models.Model):
+    reference_no = models.CharField(max_length=50, primary_key=True, db_index=True)
+    distributor_permit = models.ForeignKey(
+        DistributorPermitApplication,
+        on_delete=models.CASCADE,
+        related_name='revalidations',
+    )
+    applicant = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='imfl_revalidations',
+    )
+    revalidated_permit_number = models.CharField(max_length=100, blank=True, default='')
+    permit_wise_details = models.JSONField(default=list, blank=True)
+    revalidation_reason = models.TextField(blank=True, default='')
+    status = models.CharField(max_length=100, default='Submitted')
+    officer_remarks = models.TextField(blank=True, default='')
+    valid_up_to = models.DateTimeField(null=True, blank=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    workflow = models.ForeignKey(
+        'workflow.Workflow',
+        on_delete=models.PROTECT,
+        related_name='imfl_revalidations',
+        null=True,
+        blank=True,
+    )
+    current_stage = models.ForeignKey(
+        'workflow.WorkflowStage',
+        on_delete=models.PROTECT,
+        related_name='imfl_revalidations',
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        db_table = 'imfl_revalidation'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.reference_no} ({self.distributor_permit_id})"
+
+
+class IMFLCancellation(models.Model):
+    reference_no = models.CharField(max_length=50, primary_key=True, db_index=True)
+    distributor_permit = models.ForeignKey(
+        DistributorPermitApplication,
+        on_delete=models.CASCADE,
+        related_name='cancellations',
+    )
+    applicant = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='imfl_cancellations',
+    )
+    cancelled_permit_number = models.CharField(max_length=100, blank=True, default='')
+    permit_wise_details = models.JSONField(default=list, blank=True)
+    cancellation_reason = models.TextField(blank=True, default='')
+    status = models.CharField(max_length=100, default='Submitted')
+    officer_remarks = models.TextField(blank=True, default='')
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    workflow = models.ForeignKey(
+        'workflow.Workflow',
+        on_delete=models.PROTECT,
+        related_name='imfl_cancellations',
+        null=True,
+        blank=True,
+    )
+    current_stage = models.ForeignKey(
+        'workflow.WorkflowStage',
+        on_delete=models.PROTECT,
+        related_name='imfl_cancellations',
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        db_table = 'imfl_cancellation'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.reference_no} ({self.distributor_permit_id})"
+
+
+class IMFLArrival(models.Model):
+    distributor_permit = models.ForeignKey(
+        DistributorPermitApplication,
+        on_delete=models.CASCADE,
+        related_name='arrivals'
+    )
+    permit_number = models.CharField(max_length=100, db_index=True)
+    vehicle_number = models.CharField(max_length=100)
+    brand_name = models.CharField(max_length=255)
+    size_ml = models.IntegerField(default=750)
+    expected_cases = models.IntegerField(default=0)
+    arrived_cases = models.IntegerField(default=0)
+    remarks = models.TextField(blank=True, default='')
+    arrived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='imfl_arrivals',
+        null=True,
+        blank=True
+    )
+    arrived_at = models.DateTimeField(default=timezone.now)
+    status = models.CharField(max_length=50, default='Submitted')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'imfl_arrival'
+        ordering = ['-arrived_at', '-id']
+
+    def __str__(self):
+        return f"{self.permit_number} - {self.vehicle_number} ({self.arrived_cases} cases)"
+
+
+class IMFLCasesProcessed(models.Model):
+    distributor_permit = models.ForeignKey(
+        DistributorPermitApplication,
+        on_delete=models.CASCADE,
+        related_name='processed_arrivals'
+    )
+    permit_number = models.CharField(max_length=100, db_index=True)
+    vehicle_number = models.CharField(max_length=100)
+    brand_name = models.CharField(max_length=255)
+    size_ml = models.IntegerField(default=750)
+    expected_cases = models.IntegerField(default=0)
+    arrived_cases = models.IntegerField(default=0)
+    remarks = models.TextField(blank=True, default='')
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='submitted_imfl_cases_processed',
+        null=True,
+        blank=True
+    )
+    oic_officer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name='assigned_imfl_cases_processed',
+        null=True,
+        blank=True
+    )
+    status = models.CharField(
+        max_length=50,
+        default='under_review',
+        choices=[
+            ('under_review', 'Under Review'),
+            ('approved', 'Approved'),
+            ('rejected', 'Rejected'),
+        ],
+        db_index=True
+    )
+    officer_remarks = models.TextField(blank=True, default='')
+    submitted_at = models.DateTimeField(default=timezone.now)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'imfl_cases_processed'
+        ordering = ['-submitted_at', '-id']
+
+    def __str__(self):
+        return f"{self.permit_number} - {self.vehicle_number} ({self.status})"
+
+
+

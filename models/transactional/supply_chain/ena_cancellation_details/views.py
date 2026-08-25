@@ -19,6 +19,29 @@ from models.transactional.supply_chain.access_control import (
 
 logger = logging.getLogger(__name__)
 
+
+def _is_permit_under_revalidation(permit_no: str) -> bool:
+    from models.transactional.supply_chain.ena_revalidation_details.models import EnaRevalidationDetail
+    p_no = str(permit_no or '').strip()
+    if not p_no:
+        return False
+    
+    # Active (unapproved/pending) revalidations only
+    revals = EnaRevalidationDetail.objects.exclude(
+        models.Q(status__icontains='reject') |
+        models.Q(status__icontains='invalid') |
+        models.Q(status__icontains='expire') |
+        models.Q(status__icontains='approv') |
+        models.Q(status_code__iexact='RV_09')
+    )
+    for r in revals:
+        r_permits = [p.strip() for p in str(r.details_permits_number or '').split(',') if p.strip()]
+        if p_no in r_permits:
+            return True
+            
+    return False
+
+
 class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     """
     API endpoint that allows ENA cancellation details to be viewed or edited.
@@ -720,6 +743,12 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                 return Response({
                     'error': 'Some selected permits are already submitted for cancellation.',
                     'duplicate_permits': duplicate_permits
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            reval_blocked = [p for p in normalized_permit_numbers if _is_permit_under_revalidation(p)]
+            if reval_blocked:
+                return Response({
+                    'error': f"Some selected permits are currently under revalidation: {', '.join(reval_blocked)}. Cannot submit cancellation request."
                 }, status=status.HTTP_400_BAD_REQUEST)
 
             # Cancellation fee is fixed per permit, while refund comes from the requisition's

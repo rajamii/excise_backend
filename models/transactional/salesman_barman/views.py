@@ -33,6 +33,7 @@ from django.contrib.contenttypes.models import ContentType
 from models.transactional.payment_gateway.models import MasterPaymentModule
 from models.transactional.wallet.wallet_service import debit_wallet_balance
 from models.transactional.dashboard_cache import dashboard_counts_cache
+from models.transactional.helpers import _filter_by_user_district, _is_district_scoped_role
 
 
 def _normalize_role(role_name):
@@ -42,6 +43,7 @@ def _normalize_role(role_name):
     aliases = {
         'license_user': 'licensee',
         'licensee_user': 'licensee',
+        'distributor': 'licensee',
         'singlewindow': 'single_window',
         'siteadmin': 'site_admin',
     }
@@ -695,11 +697,29 @@ def list_salesman_barman(request):
     elif role == "licensee":
         applications = SalesmanBarmanModel.objects.filter(applicant=request.user)
     else:
+        workflow_id = WORKFLOW_IDS['SALESMAN_BARMAN']
+        role_stage_names = _get_role_stage_names(request.user, workflow_id)
+        role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+
+        from django.contrib.contenttypes.models import ContentType
+        from django.db.models import OuterRef, Exists, Q
+
+        content_type = ContentType.objects.get_for_model(SalesmanBarmanModel)
+        acted_by_role = Exists(
+            WorkflowTransaction.objects.filter(
+                content_type=content_type,
+                object_id=OuterRef('application_id'),
+                performed_by__role_id=role_id
+            )
+        )
+
         applications = SalesmanBarmanModel.objects.filter(
-            current_stage__stagepermission__role=request.user.role,
-            current_stage__stagepermission__can_process=True
+            Q(current_stage__name__in=role_stage_names) |
+            Q(current_stage__stagepermission__role=request.user.role, current_stage__stagepermission__can_process=True) |
+            acted_by_role
         ).distinct()
 
+    applications = _filter_by_user_district(applications, request.user, 'excise_district')
     serializer = SalesmanBarmanSerializer(applications, many=True)
     return Response(serializer.data)
 
@@ -863,7 +883,7 @@ def dashboard_counts(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['SALESMAN_BARMAN']
     stage_sets = _get_stage_sets(workflow_id)
-    all_qs = SalesmanBarmanModel.objects.all()
+    all_qs = _filter_by_user_district(SalesmanBarmanModel.objects.all(), request.user, 'excise_district')
 
     month = request.query_params.get('month')
     year = request.query_params.get('year')
@@ -889,7 +909,7 @@ def dashboard_counts(request):
             "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
         })
 
-    if role in ['site_admin', 'single_window']:
+    if role in ['site_admin', 'single_window', 'secretary', 'commissioner', 'joint_commissioner', 'executive']:
         applied_stages = set(stage_sets['initial'])
         pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
         pending_for_ui = pending_stages | applied_stages
@@ -973,7 +993,7 @@ def application_group(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['SALESMAN_BARMAN']
     stage_sets = _get_stage_sets(workflow_id)
-    all_qs = SalesmanBarmanModel.objects.all()
+    all_qs = _filter_by_user_district(SalesmanBarmanModel.objects.all(), request.user, 'excise_district')
 
     if role == 'licensee':
         base_qs = SalesmanBarmanModel.objects.filter(applicant=request.user)

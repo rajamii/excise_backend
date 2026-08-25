@@ -9,10 +9,10 @@ from rest_framework.parsers import JSONParser
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 
-from auth.workflow.models import Workflow
+from auth.workflow.models import Workflow, Transaction as WorkflowTransaction
 from auth.workflow.services import WorkflowService
 from models.masters.license.models import License
-from models.transactional.helpers import _get_role_stage_names, _get_stage_sets, _normalize_role, _collect_reachable_stage_names
+from models.transactional.helpers import _get_role_stage_names, _get_stage_sets, _normalize_role, _collect_reachable_stage_names, _filter_by_user_district, _is_district_scoped_role
 from models.transactional.dashboard_cache import dashboard_counts_cache
 
 from .models import SpecialPermitApplication, MasterDryDay
@@ -302,16 +302,35 @@ def _visible_queryset(request):
         'current_stage',
     )
 
+    if role in ['site_admin', 'admin']:
+        return qs
+
     if role == 'licensee':
         return qs.filter(applicant=request.user)
 
-    if role == 'district_user' and getattr(request.user, 'district', None):
-        return qs.filter(excise_district=request.user.district)
+    workflow = _get_special_permit_workflow()
+    if workflow:
+        role_stage_names = _get_role_stage_names(request.user, workflow.id)
+        role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+        from django.contrib.contenttypes.models import ContentType
+        from django.db.models import OuterRef, Exists, Q
 
-    if role and 'commissioner' in role:
-        return qs.exclude(current_stage__name__in=['Applied', 'District User'])
+        content_type = ContentType.objects.get_for_model(SpecialPermitApplication)
+        acted_by_role = Exists(
+            WorkflowTransaction.objects.filter(
+                content_type=content_type,
+                object_id=OuterRef('application_id'),
+                performed_by__role_id=role_id
+            )
+        )
 
-    return qs
+        qs = qs.filter(
+            Q(current_stage__name__in=role_stage_names) |
+            Q(current_stage__stagepermission__role=request.user.role, current_stage__stagepermission__can_process=True) |
+            acted_by_role
+        ).distinct()
+
+    return _filter_by_user_district(qs, request.user, 'excise_district')
 
 
 def _status_sets(workflow):
@@ -474,7 +493,7 @@ def dashboard_counts(request):
             'awaiting_payment': qs.filter(current_stage__name__in=payment_stages).count(),
         }, status=status.HTTP_200_OK)
 
-    if role in ('site_admin', 'single_window'):
+    if role in ('site_admin', 'single_window', 'secretary', 'commissioner', 'joint_commissioner', 'executive'):
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])

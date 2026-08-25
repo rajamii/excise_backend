@@ -103,7 +103,8 @@ INSTALLED_APPS = [
     # auth models 
     'auth.roles',
     'auth.user',
-    'auth.workflow'
+    'auth.workflow',
+    'secretary'
 ]
 
 MIDDLEWARE = [
@@ -163,12 +164,12 @@ DATABASES = {
         'USER': 'postgres',         # Your PostgreSQL username
         'PASSWORD': 'postgres',  # Your PostgreSQL password
         'HOST': 'localhost',        
-        'PORT': '5432',             # Default PostgreSQL port
+        'PORT': '5433',             # Default PostgreSQL port
         'CONN_MAX_AGE': 300,         # Don't reuse connections — avoids aborted transaction state
     }
 }
 
-# Forgot Password Email SettingsSS
+# Forgot Password Email Settings
 # EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # For production, use SMTP:
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'

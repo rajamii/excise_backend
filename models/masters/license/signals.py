@@ -397,15 +397,18 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
     prefix = prefix_map.get(source_type, 'XX')
     base_prefix = f"{prefix}/{district_code}/{fin_year}"
 
-    # Get next sequence
-    last_license = License.objects.filter(license_id__startswith=base_prefix + "/").order_by('-license_id').first()
-    seq = 1
-    if last_license:
-        try:
-            seq = int(last_license.license_id.split('/')[-1]) + 1
-        except:
-            pass
+    # Get next sequence cleanly (max int rather than string order_by)
+    existing_ids = License.objects.filter(license_id__startswith=base_prefix + "/").values_list('license_id', flat=True)
+    seqs = []
+    for lic_id in existing_ids:
+        parts = lic_id.split('/')
+        if len(parts) > 0 and parts[-1].isdigit():
+            seqs.append(int(parts[-1]))
+    seq = (max(seqs) + 1) if seqs else 1
     new_license_id = f"{base_prefix}/{str(seq).zfill(4)}"
+    while License.objects.filter(license_id=new_license_id).exists():
+        seq += 1
+        new_license_id = f"{base_prefix}/{str(seq).zfill(4)}"
 
     try:
         license_is_active = (

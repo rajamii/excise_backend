@@ -124,6 +124,20 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
             data['approval_date'] = approval_anchor.isoformat()
             data['expiry_date'] = (approval_anchor + timedelta(days=validity_days)).isoformat()
 
+        requisition_ref_no = getattr(instance, 'requisition_ref_no', None)
+        if not requisition_ref_no and instance.our_ref_no and str(instance.our_ref_no).startswith('REV/'):
+            requisition_ref_no = str(instance.our_ref_no).replace('REV/', 'REQ/')
+        data['requisition_ref_no'] = requisition_ref_no or instance.our_ref_no
+
+        try:
+            from models.transactional.supply_chain.ena_requisition_details.models import EnaRequisitionDetail
+            req = EnaRequisitionDetail.objects.filter(our_ref_no=data['requisition_ref_no']).first()
+            if req and req.valid_up_to:
+                data['valid_up_to'] = req.valid_up_to.isoformat()
+                data['expiry_date'] = req.valid_up_to.isoformat()
+        except Exception:
+            pass
+
         return data
 
     def _get_revalidation_validity_period_days(self) -> int:
@@ -134,26 +148,26 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
         default_days = 45
         resolved_days = default_days
         try:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT COALESCE(validity_period_days, %s)
-                    FROM public.timer
-                    WHERE code = %s
-                      AND is_active = TRUE
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    [default_days, 'ENA_REVALIDATION_ACTIVATION']
-                )
-                row = cursor.fetchone()
-                if row and row[0] is not None:
-                    candidate = int(row[0])
-                    if candidate >= 0:
-                        resolved_days = candidate
+            from models.masters.core.models import SupplyChainTimerConfig
+            cfg = SupplyChainTimerConfig.objects.filter(
+                code='ENA_REVALIDATION_ACTIVATION', is_active=True
+            ).order_by('-updated_at', '-id').first()
+            if cfg and cfg.delay_value:
+                val = int(cfg.delay_value)
+                unit = (cfg.delay_unit or 'day').lower()
+                if unit == 'day':
+                    resolved_days = val
+                elif unit == 'month':
+                    resolved_days = val * 30
+                elif unit == 'year':
+                    resolved_days = val * 365
+                elif unit == 'week':
+                    resolved_days = val * 7
+                else:
+                    resolved_days = val
         except Exception as exc:
             logger.warning(
-                "Unable to resolve revalidation validity_period_days from public.timer. Using default=%s. Error=%s",
+                "Unable to resolve revalidation validity_period_days from SupplyChainTimerConfig. Using default=%s. Error=%s",
                 default_days,
                 exc,
             )
@@ -216,21 +230,16 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
         if not user_role_name:
             return []
 
-        user_role_name = user_role_name.strip()
+        cleaned_role_name = user_role_name.lower().strip()
 
         role = None
-        commissioner_roles = ['level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'Site-Admin', 'site_admin', 'commissioner', 'Commissioner']
-        permit_roles = ['permit-section', 'Permit-Section', 'Permit Section', 'permit section']
-        oic_roles = ['officer-in-charge', 'Officer-in-Charge', 'OIC', 'oic']
-        licensee_roles = ['licensee', 'Licensee']
-
-        if user_role_name in commissioner_roles:
+        if cleaned_role_name in ['commissioner', 'level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'site_admin', 'site-admin'] or 'commissioner' in cleaned_role_name:
             role = 'commissioner'
-        elif user_role_name in permit_roles:
+        elif cleaned_role_name in ['permit-section', 'permit section', 'permit_section']:
             role = 'permit-section'
-        elif user_role_name in oic_roles:
+        elif cleaned_role_name in ['officer-in-charge', 'officer in charge', 'officer_in_charge', 'oic']:
             role = 'officer-in-charge'
-        elif user_role_name in licensee_roles:
+        elif cleaned_role_name in ['licensee', 'license user', 'license_user']:
             role = 'licensee'
 
         if not role:
@@ -286,19 +295,21 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
         return configs
 
     def create(self, validated_data):
-        validated_data.pop('our_ref_no', None)
+        our_ref_no = validated_data.pop('our_ref_no', None)
+        if not our_ref_no:
+            existing_refs = EnaRevalidationDetail.objects.values_list('our_ref_no', flat=True)
+            pattern = r'REV/(\d+)/EXCISE'
+            numbers = []
 
-        existing_refs = EnaRevalidationDetail.objects.values_list('our_ref_no', flat=True)
-        pattern = r'REV/(\d+)/EXCISE'
-        numbers = []
+            for ref in existing_refs:
+                match = re.match(pattern, str(ref or ''))
+                if match:
+                    numbers.append(int(match.group(1)))
 
-        for ref in existing_refs:
-            match = re.match(pattern, str(ref or ''))
-            if match:
-                numbers.append(int(match.group(1)))
-
-        next_number = (max(numbers) + 1) if numbers else 1
-        validated_data['our_ref_no'] = f"REV/{next_number:02d}/EXCISE"
+            next_number = (max(numbers) + 1) if numbers else 1
+            our_ref_no = f"REV/{next_number:02d}/EXCISE"
+        
+        validated_data['our_ref_no'] = our_ref_no
 
         request = self.context.get('request')
         if request:

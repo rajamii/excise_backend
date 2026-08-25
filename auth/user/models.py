@@ -275,22 +275,46 @@ class LicenseeProfile(models.Model):
 
 
 class OICOfficerAssignment(models.Model):
+    ASSIGNMENT_MANUFACTURING = 'manufacturing'
+    ASSIGNMENT_DISTRIBUTOR = 'distributor'
+    ASSIGNMENT_TYPE_CHOICES = [
+        (ASSIGNMENT_MANUFACTURING, 'Manufacturing'),
+        (ASSIGNMENT_DISTRIBUTOR, 'Distributor'),
+    ]
+
     officer = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='oic_assignment'
     )
+    assignment_type = models.CharField(
+        max_length=50,
+        choices=ASSIGNMENT_TYPE_CHOICES,
+        default=ASSIGNMENT_MANUFACTURING,
+        db_index=True
+    )
     approved_application = models.ForeignKey(
         'new_license_application.NewLicenseApplication',
         on_delete=models.PROTECT,
-        related_name='oic_officers'
+        related_name='oic_officers',
+        null=True,
+        blank=True
     )
     license = models.ForeignKey(
         'license.License',
         on_delete=models.PROTECT,
-        related_name='oic_officers'
+        related_name='oic_officers',
+        null=True,
+        blank=True
     )
-    licensee_id = models.CharField(max_length=100)
+    distributor_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='assigned_distributor_oic_officers'
+    )
+    licensee_id = models.CharField(max_length=100, blank=True, default='')
     establishment_name = models.CharField(max_length=150)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -307,4 +331,4 @@ class OICOfficerAssignment(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.officer} -> {self.establishment_name}"
+        return f"{self.officer} -> {self.establishment_name} ({self.assignment_type})"

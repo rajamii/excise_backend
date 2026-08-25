@@ -12,6 +12,7 @@ from models.masters.license.models import License
 from models.transactional.new_license_application.models import NewLicenseApplication
 from models.transactional.license_renewal_application.models import LicenseApplication as RenewalApplication
 from models.transactional.salesman_barman.models import SalesmanBarmanModel
+from models.transactional.helpers import _filter_by_user_district, _is_district_scoped_role
 
 
 def get_current_run_start_time(content_type, object_id):
@@ -739,6 +740,7 @@ def single_window_search(request):
         )
         licenses = apply_date_filters(licenses, "issue_date")
         licenses = apply_category_filter(licenses, "license_category__license_category")
+        licenses = _filter_by_user_district(licenses, request.user, 'excise_district')
         licenses = licenses.order_by("-issue_date")[:15]
     else:
         licenses = []
@@ -759,6 +761,7 @@ def single_window_search(request):
         )
         renewal_apps = apply_date_filters(renewal_apps, "created_at")
         renewal_apps = apply_category_filter(renewal_apps, "license_category__license_category")
+        renewal_apps = _filter_by_user_district(renewal_apps, request.user, 'applicant__district')
         renewal_apps = renewal_apps.order_by("-created_at")[:15]
     else:
         renewal_apps = []
@@ -783,6 +786,7 @@ def single_window_search(request):
         )
         sbm_apps = apply_date_filters(sbm_apps, "created_at")
         sbm_apps = apply_role_filter(sbm_apps, "role")
+        sbm_apps = _filter_by_user_district(sbm_apps, request.user, 'excise_district')
         sbm_apps = sbm_apps.order_by("-created_at")[:15]
     else:
         sbm_apps = []
@@ -824,6 +828,7 @@ def single_window_search(request):
     )
     new_apps = apply_date_filters(new_apps, "created_at")
     new_apps = apply_category_filter(new_apps, "license_category__license_category")
+    new_apps = _filter_by_user_district(new_apps, request.user, 'site_district')
     new_apps = new_apps.order_by("-created_at")[:15]
 
     for app in new_apps:

@@ -16,7 +16,8 @@ urlpatterns = [
     re_path(r'^masters/v/(?P<code>.+)/$', public_validation_views.validate_license_landing, name='validate-license-masters'),
     path('masters/', include('models.masters.urls')),
     path('transactional/', include('models.transactional.urls')),
-    
+    path('api/secretary/', include('secretary.urls')),
+    path('secretary/', include('secretary.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
 if settings.DEBUG:

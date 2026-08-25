@@ -49,28 +49,10 @@ def _derive_licensee_id(application, license_obj):
 def create_oic_officer_service(payload: dict, created_by_user: CustomUser):
     """
     Service to handle the business logic of creating an OIC officer.
+    Supports assignment_type = 'manufacturing' or 'distributor'.
     Raises ValidationError if business rules are violated.
     """
-    try:
-        application = NewLicenseApplication.objects.get(
-            application_id=payload['approved_application_id']
-        )
-    except NewLicenseApplication.DoesNotExist:
-        raise ValidationError("Approved application not found.")
-
-    content_type = ContentType.objects.get_for_model(NewLicenseApplication)
-    license_obj = (
-        License.objects.filter(
-            source_type='new_license_application',
-            source_content_type=content_type,
-            source_object_id=str(application.application_id),
-            is_active=True,
-        )
-        .order_by('-issue_date')
-        .first()
-    )
-    if not license_obj:
-        raise ValidationError("No active license found for selected approved application.")
+    assignment_type = str(payload.get('assignment_type', '') or 'manufacturing').strip().lower()
 
     oic_role = (
         Role.objects.filter(name__iexact='officer_in_charge').first()
@@ -82,50 +64,115 @@ def create_oic_officer_service(payload: dict, created_by_user: CustomUser):
 
     first_name, last_name = _split_full_name(payload['name'])
     password = _generate_temp_password()
-    address = (
-        str(getattr(application, 'business_address', '') or '').strip()
-        or str(getattr(application, 'present_address', '') or '').strip()
-        or 'N/A'
-    )
-    licensee_id = _derive_licensee_id(application, license_obj)
-    license_type_name = (
-        str(getattr(getattr(application, 'license_type', None), 'license_type', '') or '').strip()
-        or None
-    )
 
-    with transaction.atomic():
-        officer = CustomUser.objects.create_user(
-            email=payload['email'],
-            first_name=first_name,
-            middle_name='',
-            last_name=last_name,
-            phone_number=payload['phone_number'],
-            district=application.site_district,
-            subdivision=application.site_subdivision,
-            address=address,
-            password=password,
-            role=oic_role,
-            created_by=created_by_user,
-            is_oic_managed=True,
+    if assignment_type == 'distributor':
+        distributor_id = payload.get('distributor_user_id') or payload.get('approved_application_id')
+        if not distributor_id:
+            raise ValidationError("Distributor selection is required for Distributor OIC assignment.")
+
+        try:
+            distributor_user = CustomUser.objects.select_related('district', 'subdivision').get(pk=distributor_id)
+        except (CustomUser.DoesNotExist, ValueError):
+            try:
+                distributor_user = CustomUser.objects.select_related('district', 'subdivision').get(username=distributor_id)
+            except CustomUser.DoesNotExist:
+                raise ValidationError("Selected Distributor user not found.")
+
+        establishment_name = (
+            str(getattr(distributor_user, 'company_name', '') or '').strip()
+            or str(getattr(distributor_user, 'establishment_name', '') or '').strip()
+            or f"Distributor {distributor_user.username}"
         )
+        licensee_id = distributor_user.username
+        address = str(getattr(distributor_user, 'address', '') or 'Distributor Premises').strip()
+        site_district = distributor_user.district
+        site_subdivision = distributor_user.subdivision
 
-        assignment = OICOfficerAssignment.objects.create(
-            officer=officer,
-            approved_application=application,
-            license=license_obj,
-            licensee_id=licensee_id,
-            establishment_name=application.establishment_name,
-            created_by=created_by_user,
+        with transaction.atomic():
+            officer = CustomUser.objects.create_user(
+                email=payload['email'],
+                first_name=first_name,
+                middle_name='',
+                last_name=last_name,
+                phone_number=payload['phone_number'],
+                district=site_district,
+                subdivision=site_subdivision,
+                address=address,
+                password=password,
+                role=oic_role,
+                created_by=created_by_user,
+                is_oic_managed=True,
+            )
+
+            assignment = OICOfficerAssignment.objects.create(
+                officer=officer,
+                assignment_type=OICOfficerAssignment.ASSIGNMENT_DISTRIBUTOR,
+                distributor_user=distributor_user,
+                licensee_id=licensee_id,
+                establishment_name=establishment_name,
+                created_by=created_by_user,
+            )
+
+            return officer, assignment, password
+
+    else:
+        # Manufacturing OIC assignment
+        try:
+            application = NewLicenseApplication.objects.select_related('license_category').get(
+                application_id=payload['approved_application_id']
+            )
+        except NewLicenseApplication.DoesNotExist:
+            raise ValidationError("Approved application not found.")
+
+        cat_name = str(getattr(getattr(application, 'license_category', None), 'license_category', '') or '').strip().lower()
+        if not ('manufacturing' in cat_name or 'brewery' in cat_name or 'distiller' in cat_name):
+            raise ValidationError("Officer in Charge (OIC) can only be assigned to Manufacturing category establishments.")
+
+        content_type = ContentType.objects.get_for_model(NewLicenseApplication)
+        license_obj = (
+            License.objects.filter(
+                source_type='new_license_application',
+                source_content_type=content_type,
+                source_object_id=str(application.application_id),
+                is_active=True,
+            )
+            .order_by('-issue_date')
+            .first()
         )
+        if not license_obj:
+            raise ValidationError("No active license found for selected approved application.")
 
-        UserManufacturingUnit.objects.update_or_create(
-            user=officer,
-            licensee_id=licensee_id,
-            defaults={
-                'manufacturing_unit_name': application.establishment_name,
-                'license_type': license_type_name,
-                'address': address,
-            }
+        address = (
+            str(getattr(application, 'business_address', '') or '').strip()
+            or str(getattr(application, 'present_address', '') or '').strip()
+            or 'N/A'
         )
+        licensee_id = _derive_licensee_id(application, license_obj)
 
-    return officer, assignment, password
+        with transaction.atomic():
+            officer = CustomUser.objects.create_user(
+                email=payload['email'],
+                first_name=first_name,
+                middle_name='',
+                last_name=last_name,
+                phone_number=payload['phone_number'],
+                district=application.site_district,
+                subdivision=application.site_subdivision,
+                address=address,
+                password=password,
+                role=oic_role,
+                created_by=created_by_user,
+                is_oic_managed=True,
+            )
+
+            assignment = OICOfficerAssignment.objects.create(
+                officer=officer,
+                assignment_type=OICOfficerAssignment.ASSIGNMENT_MANUFACTURING,
+                approved_application=application,
+                license=license_obj,
+                licensee_id=licensee_id,
+                establishment_name=application.establishment_name,
+                created_by=created_by_user,
+            )
+
+            return officer, assignment, password

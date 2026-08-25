@@ -140,6 +140,7 @@ def _normalize_role(role_name):
     aliases = {
         'license_user':       'licensee',
         'licensee_user':      'licensee',
+        'distributor':        'licensee',
         'singlewindow':       'single_window',
         'siteadmin':          'site_admin',
         'permitsection':      'permit_section',
@@ -552,7 +553,7 @@ def workflow_action(request, application_id):
 # ---------------------------------------------------------------------------
 
 @api_view(['GET'])
-@permission_classes([HasCompanyCollaborationViewPermission, HasStagePermission])
+@permission_classes([permissions.IsAuthenticated])
 @dashboard_counts_cache("company_collaboration")
 def dashboard_counts(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
@@ -568,27 +569,37 @@ def dashboard_counts(request):
 
     # ── Permit Section ───────────────────────────────────────────────────
     if role == 'permit_section':
+        pending = base_qs.filter(current_stage__name__in=[STAGE_PERMIT_SECTION, STAGE_PERMIT_SECTION_OBJECTION]).count()
+        approved = base_qs.filter(current_stage__name__in=[
+            STAGE_COMMISSIONER, STAGE_COMMISSIONER_OBJECTION, 
+            STAGE_AWAITING_PAYMENT, STAGE_FINAL_COMMISSIONER_REVIEW, STAGE_APPROVED
+        ]).count()
+        rejected = base_qs.filter(current_stage__name=STAGE_REJECTED).count()
+        objection = base_qs.filter(current_stage__name=STAGE_PERMIT_SECTION_OBJECTION).count()
+        awaiting_payment = base_qs.filter(current_stage__name=STAGE_AWAITING_PAYMENT).count()
         counts = {
-            'applied': base_qs.count(),
-            'pending':  base_qs.filter(current_stage__name__in=[STAGE_PERMIT_SECTION, STAGE_PERMIT_SECTION_OBJECTION]).count(),
-            'approved': base_qs.filter(current_stage__name__in=[
-                STAGE_COMMISSIONER, STAGE_COMMISSIONER_OBJECTION, 
-                STAGE_AWAITING_PAYMENT, STAGE_FINAL_COMMISSIONER_REVIEW, STAGE_APPROVED
-            ]).count(),
-            'rejected': base_qs.filter(current_stage__name=STAGE_REJECTED).count(),
-            'objection': base_qs.filter(current_stage__name=STAGE_PERMIT_SECTION_OBJECTION).count(),
-            'awaiting_payment': base_qs.filter(current_stage__name=STAGE_AWAITING_PAYMENT).count(),
+            'applied': pending + approved + rejected,
+            'pending':  pending,
+            'approved': approved,
+            'rejected': rejected,
+            'objection': objection,
+            'awaiting_payment': awaiting_payment,
         }
 
     # ── Commissioner ─────────────────────────────────────────────────────
     elif role == 'commissioner':
+        pending = base_qs.filter(current_stage__name__in=[STAGE_COMMISSIONER, STAGE_COMMISSIONER_OBJECTION, STAGE_FINAL_COMMISSIONER_REVIEW]).count()
+        approved = base_qs.filter(current_stage__name__in=[STAGE_AWAITING_PAYMENT, STAGE_APPROVED]).count()
+        rejected = base_qs.filter(current_stage__name=STAGE_REJECTED).count()
+        objection = base_qs.filter(current_stage__name=STAGE_COMMISSIONER_OBJECTION).count()
+        awaiting_payment = base_qs.filter(current_stage__name=STAGE_AWAITING_PAYMENT).count()
         counts = {
-            'applied': base_qs.count(),
-            'pending':  base_qs.filter(current_stage__name__in=[STAGE_COMMISSIONER, STAGE_COMMISSIONER_OBJECTION, STAGE_FINAL_COMMISSIONER_REVIEW]).count(),
-            'approved': base_qs.filter(current_stage__name__in=[STAGE_AWAITING_PAYMENT, STAGE_APPROVED]).count(),
-            'rejected': base_qs.filter(current_stage__name=STAGE_REJECTED).count(),
-            'objection': base_qs.filter(current_stage__name=STAGE_COMMISSIONER_OBJECTION).count(),
-            'awaiting_payment': base_qs.filter(current_stage__name=STAGE_AWAITING_PAYMENT).count(),
+            'applied': pending + approved + rejected,
+            'pending':  pending,
+            'approved': approved,
+            'rejected': rejected,
+            'objection': objection,
+            'awaiting_payment': awaiting_payment,
         }
 
     # ── Applicant / licensee ─────────────────────────────────────────────
@@ -666,9 +677,9 @@ def application_group(request):
     if role == 'licensee':
         mine = base_qs.filter(applicant=request.user)
         return Response({
-            'applied':   _serialize(mine.filter(current_stage__name__in=OFFICER_PENDING_STAGES)),
+            'applied':   _serialize(mine.filter(current_stage__name__in=[STAGE_APPLICANT_APPLIED] + OFFICER_PENDING_STAGES)),
             'objection': _serialize(mine.filter(current_stage__name__in=OBJECTION_STAGES)),
-            'approved':  _serialize(mine.filter(current_stage__name=STAGE_APPROVED)),
+            'approved':  _serialize(mine.filter(current_stage__name=STAGE_APPROVED, is_approved=True)),
             'rejected':  _serialize(mine.filter(current_stage__name=STAGE_REJECTED)),
         })
 

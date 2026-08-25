@@ -48,6 +48,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         
         # Explicitly ensure critical fields are included with proper values
+        data['valid_up_to'] = instance.valid_up_to.isoformat() if instance.valid_up_to else None
         data['our_ref_no'] = instance.our_ref_no or ''
         data['lifted_from'] = instance.lifted_from or ''
         data['via_route'] = instance.via_route or ''
@@ -196,6 +197,9 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             data['arrival_rejected_permits_count'] = len(rejected_permits)
             data['arrival_cancelled_permits_count'] = len(cancelled_permits)
             data['arrival_remaining_permits_count'] = remaining_permits
+            # Add actual permit number lists
+            data['arrival_approved_permit_numbers'] = ','.join(sorted(approved_permits, key=lambda x: int(x) if x.isdigit() else x))
+            data['arrival_cancelled_permit_numbers'] = ','.join(sorted(cancelled_permits, key=lambda x: int(x) if x.isdigit() else x))
             data['arrival_submitted_at'] = latest_row.submitted_at.isoformat() if latest_row and latest_row.submitted_at else None
             data['arrival_reviewed_at'] = latest_row.reviewed_at.isoformat() if latest_row and latest_row.reviewed_at else None
             data['arrival_reviewed_by'] = latest_row.reviewed_by or '' if latest_row else ''
@@ -260,6 +264,9 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             data['arrival_rejected_permits_count'] = 0
             data['arrival_cancelled_permits_count'] = len(cancelled_permits)
             data['arrival_remaining_permits_count'] = remaining
+            # Add actual permit number lists
+            data['arrival_approved_permit_numbers'] = ''
+            data['arrival_cancelled_permit_numbers'] = ','.join(sorted(cancelled_permits, key=lambda x: int(x) if x.isdigit() else x))
             data['arrival_submitted_at'] = None
             data['arrival_reviewed_at'] = None
             data['arrival_reviewed_by'] = ''
@@ -479,7 +486,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         role = None
         
         # Commissioner roles (add more aliases if needed)
-        if cleaned_role_name in ['commissioner', 'level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'site_admin', 'site-admin']:
+        if cleaned_role_name in ['commissioner', 'level_1', 'level_2', 'level_3', 'level_4', 'level_5', 'site_admin', 'site-admin'] or 'commissioner' in cleaned_role_name:
             role = 'commissioner'
         # Permit Section roles
         elif cleaned_role_name in ['permit-section', 'permit section', 'permit_section']:

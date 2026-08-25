@@ -62,6 +62,8 @@ def _resolve_license_id_for_report(request, application):
     return _first_non_empty(getattr(application, 'application_id', ''))
 
 
+from models.transactional.helpers import _filter_by_user_district, _is_district_scoped_role
+
 @api_view(['GET', 'POST'])
 @permission_classes([HasStagePermission])
 @parser_classes([MultiPartParser, FormParser])
@@ -70,8 +72,12 @@ def site_enquiry_detail(request, application_id):
     application = None
     for model in [LicenseApplication, NewLicenseApplication]:
         try:
-            application = model.objects.get(application_id=application_id)
-            break
+            qs = model.objects.filter(application_id=application_id)
+            if request.user and _is_district_scoped_role(request.user):
+                qs = _filter_by_user_district(qs, request.user)
+            application = qs.first()
+            if application:
+                break
         except model.DoesNotExist:
             continue
 

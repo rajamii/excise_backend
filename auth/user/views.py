@@ -288,16 +288,16 @@ def oic_approved_establishments(request):
     _ensure_site_admin_or_commissioner(request)
 
     content_type = ContentType.objects.get_for_model(NewLicenseApplication)
-    
+
     application_prefetch = Prefetch(
         'source_application',
         queryset=NewLicenseApplication.objects.select_related(
-            'site_district', 
-            'site_subdivision'
+            'site_district',
+            'site_subdivision',
+            'license_category',
         )
     )
 
-    
     licenses = (
         License.objects.filter(
             source_type='new_license_application',
@@ -313,19 +313,25 @@ def oic_approved_establishments(request):
     seen_applications = set()
 
     for license_obj in licenses:
-        
-        application = license_obj.source_application 
-        
+        application = license_obj.source_application
+
         if not isinstance(application, NewLicenseApplication):
             continue
         if application.application_id in seen_applications:
             continue
+
+        cat_name = str(getattr(getattr(application, 'license_category', None), 'license_category', '') or '').strip()
+        cat_lower = cat_name.lower()
+
+        # OIC assignment is only applicable for Manufacturing category establishments
+        if not ('manufacturing' in cat_lower or 'brewery' in cat_lower or 'distiller' in cat_lower):
+            continue
+
         seen_applications.add(application.application_id)
 
         licensee_id = _derive_licensee_id(application, license_obj)
-        
-        district_code = str(getattr(application.site_district, 'district_code', '') or '')
 
+        district_code = str(getattr(application.site_district, 'district_code', '') or '')
         subdivision_code = str(getattr(application.site_subdivision, 'subdivision_code', '') or '')
 
         rows.append({
@@ -335,6 +341,7 @@ def oic_approved_establishments(request):
             'licenseeId': licensee_id,
             'districtCode': district_code,
             'subdivisionCode': subdivision_code,
+            'categoryName': cat_name,
         })
 
     serializer = OICApprovedEstablishmentSerializer(rows, many=True)
@@ -343,16 +350,57 @@ def oic_approved_establishments(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def oic_approved_distributors(request):
+    _ensure_site_admin_or_commissioner(request)
+
+    distributors = CustomUser.objects.filter(
+        role__name__icontains='distributor',
+        is_active=True
+    ).select_related('district', 'subdivision').order_by('first_name', 'username')
+
+    rows = []
+    for d in distributors:
+        first_name = str(getattr(d, 'first_name', '') or '').strip()
+        last_name = str(getattr(d, 'last_name', '') or '').strip()
+        full_name = f"{first_name} {last_name}".strip() or d.username
+
+        est_name = (
+            str(getattr(d, 'company_name', '') or '').strip()
+            or str(getattr(d, 'establishment_name', '') or '').strip()
+            or f"{full_name} ({d.username})"
+        )
+
+        rows.append({
+            'id': d.id,
+            'username': d.username,
+            'fullName': full_name,
+            'establishmentName': est_name,
+            'email': d.email,
+            'phoneNumber': d.phone_number,
+            'districtCode': str(getattr(d.district, 'district_code', '') or ''),
+            'subdivisionCode': str(getattr(d.subdivision, 'subdivision_code', '') or ''),
+        })
+
+    return Response(rows, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def oic_officer_list(request):
     _ensure_site_admin_or_commissioner(request)
 
-    assignments = OICOfficerAssignment.objects.select_related(
+    queryset = OICOfficerAssignment.objects.select_related(
         'officer',
         'approved_application',
         'license',
+        'distributor_user',
     ).order_by('-created_at')
 
-    serializer = OICOfficerAssignmentSerializer(assignments, many=True)
+    assignment_type = request.query_params.get('type') or request.query_params.get('assignment_type')
+    if assignment_type in ['manufacturing', 'distributor']:
+        queryset = queryset.filter(assignment_type=assignment_type)
+
+    serializer = OICOfficerAssignmentSerializer(queryset, many=True)
     return Response(serializer.data, status=status.HTTP_200_OK)
 
 

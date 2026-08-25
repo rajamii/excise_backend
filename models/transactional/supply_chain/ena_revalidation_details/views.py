@@ -28,6 +28,70 @@ from models.transactional.supply_chain.access_control import (
 
 logger = logging.getLogger(__name__)
 
+
+def _get_eligible_revalidation_permits_info_for_requisition(requisition):
+    # 1. Get all permit numbers of this requisition
+    raw_permits = str(getattr(requisition, 'details_permits_number', '') or '').strip()
+    if not raw_permits:
+        return "", 0, Decimal('0.00'), Decimal('0.00')
+    
+    permits = [p.strip() for p in raw_permits.split(',') if p.strip()]
+    if not permits:
+        return "", 0, Decimal('0.00'), Decimal('0.00')
+
+    # 2. Get arrived permit numbers (status PENDING or APPROVED in RequisitionBulkLiterDetail)
+    from models.transactional.supply_chain.ena_requisition_details.models import RequisitionBulkLiterDetail
+    arrived_permits = set()
+    rows = RequisitionBulkLiterDetail.objects.filter(
+        requisition=requisition,
+        approval_status__in=['PENDING', 'APPROVED']
+    )
+    for row in rows:
+        for tanker in (row.tanker_details or []):
+            if isinstance(tanker, dict):
+                p_no = str(tanker.get('permit_no') or tanker.get('permitNo') or '').strip()
+                if p_no:
+                    arrived_permits.add(p_no)
+
+    # 3. Get cancelled/cancel-requested permit numbers
+    try:
+        from models.transactional.supply_chain.ena_requisition_details.views import (
+            _approved_cancelled_permit_numbers_for_requisition,
+            _cancellation_requested_permit_numbers_for_requisition
+        )
+        ref_no = getattr(requisition, 'our_ref_no', '') or ''
+        cancelled_permits = _approved_cancelled_permit_numbers_for_requisition(ref_no)
+        cancel_req_permits = _cancellation_requested_permit_numbers_for_requisition(ref_no)
+    except Exception:
+        cancelled_permits = set()
+        cancel_req_permits = set()
+
+    # 4. Filter out arrived and cancelled permits
+    eligible = []
+    for p in permits:
+        if p in arrived_permits:
+            continue
+        if p in cancelled_permits:
+            continue
+        if p in cancel_req_permits:
+            continue
+        eligible.append(p)
+
+    if not eligible:
+        return "", 0, Decimal('0.00'), Decimal('0.00')
+
+    eligible_count = len(eligible)
+    total_permits_count = len(permits)
+    
+    total_bl = Decimal(str(requisition.totalbl or 0))
+    proportional_bl = total_bl
+    if total_permits_count > 0:
+        proportional_bl = (total_bl * Decimal(eligible_count)) / Decimal(total_permits_count)
+        proportional_bl = proportional_bl.quantize(Decimal('0.01'))
+
+    return ", ".join(eligible), eligible_count, proportional_bl, proportional_bl
+
+
 class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
     queryset = EnaRevalidationDetail.objects.all().order_by('-created_at')
     serializer_class = EnaRevalidationDetailSerializer
@@ -140,6 +204,10 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         if not license_token:
             raise ValueError("Requisition is missing licensee_id; cannot auto-create revalidation.")
 
+        eligible_permits, eligible_count, proportional_bl, proportional_br = _get_eligible_revalidation_permits_info_for_requisition(requisition)
+        if not eligible_permits:
+            return None
+
         payload = {
             'requisition_date': requisition.requisition_date,
             'grain_ena_number': requisition.grain_ena_number,
@@ -147,9 +215,9 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             'strength': requisition.strength or '',
             'lifted_from': requisition.lifted_from or '',
             'via_route': requisition.via_route or '',
-            'total_bl': requisition.totalbl or 0,
-            'br_amount': requisition.totalbl or 0,
-            'requisiton_number_of_permits': requisition.requisiton_number_of_permits or 0,
+            'total_bl': proportional_bl,
+            'br_amount': proportional_br,
+            'requisiton_number_of_permits': eligible_count,
             'branch_name': requisition.lifted_from_distillery_name or requisition.check_post_name or '',
             # EnaRevalidationDetail.branch_address is non-blank; use a safe placeholder if not available.
             'branch_address': (
@@ -165,7 +233,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             'status': 'IMPORT PERMIT EXTENDS 45 DAYS INVALID',
             'status_code': 'RV_00',
             'revalidation_br_amount': str(self.REVALIDATION_FEE_AMOUNT),
-            'details_permits_number': requisition.details_permits_number or '',
+            'details_permits_number': eligible_permits,
             'distillery_name': requisition.lifted_from_distillery_name or requisition.lifted_from or '',
         }
         payload['licensee_id'] = license_token
@@ -588,10 +656,14 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
 
         in_memory_revals = []
         for s in unsubmitted_schedules:
+            eligible_permits, eligible_count, proportional_bl, proportional_br = _get_eligible_revalidation_permits_info_for_requisition(s.requisition)
+            if not eligible_permits:
+                continue
+
             # Check if there is an existing database draft (RV_00)
             draft = EnaRevalidationDetail.objects.filter(
                 licensee_id=s.requisition.licensee_id,
-                details_permits_number=s.requisition.details_permits_number,
+                details_permits_number=eligible_permits,
                 status_code='RV_00'
             ).order_by('-created_at').first()
 
@@ -608,9 +680,9 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                     strength=s.requisition.strength or '',
                     lifted_from=s.requisition.lifted_from or '',
                     via_route=s.requisition.via_route or '',
-                    total_bl=s.requisition.totalbl or 0,
-                    br_amount=s.requisition.totalbl or 0,
-                    requisiton_number_of_permits=s.requisition.requisiton_number_of_permits or 0,
+                    total_bl=proportional_bl,
+                    br_amount=proportional_br,
+                    requisiton_number_of_permits=eligible_count,
                     branch_name=s.requisition.lifted_from_distillery_name or s.requisition.check_post_name or '',
                     branch_address=s.requisition.via_route or 'N/A',
                     branch_purpose=s.requisition.branch_purpose or s.requisition.purpose_name or '',
@@ -620,7 +692,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                     status='IMPORT PERMIT EXTENDS 45 DAYS ',
                     status_code='RV_00',
                     revalidation_br_amount=self.REVALIDATION_FEE_AMOUNT,
-                    details_permits_number=s.requisition.details_permits_number or '',
+                    details_permits_number=eligible_permits,
                     licensee_id=s.requisition.licensee_id,
                     distillery_name=s.requisition.lifted_from_distillery_name or s.requisition.lifted_from or '',
                 )
@@ -673,8 +745,16 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+        # Filter eligible permits
+        eligible_permits, eligible_count, proportional_bl, proportional_br = _get_eligible_revalidation_permits_info_for_requisition(requisition)
+        if not eligible_permits:
+            return Response({
+                'status': 'error',
+                'message': 'No eligible permits available for revalidation (already cancelled or arrived).'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         existing = None
-        details_token = str(getattr(requisition, 'details_permits_number', '') or '').strip()
+        details_token = eligible_permits
         license_token = str(getattr(requisition, 'licensee_id', '') or '').strip()
 
         # Same rationale as schedule processor: avoid licensee-only matches.
@@ -697,17 +777,27 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                 'data': serializer.data
             }, status=status.HTTP_200_OK)
 
+        import re
+        req_ref = requisition.our_ref_no
+        match = re.search(r'/(\d+)/', req_ref)
+        if match:
+            num = match.group(1)
+            our_ref_no = f"REV/{num}/EXCISE"
+        else:
+            our_ref_no = f"REV-{requisition.id}"
+
         now = timezone.now()
         payload = {
+            'our_ref_no': our_ref_no,
             'requisition_date': requisition.requisition_date,
             'grain_ena_number': requisition.grain_ena_number,
             'bulk_spirit_type': requisition.bulk_spirit_type or '',
             'strength': requisition.strength or '',
             'lifted_from': requisition.lifted_from or '',
             'via_route': requisition.via_route or '',
-            'total_bl': requisition.totalbl or 0,
-            'br_amount': requisition.totalbl or 0,
-            'requisiton_number_of_permits': requisition.requisiton_number_of_permits or 0,
+            'total_bl': proportional_bl,
+            'br_amount': proportional_br,
+            'requisiton_number_of_permits': eligible_count,
             'branch_name': requisition.lifted_from_distillery_name or requisition.check_post_name or '',
             'branch_address': (
                 str(getattr(requisition, 'via_route', '') or '').strip()
@@ -721,7 +811,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             'status': 'IMPORT PERMIT EXTENDS 45 DAYS INVALID',
             'status_code': 'RV_00',
             'revalidation_br_amount': str(self.REVALIDATION_FEE_AMOUNT),
-            'details_permits_number': requisition.details_permits_number or '',
+            'details_permits_number': eligible_permits,
             'distillery_name': requisition.lifted_from_distillery_name or requisition.lifted_from or '',
         }
 
@@ -802,8 +892,42 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             return Response(response_payload, status=status.HTTP_200_OK)
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    def _update_requisition_validity_on_revalidation_approval(self, revalidation):
+        try:
+            req_ref = str(getattr(revalidation, 'our_ref_no', '') or '').strip()
+            if req_ref.startswith('REV/'):
+                req_ref = req_ref.replace('REV/', 'REQ/')
+
+            requisition = EnaRequisitionDetail.objects.filter(our_ref_no=req_ref).first()
+            if not requisition:
+                permits = str(getattr(revalidation, 'details_permits_number', '') or '').strip()
+                lic_id = str(getattr(revalidation, 'licensee_id', '') or '').strip()
+                if permits and lic_id:
+                    requisition = EnaRequisitionDetail.objects.filter(
+                        details_permits_number=permits,
+                        licensee_id=lic_id
+                    ).order_by('-created_at').first()
+
+            if requisition:
+                now = timezone.now()
+                delay_seconds = self._resolve_revalidation_activation_delay_seconds()
+                new_valid_up_to = now + timedelta(seconds=delay_seconds)
+                requisition.valid_up_to = new_valid_up_to
+                requisition.save(update_fields=['valid_up_to', 'updated_at'])
+
+                # Reset revalidation activation schedule so auto-revalidation counts down to the new valid_up_to
+                EnaRevalidationActivationSchedule.objects.update_or_create(
+                    requisition=requisition,
+                    defaults={
+                        'requisition_ref_no': str(getattr(requisition, 'our_ref_no', '') or ''),
+                        'approval_date': now,
+                        'activation_due_at': new_valid_up_to,
+                        'status': EnaRevalidationActivationSchedule.STATUS_PENDING,
+                        'notes': 'Rescheduled after revalidation approval',
+                    }
+                )
+        except Exception as exc:
+            logger.exception("Error updating requisition validity on revalidation approval: %s", exc)
 
     @action(detail=True, methods=['post'])
     def perform_action(self, request, pk=None):
@@ -870,6 +994,11 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                 revalidation.status = target_transition.to_stage.name
                 # revalidation.status_code = ... # Removed dependency
                 revalidation.save()
+
+                if action_type == 'APPROVE':
+                    stage_token = self._normalize_token(getattr(target_transition.to_stage, 'name', ''))
+                    if 'approv' in stage_token:
+                        self._update_requisition_validity_on_revalidation_approval(revalidation)
 
                 invalidate_dashboard_counts_cache()
                 serializer = self.get_serializer(revalidation)
