@@ -35,7 +35,7 @@ class ObjectionSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class SalesmanBarmanSerializer(serializers.ModelSerializer):
-     
+    allowed_actions = serializers.SerializerMethodField()
     excise_district = CodeRelatedField(queryset=District.objects.all(), lookup_field='district_code')
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
     license_category_name = serializers.CharField(source='license_category.license_category', read_only=True)
@@ -66,7 +66,42 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
             'updated_at',
             'applicant',
             'workflow'
-            ]
+        ]
+
+    def get_allowed_actions(self, obj):
+        request = self.context.get('request')
+        if not request or not hasattr(request, 'user'):
+            return []
+
+        user = request.user
+        role_name = getattr(getattr(user, 'role', None), 'name', '') or ''
+        role_token = ''.join(ch for ch in str(role_name).lower() if ch.isalnum())
+
+        current_stage = getattr(obj, 'current_stage', None)
+        if not current_stage:
+            return []
+
+        from auth.workflow.models import WorkflowTransition
+        from models.transactional.supply_chain.access_control import condition_role_matches
+
+        transitions = WorkflowTransition.objects.filter(from_stage=current_stage)
+        actions = []
+        for t in transitions:
+            cond = t.condition or {}
+            if condition_role_matches(cond, user):
+                action = cond.get('action')
+                if action:
+                    actions.append(str(action).strip().upper())
+
+        if not actions:
+            stage_name = str(getattr(current_stage, 'name', '') or '').lower()
+            if not any(k in stage_name for k in ['approv', 'reject', 'issue', 'cancel']):
+                if role_token in {'commissioner', 'jointcommissioner', 'level1', 'level2', 'level3', 'level4', 'level5', 'siteadmin'} or 'commissioner' in role_token:
+                    actions = ['APPROVE', 'FORWARD', 'REJECT', 'RAISE_OBJECTION']
+                else:
+                    actions = ['FORWARD', 'REJECT', 'RAISE_OBJECTION']
+
+        return list(set(actions))
 
     def get_valid_up_to(self, obj):
         try:
