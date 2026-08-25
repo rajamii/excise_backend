@@ -130,8 +130,7 @@ def _approved_cancelled_permit_numbers_for_requisition(requisition_ref_no: str):
         return set()
 
     rows = EnaCancellationDetail.objects.filter(
-        models.Q(requisition_ref_no=token) |
-        models.Q(our_ref_no=token)
+        requisition_ref_no=token
     ).select_related('current_stage')
 
     approved_numbers = set()
@@ -161,8 +160,7 @@ def _cancellation_requested_permit_numbers_for_requisition(requisition_ref_no: s
         return set()
 
     rows = EnaCancellationDetail.objects.filter(
-        models.Q(requisition_ref_no=token) |
-        models.Q(our_ref_no=token)
+        requisition_ref_no=token
     ).select_related('current_stage')
 
     requested_numbers = set()
@@ -1081,7 +1079,7 @@ class PerformRequisitionActionAPIView(APIView):
     def _is_forwarded_payslip_stage(self, stage_name: str) -> bool:
         token = ''.join(ch for ch in str(stage_name or '').lower() if ch.isalnum())
         return (
-            ('forward' in token and 'payslip' in token and ('permitsection' in token or 'permit' in token))
+            ('payslip' in token and ('forward' in token or 'permit' in token or 'pay' in token))
         )
 
     def _normalize_stage_token(self, value: str) -> str:
@@ -1372,7 +1370,9 @@ class PerformRequisitionActionAPIView(APIView):
         try:
              # from models.masters.supply_chain.status_master.models import StatusMaster, WorkflowRule # Removed
             
-            action = request.data.get('action')
+            action = str(request.data.get('action') or '').strip().upper()
+            if action == 'PAY':
+                action = 'APPROVE'
             if not action or action not in ['APPROVE', 'REJECT']:
                 return Response({
                     'status': 'error',
