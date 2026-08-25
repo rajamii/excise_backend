@@ -493,7 +493,7 @@ def dashboard_counts(request):
             'awaiting_payment': qs.filter(current_stage__name__in=payment_stages).count(),
         }, status=status.HTTP_200_OK)
 
-    if role in ('site_admin', 'single_window'):
+    if role in ('site_admin', 'single_window', 'secretary', 'commissioner', 'joint_commissioner', 'executive'):
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])

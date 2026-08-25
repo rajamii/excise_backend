@@ -1195,7 +1195,7 @@ def dashboard_counts(request):
             }
         )
 
-    if role in ['site_admin', 'single_window']:
+    if role in ['site_admin', 'single_window', 'secretary', 'commissioner', 'joint_commissioner', 'executive']:
         from django.contrib.contenttypes.models import ContentType
         from django.db.models import Exists, OuterRef, Q
         from auth.workflow.models import Transaction as WorkflowTransaction
