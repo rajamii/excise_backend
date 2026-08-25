@@ -1195,49 +1195,45 @@ def dashboard_counts(request):
             }
         )
 
-    if role in ['site_admin', 'single_window', 'secretary', 'commissioner', 'joint_commissioner', 'executive']:
-        from django.contrib.contenttypes.models import ContentType
-        from django.db.models import Exists, OuterRef, Q
-        from auth.workflow.models import Transaction as WorkflowTransaction
-
-        content_type = ContentType.objects.get_for_model(LicenseApplication)
-        acted_by_admin = Exists(
-            WorkflowTransaction.objects.filter(
-                content_type=content_type,
-                object_id=OuterRef('application_id')
-            ).exclude(performed_by__role_id=2)
-        )
-        all_qs_annotated = all_qs.annotate(_acted_by_admin=acted_by_admin)
-
-        approved_count = all_qs_annotated.filter(
-            Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True)
-        ).count()
-
+    role_stage_names = _renewal_role_stage_names(request.user, wf.id)
+    if role_stage_names:
+        visible_qs = _renewal_queryset_visible_to_role(all_qs, request.user, role_stage_names)
+        pending_for_role = set(role_stage_names)
         return Response(
             {
-                "applied": all_qs.filter(current_stage__name__in=applied_stages).count(),
-                "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
-                "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
-                "approved": approved_count,
-                "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
+                "applied": all_qs.count(),
+                "pending": visible_qs.filter(current_stage__name__in=pending_for_role).count(),
+                "objection": visible_qs.filter(current_stage__name__in=objection_stages).count(),
+                "approved": visible_qs.filter(current_stage__name__in=approved_stages).count(),
+                "rejected": visible_qs.filter(current_stage__name__in=rejected_stages).count(),
             }
         )
 
-    role_stage_names = _renewal_role_stage_names(request.user, wf.id)
-    if not role_stage_names:
-        return Response({"applied": 0, "pending": 0, "objection": 0, "approved": 0, "rejected": 0})
+    # Site admin / global fallback
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Exists, OuterRef, Q
+    from auth.workflow.models import Transaction as WorkflowTransaction
 
-    visible_qs = _renewal_queryset_visible_to_role(all_qs, request.user, role_stage_names)
-    pending_for_role = set(role_stage_names)
+    content_type = ContentType.objects.get_for_model(LicenseApplication)
+    acted_by_admin = Exists(
+        WorkflowTransaction.objects.filter(
+            content_type=content_type,
+            object_id=OuterRef('application_id')
+        ).exclude(performed_by__role_id=2)
+    )
+    all_qs_annotated = all_qs.annotate(_acted_by_admin=acted_by_admin)
+
+    approved_count = all_qs_annotated.filter(
+        Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True)
+    ).count()
+
     return Response(
         {
-            "applied": 0,
-            "pending": visible_qs.filter(current_stage__name__in=pending_for_role).count(),
-            "objection": visible_qs.filter(current_stage__name__in=objection_stages).count(),
-            "approved": visible_qs.exclude(
-                current_stage__name__in=pending_for_role | objection_stages | rejected_stages
-            ).count(),
-            "rejected": visible_qs.filter(current_stage__name__in=rejected_stages).count(),
+            "applied": all_qs.count(),
+            "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
+            "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
+            "approved": approved_count,
+            "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
         }
     )
 

@@ -1189,3 +1189,9 @@ class WorkflowService:
             remarks=remarks
         )
 
+        try:
+            from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
+            invalidate_dashboard_counts_cache()
+        except Exception:
+            pass
+

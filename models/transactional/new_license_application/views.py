@@ -1,4 +1,5 @@
 from django.shortcuts import get_object_or_404
+from django.views.decorators.cache import never_cache
 from datetime import date, timedelta
 from django.db import transaction
 from django.db.models import OuterRef, Subquery, BooleanField, TextField
@@ -730,6 +731,7 @@ def list_license_applications(request):
 
 
 # License Application Detail
+@never_cache
 @permission_classes([HasAppPermission('new_license_application', 'view')])
 @api_view(['GET'])
 def license_application_detail(request, pk):
@@ -1571,82 +1573,77 @@ def dashboard_counts(request):
             "awaiting_payment": paid_qs.filter(current_stage__name__in=payment_stages).count(),
         })
 
-    if role in ['site_admin', 'single_window', 'secretary', 'commissioner', 'joint_commissioner', 'executive']:
-        applied_stages = set(stage_sets['initial'])
-        objection_stages = set(stage_sets['objection'])
-        approved_stages = set(stage_sets['approved'])
-        rejected_stages = set(stage_sets['rejected'])
-        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
-
-        content_type = ContentType.objects.get_for_model(NewLicenseApplication)
-        acted_by_admin = Exists(
-            WorkflowTransaction.objects.filter(
-                content_type=content_type,
-                object_id=OuterRef('application_id')
-            ).exclude(performed_by__role_id=2)
-        )
-        all_qs_annotated = all_qs.annotate(_acted_by_admin=acted_by_admin)
-
-        approved_count = all_qs_annotated.filter(
-            Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True)
-        ).count()
-
-        return Response({
-            "applied": all_qs.filter(current_stage__name__in=applied_stages).count(),
-            "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
-            "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
-            "approved": approved_count,
-            "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
-        })
-
     role_stage_names = _get_role_stage_names(request.user, workflow_id)
-    if not role_stage_names:
+    if role_stage_names:
+        content_type = ContentType.objects.get_for_model(NewLicenseApplication)
+        role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+        
+        acted_by_role = Exists(
+            WorkflowTransaction.objects.filter(
+                content_type=content_type, 
+                object_id=OuterRef('application_id'),
+                performed_by__role_id=role_id
+            )
+        )
+
+        role_objection_stages = set(stage_sets['objection'])
+        pending_stages = set(role_stage_names) - role_objection_stages
+        role_rejected_stages = set(stage_sets['rejected'])
+
+        pending_count = all_qs.filter(current_stage__name__in=pending_stages).count()
+        approved_count = (
+            all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
+            .annotate(_acted_by_role=acted_by_role)
+            .filter(_acted_by_role=True)
+            .count()
+        )
+        rejected_count = (
+            all_qs.filter(current_stage__name__in=role_rejected_stages)
+            .annotate(_acted_by_role=acted_by_role)
+            .filter(_acted_by_role=True)
+            .count()
+        )
+        objection_count = (
+            all_qs.filter(current_stage__name__in=role_objection_stages)
+            .annotate(_acted_by_role=acted_by_role)
+            .filter(_acted_by_role=True)
+            .count()
+        )
+
         return Response({
-            "pending": 0,
-            "approved": 0,
-            "rejected": 0,
+            "applied": all_qs.count(),
+            "pending": pending_count,
+            "approved": approved_count,
+            "rejected": rejected_count,
+            "objection": objection_count,
         })
+
+    # Site admin / global overview fallback for roles without specific stage restriction:
+    applied_stages = set(stage_sets['initial'])
+    objection_stages = set(stage_sets['objection'])
+    approved_stages = set(stage_sets['approved'])
+    rejected_stages = set(stage_sets['rejected'])
+    pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
 
     content_type = ContentType.objects.get_for_model(NewLicenseApplication)
-    role_id = getattr(getattr(request.user, 'role', None), 'id', None)
-    
-    acted_by_role = Exists(
+    acted_by_admin = Exists(
         WorkflowTransaction.objects.filter(
-            content_type=content_type, 
-            object_id=OuterRef('application_id'),
-            performed_by__role_id=role_id
-        )
+            content_type=content_type,
+            object_id=OuterRef('application_id')
+        ).exclude(performed_by__role_id=2)
     )
+    all_qs_annotated = all_qs.annotate(_acted_by_admin=acted_by_admin)
 
-    role_objection_stages = set(stage_sets['objection'])
-    pending_stages = set(role_stage_names) - role_objection_stages
-    role_rejected_stages = set(stage_sets['rejected'])
-
-    pending_count = all_qs.filter(current_stage__name__in=pending_stages).count()
-    approved_count = (
-        all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
-        .annotate(_acted_by_role=acted_by_role)
-        .filter(_acted_by_role=True)
-        .count()
-    )
-    rejected_count = (
-        all_qs.filter(current_stage__name__in=role_rejected_stages)
-        .annotate(_acted_by_role=acted_by_role)
-        .filter(_acted_by_role=True)
-        .count()
-    )
-    objection_count = (
-        all_qs.filter(current_stage__name__in=role_objection_stages)
-        .annotate(_acted_by_role=acted_by_role)
-        .filter(_acted_by_role=True)
-        .count()
-    )
+    approved_count = all_qs_annotated.filter(
+        Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True)
+    ).count()
 
     return Response({
-        "pending": pending_count,
+        "applied": all_qs.count(),
+        "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
+        "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
         "approved": approved_count,
-        "rejected": rejected_count,
-        "objection": objection_count,
+        "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
     })
 
 # Application Grouping

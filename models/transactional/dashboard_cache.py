@@ -117,9 +117,12 @@ def dashboard_counts_cache(namespace: str):
     def decorator(view_func):
         @wraps(view_func)
         def wrapper(request, *args, **kwargs):
-            cached_data = get_cached_api_response(request, namespace)
-            if cached_data is not None:
-                return _mark_cache_response(Response(cached_data), "HIT")
+            query_params = getattr(request, "query_params", {})
+            has_cache_buster = any(k in query_params for k in ["_t", "cb", "_", "nocache", "refresh", "cache_buster"])
+            if not has_cache_buster:
+                cached_data = get_cached_api_response(request, namespace)
+                if cached_data is not None:
+                    return _mark_cache_response(Response(cached_data), "HIT")
 
             response = view_func(request, *args, **kwargs)
 
