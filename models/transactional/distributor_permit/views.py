@@ -316,6 +316,26 @@ class DistributorPermitDocumentUploadView(DistributorRoleRequiredMixin, APIView)
 
 class DistributorPermitSuppliersView(DistributorRoleRequiredMixin, APIView):
     def get(self, request):
+        from .models import IMFLSupplier
+        suppliers = IMFLSupplier.objects.all().order_by('id')
+        if suppliers.exists():
+            data = [
+                {
+                    'id': s.id,
+                    'supplier_master_name': s.supplier_master_name or s.supplier_name,
+                    'supplierMasterName': s.supplier_master_name or s.supplier_name,
+                    'supplier_name': s.supplier_master_name or s.supplier_name,
+                    'company_name': s.supplier_name,
+                    'companyName': s.supplier_name,
+                    'address': s.address,
+                    'route_details': s.route_details,
+                    'routeDetails': s.route_details,
+                    'state': s.address.split(',')[-1].strip() if ',' in s.address else '',
+                }
+                for s in suppliers
+            ]
+            return Response(data)
+
         active_only = str(request.query_params.get('active_only') or '1').strip().lower()
         rows = MasterHologramSupplier.objects.all().order_by('company_name')
         if active_only not in {'0', 'false', 'no', 'n'}:
@@ -326,7 +346,35 @@ class DistributorPermitSuppliersView(DistributorRoleRequiredMixin, APIView):
 
 class DistributorPermitBrandMasterView(DistributorRoleRequiredMixin, APIView):
     def get(self, request):
+        from .models import IMFLBrand
         query = str(request.query_params.get('q') or '').strip()
+        supplier_id = request.query_params.get('supplier_id') or request.query_params.get('supplierId')
+
+        imfl_qs = IMFLBrand.objects.select_related('supplier').all().order_by('brand_name')
+        if query:
+            imfl_qs = imfl_qs.filter(brand_name__icontains=query)
+        if supplier_id:
+            imfl_qs = imfl_qs.filter(supplier_id=supplier_id)
+
+        if imfl_qs.exists():
+            data = [
+                {
+                    'brandId': b.id,
+                    'brandName': b.brand_name,
+                    'sizeMl': b.size_ml,
+                    'piecesPerCase': b.pieces_per_case,
+                    'edpPerCase': b.edp_per_case,
+                    'importPassFeePerCase': b.import_pass_fee_per_case,
+                    'mrpPerBottle': b.mrp_per_bottle,
+                    'additionalEdPerCase': b.additional_ed_per_case,
+                    'educationCessPerCase': b.education_cess_per_case,
+                    'supplierId': b.supplier_id,
+                    'supplierName': b.supplier.supplier_name if b.supplier else '',
+                }
+                for b in imfl_qs
+            ]
+            return Response({'success': True, 'data': data, 'total': len(data)})
+
         brand_qs = MasterBrandList.objects.all().order_by('brand_name')
         if query:
             brand_qs = brand_qs.filter(brand_name__icontains=query)

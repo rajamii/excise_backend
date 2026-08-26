@@ -135,6 +135,48 @@ class DistributorPermitLineItem(models.Model):
         return f'{self.application_id} - {self.brand_name}'
 
 
+class IMFLSupplier(models.Model):
+    supplier_master_name = models.CharField(max_length=255, blank=True, default='')
+    supplier_name = models.CharField(max_length=255)
+    address = models.TextField(blank=True, default='')
+    route_details = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'imfl_suppliers'
+        ordering = ['id']
+
+    def __str__(self):
+        return f'{self.supplier_master_name or self.supplier_name}'
+
+
+class IMFLBrand(models.Model):
+    supplier = models.ForeignKey(
+        IMFLSupplier,
+        on_delete=models.CASCADE,
+        related_name='brands',
+        db_column='imfl_supplier_id',
+        null=True,
+        blank=True,
+    )
+    brand_name = models.CharField(max_length=255)
+    size_ml = models.PositiveIntegerField(default=750)
+    pieces_per_case = models.PositiveIntegerField(default=12)
+    edp_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
+    import_pass_fee_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
+    mrp_per_bottle = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
+    additional_ed_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
+    education_cess_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'imfl_brands'
+        ordering = ['id']
+
+    def __str__(self):
+        return f'{self.brand_name} ({self.size_ml} ml)'
+
+
 class DistributorPermitDocument(models.Model):
     application = models.ForeignKey(
         DistributorPermitApplication,
