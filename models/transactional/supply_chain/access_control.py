@@ -230,7 +230,7 @@ def scope_by_profile_or_workflow(user, queryset, workflow_id, licensee_field='li
     if (
         getattr(user, 'is_superuser', False)
         or getattr(user, 'is_staff', False)
-        or (role_id is not None and role_id in {1, 3, 10})
+        or (role_id is not None and role_id in {3, 10})
         or role_token in {'siteadmin', 'singlewindow', 'commissioner', 'jointcommissioner'}
     ):
         return queryset
@@ -292,8 +292,18 @@ def scope_by_profile_or_workflow(user, queryset, workflow_id, licensee_field='li
         for alias in _expand_license_aliases(value):
             scoped_values.add(alias)
 
-    if scoped_values:
-        return queryset.filter(**{f'{licensee_field}__in': list(scoped_values)})
+    # Direct applicant/licensee filtering for models that store applicant foreign key or licensee_id
+    has_applicant_field = any(f.name == 'applicant' for f in queryset.model._meta.get_fields())
+    has_licensee_field = any(f.name == licensee_field for f in queryset.model._meta.get_fields())
+
+    if has_applicant_field or (has_licensee_field and scoped_values):
+        filter_q = Q()
+        if has_applicant_field and user and user.is_authenticated:
+            filter_q |= Q(applicant=user)
+        if has_licensee_field and scoped_values:
+            filter_q |= Q(**{f'{licensee_field}__in': list(scoped_values)})
+        if filter_q:
+            return queryset.filter(filter_q)
 
     # OIC users without an assignment should not see cross-license records.
     if is_oic_user:

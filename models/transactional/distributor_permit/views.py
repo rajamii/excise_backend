@@ -27,8 +27,18 @@ from .serializers import (
 
 
 def _is_distributor_user(user) -> bool:
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+    role_id = getattr(getattr(user, 'role', None), 'id', 0)
     role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').strip().lower()
-    return role_name == 'distributor'
+    if role_name in ('distributor', 'licensee', 'licencee') or role_id in (1, 2, 16):
+        return True
+    try:
+        from models.masters.license.models import License
+        return License.objects.filter(applicant=user, license_category__is_distributor_user=True, is_active=True).exists()
+    except Exception:
+        pass
+    return False
 
 
 def _is_officer_user(user) -> bool:
@@ -96,30 +106,25 @@ def scope_permit_queryset(qs, user):
     role_id = getattr(getattr(user, 'role', None), 'id', 0)
     role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').strip().lower().replace('-', '_').replace(' ', '_')
 
-    # If Officer is a Distributor OIC with an assigned distributor user, scope applications to that distributor
-    assignment = getattr(user, 'oic_assignment', None)
-    if assignment and getattr(assignment, 'assignment_type', '') == 'distributor' and getattr(assignment, 'distributor_user', None):
-        return qs.filter(applicant=assignment.distributor_user)
-
-    # Admin / Staff / Superuser / Site Admin / Distributor / Permit Section / Inspector / OIC / Single Window
-    if (
-        getattr(user, 'is_staff', False)
-        or getattr(user, 'is_superuser', False)
-        or 'admin' in role_name
-        or 'distributor' in role_name
-        or 'permit' in role_name
-        or 'officer' in role_name
-        or 'offcier' in role_name
-        or 'oic' in role_name
-        or 'window' in role_name
-        or role_id in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 16)
-    ):
-        if role_id in (10, 12) or 'commissioner' in role_name:
-            # Commissioner sees applications at or past Forwarded Commissioner or Approved
-            return qs.filter(Q(current_stage_id__in=[153, 154, 156, 157, 151, 152]) | Q(status__icontains='approved') | Q(status__icontains='commissioner'))
+    # Admin / Staff / Superuser / Site Admin
+    if getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False) or 'admin' in role_name or role_id == 15:
         return qs
 
-    # Fallback for applicant
+    # Officers (Commissioner, Permit Section, OIC)
+    is_commissioner = 'commissioner' in role_name or role_id in (10, 12)
+    is_permit_section = 'permit' in role_name or role_id in (5, 6)
+    is_oic = 'oic' in role_name or 'officer' in role_name or getattr(user, 'is_oic_managed', False)
+
+    if is_commissioner:
+        return qs.filter(Q(current_stage_id__in=[153, 154, 156, 157, 151, 152]) | Q(status__icontains='approved') | Q(status__icontains='commissioner'))
+
+    if is_permit_section or is_oic:
+        assignment = getattr(user, 'oic_assignment', None)
+        if assignment and getattr(assignment, 'assignment_type', '') == 'distributor' and getattr(assignment, 'distributor_user', None):
+            return qs.filter(applicant=assignment.distributor_user)
+        return qs
+
+    # For all applicant / licensee / distributor users: scope strictly to their own applications!
     return qs.filter(applicant=user)
 
 
