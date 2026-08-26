@@ -1015,6 +1015,57 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
         )
         invalidate_dashboard_counts_cache()
 
+        # Debit Rs.1000 revalidation fee per permit from Excise wallet
+        try:
+            from decimal import Decimal
+            permit_numbers_in_details = list({
+                str(p.get('permit_number', '')).strip()
+                for p in p_details
+                if isinstance(p, dict) and p.get('permit_number')
+            }) if p_details else []
+            num_permits = len(permit_numbers_in_details) or 1
+            revalidation_fee = Decimal('1000.00') * num_permits
+
+            user_obj = self.request.user
+            dist_applicant = getattr(distributor_permit, 'applicant', None) or user_obj
+            username = str(getattr(user_obj, 'username', '') or getattr(dist_applicant, 'username', '') or '').strip()
+
+            raw_licensee_id = str(
+                getattr(distributor_permit, 'licensee_id', None) or
+                getattr(dist_applicant, 'licensee_id', None) or
+                getattr(dist_applicant, 'username', None) or
+                username
+            ).strip()
+
+            from django.db.models import Q
+            from models.transactional.wallet.models import WalletBalance
+            wb = WalletBalance.objects.filter(
+                Q(licensee_id__iexact=raw_licensee_id) |
+                Q(user_id__iexact=raw_licensee_id) |
+                Q(user_id__iexact=username)
+            ).first()
+
+            licensee_id = str(wb.licensee_id).strip() if (wb and wb.licensee_id) else raw_licensee_id
+            from models.transactional.wallet.wallet_service import debit_wallet_balance
+
+            debit_wallet_balance(
+                transaction_id=f'PAY-EXCISE-REVAL-FEE-{ref_no}',
+                licensee_id=licensee_id,
+                wallet_type='excise',
+                head_of_account='0039-00-105-45-01',
+                amount=revalidation_fee,
+                user_id=username,
+                source_module='imfl_permit_revalidation_fee',
+                reference_no=ref_no,
+                remarks=f'IMFL Permit Revalidation Fee (Rs. {revalidation_fee} for {num_permits} permit(s)) for Ref #{ref_no}'
+            )
+        except Exception as err:
+            logging.getLogger(__name__).error(
+                "IMFL revalidation wallet fee FAILED for %s: %s\n%s",
+                ref_no, err, traceback.format_exc()
+            )
+
+
     @action(detail=True, methods=['post'], url_path='perform_action')
     def perform_action(self, request, reference_no=None):
         return DistributorPermitPerformActionView().post(request, reference_no=reference_no)
