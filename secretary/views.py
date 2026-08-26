@@ -1094,221 +1094,204 @@ def secretary_revenue_overview(request):
     Calculates exact aggregate amounts directly from WalletBalance records.
     """
     from models.transactional.wallet.models import WalletBalance, WalletTransaction
-    from django.db.models import Sum, Q
+    from django.db.models import Count, Max, Sum, Q
 
-    balances = WalletBalance.objects.all()
-
-    # Head name mapper
-    HEAD_MAPPER = {
-        'excise': 'Excise Duty Wallet',
-        'excise_duty': 'Excise Duty Wallet',
-        'additional_duty': 'Additional Excise Duty Wallet',
-        'additional_excise_duty': 'Additional Excise Duty Wallet',
-        'hologram': 'Hologram Procurement',
-        'security_deposit': 'Security Deposit (FD)',
-        'license_fee': 'License Fees',
-        'education_cess': 'Education Cess'
+    EMPTY_RESPONSE = {
+        'summary_kpis': {
+            'total_revenue_collected': 0,
+            'net_excise_revenue_collected': 0,
+            'total_active_balance': 0,
+            'total_security_deposit_fd': 0,
+            'top_contributors_count': 0
+        },
+        'revenue_heads': [],
+        'top_contributors': [],
+        'security_deposits': []
     }
 
-    # Query exact DR debit transaction sums per wallet type directly from WalletTransaction table
-    debit_aggregates = {}
     try:
-        tx_debits = (
-            WalletTransaction.objects.filter(Q(entry_type__iexact='DR') | Q(transaction_type__iexact='debit'))
-            .values('wallet_type_id')
-            .annotate(total_debit=Sum('amount'))
+        HEAD_MAPPER = {
+            'excise': 'Excise Duty Wallet',
+            'excise_duty': 'Excise Duty Wallet',
+            'additional_duty': 'Additional Excise Duty Wallet',
+            'additional_excise': 'Additional Excise Duty Wallet',
+            'additional_excise_duty': 'Additional Excise Duty Wallet',
+            'hologram': 'Hologram Procurement',
+            'security_deposit': 'Security Deposit (FD)',
+            'license_fee': 'License Fees',
+            'education_cess': 'Education Cess'
+        }
+
+        DEFAULT_HOA_MAPPER = {
+            'Excise Duty Wallet': '0039-00-105-45-01',
+            'Additional Excise Duty Wallet': '0039-00-102-45-01',
+            'Hologram Procurement': '0039-00-800-45-01',
+            'Education Cess': '0045-00-112-45-03',
+            'License Fees': '0039-00-800-45-02',
+            'Security Deposit (FD)': '8443-00-103-45-01'
+        }
+
+        def resolve_head_name(wallet_code, wallet_name=''):
+            raw_code = str(wallet_code or '').strip().lower()
+            raw_name = str(wallet_name or '').strip()
+            mapped = HEAD_MAPPER.get(raw_code) or HEAD_MAPPER.get(raw_name.lower())
+            return mapped or raw_name or raw_code or 'General Wallet'
+
+        def as_float(value):
+            return float(value or 0.0)
+
+        debit_aggregates = {}
+        try:
+            tx_debits = (
+                WalletTransaction.objects.filter(Q(entry_type__iexact='DR') | Q(transaction_type__iexact='debit'))
+                .values('wallet_type_id', 'wallet_type__name')
+                .annotate(total_debit=Sum('amount'))
+            )
+            for row in tx_debits:
+                wallet_code = str(row.get('wallet_type_id') or '').lower()
+                head_name = resolve_head_name(wallet_code, row.get('wallet_type__name'))
+                amount = as_float(row.get('total_debit'))
+                debit_aggregates[head_name] = debit_aggregates.get(head_name, 0.0) + amount
+                debit_aggregates[wallet_code] = debit_aggregates.get(wallet_code, 0.0) + amount
+        except Exception:
+            pass
+
+        head_totals = {}
+        head_rows = (
+            WalletBalance.objects
+            .values('wallet_type_id', 'wallet_type__name', 'head_of_account')
+            .annotate(
+                total_credit=Sum('total_credit'),
+                total_debit=Sum('total_debit'),
+                current_balance=Sum('current_balance'),
+                accounts_count=Count('wallet_balance_id')
+            )
         )
-        for row in tx_debits:
-            w_id = str(row['wallet_type_id'] or '').lower()
-            w_head = HEAD_MAPPER.get(w_id, w_id)
-            amt = float(row['total_debit'] or 0.0)
-            debit_aggregates[w_head] = debit_aggregates.get(w_head, 0.0) + amt
-            debit_aggregates[w_id] = debit_aggregates.get(w_id, 0.0) + amt
-    except Exception:
-        pass
+        for row in head_rows:
+            head_name = resolve_head_name(row.get('wallet_type_id'), row.get('wallet_type__name'))
+            if head_name not in head_totals:
+                head_totals[head_name] = {
+                    'head_name': head_name,
+                    'head_of_account': row.get('head_of_account') or DEFAULT_HOA_MAPPER.get(head_name, '0039-00-800-45-01'),
+                    'total_credit': 0.0,
+                    'total_debit': 0.0,
+                    'current_balance': 0.0,
+                    'accounts_count': 0
+                }
+            head_totals[head_name]['total_credit'] += as_float(row.get('total_credit'))
+            head_totals[head_name]['total_debit'] += as_float(row.get('total_debit'))
+            head_totals[head_name]['current_balance'] += as_float(row.get('current_balance'))
+            head_totals[head_name]['accounts_count'] += int(row.get('accounts_count') or 0)
 
-    # Head-wise aggregations
-    head_totals = {}
-    user_totals = {}
-    security_deposits = []
-
-    for wb in balances:
-        raw_obj = wb.wallet_type
-        raw_type = str(getattr(raw_obj, 'name', raw_obj) or 'General Wallet')
-        w_type = HEAD_MAPPER.get(raw_type.lower(), raw_type)
-        credit = float(wb.total_credit or 0.0)
-        debit = float(wb.total_debit or 0.0)
-        curr_bal = float(wb.current_balance or 0.0)
-
-        if w_type not in head_totals:
-            head_totals[w_type] = {
-                'head_name': w_type,
-                'total_credit': credit,
-                'total_debit': debit,
-                'current_balance': curr_bal,
-                'accounts_count': 1
-            }
-        else:
-            head_totals[w_type]['total_credit'] += credit
-            head_totals[w_type]['total_debit'] += debit
-            head_totals[w_type]['current_balance'] += curr_bal
-            head_totals[w_type]['accounts_count'] += 1
-
-        # User aggregation for top contributors
-        u_id = wb.user_id or wb.licensee_name or 'Unknown Entity'
-        unit_n = wb.manufacturing_unit or wb.licensee_name or u_id
-        u_key = f"{wb.licensee_name or u_id}::{unit_n}"
-        
-        dt_str = wb.last_updated_at.strftime('%Y-%m-%d') if wb.last_updated_at else '2026-08-01'
-        m_str = wb.last_updated_at.strftime('%m') if wb.last_updated_at else '08'
-
-        if u_key not in user_totals:
-            unit_lower = unit_n.lower()
-            cat_name = 'Manufacturing' if any(k in unit_lower for k in ['distiller', 'brew', 'albrew', 'spirt']) else ('Distributor' if 'dist' in unit_lower else 'Retail')
-            subcat_name = 'Distillery' if 'distiller' in unit_lower else ('Brewery' if 'brew' in unit_lower else ('Distributor' if 'dist' in unit_lower else 'Retailer'))
-            
-            user_totals[u_key] = {
-                'user_id': u_id,
-                'licensee_name': wb.licensee_name or u_id,
-                'manufacturing_unit': unit_n,
-                'category': cat_name,
-                'sub_category': subcat_name,
-                'total_revenue_contributed': 0.0,
-                'total_fd_amount': 0.0,
-                'current_balance': 0.0,
-                'wallets_count': 0,
-                'updated_at': dt_str,
-                'month': m_str,
+        user_rows = (
+            WalletBalance.objects
+            .values('user_id', 'licensee_name', 'manufacturing_unit')
+            .annotate(
+                total_revenue_contributed=Sum('total_credit'),
+                current_balance=Sum('current_balance'),
+                total_fd_amount=Sum('total_credit', filter=Q(wallet_type_id__iexact='security_deposit')),
+                wallets_count=Count('wallet_balance_id'),
+                updated_at=Max('last_updated_at')
+            )
+            .order_by('-total_revenue_contributed')[:15]
+        )
+        sorted_contributors = []
+        for row in user_rows:
+            unit_name = row.get('manufacturing_unit') or row.get('licensee_name') or row.get('user_id') or 'Unknown Entity'
+            unit_lower = str(unit_name).lower()
+            category = 'Manufacturing' if any(k in unit_lower for k in ['distiller', 'brew', 'albrew', 'spirt']) else ('Distributor' if 'dist' in unit_lower else 'Retail')
+            sub_category = 'Distillery' if 'distiller' in unit_lower else ('Brewery' if 'brew' in unit_lower else ('Distributor' if 'dist' in unit_lower else 'Retailer'))
+            updated_at = row.get('updated_at')
+            sorted_contributors.append({
+                'user_id': row.get('user_id') or row.get('licensee_name') or 'Unknown Entity',
+                'licensee_name': row.get('licensee_name') or row.get('user_id') or 'Unknown Entity',
+                'manufacturing_unit': unit_name,
+                'category': category,
+                'sub_category': sub_category,
+                'total_revenue_contributed': round(as_float(row.get('total_revenue_contributed')), 2),
+                'total_fd_amount': round(as_float(row.get('total_fd_amount')), 2),
+                'current_balance': round(as_float(row.get('current_balance')), 2),
+                'wallets_count': int(row.get('wallets_count') or 0),
+                'updated_at': updated_at.strftime('%Y-%m-%d') if updated_at else '2026-08-01',
+                'month': updated_at.strftime('%m') if updated_at else '08',
                 'financial_year': '2026-2027'
-            }
-        
-        user_totals[u_key]['total_revenue_contributed'] += credit
-        user_totals[u_key]['current_balance'] += curr_bal
-        user_totals[u_key]['wallets_count'] += 1
+            })
 
-        if 'security' in w_type.lower() or 'fd' in w_type.lower():
-            user_totals[u_key]['total_fd_amount'] += (credit or curr_bal)
+        for idx, item in enumerate(sorted_contributors):
+            item['rank'] = idx + 1
+            item['tier_badge'] = 'Tier 1 Top Contributor' if idx < 3 else ('Tier 2 Contributor' if idx < 7 else 'Tier 3 Contributor')
+
+        security_rows = (
+            WalletBalance.objects
+            .filter(Q(wallet_type_id__iexact='security_deposit') | Q(wallet_type__name__icontains='security') | Q(wallet_type__name__icontains='fd'))
+            .values('licensee_id', 'user_id', 'licensee_name', 'manufacturing_unit')
+            .annotate(
+                fd_credit_amount=Sum('total_credit'),
+                fd_current_balance=Sum('current_balance'),
+                updated_at=Max('last_updated_at')
+            )
+            .order_by('-fd_credit_amount')[:20]
+        )
+        security_deposits = []
+        for row in security_rows:
+            unit_name = row.get('manufacturing_unit') or row.get('licensee_name') or row.get('user_id') or 'Unknown Entity'
+            unit_lower = str(unit_name).lower()
+            category = 'Manufacturing' if any(k in unit_lower for k in ['distiller', 'brew', 'albrew', 'spirt']) else ('Distributor' if 'dist' in unit_lower else 'Retail')
+            sub_category = 'Distillery' if 'distiller' in unit_lower else ('Brewery' if 'brew' in unit_lower else ('Distributor' if 'dist' in unit_lower else 'Retailer'))
+            updated_at = row.get('updated_at')
             security_deposits.append({
-                'licensee_id': wb.licensee_id or 'FD-REC-2026',
-                'user_id': u_id,
-                'licensee_name': wb.licensee_name or u_id,
-                'manufacturing_unit': unit_n,
-                'category': user_totals[u_key]['category'],
-                'sub_category': user_totals[u_key]['sub_category'],
-                'fd_credit_amount': credit,
-                'fd_current_balance': curr_bal,
+                'licensee_id': row.get('licensee_id') or 'FD-REC-2026',
+                'user_id': row.get('user_id') or row.get('licensee_name') or 'Unknown Entity',
+                'licensee_name': row.get('licensee_name') or row.get('user_id') or 'Unknown Entity',
+                'manufacturing_unit': unit_name,
+                'category': category,
+                'sub_category': sub_category,
+                'fd_credit_amount': round(as_float(row.get('fd_credit_amount')), 2),
+                'fd_current_balance': round(as_float(row.get('fd_current_balance')), 2),
                 'status': 'Verified & Locked FD',
-                'updated_at': dt_str,
-                'month': m_str,
+                'updated_at': updated_at.strftime('%Y-%m-%d') if updated_at else '2026-08-01',
+                'month': updated_at.strftime('%m') if updated_at else '08',
                 'financial_year': '2026-2027'
             })
 
-    # Override total_debit with exact DB WalletTransaction DR sums where available
-    for h_name, h_obj in head_totals.items():
-        if h_name in debit_aggregates and debit_aggregates[h_name] > 0:
-            h_obj['total_debit'] = debit_aggregates[h_name]
-
-    # Sort top contributors by total_revenue_contributed descending
-    sorted_contributors = sorted(user_totals.values(), key=lambda x: x['total_revenue_contributed'], reverse=True)
-    for idx, item in enumerate(sorted_contributors):
-        item['rank'] = idx + 1
-        item['tier_badge'] = 'Tier 1 Top Contributor' if idx < 3 else ('Tier 2 Contributor' if idx < 7 else 'Tier 3 Contributor')
-
-    total_revenue = sum(h['total_credit'] for h in head_totals.values())
-    total_balance = sum(h['current_balance'] for h in head_totals.values())
-    total_fd = sum(h['total_credit'] for k, h in head_totals.items() if 'security' in k.lower())
-    
-    # Net Excise Revenue Collections (excluding Education Cess and Security Deposit FDs)
-    net_excise_revenue = sum(
-        h['total_credit'] for k, h in head_totals.items()
-        if 'cess' not in k.lower() and 'security' not in k.lower()
-    )
-
-    DEFAULT_HOA_MAPPER = {
-        'Excise Duty Wallet': '0039-00-105-45-01',
-        'Additional Excise Duty Wallet': '0039-00-102-45-01',
-        'Hologram Procurement': '0039-00-800-45-01',
-        'Education Cess': '0045-00-112-45-03',
-        'License Fees': '0039-00-800-45-02',
-        'Security Deposit (FD)': '8443-00-103-45-01'
-    }
-
-    final_revenue_heads = []
-    for h in head_totals.values():
-        if h['head_name'] == 'Excise/Additional Duty' or h['head_name'] == 'Excise Duty Wallet':
-            deb = debit_aggregates.get('excise', debit_aggregates.get('excise_duty', h['total_debit']))
-            final_revenue_heads.append({
-                'head_name': 'Excise Duty Wallet',
-                'head_of_account': DEFAULT_HOA_MAPPER['Excise Duty Wallet'],
-                'total_credit': round(h['total_credit'] * 0.78, 2),
-                'total_debit': round(deb * 0.80, 2),
-                'current_balance': round(h['current_balance'] * 0.78, 2),
-                'total_paid_to_excise': round(deb * 0.80, 2),
-                'accounts_count': h['accounts_count']
-            })
-            final_revenue_heads.append({
-                'head_name': 'Additional Excise Duty Wallet',
-                'head_of_account': DEFAULT_HOA_MAPPER['Additional Excise Duty Wallet'],
-                'total_credit': round(h['total_credit'] * 0.22, 2),
-                'total_debit': round(deb * 0.20, 2),
-                'current_balance': round(h['current_balance'] * 0.22, 2),
-                'total_paid_to_excise': round(deb * 0.20, 2),
-                'accounts_count': h['accounts_count']
-            })
-        else:
+        final_revenue_heads = []
+        for h in head_totals.values():
             h_copy = dict(h)
-            actual_dr = debit_aggregates.get(h_copy['head_name'], h_copy['total_debit'])
-            h_copy['total_debit'] = round(actual_dr, 2)
-            h_copy['total_paid_to_excise'] = round(actual_dr, 2)
-            h_copy['head_of_account'] = DEFAULT_HOA_MAPPER.get(h_copy['head_name'], '0039-00-800-45-01')
+            actual_dr = debit_aggregates.get(h_copy['head_name'], debit_aggregates.get(h_copy['head_name'].lower(), h_copy['total_debit']))
+            h_copy['total_debit'] = round(float(actual_dr), 2)
+            h_copy['total_paid_to_excise'] = round(float(actual_dr), 2)
+            h_copy['total_credit'] = round(float(h_copy['total_credit']), 2)
+            h_copy['current_balance'] = round(float(h_copy['current_balance']), 2)
             final_revenue_heads.append(h_copy)
 
-    if not any(h['head_name'] == 'Additional Excise Duty Wallet' for h in final_revenue_heads):
-        excise_head = next((h for h in final_revenue_heads if h['head_name'] in ['Excise Duty Wallet', 'Excise/Additional Duty']), None)
-        if excise_head:
-            excise_head['head_name'] = 'Excise Duty Wallet'
-            excise_head['head_of_account'] = DEFAULT_HOA_MAPPER['Excise Duty Wallet']
-            c = excise_head['total_credit']
-            d = excise_head['total_debit']
-            b = excise_head['current_balance']
-            excise_head['total_credit'] = round(c * 0.78, 2)
-            excise_head['total_debit'] = round(d * 0.80, 2)
-            excise_head['current_balance'] = round(b * 0.78, 2)
-            excise_head['total_paid_to_excise'] = round(d * 0.80, 2)
-            
-            final_revenue_heads.insert(1, {
-                'head_name': 'Additional Excise Duty Wallet',
-                'head_of_account': DEFAULT_HOA_MAPPER['Additional Excise Duty Wallet'],
-                'total_credit': round(c * 0.22, 2),
-                'total_debit': round(d * 0.20, 2),
-                'current_balance': round(b * 0.22, 2),
-                'total_paid_to_excise': round(d * 0.20, 2),
-                'accounts_count': excise_head['accounts_count']
-            })
+        net_excise_paid = sum(
+            h.get('total_paid_to_excise', h.get('total_debit', 0.0)) for h in final_revenue_heads
+            if 'security' not in h['head_name'].lower() and 'fd' not in h['head_name'].lower()
+        )
+        total_fd_paid = sum(
+            h.get('total_paid_to_excise', h.get('total_debit', 0.0)) for h in final_revenue_heads
+            if 'security' in h['head_name'].lower() or 'fd' in h['head_name'].lower()
+        )
+        total_paid_all = net_excise_paid + total_fd_paid
+        total_balance_all = sum(h.get('current_balance', 0.0) for h in final_revenue_heads)
 
-    net_excise_paid = sum(
-        h.get('total_paid_to_excise', h.get('total_debit', 0.0)) for h in final_revenue_heads
-        if 'security' not in h['head_name'].lower() and 'fd' not in h['head_name'].lower()
-    )
-    total_fd_paid = sum(
-        h.get('total_paid_to_excise', h.get('total_debit', 0.0)) for h in final_revenue_heads
-        if 'security' in h['head_name'].lower() or 'fd' in h['head_name'].lower()
-    )
-    total_paid_all = net_excise_paid + total_fd_paid
-    total_balance_all = sum(h.get('current_balance', 0.0) for h in final_revenue_heads)
+        return Response(_to_json_safe({
+            'summary_kpis': {
+                'total_revenue_collected': total_paid_all,
+                'net_excise_revenue_collected': net_excise_paid,
+                'total_active_balance': total_balance_all,
+                'total_security_deposit_fd': total_fd_paid,
+                'top_contributors_count': len(sorted_contributors)
+            },
+            'revenue_heads': final_revenue_heads,
+            'top_contributors': sorted_contributors[:15],
+            'security_deposits': security_deposits[:20]
+        }))
 
-    return Response(_to_json_safe({
-        'summary_kpis': {
-            'total_revenue_collected': total_paid_all,
-            'net_excise_revenue_collected': net_excise_paid,
-            'total_active_balance': total_balance_all,
-            'total_security_deposit_fd': total_fd_paid,
-            'top_contributors_count': len(sorted_contributors)
-        },
-        'revenue_heads': final_revenue_heads,
-        'top_contributors': sorted_contributors[:15],
-        'security_deposits': security_deposits[:20]
-    }))
+    except Exception as e:
+        import traceback
+        print(f"[secretary_revenue_overview ERROR]: {e}\n{traceback.format_exc()}")
+        return Response(EMPTY_RESPONSE)
 
 
 def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_approved, created_date_str, updated_date_str):
