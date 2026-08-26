@@ -37,6 +37,10 @@ class LicenseCategory(models.Model):
         default=False,
         help_text="Whether licenses of this category are allowed to submit Special Permit (Dry Day) applications"
     )
+    is_distributor_user = models.BooleanField(
+        default=False,
+        help_text="Whether licensees of this category are distributor users (access to both Wallets and License tabs)"
+    )
 
     class Meta:
         db_table = 'masters_licensecategory'
