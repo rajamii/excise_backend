@@ -475,7 +475,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                         licensee_name=excise_wallet.licensee_name,
                         user_id=username or excise_wallet.user_id,
                         module_type=excise_wallet.module_type,
-                        wallet_type=excise_wallet.wallet_type,
+                        wallet_type_id='additional_excise',
                         head_of_account=excise_wallet.head_of_account,
                         entry_type='DR',
                         transaction_type='debit',
@@ -485,7 +485,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                         reference_no=bill_no,
                         source_module='transit_permit',
                         payment_status='success',
-                        remarks='Transit - Additional Excise',
+                        remarks='Transit - Additional Excise Duty',
                         created_at=now_ts,
                     )
 
