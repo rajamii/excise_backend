@@ -530,43 +530,55 @@ class DistributorPermitPerformActionView(APIView):
                 line_items = list(getattr(application, 'line_items', []).all() if hasattr(application, 'line_items') else [])
                 if line_items:
                     for item in line_items:
-                        cases = Decimal(str(getattr(item, 'cases', 0) or 0))
-                        import_fee_rate = Decimal(str(getattr(item, 'import_pass_fee_per_case', 0) or 0))
-                        add_ed_rate = Decimal(str(getattr(item, 'additional_ed_per_case', 0) or 0))
-                        cess_rate = Decimal(str(getattr(item, 'education_cess_per_case', 0) or 0))
+                        cases = Decimal(str(getattr(item, 'cases', 0) or getattr(item, 'no_of_cases', 0) or getattr(item, 'quantity', 0) or 0))
+                        import_fee_rate = Decimal(str(getattr(item, 'import_pass_fee_per_case', 0) or getattr(item, 'import_pass_fee', 0) or 0))
+                        add_ed_rate = Decimal(str(getattr(item, 'additional_ed_per_case', 0) or getattr(item, 'additional_ed', 0) or 0))
+                        cess_rate = Decimal(str(getattr(item, 'education_cess_per_case', 0) or getattr(item, 'education_cess', 0) or 0))
 
                         total_import_fee += (import_fee_rate * cases)
                         total_add_ed += (add_ed_rate * cases)
                         total_edu_cess += (cess_rate * cases)
-                else:
-                    details = getattr(application, 'permit_wise_details', []) or []
-                    for p in details:
-                        items = p.get('items', []) if isinstance(p, dict) else []
-                        for item in items:
-                            cases = Decimal(str(item.get('cases', 0)))
-                            import_fee = Decimal(str(item.get('totalImport') or (item.get('importFee', 0) * cases)))
-                            add_ed = Decimal(str(item.get('totalAddEd') or (item.get('addEdPerCase', 0) * cases)))
-                            cess = Decimal(str(item.get('cess', 0)))
 
-                            total_import_fee += import_fee
-                            total_add_ed += add_ed
-                            total_edu_cess += cess
+                if total_import_fee == 0 and total_add_ed == 0 and total_edu_cess == 0:
+                    details = getattr(application, 'permit_wise_details', []) or []
+                    if isinstance(details, list):
+                        for p in details:
+                            if isinstance(p, dict):
+                                items = p.get('line_items') or p.get('items') or []
+                                for item in items:
+                                    if isinstance(item, dict):
+                                        cases = Decimal(str(item.get('cases', 0) or 0))
+                                        import_fee = Decimal(str(item.get('total_import') or item.get('totalImport') or (item.get('import_pass_fee_per_case', 0) * cases)))
+                                        add_ed = Decimal(str(item.get('total_additional_ed') or item.get('totalAddEd') or (item.get('additional_ed_per_case', 0) * cases)))
+                                        cess = Decimal(str(item.get('total_education_cess') or item.get('cess') or 0))
+
+                                        total_import_fee += import_fee
+                                        total_add_ed += add_ed
+                                        total_edu_cess += cess
 
                 excise_amount = (total_import_fee + total_add_ed).quantize(Decimal('0.01'))
                 cess_amount = total_edu_cess.quantize(Decimal('0.01'))
 
-                licensee_id = str(getattr(application, 'license_id', '') or getattr(request.user, 'username', '') or '').strip()
-                username = str(getattr(request.user, 'username', '') or '').strip()
+                user_obj = getattr(application, 'applicant', None) or request.user
+                username = str(getattr(user_obj, 'username', '') or '').strip()
+
+                candidates = [username]
+                from models.masters.license.models import License
+                for lic in License.objects.filter(applicant=user_obj, is_active=True):
+                    if lic.license_id:
+                        candidates.append(str(lic.license_id).strip())
+
+                wallet_filter = Q(user_id__iexact=username) | Q(licensee_id__in=candidates)
+                if hasattr(WalletBalance, 'applicant'):
+                    wallet_filter |= Q(applicant=user_obj)
 
                 excise_wallet = WalletBalance.objects.filter(
-                    Q(licensee_id__iexact=licensee_id) | Q(user_id__iexact=username),
+                    wallet_filter,
                     wallet_type__code__iexact='excise'
-                ).order_by('wallet_balance_id').first()
-                if not excise_wallet:
-                    excise_wallet = WalletBalance.objects.filter(wallet_type__code__iexact='excise').order_by('wallet_balance_id').first()
+                ).order_by('-current_balance', 'wallet_balance_id').first()
 
                 if not excise_wallet and excise_amount > 0:
-                    return Response({'status': 'error', 'message': 'Excise Wallet not found for payment.'}, status=status.HTTP_400_BAD_REQUEST)
+                    return Response({'status': 'error', 'message': f'Excise Wallet not found for user {username}.'}, status=status.HTTP_400_BAD_REQUEST)
 
                 if excise_wallet and Decimal(str(excise_wallet.current_balance or 0)) < excise_amount:
                     return Response({
@@ -577,14 +589,12 @@ class DistributorPermitPerformActionView(APIView):
                 cess_wallet = None
                 if cess_amount > 0:
                     cess_wallet = WalletBalance.objects.filter(
-                        Q(licensee_id__iexact=licensee_id) | Q(user_id__iexact=username),
+                        wallet_filter,
                         wallet_type__code__iexact='education_cess'
-                    ).order_by('wallet_balance_id').first()
-                    if not cess_wallet:
-                        cess_wallet = WalletBalance.objects.filter(wallet_type__code__iexact='education_cess').order_by('wallet_balance_id').first()
+                    ).order_by('-current_balance', 'wallet_balance_id').first()
 
                     if not cess_wallet:
-                        return Response({'status': 'error', 'message': 'Education Cess Wallet not found for payment.'}, status=status.HTTP_400_BAD_REQUEST)
+                        return Response({'status': 'error', 'message': f'Education Cess Wallet not found for user {username}.'}, status=status.HTTP_400_BAD_REQUEST)
 
                     if Decimal(str(cess_wallet.current_balance or 0)) < cess_amount:
                         return Response({
@@ -1341,21 +1351,37 @@ class IMFLCasesProcessedViewSet(viewsets.ModelViewSet):
 def distributor_permit_wallet_balances(request):
     from django.db.models import Q
     from models.transactional.wallet.models import WalletBalance
+    from models.masters.license.models import License
+    from models.transactional.wallet.wallet_initializer import initialize_wallet_balances_for_license
 
-    user_id = str(getattr(request.user, 'username', '') or '').strip()
+    user = request.user
+    user_id = str(getattr(user, 'username', '') or '').strip()
+
+    # Expand candidate license IDs for this user
+    candidates = [user_id]
+    user_licenses = list(License.objects.filter(applicant=user, is_active=True))
+    for lic in user_licenses:
+        if lic.license_id:
+            candidates.append(str(lic.license_id).strip())
+            # Initialize wallets for user's license if missing
+            try:
+                initialize_wallet_balances_for_license(lic)
+            except Exception:
+                pass
+
+    wallet_filter = Q(user_id__iexact=user_id) | Q(licensee_id__in=candidates)
+    if hasattr(WalletBalance, 'applicant'):
+        wallet_filter |= Q(applicant=user)
+
     excise_wb = WalletBalance.objects.filter(
-        Q(user_id__iexact=user_id),
+        wallet_filter,
         wallet_type__code__iexact='excise'
-    ).order_by('wallet_balance_id').first()
-    if not excise_wb:
-        excise_wb = WalletBalance.objects.filter(wallet_type__code__iexact='excise').order_by('wallet_balance_id').first()
+    ).order_by('-current_balance', 'wallet_balance_id').first()
 
     cess_wb = WalletBalance.objects.filter(
-        Q(user_id__iexact=user_id),
+        wallet_filter,
         wallet_type__code__iexact='education_cess'
-    ).order_by('wallet_balance_id').first()
-    if not cess_wb:
-        cess_wb = WalletBalance.objects.filter(wallet_type__code__iexact='education_cess').order_by('wallet_balance_id').first()
+    ).order_by('-current_balance', 'wallet_balance_id').first()
 
     return Response({
         'excise_balance': float(excise_wb.current_balance) if excise_wb else 0.0,
