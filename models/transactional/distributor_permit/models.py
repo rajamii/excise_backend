@@ -120,8 +120,6 @@ class DistributorPermitLineItem(models.Model):
     mrp_per_bottle = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
     additional_ed_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
     education_cess_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
-    total_additional_ed = models.DecimalField(max_digits=15, decimal_places=2, default=Decimal('0.00'))
-    bulk_litres = models.DecimalField(max_digits=15, decimal_places=3, default=Decimal('0.000'))
     permit_number = models.CharField(max_length=100, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 

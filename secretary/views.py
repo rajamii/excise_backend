@@ -1362,9 +1362,11 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
     if not end_dt or end_dt <= base_dt:
         end_dt = base_dt + timedelta(days=2, hours=4)
 
-    if is_approved or 'approved' in stage_lower or 'issue' in stage_lower:
+    if is_approved or 'issue' in stage_lower or 'certificate' in stage_lower or 'final' in stage_lower or 'active' in stage_lower:
         active_step_idx = 6
-    elif 'commissioner' in stage_lower or 'payment' in stage_lower or 'fee' in stage_lower or 'demand' in stage_lower:
+    elif 'payment' in stage_lower or 'fee' in stage_lower or 'demand' in stage_lower or 'awaiting' in stage_lower or 'wallet' in stage_lower:
+        active_step_idx = 6
+    elif 'commissioner' in stage_lower:
         active_step_idx = 5
     elif 'joint' in stage_lower or 'jc' in stage_lower:
         active_step_idx = 4
@@ -1415,14 +1417,14 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
             'title': 'Stage: Excise Commissioner Grant Approval',
             'desc': f'Excise Commissioner (IAS) approval for license grant and issue of official Demand Note.',
             'user': 'Excise Commissioner (IAS)',
-            'time': 'Day 4 - Day 5'
+            'time': 'Day 4'
         },
         {
             'step_no': 6,
-            'title': 'Stage: Final License Certificate Issued',
-            'desc': f'Applicant completes License Fee & Security FD Deposit settlement. Final QR-coded License Certificate generated, signed & issued to licensee.',
-            'user': f'{applicant} (Licensee) & Excise Authority',
-            'time': 'Final Order'
+            'title': 'Stage: Final License Certificate Issued & Active' if is_approved else 'Stage: License Fee & Security Deposit Payment',
+            'desc': f'Applicant completes License Fee & Security FD Deposit settlement. Final QR-coded License Certificate generated, signed & issued to licensee.' if is_approved else f'Awaiting online License Fee settlement and Security Deposit wallet deposit by applicant.',
+            'user': f'{applicant} (Licensee) & Excise Authority' if is_approved else f'{applicant} (Licensee) - Awaiting Payment',
+            'time': 'Final Order' if is_approved else 'Day 4 - Day 5'
         }
     ]
 
@@ -1446,8 +1448,7 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
             step_dt_str = cur_dt.strftime('%Y-%m-%d %H:%M')
             last_step_dt = cur_dt
             
-            u_obj = matching_tx.performed_by
-            user_str = f"{getattr(u_obj, 'first_name', '')} {getattr(u_obj, 'last_name', '')}".strip() if u_obj else ''
+            user_str = f"{getattr(u_obj, 'first_name', '')} {getattr(u_obj, 'last_name', '')}".strip() if (u_obj := matching_tx.performed_by) else ''
             if not user_str or step_num in (5, 6):
                 user_str = s['user']
 
@@ -1490,7 +1491,7 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
                 'resolved_by': f"{getattr(res_by, 'first_name', '')} {getattr(res_by, 'last_name', '')}".strip() if res_by else 'Applicant'
             }
 
-        # Payment Breakdown details for Stage 6 (Final License Certificate & Fee Settlement)
+        # Payment Breakdown details for Stage 6
         payment_breakdown = None
         if step_num == 6 and (is_approved or step_num <= active_step_idx):
             license_fee_val = 25000.0 if ('manufacturing' in str(app_id).lower() or 'distill' in str(est_name).lower()) else 15000.0
@@ -1525,7 +1526,7 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
                 'status_text': 'Completed'
             })
         elif step_num == active_step_idx:
-            if is_approved or active_step_idx == 6:
+            if is_approved or (active_step_idx == 6 and 'approved' in stage_lower):
                 steps.append({
                     'step_no': step_num,
                     'icon': '👑',
@@ -1549,7 +1550,7 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
                     'badge_class': 'status-final-pending',
                     'event_title': s['title'],
                     'event_date': step_dt_str,
-                    'event_description': f"Current status: {stage_name}. Active officer review at stage: {s['title']}.",
+                    'event_description': f"Current status: {stage_name}. Active applicant/officer review at stage: {s['title']}.",
                     'user_details': stage_name,
                     'forwarded_info': forwarded_info,
                     'objection_info': objection_info,

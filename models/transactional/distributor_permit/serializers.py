@@ -41,8 +41,6 @@ class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
             'mrp_per_bottle',
             'additional_ed_per_case',
             'education_cess_per_case',
-            'total_additional_ed',
-            'bulk_litres',
             'permit_number',
         ]
         read_only_fields = [
@@ -54,8 +52,6 @@ class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
             'mrp_per_bottle',
             'additional_ed_per_case',
             'education_cess_per_case',
-            'total_additional_ed',
-            'bulk_litres',
         ]
 
     def to_internal_value(self, data):
@@ -358,8 +354,6 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
                     mrp_per_bottle=i['mrp'],
                     additional_ed_per_case=i['additional_ed'],
                     education_cess_per_case=i['education_cess'],
-                    total_additional_ed=i['additional_ed'] * i['allocated_cases'],
-                    bulk_litres=(Decimal(i['size_ml']) * Decimal(i['pieces_per_case']) * Decimal(i['allocated_cases']) / Decimal('1000')),
                     permit_number=p_num,
                 )
 

@@ -104,16 +104,18 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             total_permits = len(permit_tokens)
 
             cancelled_permits_approved = set()
-            try:
-                cancelled_permits_approved = set(self._approved_cancelled_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or ''))
-            except Exception:
-                cancelled_permits_approved = set()
-
             cancel_requested_permits = set()
-            try:
-                cancel_requested_permits = set(self._cancellation_requested_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or ''))
-            except Exception:
-                cancel_requested_permits = set()
+            req_status = str(getattr(instance, 'status', '') or '').upper()
+            if req_status not in ('PENDING', 'SUBMITTED', 'REJECTED', 'DRAFT') and 'APPROV' in req_status:
+                try:
+                    cancelled_permits_approved = set(self._approved_cancelled_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or '', instance))
+                except Exception:
+                    cancelled_permits_approved = set()
+
+                try:
+                    cancel_requested_permits = set(self._cancellation_requested_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or '', instance))
+                except Exception:
+                    cancel_requested_permits = set()
 
             cancelled_permits = set(cancelled_permits_approved or set()).union(set(cancel_requested_permits or set()))
             if permit_tokens:
@@ -238,16 +240,18 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
             total_permits = len(permit_tokens)
 
             cancelled_permits_approved = set()
-            try:
-                cancelled_permits_approved = set(self._approved_cancelled_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or ''))
-            except Exception:
-                cancelled_permits_approved = set()
-
             cancel_requested_permits = set()
-            try:
-                cancel_requested_permits = set(self._cancellation_requested_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or ''))
-            except Exception:
-                cancel_requested_permits = set()
+            req_status = str(getattr(instance, 'status', '') or '').upper()
+            if req_status not in ('PENDING', 'SUBMITTED', 'REJECTED', 'DRAFT') and 'APPROV' in req_status:
+                try:
+                    cancelled_permits_approved = set(self._approved_cancelled_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or '', instance))
+                except Exception:
+                    cancelled_permits_approved = set()
+
+                try:
+                    cancel_requested_permits = set(self._cancellation_requested_permit_numbers_for_requisition(getattr(instance, 'our_ref_no', '') or '', instance))
+                except Exception:
+                    cancel_requested_permits = set()
 
             cancelled_permits = set(cancelled_permits_approved or set()).union(set(cancel_requested_permits or set()))
             if permit_tokens:
@@ -748,15 +752,18 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
         merged = f"{status_token} {stage_token}"
         return 'reject' in merged
 
-    def _approved_cancelled_permit_numbers_for_requisition(self, requisition_ref_no):
+    def _approved_cancelled_permit_numbers_for_requisition(self, requisition_ref_no, requisition_obj=None):
         if not requisition_ref_no:
             return set()
+        if requisition_obj:
+            req_status = str(getattr(requisition_obj, 'status', '') or '').upper()
+            if req_status in ('PENDING', 'SUBMITTED', 'REJECTED', 'DRAFT') or 'APPROV' not in req_status:
+                return set()
 
         from models.transactional.supply_chain.ena_cancellation_details.models import EnaCancellationDetail
 
         rows = EnaCancellationDetail.objects.filter(
-            models.Q(requisition_ref_no=requisition_ref_no) |
-            models.Q(our_ref_no=requisition_ref_no)
+            requisition_ref_no=requisition_ref_no
         ).select_related('current_stage')
 
         approved_numbers = set()
@@ -769,15 +776,18 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
 
         return approved_numbers
 
-    def _cancellation_requested_permit_numbers_for_requisition(self, requisition_ref_no):
+    def _cancellation_requested_permit_numbers_for_requisition(self, requisition_ref_no, requisition_obj=None):
         if not requisition_ref_no:
             return set()
+        if requisition_obj:
+            req_status = str(getattr(requisition_obj, 'status', '') or '').upper()
+            if req_status in ('PENDING', 'SUBMITTED', 'REJECTED', 'DRAFT') or 'APPROV' not in req_status:
+                return set()
 
         from models.transactional.supply_chain.ena_cancellation_details.models import EnaCancellationDetail
 
         rows = EnaCancellationDetail.objects.filter(
-            models.Q(requisition_ref_no=requisition_ref_no) |
-            models.Q(our_ref_no=requisition_ref_no)
+            requisition_ref_no=requisition_ref_no
         ).select_related('current_stage')
 
         requested_numbers = set()
