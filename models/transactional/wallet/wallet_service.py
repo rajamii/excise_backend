@@ -27,6 +27,7 @@ def credit_wallet_balance(
     source_module: str = "billdesk",
     payment_status: str = "success",
     remarks: str = "",
+    reference_no: str = "",
 ) -> tuple[WalletTransaction | None, WalletBalance | None, bool]:
     txn = str(transaction_id or "").strip()
     if not txn:
@@ -68,19 +69,19 @@ def credit_wallet_balance(
         if existing and not _is_pending_payment_status(getattr(existing, "payment_status", "")):
             return existing, None, True
 
-        wallet = WalletBalance.objects.select_for_update().filter(
-            licensee_id__iexact=resolved_licensee_id,
-            wallet_type__code__iexact=wtype,
-            head_of_account=hoa,
-        ).order_by("wallet_balance_id").first()
-        
-        # COMMENTED OUT: Wallet should already exist (created at commissioner approval stage).
-        # Creating a new dummy WalletBalance row here during payment was causing a duplicate/ghost
-        # row in wallet_balances. If the wallet is missing, raise an error instead.
+        matching_codes = [wtype]
+        if wtype.lower() in ('excise', 'additional_excise', 'additional_ed'):
+            matching_codes = ['excise', 'additional_excise', 'additional_ed']
+
+        wallet = (
+            WalletBalance.objects.select_for_update()
+            .filter(wallet_filter, wallet_type__code__in=matching_codes)
+            .order_by("wallet_balance_id")
+            .first()
+        )
         if not wallet:
             raise ValueError(
-                f"Wallet not found for licensee_id={resolved_licensee_id}, wallet_type={wtype}, "
-                f"head_of_account={hoa}. "
+                f"Wallet not found for licensee_id={resolved_licensee_id}, wallet_type={wtype}. "
                 "Wallet must be initialized at license approval before any payment can be credited."
             )
         # if not wallet:
@@ -120,7 +121,7 @@ def credit_wallet_balance(
             existing.amount = amt
             existing.balance_before = before
             existing.balance_after = after
-            existing.reference_no = txn
+            existing.reference_no = str(reference_no or txn).strip()
             existing.source_module = str(source_module or "billdesk").strip()
             existing.payment_status = str(payment_status or "success").strip()
             existing.remarks = str(remarks or "").strip() or None
@@ -142,7 +143,7 @@ def credit_wallet_balance(
                 amount=amt,
                 balance_before=before,
                 balance_after=after,
-                reference_no=txn,
+                reference_no=str(reference_no or txn).strip(),
                 source_module=str(source_module or "billdesk").strip(),
                 payment_status=str(payment_status or "success").strip(),
                 remarks=str(remarks or "").strip() or None,
