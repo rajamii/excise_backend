@@ -116,7 +116,7 @@ def credit_wallet_balance(
             existing.licensee_name = str(wallet.licensee_name or licensee_name or "").strip() or None
             existing.user_id = str(user_id or getattr(wallet, "user_id", "") or "").strip() or None
             existing.module_type = str(wallet.module_type or resolved_module_type).strip()
-            existing.wallet_type_id = str(getattr(wallet, "wallet_type_id", None) or wtype).strip()
+            existing.wallet_type_id = str(wtype).strip()
             existing.head_of_account = str(wallet.head_of_account or hoa).strip()
             existing.amount = amt
             existing.balance_before = before
@@ -136,7 +136,7 @@ def credit_wallet_balance(
                 licensee_name=str(wallet.licensee_name or licensee_name or "").strip() or None,
                 user_id=str(user_id or getattr(wallet, "user_id", "") or "").strip() or None,
                 module_type=str(wallet.module_type or resolved_module_type).strip(),
-                wallet_type_id=str(getattr(wallet, "wallet_type_id", None) or wtype).strip(),
+                wallet_type_id=str(wtype).strip(),
                 head_of_account=str(wallet.head_of_account or hoa).strip(),
                 entry_type=str(entry_type or "CR").strip(),
                 transaction_type=str(transaction_type or "recharge").strip(),

@@ -1116,7 +1116,14 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
                     total_add_ed += (add_rate * cases)
                     total_edu_cess += (cess_rate * cases)
 
-            cancellation_fee = Decimal('1000.00')
+            # Cancellation fee = Rs.1000 per permit being cancelled
+            permit_numbers_in_details = list({
+                str(p.get('permit_number', '')).strip()
+                for p in p_details
+                if isinstance(p, dict) and p.get('permit_number')
+            }) if p_details else []
+            num_permits = len(permit_numbers_in_details) or 1
+            cancellation_fee = Decimal('1000.00') * num_permits
 
             user_obj = self.request.user
             dist_applicant = getattr(distributor_permit, 'applicant', None) or user_obj
@@ -1140,7 +1147,7 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
             licensee_id = str(wb.licensee_id).strip() if (wb and wb.licensee_id) else raw_licensee_id
             from models.transactional.wallet.wallet_service import debit_wallet_balance, credit_wallet_balance
 
-            # 1. Debit Cancellation Processing Fee (Rs. 1000.00)
+            # 1. Debit Cancellation Processing Fee (Rs.1000 per permit) from Excise wallet
             debit_wallet_balance(
                 transaction_id=f"PAY-EXCISE-CAN-FEE-{ref_no}",
                 licensee_id=licensee_id,
@@ -1150,10 +1157,10 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
                 user_id=username,
                 source_module="imfl_permit_cancellation_fee",
                 reference_no=ref_no,
-                remarks=f"IMFL Requisition Cancellation Processing Fee Debit (Rs. 1000.00) for Ref #{ref_no}"
+                remarks=f"IMFL Cancellation Processing Fee (Rs. {cancellation_fee} for {num_permits} permit(s)) for Ref #{ref_no}"
             )
 
-            # 2. Credit Excise Duty Refund (Import Pass Fee)
+            # 2. Credit Excise Duty Refund (Import Pass Fee) — Excise wallet
             if total_import_fee > 0:
                 credit_wallet_balance(
                     transaction_id=f"PAY-EXCISE-ED-REFUND-{ref_no}",
@@ -1165,10 +1172,10 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
                     source_module="imfl_permit_cancellation_excise",
                     transaction_type="refund",
                     reference_no=ref_no,
-                    remarks=f"IMFL Requisition Excise Duty Refund (Import Pass Fee Rs. {total_import_fee}) for Ref #{ref_no}"
+                    remarks=f"IMFL Cancellation Excise Duty Refund (Import Pass Fee Rs. {total_import_fee}) for Ref #{ref_no}"
                 )
 
-            # 3. Credit Additional Excise Duty Refund
+            # 3. Credit Additional Excise Duty Refund — stored as additional_excise (uses excise wallet balance row)
             if total_add_ed > 0:
                 credit_wallet_balance(
                     transaction_id=f"PAY-EXCISE-ADD-REFUND-{ref_no}",
@@ -1180,10 +1187,10 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
                     source_module="imfl_permit_cancellation_additional_ed",
                     transaction_type="refund",
                     reference_no=ref_no,
-                    remarks=f"IMFL Requisition Additional Excise Duty Refund (Add. ED Rs. {total_add_ed}) for Ref #{ref_no}"
+                    remarks=f"IMFL Cancellation Additional Excise Duty Refund (Add. ED Rs. {total_add_ed}) for Ref #{ref_no}"
                 )
 
-            # 4. Credit Education Cess Refund
+            # 4. Credit Education Cess Refund — Education Cess wallet
             if total_edu_cess > 0:
                 credit_wallet_balance(
                     transaction_id=f"PAY-CESS-REFUND-{ref_no}",
@@ -1195,11 +1202,16 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
                     source_module="imfl_permit_cancellation_education_cess",
                     transaction_type="refund",
                     reference_no=ref_no,
-                    remarks=f"IMFL Requisition Education Duty Refund (Education Cess Rs. {total_edu_cess}) for Ref #{ref_no}"
+                    remarks=f"IMFL Cancellation Education Cess Refund (Rs. {total_edu_cess}) for Ref #{ref_no}"
                 )
         except Exception as err:
             import logging
-            logging.getLogger(__name__).exception("Failed to process wallet refund/fee for IMFL cancellation %s: %s", ref_no, err)
+            import traceback
+            logging.getLogger(__name__).error(
+                "IMFL cancellation wallet refund FAILED for %s: %s\n%s",
+                ref_no, err, traceback.format_exc()
+            )
+
 
     @action(detail=True, methods=['post'], url_path='perform_action')
     def perform_action(self, request, reference_no=None):
@@ -1305,62 +1317,6 @@ class IMFLArrivalViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='perform-action')
     def perform_action_hyphen(self, request, reference_no=None):
         return DistributorPermitPerformActionView().post(request, reference_no=reference_no)
-
-
-class IMFLCancellationViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
-    serializer_class = IMFLCancellationSerializer
-    lookup_field = 'reference_no'
-    lookup_value_regex = '.+'
-
-    def get_queryset(self):
-        qs = IMFLCancellation.objects.select_related('distributor_permit', 'applicant', 'current_stage').all()
-        return scope_permit_queryset(qs, self.request.user)
-
-    def perform_create(self, serializer):
-        from django.utils import timezone
-        from auth.workflow.models import Workflow, WorkflowStage
-        from auth.workflow.constants import WORKFLOW_IDS
-
-        ref_no = DistributorPermitApplication.generate_reference_no(app_type='cancellation')
-        workflow_id = WORKFLOW_IDS.get('IMFL_CANCELLATION', 17)
-        workflow = Workflow.objects.filter(id=workflow_id).first()
-        initial_stage = WorkflowStage.objects.filter(id=162).first() or (workflow.stages.filter(is_initial=True).first() if workflow else None)
-        status_name = initial_stage.name if initial_stage else 'Forwarded To Commissioner'
-
-        target_permit_no = self.request.data.get('cancelled_permit_number') or self.request.data.get('cancelledPermitNumber') or ''
-        p_details = self.request.data.get('permit_wise_details') or self.request.data.get('permitWiseDetails') or []
-
-        distributor_permit = serializer.validated_data.get('distributor_permit')
-        if distributor_permit and not p_details:
-            app_pdetails = getattr(distributor_permit, 'permit_wise_details', []) or []
-            if target_permit_no:
-                matched = [p for p in app_pdetails if str(p.get('permit_number', '')).lower() == str(target_permit_no).lower()]
-                p_details = matched if matched else app_pdetails
-            else:
-                p_details = app_pdetails
-
-        serializer.save(
-            reference_no=ref_no,
-            applicant=self.request.user,
-            cancelled_permit_number=target_permit_no,
-            permit_wise_details=p_details,
-            submitted_at=timezone.now(),
-            workflow=workflow,
-            current_stage=initial_stage,
-            status=status_name
-        )
-
-    @action(detail=True, methods=['post'], url_path='perform_action')
-    def perform_action(self, request, reference_no=None):
-        handler = DistributorPermitPerformActionView()
-        return handler.post(request, reference_no=reference_no)
-
-    @action(detail=True, methods=['post'], url_path='perform-action')
-    def perform_action_hyphen(self, request, reference_no=None):
-        handler = DistributorPermitPerformActionView()
-        return handler.post(request, reference_no=reference_no)
-
 
 class IMFLArrivalViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
