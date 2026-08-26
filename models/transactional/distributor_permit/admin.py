@@ -18,8 +18,6 @@ class DistributorPermitLineItemInline(admin.TabularInline):
         'mrp_per_bottle',
         'additional_ed_per_case',
         'education_cess_per_case',
-        'total_additional_ed',
-        'bulk_litres',
         'permit_number',
     )
 
