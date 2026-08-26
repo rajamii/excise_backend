@@ -604,24 +604,52 @@ class DistributorPermitPerformActionView(APIView):
 
                 import uuid
                 ref_no_str = application.reference_no
-                excise_txn_id = f"PAY-EXCISE-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
-                cess_txn_id = f"PAY-CESS-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
 
                 if excise_wallet and excise_amount > 0:
-                    debit_wallet_balance(
-                        transaction_id=excise_txn_id,
-                        licensee_id=excise_wallet.licensee_id,
-                        wallet_type="excise",
-                        head_of_account=excise_wallet.head_of_account,
-                        amount=excise_amount,
-                        user_id=username,
-                        remarks=f"IMFL Permit Requisition Fee Payment (Import Pass Fee ₹{total_import_fee} & Add. ED ₹{total_add_ed}) for Ref #{ref_no_str}",
-                        reference_no=ref_no_str,
-                        source_module="imfl_permit_requisition",
-                        transaction_type="payment"
-                    )
+                    if total_import_fee > 0 and total_add_ed > 0:
+                        ed_txn_id = f"PAY-EXCISE-ED-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
+                        debit_wallet_balance(
+                            transaction_id=ed_txn_id,
+                            licensee_id=excise_wallet.licensee_id,
+                            wallet_type="excise",
+                            head_of_account=excise_wallet.head_of_account,
+                            amount=total_import_fee,
+                            user_id=username,
+                            remarks=f"IMFL Requisition Excise Duty (Import Pass Fee ₹{total_import_fee}) for Ref #{ref_no_str}",
+                            reference_no=ref_no_str,
+                            source_module="imfl_permit_requisition_excise",
+                            transaction_type="payment"
+                        )
+                        add_txn_id = f"PAY-EXCISE-ADD-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
+                        debit_wallet_balance(
+                            transaction_id=add_txn_id,
+                            licensee_id=excise_wallet.licensee_id,
+                            wallet_type="additional_excise",
+                            head_of_account=excise_wallet.head_of_account,
+                            amount=total_add_ed,
+                            user_id=username,
+                            remarks=f"IMFL Requisition Additional Excise Duty (Add. ED ₹{total_add_ed}) for Ref #{ref_no_str}",
+                            reference_no=ref_no_str,
+                            source_module="imfl_permit_requisition_additional_ed",
+                            transaction_type="payment"
+                        )
+                    else:
+                        excise_txn_id = f"PAY-EXCISE-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
+                        debit_wallet_balance(
+                            transaction_id=excise_txn_id,
+                            licensee_id=excise_wallet.licensee_id,
+                            wallet_type="excise",
+                            head_of_account=excise_wallet.head_of_account,
+                            amount=excise_amount,
+                            user_id=username,
+                            remarks=f"IMFL Requisition Excise Duty Fee Payment for Ref #{ref_no_str}",
+                            reference_no=ref_no_str,
+                            source_module="imfl_permit_requisition_excise",
+                            transaction_type="payment"
+                        )
 
                 if cess_wallet and cess_amount > 0:
+                    cess_txn_id = f"PAY-CESS-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
                     debit_wallet_balance(
                         transaction_id=cess_txn_id,
                         licensee_id=cess_wallet.licensee_id,
@@ -629,9 +657,9 @@ class DistributorPermitPerformActionView(APIView):
                         head_of_account=cess_wallet.head_of_account,
                         amount=cess_amount,
                         user_id=username,
-                        remarks=f"IMFL Permit Requisition Education Cess Payment for Ref #{ref_no_str}",
+                        remarks=f"IMFL Requisition Education Duty Payment (Education Cess ₹{cess_amount}) for Ref #{ref_no_str}",
                         reference_no=ref_no_str,
-                        source_module="imfl_permit_requisition",
+                        source_module="imfl_permit_requisition_education_cess",
                         transaction_type="payment"
                     )
 

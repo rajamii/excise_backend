@@ -26,6 +26,25 @@ class Migration(migrations.Migration):
                 'ordering': ['id'],
             },
         ),
+        migrations.CreateModel(
+            name='IMFLBrand',
+            fields=[
+                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
+                ('brand_name', models.CharField(max_length=255)),
+                ('size_ml', models.PositiveIntegerField(default=750)),
+                ('pieces_per_case', models.PositiveIntegerField(default=12)),
+                ('edp_per_case', models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=15)),
+                ('import_pass_fee_per_case', models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=15)),
+                ('mrp_per_bottle', models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=15)),
+                ('additional_ed_per_case', models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=15)),
+                ('education_cess_per_case', models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=15)),
+                ('created_at', models.DateTimeField(auto_now_add=True)),
+            ],
+            options={
+                'db_table': 'imfl_brands',
+                'ordering': ['id'],
+            },
+        ),
         migrations.AddField(
             model_name='IMFLBrand',
             name='supplier',
@@ -33,6 +52,26 @@ class Migration(migrations.Migration):
         ),
         migrations.RunSQL(
             sql="""
+            CREATE TABLE IF NOT EXISTS public.imfl_suppliers (
+                id bigserial PRIMARY KEY,
+                supplier_name varchar(255) NOT NULL,
+                address text NOT NULL DEFAULT '',
+                route_details text NOT NULL DEFAULT '',
+                created_at timestamptz NOT NULL DEFAULT now()
+            );
+            CREATE TABLE IF NOT EXISTS public.imfl_brands (
+                id bigserial PRIMARY KEY,
+                brand_name varchar(255) NOT NULL,
+                size_ml integer NOT NULL DEFAULT 750,
+                pieces_per_case integer NOT NULL DEFAULT 12,
+                edp_per_case numeric(15,2) NOT NULL DEFAULT 0.00,
+                import_pass_fee_per_case numeric(15,2) NOT NULL DEFAULT 0.00,
+                mrp_per_bottle numeric(15,2) NOT NULL DEFAULT 0.00,
+                additional_ed_per_case numeric(15,2) NOT NULL DEFAULT 0.00,
+                education_cess_per_case numeric(15,2) NOT NULL DEFAULT 0.00,
+                created_at timestamptz NOT NULL DEFAULT now(),
+                imfl_supplier_id bigint REFERENCES public.imfl_suppliers(id) ON DELETE CASCADE
+            );
             ALTER TABLE public.imfl_brands ADD COLUMN IF NOT EXISTS imfl_supplier_id bigint REFERENCES public.imfl_suppliers(id) ON DELETE CASCADE;
             """,
             reverse_sql=""

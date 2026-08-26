@@ -329,9 +329,13 @@ def debit_wallet_balance(
         if existing and not _is_pending_payment_status(getattr(existing, "payment_status", "")):
             return existing, None, True
 
+        matching_codes = [wtype]
+        if wtype.lower() in ('excise', 'additional_excise', 'additional_ed'):
+            matching_codes = ['excise', 'additional_excise', 'additional_ed']
+
         wallet = (
             WalletBalance.objects.select_for_update()
-            .filter(wallet_filter, wallet_type__code__iexact=wtype, head_of_account=hoa)
+            .filter(wallet_filter, wallet_type__code__in=matching_codes)
             .order_by("wallet_balance_id")
             .first()
         )
@@ -355,7 +359,7 @@ def debit_wallet_balance(
             licensee_name=str(wallet.licensee_name or licensee_name or "").strip() or None,
             user_id=str(user_id or getattr(wallet, "user_id", "") or "").strip() or None,
             module_type=str(wallet.module_type or resolved_module_type).strip(),
-            wallet_type_id=str(getattr(wallet, "wallet_type_id", None) or wtype).strip(),
+            wallet_type_id=str(wtype).strip(),
             head_of_account=str(wallet.head_of_account or hoa).strip(),
             entry_type="DR",
             transaction_type=str(transaction_type or "payment").strip(),
