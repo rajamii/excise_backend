@@ -109,8 +109,10 @@ class DistributorPermitLineItem(models.Model):
     )
     brand = models.ForeignKey(
         'liquor_data.MasterBrandList',
-        on_delete=models.PROTECT,
+        on_delete=models.SET_NULL,
         related_name='distributor_permit_line_items',
+        null=True,
+        blank=True,
     )
     brand_name = models.CharField(max_length=255)
     size_ml = models.PositiveIntegerField()

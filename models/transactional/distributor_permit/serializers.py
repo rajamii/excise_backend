@@ -18,11 +18,7 @@ from .models import (
 
 
 class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
-    brand_id = serializers.PrimaryKeyRelatedField(
-        source='brand',
-        queryset=MasterBrandList.objects.all(),
-        write_only=True,
-    )
+    brand_id = serializers.IntegerField(write_only=True)
     brand_master_id = serializers.IntegerField(source='brand_id', read_only=True)
     cases = serializers.IntegerField(write_only=True, required=False, default=1)
 
@@ -64,6 +60,14 @@ class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
             if camel in data and snake not in data:
                 data[snake] = data[camel]
         return super().to_internal_value(data)
+
+    def validate_brand_id(self, value):
+        from .models import IMFLBrand
+        from models.masters.supply_chain.liquor_data.models import MasterBrandList
+
+        if IMFLBrand.objects.filter(id=value).exists() or MasterBrandList.objects.filter(id=value).exists():
+            return value
+        raise serializers.ValidationError(f'Invalid brand ID "{value}" - brand does not exist.')
 
     def validate_cases(self, value):
         if value <= 0:
@@ -233,16 +237,33 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         return application
 
     def _process_and_save_line_items(self, application, line_items):
+        from .models import IMFLBrand
+        from models.masters.supply_chain.liquor_data.models import MasterBrandList
+
         expanded_items = []
         for item in line_items:
-            brand = item['brand']
-            size_ml = int(item['size_ml'])
-            cases = int(item['cases'])
-            brand_name = str(getattr(brand, 'brand_name', '') or '').strip()
-            rates = self._resolve_rates(brand_name, size_ml)
-            pieces_per_case = int(item.get('pieces_per_case') or self._resolve_pieces_per_case(size_ml))
+            raw_brand_id = item.get('brand_id')
+            imfl_brand = IMFLBrand.objects.filter(id=raw_brand_id).first() if raw_brand_id else None
+            master_brand = MasterBrandList.objects.filter(id=raw_brand_id).first() if raw_brand_id else None
 
-            edp = self._decimal(item.get('edp_per_case') or item.get('edp'))
+            brand = master_brand
+            if imfl_brand:
+                brand_name = str(imfl_brand.brand_name or '').strip()
+                size_ml = int(item.get('size_ml') or imfl_brand.size_ml or 750)
+                pieces_per_case = int(item.get('pieces_per_case') or imfl_brand.pieces_per_case or self._resolve_pieces_per_case(size_ml))
+            elif master_brand:
+                brand_name = str(getattr(master_brand, 'brand_name', '') or '').strip()
+                size_ml = int(item.get('size_ml') or 750)
+                pieces_per_case = int(item.get('pieces_per_case') or self._resolve_pieces_per_case(size_ml))
+            else:
+                brand_name = str(item.get('brand_name') or 'IMFL Brand').strip()
+                size_ml = int(item.get('size_ml') or 750)
+                pieces_per_case = int(item.get('pieces_per_case') or self._resolve_pieces_per_case(size_ml))
+
+            cases = int(item.get('cases') or 1)
+            rates = self._resolve_rates(brand_name, size_ml)
+
+            edp = self._decimal(item.get('edp_per_case') or item.get('edp') or (imfl_brand.edp_per_case if imfl_brand else 0))
             if edp <= Decimal('0.00'):
                 edp = rates['edp_per_case']
 

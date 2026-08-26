@@ -512,6 +512,114 @@ class DistributorPermitPerformActionView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
+            if action in ('PAY', 'FORCE_PAY'):
+                from decimal import Decimal
+                from django.db.models import Q
+                from models.transactional.wallet.models import WalletBalance
+                from models.transactional.wallet.wallet_service import debit_wallet_balance
+
+                total_import_fee = Decimal('0.00')
+                total_add_ed = Decimal('0.00')
+                total_edu_cess = Decimal('0.00')
+
+                line_items = list(getattr(application, 'line_items', []).all() if hasattr(application, 'line_items') else [])
+                if line_items:
+                    for item in line_items:
+                        cases = Decimal(str(getattr(item, 'cases', 0) or 0))
+                        import_fee_rate = Decimal(str(getattr(item, 'import_pass_fee_per_case', 0) or 0))
+                        add_ed_rate = Decimal(str(getattr(item, 'additional_ed_per_case', 0) or 0))
+                        cess_rate = Decimal(str(getattr(item, 'education_cess_per_case', 0) or 0))
+
+                        total_import_fee += (import_fee_rate * cases)
+                        total_add_ed += (add_ed_rate * cases)
+                        total_edu_cess += (cess_rate * cases)
+                else:
+                    details = getattr(application, 'permit_wise_details', []) or []
+                    for p in details:
+                        items = p.get('items', []) if isinstance(p, dict) else []
+                        for item in items:
+                            cases = Decimal(str(item.get('cases', 0)))
+                            import_fee = Decimal(str(item.get('totalImport') or (item.get('importFee', 0) * cases)))
+                            add_ed = Decimal(str(item.get('totalAddEd') or (item.get('addEdPerCase', 0) * cases)))
+                            cess = Decimal(str(item.get('cess', 0)))
+
+                            total_import_fee += import_fee
+                            total_add_ed += add_ed
+                            total_edu_cess += cess
+
+                excise_amount = (total_import_fee + total_add_ed).quantize(Decimal('0.01'))
+                cess_amount = total_edu_cess.quantize(Decimal('0.01'))
+
+                licensee_id = str(getattr(application, 'license_id', '') or getattr(request.user, 'username', '') or '').strip()
+                username = str(getattr(request.user, 'username', '') or '').strip()
+
+                excise_wallet = WalletBalance.objects.filter(
+                    Q(licensee_id__iexact=licensee_id) | Q(user_id__iexact=username),
+                    wallet_type__code__iexact='excise'
+                ).order_by('wallet_balance_id').first()
+                if not excise_wallet:
+                    excise_wallet = WalletBalance.objects.filter(wallet_type__code__iexact='excise').order_by('wallet_balance_id').first()
+
+                if not excise_wallet and excise_amount > 0:
+                    return Response({'status': 'error', 'message': 'Excise Wallet not found for payment.'}, status=status.HTTP_400_BAD_REQUEST)
+
+                if excise_wallet and Decimal(str(excise_wallet.current_balance or 0)) < excise_amount:
+                    return Response({
+                        'status': 'error',
+                        'message': f'Insufficient Excise Wallet balance (Required: ₹{excise_amount}, Available: ₹{excise_wallet.current_balance}).'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+                cess_wallet = None
+                if cess_amount > 0:
+                    cess_wallet = WalletBalance.objects.filter(
+                        Q(licensee_id__iexact=licensee_id) | Q(user_id__iexact=username),
+                        wallet_type__code__iexact='education_cess'
+                    ).order_by('wallet_balance_id').first()
+                    if not cess_wallet:
+                        cess_wallet = WalletBalance.objects.filter(wallet_type__code__iexact='education_cess').order_by('wallet_balance_id').first()
+
+                    if not cess_wallet:
+                        return Response({'status': 'error', 'message': 'Education Cess Wallet not found for payment.'}, status=status.HTTP_400_BAD_REQUEST)
+
+                    if Decimal(str(cess_wallet.current_balance or 0)) < cess_amount:
+                        return Response({
+                            'status': 'error',
+                            'message': f'Insufficient Education Cess Wallet balance (Required: ₹{cess_amount}, Available: ₹{cess_wallet.current_balance}).'
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+                import uuid
+                ref_no_str = application.reference_no
+                excise_txn_id = f"PAY-EXCISE-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
+                cess_txn_id = f"PAY-CESS-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
+
+                if excise_wallet and excise_amount > 0:
+                    debit_wallet_balance(
+                        transaction_id=excise_txn_id,
+                        licensee_id=excise_wallet.licensee_id,
+                        wallet_type="excise",
+                        head_of_account=excise_wallet.head_of_account,
+                        amount=excise_amount,
+                        user_id=username,
+                        remarks=f"IMFL Permit Requisition Fee Payment (Import Pass Fee ₹{total_import_fee} & Add. ED ₹{total_add_ed}) for Ref #{ref_no_str}",
+                        reference_no=ref_no_str,
+                        source_module="imfl_permit_requisition",
+                        transaction_type="payment"
+                    )
+
+                if cess_wallet and cess_amount > 0:
+                    debit_wallet_balance(
+                        transaction_id=cess_txn_id,
+                        licensee_id=cess_wallet.licensee_id,
+                        wallet_type="education_cess",
+                        head_of_account=cess_wallet.head_of_account,
+                        amount=cess_amount,
+                        user_id=username,
+                        remarks=f"IMFL Permit Requisition Education Cess Payment for Ref #{ref_no_str}",
+                        reference_no=ref_no_str,
+                        source_module="imfl_permit_requisition",
+                        transaction_type="payment"
+                    )
+
             WorkflowService.advance_stage(
                 application=application,
                 user=request.user,
@@ -1221,3 +1329,30 @@ class IMFLCasesProcessedViewSet(viewsets.ModelViewSet):
             instance.officer_remarks = remarks
             instance.save()
             return Response({'message': 'Stock arrival rejected.', 'status': 'rejected'})
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def distributor_permit_wallet_balances(request):
+    from django.db.models import Q
+    from models.transactional.wallet.models import WalletBalance
+
+    user_id = str(getattr(request.user, 'username', '') or '').strip()
+    excise_wb = WalletBalance.objects.filter(
+        Q(user_id__iexact=user_id),
+        wallet_type__code__iexact='excise'
+    ).order_by('wallet_balance_id').first()
+    if not excise_wb:
+        excise_wb = WalletBalance.objects.filter(wallet_type__code__iexact='excise').order_by('wallet_balance_id').first()
+
+    cess_wb = WalletBalance.objects.filter(
+        Q(user_id__iexact=user_id),
+        wallet_type__code__iexact='education_cess'
+    ).order_by('wallet_balance_id').first()
+    if not cess_wb:
+        cess_wb = WalletBalance.objects.filter(wallet_type__code__iexact='education_cess').order_by('wallet_balance_id').first()
+
+    return Response({
+        'excise_balance': float(excise_wb.current_balance) if excise_wb else 0.0,
+        'education_cess_balance': float(cess_wb.current_balance) if cess_wb else 0.0,
+    })

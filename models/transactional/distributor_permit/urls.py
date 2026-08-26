@@ -31,6 +31,7 @@ urlpatterns = [
     path('dashboard-counts/', views.dashboard_counts, name='dashboard-counts'),
     path('suppliers/', views.DistributorPermitSuppliersView.as_view(), name='suppliers'),
     path('brand-master/', views.DistributorPermitBrandMasterView.as_view(), name='brand-master'),
+    path('wallet-balances/', views.distributor_permit_wallet_balances, name='wallet-balances'),
     path('premises/', views.DistributorPermitPremisesView.as_view(), name='premises'),
     path('cancellation/<everything:reference_no>/perform_action/', views.DistributorPermitPerformActionView.as_view(), name='cancellation-perform-action-1'),
     path('cancellation/<everything:reference_no>/perform-action/', views.DistributorPermitPerformActionView.as_view(), name='cancellation-perform-action-2'),
