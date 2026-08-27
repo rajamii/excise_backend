@@ -304,13 +304,13 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         for item in expanded_items:
             rem_cases = item['cases']
             while rem_cases > 0:
-                available_space = 600 - current_permit_cases
+                available_space = 700 - current_permit_cases
                 if available_space <= 0:
                     permits.append((current_permit_index, current_permit_items))
                     current_permit_index += 1
                     current_permit_cases = 0
                     current_permit_items = []
-                    available_space = 600
+                    available_space = 700
 
                 allocated_cases = min(rem_cases, available_space)
 
