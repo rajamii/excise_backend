@@ -668,6 +668,10 @@ def _get_application_by_id(application_id, user=None):
                 qs = _filter_by_user_district(qs, user)
             obj = qs.first()
             if obj:
+                try:
+                    WorkflowService.auto_reject_application_if_expired(obj)
+                except Exception:
+                    pass
                 return obj
         except (LookupError, Model.DoesNotExist):
             continue

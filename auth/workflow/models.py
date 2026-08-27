@@ -93,6 +93,16 @@ class Objection(models.Model):
         blank=True,
         related_name='workflow_objections_resolved'
     )
+    deadline_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Datetime by which this objection must be resolved. "
+            "Auto-set from the OBJECTION_DEADLINE timer config when the objection is raised. "
+            "If the applicant takes no action by this time the application is automatically "
+            "moved to 'Rejected - No Action Taken on Objection'."
+        )
+    )
 
     class Meta:
         ordering = ['-raised_on']

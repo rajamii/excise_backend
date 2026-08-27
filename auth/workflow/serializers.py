@@ -76,6 +76,8 @@ class WorkflowObjectionSerializer(serializers.ModelSerializer):
     isResolved = serializers.BooleanField(source='is_resolved', read_only=True)
     beforeContent = serializers.CharField(source='before_content', read_only=True, allow_null=True)
     afterContent = serializers.CharField(source='after_content', read_only=True, allow_null=True)
+    deadlineAt = serializers.DateTimeField(source='deadline_at', read_only=True, allow_null=True)
+    timeRemainingSeconds = serializers.SerializerMethodField()
 
     def get_raisedByName(self, obj):
         user = getattr(obj, 'raised_by', None)
@@ -90,6 +92,21 @@ class WorkflowObjectionSerializer(serializers.ModelSerializer):
             return None
         name = f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip()
         return name or getattr(user, 'username', None)
+
+    def get_timeRemainingSeconds(self, obj):
+        """
+        Returns the number of seconds remaining until the objection deadline.
+        Returns 0 when the deadline has passed.
+        Returns None when no deadline is set (e.g. legacy objections).
+        """
+        from django.utils import timezone as tz
+        deadline = getattr(obj, 'deadline_at', None)
+        if deadline is None:
+            return None
+        if getattr(obj, 'is_resolved', False):
+            return None
+        remaining = (deadline - tz.now()).total_seconds()
+        return max(0.0, remaining)
 
     class Meta:
         model = Objection
@@ -109,6 +126,8 @@ class WorkflowObjectionSerializer(serializers.ModelSerializer):
             'resolvedAt',
             'resolved_by',
             'resolvedByName',
+            'deadlineAt',
+            'timeRemainingSeconds',
         ]
 
 class WorkflowRejectionSerializer(serializers.ModelSerializer):

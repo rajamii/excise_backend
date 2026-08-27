@@ -738,7 +738,8 @@ class WorkflowService:
 
         # ---------- Forwarded role ----------
         forwarded_to = None
-        if "objection" in target_stage.name.lower() or target_stage.name == "awaiting_payment":
+        is_target_obj = "objection" in target_stage.name.lower() and "reject" not in target_stage.name.lower() and not getattr(target_stage, "is_final", False)
+        if is_target_obj or target_stage.name == "awaiting_payment":
             first_txn = application.transactions.order_by('id').first()
             if first_txn and first_txn.performed_by.role:
                 forwarded_to = first_txn.performed_by.role
@@ -796,6 +797,9 @@ class WorkflowService:
             raise ValidationError("Objections list cannot be empty.")
         WorkflowService.validate_transition(application, target_stage, {"has_objections": True})
 
+        # ── Resolve the objection deadline from the timer config ──────────────
+        deadline_at = WorkflowService._compute_objection_deadline()
+
         for obj in objections:
             field_name = obj.get("field") or obj.get("field_name") or obj.get("fieldName")
             if not field_name:
@@ -812,7 +816,8 @@ class WorkflowService:
                 remarks=str(objection_remarks),
                 before_content=before_content,
                 raised_by=user,
-                stage=target_stage
+                stage=target_stage,
+                deadline_at=deadline_at,
             )
 
         application.current_stage = target_stage
@@ -832,8 +837,54 @@ class WorkflowService:
         )
 
     @staticmethod
+    def _compute_objection_deadline():
+        """
+        Read the OBJECTION_DEADLINE timer config and return the absolute deadline
+        datetime (now + configured duration). Falls back to 7 days if the config
+        is missing or inactive.
+        """
+        from datetime import timedelta
+        from models.masters.core.models import SupplyChainTimerConfig
+
+        FALLBACK_DAYS = 7
+        now = timezone.now()
+
+        try:
+            cfg = SupplyChainTimerConfig.objects.filter(
+                code="OBJECTION_DEADLINE",
+                is_active=True,
+            ).first()
+            if not cfg:
+                return now + timedelta(days=FALLBACK_DAYS)
+
+            value = cfg.delay_value or FALLBACK_DAYS
+            unit  = cfg.delay_unit or "day"
+
+            unit_to_seconds = {
+                "second": 1,
+                "minute": 60,
+                "hour":   3_600,
+                "day":    86_400,
+                "week":   604_800,
+                "month":  2_592_000,   # 30 days
+                "year":   31_536_000,  # 365 days
+            }
+            seconds = value * unit_to_seconds.get(unit, 86_400)
+            return now + timedelta(seconds=seconds)
+
+        except Exception:
+            # Never let a config-read failure block objection creation.
+            return now + timedelta(days=FALLBACK_DAYS)
+
+
+    @staticmethod
     @transaction.atomic
     def resolve_objections(application, user, objection_ids=None, updated_fields=None, remarks=None):
+        if WorkflowService.auto_reject_application_if_expired(application):
+            raise ValidationError(
+                "The deadline to resolve objections for this application has passed. "
+                "The application has been automatically rejected."
+            )
 
         role_token = WorkflowService._normalize_token(getattr(getattr(user, "role", None), "name", ""))
         if role_token in {"licenseuser", "licenseeuser", "licencee"}:
@@ -1085,7 +1136,8 @@ class WorkflowService:
             return name == "awaiting_payment" or ("payment" in name and "reject" not in name)
 
         def _is_objection_stage(stage):
-            return "objection" in str(getattr(stage, "name", "") or "").strip().lower()
+            name = str(getattr(stage, "name", "") or "").strip().lower()
+            return "objection" in name and "reject" not in name and not getattr(stage, "is_final", False)
 
         base_qs = (
             application.transactions
@@ -1194,4 +1246,157 @@ class WorkflowService:
             invalidate_dashboard_counts_cache()
         except Exception:
             pass
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Auto-rejection of expired objections
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    @transaction.atomic
+    def auto_reject_application_if_expired(application):
+        """
+        Checks if the application is currently in an active (non-final) stage with
+        unresolved objections whose deadline_at has passed. If so, immediately moves
+        the application to the "Rejected - No Action Taken on Objection" terminal stage.
+
+        Returns True if the application was auto-rejected, False otherwise.
+        """
+        if not application:
+            return False
+
+        current_stage = getattr(application, "current_stage", None)
+        if not current_stage or getattr(current_stage, "is_final", False):
+            return False
+
+        now = timezone.now()
+        from django.contrib.contenttypes.models import ContentType as CT
+        ct = CT.objects.get_for_model(application)
+
+        expired_exists = Objection.objects.filter(
+            content_type=ct,
+            object_id=str(application.pk),
+            is_resolved=False,
+            deadline_at__isnull=False,
+            deadline_at__lt=now,
+        ).exists()
+
+        if not expired_exists:
+            return False
+
+        # Locate workflow from application.workflow or current_stage.workflow
+        workflow = getattr(application, "workflow", None)
+        if not workflow and current_stage:
+            workflow = getattr(current_stage, "workflow", None)
+
+        if not workflow:
+            return False
+
+        AUTO_REJECT_STAGE_NAME = "Rejected - No Action Taken on Objection"
+        from .models import WorkflowStage as WS
+        rejected_stage = WS.objects.filter(
+            workflow=workflow,
+            name=AUTO_REJECT_STAGE_NAME,
+            is_final=True,
+        ).first()
+
+        if not rejected_stage:
+            return False
+
+        # Move application to rejected stage
+        application.current_stage = rejected_stage
+        application.save(update_fields=["current_stage"])
+
+        # Record a Transaction
+        Transaction.objects.create(
+            content_type=ct,
+            object_id=str(application.pk),
+            performed_by=None,   # System action — no human actor
+            forwarded_by=None,
+            forwarded_to=None,
+            stage=rejected_stage,
+            remarks=(
+                "Application automatically rejected: no action was taken "
+                "on the raised objection within the allowed deadline."
+            ),
+        )
+
+        # Record a Rejection
+        from .models import Rejection as RejectionModel
+        RejectionModel.objects.create(
+            content_type=ct,
+            object_id=str(application.pk),
+            remarks=(
+                "Auto-rejected by system: objection deadline passed "
+                "without applicant action."
+            ),
+            rejected_by=None,
+            stage=rejected_stage,
+        )
+
+        try:
+            from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
+            invalidate_dashboard_counts_cache()
+        except Exception:
+            pass
+
+        return True
+
+    @staticmethod
+    @transaction.atomic
+    def auto_reject_expired_objections():
+        """
+        Find all unresolved Objection records whose ``deadline_at`` has passed,
+        group them by application, and move each application to the
+        "Rejected - No Action Taken on Objection" terminal stage.
+
+        Safe to call repeatedly (idempotent for already-rejected applications).
+        Returns a dict with counts: {'checked': N, 'rejected': M, 'errors': K}
+        """
+        now = timezone.now()
+
+        # Find all unresolved, overdue objections
+        expired_qs = Objection.objects.filter(
+            is_resolved=False,
+            deadline_at__isnull=False,
+            deadline_at__lt=now,
+        ).select_related("content_type")
+
+        # Group by (content_type_id, object_id) so we process each application once
+        app_keys = {}
+        for obj in expired_qs:
+            key = (obj.content_type_id, obj.object_id)
+            app_keys.setdefault(key, []).append(obj)
+
+        checked  = len(app_keys)
+        rejected = 0
+        errors   = 0
+
+        for (ct_id, obj_id), objection_list in app_keys.items():
+            try:
+                from django.contrib.contenttypes.models import ContentType as CT
+                ct = CT.objects.get(pk=ct_id)
+                ModelClass = ct.model_class()
+                if ModelClass is None:
+                    continue
+
+                try:
+                    application = ModelClass.objects.select_related(
+                        "current_stage", "workflow"
+                    ).get(pk=obj_id)
+                except ModelClass.DoesNotExist:
+                    continue
+
+                if WorkflowService.auto_reject_application_if_expired(application):
+                    rejected += 1
+
+            except Exception as exc:
+                import logging
+                logging.getLogger("workflow.auto_reject").error(
+                    "auto_reject_expired_objections: error processing "
+                    "ct=%s obj_id=%s: %s", ct_id, obj_id, exc,
+                    exc_info=True,
+                )
+                errors += 1
+
+        return {"checked": checked, "rejected": rejected, "errors": errors}
 
