@@ -896,15 +896,13 @@ def secretary_revenue_overview(request):
     """
     Returns Secretary Admin revenue insights, head-wise collection breakdowns,
     top revenue contributors (big account holders), and Security Deposit (FD) details.
-    Catches exact payments from:
-    1. Wallet Transactions (wallet_transactions table - DR entries per wallet type & head of account)
-       - Excise Duty Wallet: DR payments with wallet_type_id in ['excise', 'excise_duty'] or HOA '0039-00-105-45-01'
-       - Additional Excise Duty Wallet: DR payments with wallet_type_id in ['additional_excise', 'additional_duty']
-       - Hologram Procurement: DR payments with wallet_type_id in ['hologram', 'hologram_procurement']
-       - Education Cess: DR payments with wallet_type_id in ['education_cess', 'cess']
-    2. License Fees: Caught from wallet_transactions DR + double-checked from sems_payment_transaction_billdesk (Module 001/002 SIKPAY)
-    3. Security Deposit (FD): Caught from sems_payment_transaction_billdesk (SIKFDR) + wallet_transactions security deposit
+    Supports comprehensive filtering:
+    - financial_year: e.g. '2026-2027', '2025-2026', '2024-2025'
+    - month: e.g. '04', '05', '06', '07', '08', '09' or 'all'
+    - category: e.g. 'Manufacturing', 'Distributor', 'Retail', 'all'
+    - search: search query string for entity, license, reference, etc.
     """
+    from datetime import date
     from models.transactional.wallet.models import WalletBalance, WalletTransaction
     from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
     from django.db.models import Count, Max, Sum, Q
@@ -926,12 +924,75 @@ def secretary_revenue_overview(request):
         def as_float(value):
             return float(value or 0.0)
 
-        # 1. BillDesk Success Transactions
-        billdesk_success = PaymentBilldeskTransaction.objects.filter(payment_status__iexact='S')
-        billdesk_amount = Sum('transaction_amount')
+        # Parse request query params
+        fy_param = str(request.GET.get('financial_year') or request.GET.get('financialYear') or '').strip()
+        month_param = str(request.GET.get('month') or '').strip()
+        category_param = str(request.GET.get('category') or '').strip()
+        search_param = str(request.GET.get('search') or '').strip()
 
+        # 1. Financial Year Date Range Helper
+        def parse_fy_range(fy_str):
+            if not fy_str or fy_str.lower() in ('all', 'all years'):
+                return None, None
+            try:
+                parts = fy_str.split('-')
+                start_year = int(parts[0])
+                end_year = int(parts[1])
+                return date(start_year, 4, 1), date(end_year, 3, 31)
+            except Exception:
+                return None, None
+
+        fy_start, fy_end = parse_fy_range(fy_param)
+
+        # 2. Month integer helper
+        month_num = None
+        if month_param and month_param.lower() not in ('all', 'all months'):
+            try:
+                month_num = int(month_param)
+            except Exception:
+                month_num = None
+
+        # 3. BillDesk Transactions QuerySet with filters
+        billdesk_qs = PaymentBilldeskTransaction.objects.filter(payment_status__iexact='S')
+        if fy_start and fy_end:
+            billdesk_qs = billdesk_qs.filter(transaction_date__date__gte=fy_start, transaction_date__date__lte=fy_end)
+        if month_num is not None:
+            billdesk_qs = billdesk_qs.filter(transaction_date__month=month_num)
+
+        if category_param and category_param.lower() != 'all':
+            c_low = category_param.lower()
+            if c_low == 'manufacturing':
+                billdesk_qs = billdesk_qs.filter(
+                    Q(request_additionalinfo1__icontains='distill') |
+                    Q(request_additionalinfo1__icontains='brew') |
+                    Q(request_additionalinfo1__icontains='spirit') |
+                    Q(request_additionalinfo4__icontains='distill') |
+                    Q(request_additionalinfo4__icontains='brew')
+                )
+            elif c_low == 'distributor':
+                billdesk_qs = billdesk_qs.filter(
+                    Q(request_additionalinfo1__icontains='dist') |
+                    Q(request_additionalinfo4__icontains='dist')
+                )
+            elif c_low in ('retail', 'retailer'):
+                billdesk_qs = billdesk_qs.filter(
+                    Q(request_additionalinfo1__icontains='retail') |
+                    Q(request_additionalinfo4__icontains='retail')
+                )
+
+        if search_param:
+            billdesk_qs = billdesk_qs.filter(
+                Q(payer_id__icontains=search_param) |
+                Q(user_id__icontains=search_param) |
+                Q(request_additionalinfo1__icontains=search_param) |
+                Q(request_additionalinfo4__icontains=search_param) |
+                Q(transaction_id_no_hoa__icontains=search_param) |
+                Q(utr__icontains=search_param)
+            )
+
+        billdesk_amount = Sum('transaction_amount')
         billdesk_license_fee_total = as_float(
-            billdesk_success.filter(
+            billdesk_qs.filter(
                 Q(payment_module_code='001') |
                 Q(request_additionalinfo1__icontains='0039-00-800-45-02') |
                 (
@@ -944,16 +1005,16 @@ def secretary_revenue_overview(request):
             ).aggregate(total=billdesk_amount).get('total')
         )
         billdesk_application_fee_total = as_float(
-            billdesk_success.filter(payment_module_code='001').aggregate(total=billdesk_amount).get('total')
+            billdesk_qs.filter(payment_module_code='001').aggregate(total=billdesk_amount).get('total')
         )
         billdesk_security_deposit_total = as_float(
-            billdesk_success.filter(
+            billdesk_qs.filter(
                 Q(request_additionalinfo2__iexact='SIKFDR') |
                 Q(request_additionalinfo3__iexact='SIKFDR')
             ).aggregate(total=billdesk_amount).get('total')
         )
 
-        # 2. Wallet Transactions (DR Debits / Payments)
+        # 4. Wallet Transactions (DR Debits / Payments) QuerySet with filters
         successful_wallet_payment = (
             Q(payment_status__iexact='success') |
             Q(payment_status__iexact='s') |
@@ -964,6 +1025,41 @@ def secretary_revenue_overview(request):
         dr_filter = Q(entry_type__iexact='DR') | Q(transaction_type__iexact='debit') | Q(transaction_type__iexact='payment')
 
         tx_dr_qs = WalletTransaction.objects.filter(successful_wallet_payment, dr_filter)
+        if fy_start and fy_end:
+            tx_dr_qs = tx_dr_qs.filter(created_at__date__gte=fy_start, created_at__date__lte=fy_end)
+        if month_num is not None:
+            tx_dr_qs = tx_dr_qs.filter(created_at__month=month_num)
+
+        if category_param and category_param.lower() != 'all':
+            c_low = category_param.lower()
+            if c_low == 'manufacturing':
+                tx_dr_qs = tx_dr_qs.filter(
+                    Q(module_type__in=['distillery', 'brewery']) |
+                    Q(licensee_name__icontains='distill') |
+                    Q(licensee_name__icontains='brew') |
+                    Q(licensee_name__icontains='spirit')
+                )
+            elif c_low == 'distributor':
+                tx_dr_qs = tx_dr_qs.filter(
+                    Q(module_type__icontains='dist') |
+                    Q(licensee_name__icontains='dist')
+                )
+            elif c_low in ('retail', 'retailer'):
+                tx_dr_qs = tx_dr_qs.filter(
+                    Q(module_type__in=['other', 'retail']) |
+                    Q(licensee_name__icontains='retail')
+                )
+
+        if search_param:
+            tx_dr_qs = tx_dr_qs.filter(
+                Q(licensee_name__icontains=search_param) |
+                Q(licensee_id__icontains=search_param) |
+                Q(user_id__icontains=search_param) |
+                Q(transaction_id__icontains=search_param) |
+                Q(reference_no__icontains=search_param) |
+                Q(remarks__icontains=search_param)
+            )
+
         tx_debits = (
             tx_dr_qs
             .values('wallet_type_id')
@@ -971,9 +1067,42 @@ def secretary_revenue_overview(request):
         )
         tx_debits_map = {str(row['wallet_type_id'] or '').lower().strip(): as_float(row['total_debit']) for row in tx_debits}
 
-        # 3. Wallet Balances aggregate per wallet_type_id
+        # 5. Wallet Balances aggregate per wallet_type_id
+        bal_qs = WalletBalance.objects.all()
+        if category_param and category_param.lower() != 'all':
+            c_low = category_param.lower()
+            if c_low == 'manufacturing':
+                bal_qs = bal_qs.filter(
+                    Q(module_type__in=['distillery', 'brewery']) |
+                    Q(manufacturing_unit__icontains='distill') |
+                    Q(manufacturing_unit__icontains='brew') |
+                    Q(licensee_name__icontains='distill') |
+                    Q(licensee_name__icontains='brew') |
+                    Q(licensee_name__icontains='spirit')
+                )
+            elif c_low == 'distributor':
+                bal_qs = bal_qs.filter(
+                    Q(module_type__icontains='dist') |
+                    Q(manufacturing_unit__icontains='dist') |
+                    Q(licensee_name__icontains='dist')
+                )
+            elif c_low in ('retail', 'retailer'):
+                bal_qs = bal_qs.filter(
+                    Q(module_type__in=['other', 'retail']) |
+                    Q(manufacturing_unit__icontains='retail') |
+                    Q(licensee_name__icontains='retail')
+                )
+
+        if search_param:
+            bal_qs = bal_qs.filter(
+                Q(licensee_name__icontains=search_param) |
+                Q(manufacturing_unit__icontains=search_param) |
+                Q(licensee_id__icontains=search_param) |
+                Q(user_id__icontains=search_param)
+            )
+
         balance_rows = (
-            WalletBalance.objects
+            bal_qs
             .values('wallet_type_id')
             .annotate(
                 total_credit=Sum('total_credit'),
@@ -984,7 +1113,7 @@ def secretary_revenue_overview(request):
         )
         balance_map = {str(row['wallet_type_id'] or '').lower().strip(): row for row in balance_rows}
 
-        # 4. Standard 6 Revenue Heads Specification
+        # 6. Standard 6 Revenue Heads Specification
         STANDARD_HEADS = [
             {
                 'key': 'excise',
@@ -1032,24 +1161,17 @@ def secretary_revenue_overview(request):
             b_curr = as_float(bal_info.get('current_balance', 0))
             b_count = int(bal_info.get('accounts_count', 0))
 
-            # Fetch exact DR payment from wallet_transactions table for wallet heads
             tx_debit = tx_debits_map.get(k, 0.0)
 
             if k == 'license_fee':
-                # License fees: catch from wallet_transactions + cross check with BillDesk success payments
-                paid_amt = billdesk_license_fee_total or tx_debit or as_float(bal_info.get('total_debit', 0))
+                paid_amt = billdesk_license_fee_total or tx_debit
                 source = 'billdesk_success_and_wallet_transactions'
             elif k == 'security_deposit':
-                # Security deposit (FD): catch from BillDesk SIKFDR + wallet_transactions
-                paid_amt = billdesk_security_deposit_total or tx_debit or b_credit
+                paid_amt = billdesk_security_deposit_total or tx_debit
                 source = 'billdesk_sikfdr_and_wallet_security'
-            elif k in ('excise', 'additional_excise', 'education_cess', 'hologram'):
-                # Catch directly from wallet_transactions table DR records
-                paid_amt = tx_debit
-                source = 'wallet_transactions_dr'
             else:
                 paid_amt = tx_debit
-                source = 'wallet_transactions'
+                source = 'wallet_transactions_dr'
 
             head_entry = {
                 'head_name': item['head_name'],
@@ -1070,9 +1192,10 @@ def secretary_revenue_overview(request):
 
             final_revenue_heads.append(head_entry)
 
-        # 5. Top Contributors (Big Accounts)
+        # 7. Top Contributors (Big Accounts) with filters
+        user_bal_qs = bal_qs
         user_rows = (
-            WalletBalance.objects
+            user_bal_qs
             .values('user_id', 'licensee_name', 'manufacturing_unit')
             .annotate(
                 total_revenue_contributed=Sum('total_debit'),
@@ -1104,16 +1227,16 @@ def secretary_revenue_overview(request):
                 'wallets_count': int(row.get('wallets_count') or 0),
                 'updated_at': updated_at.strftime('%Y-%m-%d') if updated_at else '2026-08-01',
                 'month': updated_at.strftime('%m') if updated_at else '08',
-                'financial_year': '2026-2027'
+                'financial_year': fy_param or '2026-2027'
             })
 
         for idx, item in enumerate(sorted_contributors):
             item['rank'] = idx + 1
             item['tier_badge'] = 'Tier 1 Top Contributor' if idx < 3 else ('Tier 2 Contributor' if idx < 7 else 'Tier 3 Contributor')
 
-        # 6. Security Deposit FD Accounts
+        # 8. Security Deposit FD Accounts with filters
         wallet_security_rows = (
-            WalletBalance.objects
+            bal_qs
             .filter(Q(wallet_type_id='security_deposit') | Q(wallet_type__name__icontains='security') | Q(wallet_type__name__icontains='fd'))
             .values('licensee_id', 'user_id', 'licensee_name', 'manufacturing_unit')
             .annotate(
@@ -1130,7 +1253,7 @@ def secretary_revenue_overview(request):
                 wallet_security_by_payer[payer_key] = row
 
         billdesk_security_rows = (
-            billdesk_success
+            billdesk_qs
             .filter(Q(request_additionalinfo2__iexact='SIKFDR') | Q(request_additionalinfo3__iexact='SIKFDR'))
             .values('payer_id', 'user_id', 'request_additionalinfo1', 'request_additionalinfo4')
             .annotate(
@@ -1170,10 +1293,10 @@ def secretary_revenue_overview(request):
                 'status': 'Verified & Locked FD',
                 'updated_at': updated_at.strftime('%Y-%m-%d') if updated_at else '2026-08-01',
                 'month': updated_at.strftime('%m') if updated_at else '08',
-                'financial_year': '2026-2027'
+                'financial_year': fy_param or '2026-2027'
             })
 
-        # 7. Summary KPIs
+        # 9. Summary KPIs
         net_excise_paid = sum(
             h.get('total_paid_to_excise', 0.0) for h in final_revenue_heads
             if 'security' not in h['head_name'].lower() and 'fd' not in h['head_name'].lower() and 'cess' not in h['head_name'].lower()
