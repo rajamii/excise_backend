@@ -210,6 +210,14 @@ class HasCompanyCollaborationViewPermission(permissions.BasePermission):
     """
 
     def has_permission(self, request, view):
+        if not request.user.is_authenticated:
+            return False
+        if getattr(request.user, 'is_superuser', False) or getattr(request.user, 'is_staff', False):
+            return True
+        role_name = (request.user.role.name if getattr(request.user, 'role', None) else '').lower()
+        if role_name in ['site admin', 'secretary', 'super admin', 'administrator', 'single window']:
+            return True
+
         permission_labels = ('company_collaboration', 'company_registration')
 
         for label in permission_labels:
