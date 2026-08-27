@@ -12,11 +12,13 @@ class BlockSerializer(serializers.ModelSerializer):
         source='created_by.username',
         read_only=True
     )
+    block_name = serializers.CharField(source='gpu_name', required=False)
 
     class Meta:
         model = Block
         fields = [
             'id',
+            'gpu_name',
             'block_name',
             'subcategory',
             'subcategory_name',

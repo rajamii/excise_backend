@@ -459,7 +459,7 @@ class Ward(models.Model):
 
 
 class Block(models.Model):
-    block_name = models.CharField(
+    gpu_name = models.CharField(
         max_length=100,
         validators=[validate_name_extended]
     )
@@ -481,12 +481,23 @@ class Block(models.Model):
     operation_date = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'master_block'
-        verbose_name = 'Block'
-        verbose_name_plural = 'Blocks'
+        db_table = 'master_gpu'
+        verbose_name = 'GPU'
+        verbose_name_plural = 'GPUs'
 
     def __str__(self) -> str:
-        return self.block_name
+        return self.gpu_name
+
+    @property
+    def block_name(self):
+        return self.gpu_name
+
+    @block_name.setter
+    def block_name(self, value):
+        self.gpu_name = value
+
+
+GPU = Block
 
 
 class RuralWard(models.Model):
