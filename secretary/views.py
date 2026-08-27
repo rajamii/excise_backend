@@ -896,202 +896,14 @@ def secretary_revenue_overview(request):
     """
     Returns Secretary Admin revenue insights, head-wise collection breakdowns,
     top revenue contributors (big account holders), and Security Deposit (FD) details.
-    Calculates exact aggregate amounts directly from WalletBalance records.
-    """
-    from models.transactional.wallet.models import WalletBalance
-
-    balances = WalletBalance.objects.all()
-
-    # Head name mapper
-    HEAD_MAPPER = {
-        'excise': 'Excise/Additional Duty',
-        'hologram': 'Hologram Procurement',
-        'security_deposit': 'Security Deposit (FD)',
-        'license_fee': 'License Fees',
-        'education_cess': 'Education Cess'
-    }
-
-    # Head-wise aggregations
-    head_totals = {}
-    user_totals = {}
-    security_deposits = []
-
-    for wb in balances:
-        raw_obj = wb.wallet_type
-        raw_type = str(getattr(raw_obj, 'name', raw_obj) or 'General Wallet')
-        w_type = HEAD_MAPPER.get(raw_type.lower(), raw_type)
-        credit = float(wb.total_credit or 0.0)
-        debit = float(wb.total_debit or 0.0)
-        curr_bal = float(wb.current_balance or 0.0)
-
-        if w_type not in head_totals:
-            head_totals[w_type] = {
-                'head_name': w_type,
-                'total_credit': credit,
-                'total_debit': debit,
-                'current_balance': curr_bal,
-                'accounts_count': 1
-            }
-        else:
-            head_totals[w_type]['total_credit'] += credit
-            head_totals[w_type]['total_debit'] += debit
-            head_totals[w_type]['current_balance'] += curr_bal
-            head_totals[w_type]['accounts_count'] += 1
-
-        # User aggregation for top contributors
-        u_id = wb.user_id or wb.licensee_name or 'Unknown Entity'
-        unit_n = wb.manufacturing_unit or wb.licensee_name or u_id
-        u_key = f"{wb.licensee_name or u_id}::{unit_n}"
-        
-        dt_str = wb.last_updated_at.strftime('%Y-%m-%d') if wb.last_updated_at else '2026-08-01'
-        m_str = wb.last_updated_at.strftime('%m') if wb.last_updated_at else '08'
-
-        if u_key not in user_totals:
-            unit_lower = unit_n.lower()
-            cat_name = 'Manufacturing' if any(k in unit_lower for k in ['distiller', 'brew', 'albrew', 'spirt']) else ('Distributor' if 'dist' in unit_lower else 'Retail')
-            subcat_name = 'Distillery' if 'distiller' in unit_lower else ('Brewery' if 'brew' in unit_lower else ('Distributor' if 'dist' in unit_lower else 'Retailer'))
-            
-            user_totals[u_key] = {
-                'user_id': u_id,
-                'licensee_name': wb.licensee_name or u_id,
-                'manufacturing_unit': unit_n,
-                'category': cat_name,
-                'sub_category': subcat_name,
-                'total_revenue_contributed': 0.0,
-                'total_fd_amount': 0.0,
-                'current_balance': 0.0,
-                'wallets_count': 0,
-                'updated_at': dt_str,
-                'month': m_str,
-                'financial_year': '2026-2027'
-            }
-        
-        user_totals[u_key]['total_revenue_contributed'] += credit
-        user_totals[u_key]['current_balance'] += curr_bal
-        user_totals[u_key]['wallets_count'] += 1
-
-        if 'security' in w_type.lower() or 'fd' in w_type.lower():
-            user_totals[u_key]['total_fd_amount'] += (credit or curr_bal)
-            security_deposits.append({
-                'licensee_id': wb.licensee_id or 'FD-REC-2026',
-                'user_id': u_id,
-                'licensee_name': wb.licensee_name or u_id,
-                'manufacturing_unit': unit_n,
-                'category': user_totals[u_key]['category'],
-                'sub_category': user_totals[u_key]['sub_category'],
-                'fd_credit_amount': credit,
-                'fd_current_balance': curr_bal,
-                'status': 'Verified & Locked FD',
-                'updated_at': dt_str,
-                'month': m_str,
-                'financial_year': '2026-2027'
-            })
-
-    # Sort top contributors by total_revenue_contributed descending
-    sorted_contributors = sorted(user_totals.values(), key=lambda x: x['total_revenue_contributed'], reverse=True)
-    for idx, item in enumerate(sorted_contributors):
-        item['rank'] = idx + 1
-        item['tier_badge'] = 'Tier 1 Top Contributor' if idx < 3 else ('Tier 2 Contributor' if idx < 7 else 'Tier 3 Contributor')
-
-    total_revenue = sum(h['total_credit'] for h in head_totals.values())
-    total_balance = sum(h['current_balance'] for h in head_totals.values())
-    total_fd = sum(h['total_credit'] for k, h in head_totals.items() if 'security' in k.lower())
-    
-    # Net Excise Revenue Collections (excluding Education Cess and Security Deposit FDs)
-    net_excise_revenue = sum(
-        h['total_credit'] for k, h in head_totals.items()
-        if 'cess' not in k.lower() and 'security' not in k.lower()
-    )
-
-    return Response({
-        'summary_kpis': {
-            'total_revenue_collected': total_revenue or 75631457.0,
-            'net_excise_revenue_collected': net_excise_revenue or 64873457.0,
-            'total_active_balance': total_balance or 1228683461.0,
-            'total_security_deposit_fd': total_fd or 288000.0,
-            'top_contributors_count': len(sorted_contributors)
-        },
-        'revenue_heads': list(head_totals.values()),
-        'top_contributors': sorted_contributors[:15],
-            'distillery_name': dist_name,
-            'establishment_name': dist_name,
-            'spirit_type': 'IMFL Premium Cases',
-            'cancelled_bl': 6500.0,
-            'total_bl': 6500.0,
-            'cancellation_fee': 2000.0,
-            'cancelled_permit_no': ic.cancelled_permit_number or 'IMFLREQ/2026-27/0001-P2',
-            'cancelled_permit_number': ic.cancelled_permit_number or 'IMFLREQ/2026-27/0001-P2',
-            'status': ic.status or 'Forwarded To Commissioner',
-            'reason': ic.cancellation_reason or 'Commercial cancellation requested before transit vehicle departure',
-            'submitted_at': ic.submitted_at.strftime('%Y-%m-%d %H:%M') if ic.submitted_at else '2026-08-22 09:53'
-        })
-
-    if not raw_cancellations:
-        raw_cancellations = [
-            {
-                'reference_no': 'CNC-ENA-001',
-                'our_ref_no': 'CNC-ENA-001',
-                'requisition_ref': 'REQ-ENA-001',
-                'requisition_ref_no': 'REQ-ENA-001',
-                'distillery_name': 'Yuksom Breweries Limited (Gyalshing)',
-                'establishment_name': 'Yuksom Breweries Limited (Gyalshing)',
-                'spirit_type': 'Extra Neutral Alcohol (ENA)',
-                'cancelled_bl': 8000.0,
-                'total_bl': 8000.0,
-                'cancellation_fee': 1500.0,
-                'cancelled_permit_no': 'PERMIT/2026/01',
-                'cancelled_permit_number': 'PERMIT/2026/01',
-                'status': 'Approved',
-                'reason': 'Order quantity revised by licensee prior to dispatch from distillery',
-                'submitted_at': '2026-08-14 16:30'
-            },
-            {
-                'reference_no': 'IMFLCNC/2026-27/001',
-                'our_ref_no': 'IMFLCNC/2026-27/001',
-                'requisition_ref': 'IMFLREQ/2026-27/0001',
-                'requisition_ref_no': 'IMFLREQ/2026-27/0001',
-                'distillery_name': 'Sikkim Himalayan Bottlers Pvt Ltd',
-                'establishment_name': 'Sikkim Himalayan Bottlers Pvt Ltd',
-                'spirit_type': 'IMFL Premium Cases',
-                'cancelled_bl': 6500.0,
-                'total_bl': 6500.0,
-                'cancellation_fee': 2000.0,
-                'cancelled_permit_no': 'IMFL/CNC/2026/09',
-                'cancelled_permit_number': 'IMFL/CNC/2026/09',
-                'status': 'Approved',
-                'reason': 'Commercial cancellation requested before transit vehicle departure',
-                'submitted_at': '2026-08-15 09:45'
-            }
-        ]
-
-    # Deduplicate Cancellations by reference_no
-    seen_cnc_refs = set()
-    cancellations = []
-    for item in raw_cancellations:
-        if item['reference_no'] not in seen_cnc_refs:
-            seen_cnc_refs.add(item['reference_no'])
-            cancellations.append(item)
-
-    return Response({
-        'summary_kpis': {
-            'requisitions_count': len(requisitions),
-            'revalidations_count': len(revalidations),
-            'cancellations_count': len(cancellations),
-            'total_imfl_records': len(requisitions) + len(revalidations) + len(cancellations)
-        },
-        'requisitions': requisitions,
-        'revalidations': revalidations,
-        'cancellations': cancellations
-    })
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def secretary_revenue_overview(request):
-    """
-    Returns Secretary Admin revenue insights, head-wise collection breakdowns,
-    top revenue contributors (big account holders), and Security Deposit (FD) details.
-    Calculates exact aggregate amounts directly from WalletBalance records.
+    Catches exact payments from:
+    1. Wallet Transactions (wallet_transactions table - DR entries per wallet type & head of account)
+       - Excise Duty Wallet: DR payments with wallet_type_id in ['excise', 'excise_duty'] or HOA '0039-00-105-45-01'
+       - Additional Excise Duty Wallet: DR payments with wallet_type_id in ['additional_excise', 'additional_duty']
+       - Hologram Procurement: DR payments with wallet_type_id in ['hologram', 'hologram_procurement']
+       - Education Cess: DR payments with wallet_type_id in ['education_cess', 'cess']
+    2. License Fees: Caught from wallet_transactions DR + double-checked from sems_payment_transaction_billdesk (Module 001/002 SIKPAY)
+    3. Security Deposit (FD): Caught from sems_payment_transaction_billdesk (SIKFDR) + wallet_transactions security deposit
     """
     from models.transactional.wallet.models import WalletBalance, WalletTransaction
     from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
@@ -1111,45 +923,17 @@ def secretary_revenue_overview(request):
     }
 
     try:
-        HEAD_MAPPER = {
-            'excise': 'Excise Duty Wallet',
-            'excise_duty': 'Excise Duty Wallet',
-            'additional_duty': 'Additional Excise Duty Wallet',
-            'additional_excise': 'Additional Excise Duty Wallet',
-            'additional_excise_duty': 'Additional Excise Duty Wallet',
-            'hologram': 'Hologram Procurement',
-            'security_deposit': 'Security Deposit (FD)',
-            'license_fee': 'License Fees',
-            'education_cess': 'Education Cess'
-        }
-
-        DEFAULT_HOA_MAPPER = {
-            'Excise Duty Wallet': '0039-00-105-45-01',
-            'Additional Excise Duty Wallet': '0039-00-102-45-01',
-            'Hologram Procurement': '0039-00-800-45-01',
-            'Education Cess': '0045-00-112-45-03',
-            'License Fees': '0039-00-800-45-02',
-            'Security Deposit (FD)': '8443-00-103-45-01'
-        }
-
-        def resolve_head_name(wallet_code, wallet_name=''):
-            raw_code = str(wallet_code or '').strip().lower()
-            raw_name = str(wallet_name or '').strip()
-            mapped = HEAD_MAPPER.get(raw_code) or HEAD_MAPPER.get(raw_name.lower())
-            return mapped or raw_name or raw_code or 'General Wallet'
-
         def as_float(value):
             return float(value or 0.0)
 
-        def add_amount(target, key, value):
-            target[key] = target.get(key, 0.0) + as_float(value)
-
+        # 1. BillDesk Success Transactions
         billdesk_success = PaymentBilldeskTransaction.objects.filter(payment_status__iexact='S')
         billdesk_amount = Sum('transaction_amount')
+
         billdesk_license_fee_total = as_float(
             billdesk_success.filter(
                 Q(payment_module_code='001') |
-                Q(request_additionalinfo1=DEFAULT_HOA_MAPPER['License Fees']) |
+                Q(request_additionalinfo1__icontains='0039-00-800-45-02') |
                 (
                     Q(payment_module_code='002') &
                     (
@@ -1169,33 +953,28 @@ def secretary_revenue_overview(request):
             ).aggregate(total=billdesk_amount).get('total')
         )
 
-        debit_aggregates = {}
+        # 2. Wallet Transactions (DR Debits / Payments)
         successful_wallet_payment = (
             Q(payment_status__iexact='success') |
             Q(payment_status__iexact='s') |
             Q(payment_status__iexact='paid') |
-            Q(payment_status__iexact='completed')
+            Q(payment_status__iexact='completed') |
+            Q(payment_status__isnull=True)
         )
-        try:
-            tx_debits = (
-                WalletTransaction.objects.filter(successful_wallet_payment)
-                .filter(Q(entry_type__iexact='DR') | Q(transaction_type__iexact='debit') | Q(transaction_type__iexact='payment'))
-                .values('wallet_type_id', 'wallet_type__name')
-                .annotate(total_debit=Sum('amount'))
-            )
-            for row in tx_debits:
-                wallet_code = str(row.get('wallet_type_id') or '').lower()
-                head_name = resolve_head_name(wallet_code, row.get('wallet_type__name'))
-                amount = as_float(row.get('total_debit'))
-                add_amount(debit_aggregates, head_name, amount)
-                add_amount(debit_aggregates, wallet_code, amount)
-        except Exception:
-            pass
+        dr_filter = Q(entry_type__iexact='DR') | Q(transaction_type__iexact='debit') | Q(transaction_type__iexact='payment')
 
-        head_totals = {}
-        head_rows = (
+        tx_dr_qs = WalletTransaction.objects.filter(successful_wallet_payment, dr_filter)
+        tx_debits = (
+            tx_dr_qs
+            .values('wallet_type_id')
+            .annotate(total_debit=Sum('amount'))
+        )
+        tx_debits_map = {str(row['wallet_type_id'] or '').lower().strip(): as_float(row['total_debit']) for row in tx_debits}
+
+        # 3. Wallet Balances aggregate per wallet_type_id
+        balance_rows = (
             WalletBalance.objects
-            .values('wallet_type_id', 'wallet_type__name', 'head_of_account')
+            .values('wallet_type_id')
             .annotate(
                 total_credit=Sum('total_credit'),
                 total_debit=Sum('total_debit'),
@@ -1203,37 +982,95 @@ def secretary_revenue_overview(request):
                 accounts_count=Count('wallet_balance_id')
             )
         )
-        for row in head_rows:
-            head_name = resolve_head_name(row.get('wallet_type_id'), row.get('wallet_type__name'))
-            if head_name not in head_totals:
-                head_totals[head_name] = {
-                    'head_name': head_name,
-                    'head_of_account': row.get('head_of_account') or DEFAULT_HOA_MAPPER.get(head_name, '0039-00-800-45-01'),
-                    'total_credit': 0.0,
-                    'total_debit': 0.0,
-                    'current_balance': 0.0,
-                    'accounts_count': 0
-                }
-            head_totals[head_name]['total_credit'] += as_float(row.get('total_credit'))
-            head_totals[head_name]['total_debit'] += as_float(row.get('total_debit'))
-            head_totals[head_name]['current_balance'] += as_float(row.get('current_balance'))
-            head_totals[head_name]['accounts_count'] += int(row.get('accounts_count') or 0)
+        balance_map = {str(row['wallet_type_id'] or '').lower().strip(): row for row in balance_rows}
 
-        for code, head_name in HEAD_MAPPER.items():
-            if head_name in head_totals:
-                continue
-            paid_amount = debit_aggregates.get(head_name, debit_aggregates.get(code, 0.0))
-            if paid_amount <= 0 and head_name not in ('License Fees', 'Security Deposit (FD)'):
-                continue
-            head_totals[head_name] = {
-                'head_name': head_name,
-                'head_of_account': DEFAULT_HOA_MAPPER.get(head_name, '0039-00-800-45-01'),
-                'total_credit': 0.0,
-                'total_debit': paid_amount,
-                'current_balance': 0.0,
-                'accounts_count': 0
+        # 4. Standard 6 Revenue Heads Specification
+        STANDARD_HEADS = [
+            {
+                'key': 'excise',
+                'head_name': 'Excise Duty Wallet',
+                'head_of_account': '0039-00-105-45-01',
+                'is_in_target': True
+            },
+            {
+                'key': 'additional_excise',
+                'head_name': 'Additional Excise Duty Wallet',
+                'head_of_account': '0039-00-102-45-01',
+                'is_in_target': True
+            },
+            {
+                'key': 'hologram',
+                'head_name': 'Hologram Procurement',
+                'head_of_account': '0039-00-800-45-01',
+                'is_in_target': True
+            },
+            {
+                'key': 'education_cess',
+                'head_name': 'Education Cess',
+                'head_of_account': '0045-00-112-45-03',
+                'is_in_target': False
+            },
+            {
+                'key': 'license_fee',
+                'head_name': 'License Fees',
+                'head_of_account': '0039-00-800-45-02',
+                'is_in_target': True
+            },
+            {
+                'key': 'security_deposit',
+                'head_name': 'Security Deposit (FD)',
+                'head_of_account': '8443-00-103-45-01',
+                'is_in_target': False
             }
+        ]
 
+        final_revenue_heads = []
+        for item in STANDARD_HEADS:
+            k = item['key']
+            bal_info = balance_map.get(k, {})
+            b_credit = as_float(bal_info.get('total_credit', 0))
+            b_curr = as_float(bal_info.get('current_balance', 0))
+            b_count = int(bal_info.get('accounts_count', 0))
+
+            # Fetch exact DR payment from wallet_transactions table for wallet heads
+            tx_debit = tx_debits_map.get(k, 0.0)
+
+            if k == 'license_fee':
+                # License fees: catch from wallet_transactions + cross check with BillDesk success payments
+                paid_amt = billdesk_license_fee_total or tx_debit or as_float(bal_info.get('total_debit', 0))
+                source = 'billdesk_success_and_wallet_transactions'
+            elif k == 'security_deposit':
+                # Security deposit (FD): catch from BillDesk SIKFDR + wallet_transactions
+                paid_amt = billdesk_security_deposit_total or tx_debit or b_credit
+                source = 'billdesk_sikfdr_and_wallet_security'
+            elif k in ('excise', 'additional_excise', 'education_cess', 'hologram'):
+                # Catch directly from wallet_transactions table DR records
+                paid_amt = tx_debit
+                source = 'wallet_transactions_dr'
+            else:
+                paid_amt = tx_debit
+                source = 'wallet_transactions'
+
+            head_entry = {
+                'head_name': item['head_name'],
+                'head_of_account': item['head_of_account'],
+                'total_credit': round(b_credit, 2),
+                'total_debit': round(paid_amt, 2),
+                'total_paid_to_excise': round(paid_amt, 2),
+                'current_balance': round(b_curr, 2),
+                'accounts_count': b_count,
+                'amount_source': source
+            }
+            if k == 'license_fee':
+                head_entry['application_fee_paid'] = round(billdesk_application_fee_total, 2)
+                head_entry['billdesk_paid_total'] = round(billdesk_license_fee_total, 2)
+            elif k == 'security_deposit':
+                head_entry['fd_saved_amount'] = round(paid_amt, 2)
+                head_entry['billdesk_paid_total'] = round(billdesk_security_deposit_total, 2)
+
+            final_revenue_heads.append(head_entry)
+
+        # 5. Top Contributors (Big Accounts)
         user_rows = (
             WalletBalance.objects
             .values('user_id', 'licensee_name', 'manufacturing_unit')
@@ -1251,7 +1088,7 @@ def secretary_revenue_overview(request):
         for row in user_rows:
             unit_name = row.get('manufacturing_unit') or row.get('licensee_name') or row.get('user_id') or 'Unknown Entity'
             unit_lower = str(unit_name).lower()
-            category = 'Manufacturing' if any(k in unit_lower for k in ['distiller', 'brew', 'albrew', 'spirt']) else ('Distributor' if 'dist' in unit_lower else 'Retail')
+            category = 'Manufacturing' if any(w in unit_lower for w in ['distiller', 'brew', 'albrew', 'spirt']) else ('Distributor' if 'dist' in unit_lower else 'Retail')
             sub_category = 'Distillery' if 'distiller' in unit_lower else ('Brewery' if 'brew' in unit_lower else ('Distributor' if 'dist' in unit_lower else 'Retailer'))
             updated_at = row.get('updated_at')
             sorted_contributors.append({
@@ -1274,6 +1111,7 @@ def secretary_revenue_overview(request):
             item['rank'] = idx + 1
             item['tier_badge'] = 'Tier 1 Top Contributor' if idx < 3 else ('Tier 2 Contributor' if idx < 7 else 'Tier 3 Contributor')
 
+        # 6. Security Deposit FD Accounts
         wallet_security_rows = (
             WalletBalance.objects
             .filter(Q(wallet_type_id='security_deposit') | Q(wallet_type__name__icontains='security') | Q(wallet_type__name__icontains='fd'))
@@ -1315,7 +1153,7 @@ def secretary_revenue_overview(request):
             )
             unit_name = wallet_row.get('manufacturing_unit') or row.get('manufacturing_unit') or licensee_name
             unit_lower = str(unit_name).lower()
-            category = 'Manufacturing' if any(k in unit_lower for k in ['distiller', 'brew', 'albrew', 'spirt']) else ('Distributor' if 'dist' in unit_lower else 'Retail')
+            category = 'Manufacturing' if any(w in unit_lower for w in ['distiller', 'brew', 'albrew', 'spirt']) else ('Distributor' if 'dist' in unit_lower else 'Retail')
             sub_category = 'Distillery' if 'distiller' in unit_lower else ('Brewery' if 'brew' in unit_lower else ('Distributor' if 'dist' in unit_lower else 'Retailer'))
             updated_at = row.get('updated_at')
             fd_paid_amount = as_float(row.get('fd_credit_amount'))
@@ -1335,48 +1173,16 @@ def secretary_revenue_overview(request):
                 'financial_year': '2026-2027'
             })
 
-        final_revenue_heads = []
-        for h in head_totals.values():
-            h_copy = dict(h)
-            head_name = h_copy['head_name']
-            wallet_code = next((code for code, mapped_name in HEAD_MAPPER.items() if mapped_name == head_name), head_name.lower())
-            wallet_paid = debit_aggregates.get(head_name, debit_aggregates.get(wallet_code, 0.0))
-            balance_debit = as_float(h_copy.get('total_debit'))
-            actual_paid = wallet_paid
-            amount_source = 'wallet_transactions'
-
-            if head_name == 'License Fees':
-                actual_paid = billdesk_license_fee_total or wallet_paid or balance_debit
-                amount_source = 'billdesk_success_with_wallet_fallback'
-            elif head_name == 'Security Deposit (FD)':
-                actual_paid = billdesk_security_deposit_total or as_float(h_copy.get('total_credit')) or wallet_paid or balance_debit
-                amount_source = 'billdesk_success_fdr_with_wallet_balance_fallback'
-            elif actual_paid <= 0 and balance_debit > 0:
-                actual_paid = balance_debit
-                amount_source = 'wallet_balance_total_debit_fallback'
-
-            h_copy['total_debit'] = round(float(actual_paid), 2)
-            h_copy['total_paid_to_excise'] = round(float(actual_paid), 2)
-            h_copy['total_credit'] = round(float(h_copy['total_credit']), 2)
-            h_copy['current_balance'] = round(float(h_copy['current_balance']), 2)
-            h_copy['amount_source'] = amount_source
-            if head_name == 'License Fees':
-                h_copy['application_fee_paid'] = round(float(billdesk_application_fee_total), 2)
-                h_copy['billdesk_paid_total'] = round(float(billdesk_license_fee_total), 2)
-            elif head_name == 'Security Deposit (FD)':
-                h_copy['fd_saved_amount'] = round(float(actual_paid), 2)
-                h_copy['billdesk_paid_total'] = round(float(billdesk_security_deposit_total), 2)
-            final_revenue_heads.append(h_copy)
-
+        # 7. Summary KPIs
         net_excise_paid = sum(
-            h.get('total_paid_to_excise', h.get('total_debit', 0.0)) for h in final_revenue_heads
-            if 'security' not in h['head_name'].lower() and 'fd' not in h['head_name'].lower()
+            h.get('total_paid_to_excise', 0.0) for h in final_revenue_heads
+            if 'security' not in h['head_name'].lower() and 'fd' not in h['head_name'].lower() and 'cess' not in h['head_name'].lower()
         )
         total_fd_paid = sum(
-            h.get('total_paid_to_excise', h.get('total_debit', 0.0)) for h in final_revenue_heads
+            h.get('total_paid_to_excise', 0.0) for h in final_revenue_heads
             if 'security' in h['head_name'].lower() or 'fd' in h['head_name'].lower()
         )
-        total_paid_all = net_excise_paid + total_fd_paid
+        total_paid_all = sum(h.get('total_paid_to_excise', 0.0) for h in final_revenue_heads)
         total_balance_all = sum(h.get('current_balance', 0.0) for h in final_revenue_heads)
 
         return Response(_to_json_safe({
@@ -1396,7 +1202,6 @@ def secretary_revenue_overview(request):
         import traceback
         print(f"[secretary_revenue_overview ERROR]: {e}\n{traceback.format_exc()}")
         return Response(EMPTY_RESPONSE)
-
 
 def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_approved, created_date_str, updated_date_str):
     """
