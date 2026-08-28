@@ -412,7 +412,7 @@ def secretary_licenses_overview(request):
     for app in nla_qs:
         raw_app_id = (app.application_id or '').strip()
         clean_app_id = raw_app_id.replace('NLI/', '').replace('NLA/', '')
-        app_ref = f"NLA/{clean_app_id}"
+        app_ref = raw_app_id if raw_app_id.startswith('NLI/') else (f"NLI/{clean_app_id}" if clean_app_id else raw_app_id)
         
         matched_license = License.objects.filter(license_id__icontains=raw_app_id).first()
         
@@ -463,8 +463,8 @@ def secretary_licenses_overview(request):
     license_renewals_list = []
     for ren in ren_qs:
         raw_app_id = (ren.application_id or '').strip()
-        clean_app_id = raw_app_id.replace('NLI/', '').replace('REN/', '').replace('NLA/', '')
-        app_ref = f"NLA/REN/{clean_app_id}"
+        clean_app_id = raw_app_id.replace('NLI/', '').replace('REN/', '').replace('NLA/', '').replace('NLA/REN/', '')
+        app_ref = raw_app_id if (raw_app_id.startswith('REN/') or raw_app_id.startswith('NLI/')) else (f"REN/{clean_app_id}" if clean_app_id else raw_app_id)
         
         old_lic = ren.old_license_id or f"NA/2025-26/{clean_app_id.split('/')[-1]}"
         if ren.is_approved:
