@@ -416,6 +416,10 @@ def secretary_licenses_overview(request):
         
         matched_license = License.objects.filter(license_id__icontains=raw_app_id).first()
         
+        stage_name = app.current_stage.name if (hasattr(app, 'current_stage') and app.current_stage) else ('Approved' if app.is_approved else 'Under Review')
+        is_rejected = 'reject' in stage_name.lower() or Rejection.objects.filter(object_id=str(raw_app_id)).exists()
+        is_objection = 'objection' in stage_name.lower() and not is_rejected
+
         if app.is_approved:
             lic_no = matched_license.license_id if (matched_license and matched_license.license_id) else (
                 f"NA/2026-27/{clean_app_id.split('/')[-1]}" if '/' in clean_app_id else f"NA/2026-27/{clean_app_id}"
@@ -427,6 +431,14 @@ def secretary_licenses_overview(request):
                 expiry_options = ['31-Mar-2027', '30-Jun-2027', '30-Sep-2027', '31-Dec-2027', '31-Mar-2028', '15-Nov-2027', '28-Feb-2027']
                 expiry_str = expiry_options[app_num % len(expiry_options)]
             license_status = 'Approved / License Issued'
+        elif is_rejected:
+            lic_no = 'Rejected'
+            expiry_str = 'N/A'
+            license_status = 'Rejected'
+        elif is_objection:
+            lic_no = 'Under Objection'
+            expiry_str = 'Pending Resolution'
+            license_status = 'Objection Raised'
         else:
             lic_no = 'Awaiting Grant'
             expiry_str = 'Awaiting Grant'

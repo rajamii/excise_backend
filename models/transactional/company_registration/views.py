@@ -132,6 +132,10 @@ def dashboard_counts(request):
         deactivate_all_expired_licenses()
     except Exception:
         pass
+    from django.db.models import Q, Exists, OuterRef
+    from django.contrib.contenttypes.models import ContentType
+    from auth.workflow.models import Transaction as WorkflowTransaction
+
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['COMPANY_REGISTRATION']
     stage_sets = _get_stage_sets(workflow_id)
@@ -171,21 +175,8 @@ def dashboard_counts(request):
         payment_stages = set(stage_sets.get('payment', []))
         pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
 
-        from django.contrib.contenttypes.models import ContentType
-        from django.db.models import Exists, OuterRef, Q
-        from auth.workflow.models import Transaction as WorkflowTransaction
-
-        content_type = ContentType.objects.get_for_model(CompanyRegistration)
-        acted_by_admin = Exists(
-            WorkflowTransaction.objects.filter(
-                content_type=content_type,
-                object_id=OuterRef('application_id')
-            ).exclude(performed_by__role_id=2)
-        )
-        all_qs_annotated = all_qs.annotate(_acted_by_admin=acted_by_admin)
-
-        approved_count = all_qs_annotated.filter(
-            Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True) | Q(is_approved=True)
+        approved_count = all_qs.filter(
+            Q(current_stage__name__in=approved_stages) | Q(is_approved=True)
         ).count()
 
         return Response({
@@ -224,10 +215,11 @@ def dashboard_counts(request):
     role_objection_stages = set(stage_sets['objection'])
     pending_stages = set(role_stage_names) - role_objection_stages
     role_rejected_stages = set(stage_sets['rejected'])
+    approved_stages = set(stage_sets['approved'])
 
     pending_count = all_qs.filter(current_stage__name__in=pending_stages).count()
     approved_count = (
-        all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
+        all_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True))
         .annotate(_acted_by_role=acted_by_role)
         .filter(_acted_by_role=True)
         .count()
@@ -339,8 +331,9 @@ def application_group(request):
         pending_stages = set(role_stage_names) - role_objection_stages
         role_rejected_stages = set(stage_sets['rejected'])
 
+        approved_stages = set(stage_sets['approved'])
         approved_qs = (
-            all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
+            all_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True))
             .annotate(_acted_by_role=acted_by_role)
             .filter(_acted_by_role=True)
         )
