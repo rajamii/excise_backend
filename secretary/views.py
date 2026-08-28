@@ -1328,19 +1328,15 @@ def secretary_revenue_overview(request):
 
 def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_approved, created_date_str, updated_date_str):
     """
-    Generates the complete 7-stage Excise License Workflow Audit Trail:
-    1. Application Submitted Online
-    2. District User & Nodal Scrutiny
-    3. Site Enquiry & Field Survey Officer
-    4. Joint Commissioner Recommendation
-    5. Excise Commissioner Grant Approval
-    6. License Fee & Security Deposit Payment
-    7. Final License Certificate Issued
+    Generates the complete Excise License Workflow Audit Trail:
+    1. Normal Progression (7 stages: Submitted -> District Scrutiny -> Site Enquiry -> JC Recommendation -> Commissioner Grant -> Fee Payment -> Final Certificate)
+    2. Objection & Auto-Rejection Progression (Submitted -> Objection Raised by Admin Officer -> Auto-Rejected due to No Action Taken on Objection by License User within Deadline)
+    3. Manual Rejection Progression (Submitted -> Scrutiny -> Application Rejected by Officer)
     """
     stage_lower = (stage_name or '').lower()
 
     from datetime import timedelta, datetime
-    from auth.workflow.models import Transaction
+    from auth.workflow.models import Transaction, Objection, Rejection, Revert
     from django.contrib.contenttypes.models import ContentType
 
     # Query real Transaction history from workflow_transaction table if present
@@ -1361,6 +1357,15 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
         except Exception:
             objections_list = []
 
+    # Query real Rejection history from workflow_rejection table if present
+    rejections_list = []
+    if app_id:
+        try:
+            rej_qs = Rejection.objects.filter(object_id=str(app_id)).select_related('rejected_by', 'stage').order_by('rejected_on')
+            rejections_list = list(rej_qs)
+        except Exception:
+            rejections_list = []
+
     # Parse base created_at timestamp and end timestamp
     base_dt = None
     try:
@@ -1377,6 +1382,158 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
     if not end_dt or end_dt <= base_dt:
         end_dt = base_dt + timedelta(days=2, hours=4)
 
+    is_rejected = (
+        'reject' in stage_lower or 
+        len(rejections_list) > 0 or 
+        any('reject' in (tx.stage.name.lower() if tx.stage else '') for tx in tx_records)
+    )
+    is_auto_rejected = is_rejected and (
+        'no action' in stage_lower or 
+        any('no action' in (tx.stage.name.lower() if tx.stage else '') for tx in tx_records) or
+        any('no action' in (tx.remarks.lower() if tx.remarks else '') for tx in tx_records) or
+        any('auto' in (r.remarks.lower() if r.remarks else '') for r in rejections_list)
+    )
+
+    # -------------------------------------------------------------
+    # CASE 1: REJECTED / AUTO-REJECTED APPLICATION WORKFLOW
+    # -------------------------------------------------------------
+    if is_rejected:
+        steps = []
+        submission_dt_str = created_date_str
+        if tx_records and len(tx_records) > 0:
+            first_tx = tx_records[0]
+            if getattr(first_tx, 'timestamp', None):
+                submission_dt_str = first_tx.timestamp.strftime('%Y-%m-%d %H:%M')
+
+        # Step 1: Application Submitted Online
+        steps.append({
+            'step_no': 1,
+            'icon': '✓',
+            'status_class': 'completed',
+            'badge_class': 'status-completed',
+            'event_title': 'Application Submitted Online',
+            'event_date': submission_dt_str,
+            'event_description': f'Online application form submitted for {est_name} with identity proof, premises layout plan & initial fees.',
+            'user_details': f'{applicant} (Applicant)',
+            'forwarded_info': None,
+            'objection_info': None,
+            'payment_breakdown': None,
+            'time_taken': 'Day 1',
+            'status_text': 'Completed'
+        })
+
+        # Step 2: Objection Step
+        primary_obj = objections_list[0] if objections_list else None
+        obj_raised_by_name = 'District User (Admin Officer)'
+        obj_deadline_str = ''
+        if primary_obj:
+            r_by = primary_obj.raised_by
+            if r_by:
+                r_role = getattr(r_by.role, 'role_name', None) or getattr(r_by, 'role', None) or 'Admin Officer'
+                r_fname = f"{getattr(r_by, 'first_name', '')} {getattr(r_by, 'last_name', '')}".strip()
+                obj_raised_by_name = f"{r_by.username} ({r_role})" if r_by.username else f"{r_fname} ({r_role})"
+            
+            obj_date_str = primary_obj.raised_on.strftime('%Y-%m-%d %H:%M') if getattr(primary_obj, 'raised_on', None) else submission_dt_str
+            if getattr(primary_obj, 'deadline_at', None):
+                obj_deadline_str = primary_obj.deadline_at.strftime('%Y-%m-%d %H:%M')
+            
+            steps.append({
+                'step_no': 2,
+                'icon': '⚠️',
+                'status_class': 'objection',
+                'badge_class': 'status-objection',
+                'event_title': 'Stage: District User & Nodal Scrutiny - Objection Raised',
+                'event_date': obj_date_str,
+                'event_description': f"Objection raised during scrutiny by Admin Officer {obj_raised_by_name}. Objection on '{primary_obj.field_name}': \"{primary_obj.remarks}\". Application was reverted to applicant for rectification.",
+                'user_details': obj_raised_by_name,
+                'forwarded_info': f"Objection raised by {obj_raised_by_name}" + (f" | Response Deadline: {obj_deadline_str}" if obj_deadline_str else ''),
+                'objection_info': {
+                    'field_name': primary_obj.field_name or 'Application Details',
+                    'remarks': primary_obj.remarks or 'Objection raised on submitted details',
+                    'raised_by': obj_raised_by_name,
+                    'raised_on': obj_date_str,
+                    'deadline_at': obj_deadline_str or 'Expired',
+                    'is_resolved': False,
+                    'resolved_by': None
+                },
+                'payment_breakdown': None,
+                'time_taken': 'Action Required',
+                'status_text': 'Objection Raised'
+            })
+        else:
+            steps.append({
+                'step_no': 2,
+                'icon': '⚠️',
+                'status_class': 'objection',
+                'badge_class': 'status-objection',
+                'event_title': 'Stage: District User & Nodal Scrutiny',
+                'event_date': submission_dt_str,
+                'event_description': 'Application scrutiny conducted by District Desk & Nodal Officer.',
+                'user_details': 'District User / Nodal Officer',
+                'forwarded_info': None,
+                'objection_info': None,
+                'payment_breakdown': None,
+                'time_taken': 'Day 1',
+                'status_text': 'Scrutinized'
+            })
+
+        # Step 3: Terminal Rejection Step
+        rej_date_str = updated_date_str
+        rej_officer_name = 'System (Automated Rule Engine - Auto-Rejection Daemon)' if is_auto_rejected else 'Excise Authority'
+        rej_remarks_str = 'No action was taken on the raised objection within the allowed deadline.' if is_auto_rejected else 'Application rejected during departmental review.'
+        
+        if rejections_list and len(rejections_list) > 0:
+            primary_rej = rejections_list[0]
+            if getattr(primary_rej, 'rejected_on', None):
+                rej_date_str = primary_rej.rejected_on.strftime('%Y-%m-%d %H:%M')
+            if primary_rej.remarks:
+                rej_remarks_str = primary_rej.remarks
+            if primary_rej.rejected_by:
+                r_by = primary_rej.rejected_by
+                rej_officer_name = f"{r_by.username} ({getattr(r_by.role, 'role_name', 'Excise Officer')})"
+        else:
+            rej_tx = next((tx for tx in reversed(tx_records) if tx.stage and 'reject' in tx.stage.name.lower()), None)
+            if rej_tx:
+                if getattr(rej_tx, 'timestamp', None):
+                    rej_date_str = rej_tx.timestamp.strftime('%Y-%m-%d %H:%M')
+                if rej_tx.remarks:
+                    rej_remarks_str = rej_tx.remarks
+
+        if is_auto_rejected:
+            rej_title = 'Stage: Application Rejected Automatically (No Action Taken on Objection)'
+            rej_desc = f"Application automatically rejected by system: No action or response was taken by the applicant / license user on the objection raised by {obj_raised_by_name} within the stipulated deadline ({obj_deadline_str or 'Allowed Time'})."
+            rej_status_text = 'AUTO REJECTED'
+        else:
+            rej_title = 'Stage: Application Rejected by Excise Department'
+            rej_desc = f"Application rejected by {rej_officer_name}. Reason: {rej_remarks_str}"
+            rej_status_text = 'REJECTED'
+
+        steps.append({
+            'step_no': len(steps) + 1,
+            'icon': '❌',
+            'status_class': 'final-rejected',
+            'badge_class': 'status-rejected',
+            'event_title': rej_title,
+            'event_date': rej_date_str,
+            'event_description': rej_desc,
+            'user_details': rej_officer_name,
+            'forwarded_info': f"Final Terminal Decision: {rej_status_text}",
+            'objection_info': None,
+            'rejection_info': {
+                'reason': rej_remarks_str,
+                'rejected_by': rej_officer_name,
+                'rejected_on': rej_date_str
+            },
+            'payment_breakdown': None,
+            'time_taken': 'Final Order',
+            'status_text': rej_status_text
+        })
+
+        return steps
+
+    # -------------------------------------------------------------
+    # CASE 2: NORMAL / IN-PROGRESS / APPROVED APPLICATION WORKFLOW
+    # -------------------------------------------------------------
     if is_approved or 'issue' in stage_lower or 'certificate' in stage_lower or 'final' in stage_lower or 'active' in stage_lower:
         active_step_idx = 6
     elif 'payment' in stage_lower or 'fee' in stage_lower or 'demand' in stage_lower or 'awaiting' in stage_lower or 'wallet' in stage_lower:
@@ -1395,7 +1552,7 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
     # Compute step dates dynamically between base_dt and end_dt
     total_active_steps = max(1, active_step_idx)
     total_seconds_span = (end_dt - base_dt).total_seconds()
-    if total_seconds_span <= 300: # If span is too small (e.g. batch seed), provide a realistic 2.5 day spread
+    if total_seconds_span <= 300:
         total_seconds_span = 86400 * 2.5
 
     stages_definition = [
@@ -1499,9 +1656,10 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
             res_by = matching_obj.resolved_by
             objection_info = {
                 'field_name': matching_obj.field_name or 'Document Audit',
-                'remarks': matching_obj.remarks or 'Reverted to District Desk for land NOC clarification',
+                'remarks': matching_obj.remarks or 'Reverted to District Desk for clarification',
                 'raised_by': f"{getattr(r_by, 'first_name', '')} {getattr(r_by, 'last_name', '')}".strip() or 'Excise Desk Officer',
                 'raised_on': matching_obj.raised_on.strftime('%Y-%m-%d %H:%M') if getattr(matching_obj, 'raised_on', None) else step_dt_str,
+                'deadline_at': matching_obj.deadline_at.strftime('%Y-%m-%d %H:%M') if getattr(matching_obj, 'deadline_at', None) else None,
                 'is_resolved': bool(matching_obj.is_resolved),
                 'resolved_by': f"{getattr(res_by, 'first_name', '')} {getattr(res_by, 'last_name', '')}".strip() if res_by else 'Applicant'
             }
@@ -1606,6 +1764,7 @@ def secretary_timeline_overview(request):
     from models.transactional.new_license_application.models import NewLicenseApplication
     from models.transactional.license_renewal_application.models import LicenseApplication as LicenseRenewalApplication
     from models.transactional.salesman_barman.models import SalesmanBarmanModel
+    from auth.workflow.models import Objection, Rejection, Transaction
 
     timeline_records = []
     pending_queue = []
@@ -1629,7 +1788,22 @@ def secretary_timeline_overview(request):
             lic_type_str = f"{cat_name} ({subcat_name})" if subcat_name else (cat_name or 'New License Application')
 
             stage_name = app.current_stage.name if hasattr(app, 'current_stage') and app.current_stage else ('Approved' if app.is_approved else 'Under Review')
-            status_code = 'APPROVED' if app.is_approved else ('OBJECTION' if 'objection' in stage_name.lower() else 'PENDING')
+            is_rejected = 'reject' in stage_name.lower() or Rejection.objects.filter(object_id=str(app_id)).exists()
+            is_auto_rejected = is_rejected and ('no action' in stage_name.lower() or 'auto' in stage_name.lower())
+
+            if app.is_approved:
+                status_code = 'APPROVED'
+                approval_status = 'APPROVED'
+            elif is_rejected:
+                status_code = 'REJECTED'
+                approval_status = 'REJECTED'
+            elif 'objection' in stage_name.lower():
+                status_code = 'OBJECTION'
+                approval_status = 'OBJECTION'
+            else:
+                status_code = 'PENDING'
+                approval_status = 'PENDING'
+
             cat_norm = 'Manufacturing' if ('manufacturing' in cat_name.lower() or 'brew' in cat_name.lower() or 'distill' in cat_name.lower()) else ('Retailer' if 'retail' in cat_name.lower() else 'General')
 
             created_date_str = app.created_at.strftime('%Y-%m-%d %H:%M') if getattr(app, 'created_at', None) else '2026-05-28 11:59'
@@ -1637,9 +1811,29 @@ def secretary_timeline_overview(request):
 
             steps = _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, app.is_approved, created_date_str, updated_date_str)
 
-            # Calculate real time taken from submission till commissioner approval
-            real_time_taken = "2 Days 4 Hours"
-            if getattr(app, 'created_at', None) and getattr(app, 'updated_at', None) and app.updated_at > app.created_at:
+            # Calculate real time taken from submission till decision
+            real_time_taken = "12 Minutes"
+            if steps and len(steps) > 1:
+                try:
+                    s_dt = datetime.strptime(steps[0]['event_date'], '%Y-%m-%d %H:%M')
+                    e_dt = datetime.strptime(steps[-1]['event_date'], '%Y-%m-%d %H:%M')
+                    if e_dt >= s_dt:
+                        diff = e_dt - s_dt
+                        d = diff.days
+                        s = diff.seconds
+                        h = s // 3600
+                        m = (s % 3600) // 60
+                        if d > 0:
+                            real_time_taken = f"{d} Day{'s' if d > 1 else ''} {h} Hr{'s' if h > 1 else ''}" if h > 0 else f"{d} Day{'s' if d > 1 else ''}"
+                        elif h > 0:
+                            real_time_taken = f"{h} Hr{'s' if h > 1 else ''} {m} Min{'s' if m > 1 else ''}" if m > 0 else f"{h} Hr{'s' if h > 1 else ''}"
+                        elif m > 0:
+                            real_time_taken = f"{m} Minute{'s' if m > 1 else ''}"
+                        else:
+                            real_time_taken = "Less than 1 Minute"
+                except Exception:
+                    pass
+            elif getattr(app, 'created_at', None) and getattr(app, 'updated_at', None) and app.updated_at > app.created_at:
                 c_at = app.created_at
                 u_at = app.updated_at
                 diff = u_at - c_at
@@ -1651,17 +1845,10 @@ def secretary_timeline_overview(request):
                     real_time_taken = f"{d} Day{'s' if d > 1 else ''} {h} Hr{'s' if h > 1 else ''}" if h > 0 else f"{d} Day{'s' if d > 1 else ''}"
                 elif h > 0:
                     real_time_taken = f"{h} Hr{'s' if h > 1 else ''} {m} Min{'s' if m > 1 else ''}" if m > 0 else f"{h} Hr{'s' if h > 1 else ''}"
-                elif m > 5:
-                    real_time_taken = f"{m} Min{'s' if m > 1 else ''}"
+                elif m > 0:
+                    real_time_taken = f"{m} Minute{'s' if m > 1 else ''}"
                 else:
-                    app_id_str = str(app_id)
-                    val_num = sum(ord(ch) for ch in app_id_str)
-                    durations_list = [
-                        "2 Days 4 Hours", "1 Day 15 Hours", "3 Days 2 Hours", "1 Day 6 Hours", "4 Days 1 Hour",
-                        "2 Days 18 Hours", "1 Day 12 Hours", "3 Days 8 Hours", "2 Days 9 Hours", "1 Day 4 Hours",
-                        "3 Days 5 Hours", "2 Days 14 Hours", "4 Days 6 Hours", "1 Day 22 Hours", "2 Days 3 Hours"
-                    ]
-                    real_time_taken = durations_list[val_num % len(durations_list)]
+                    real_time_taken = "Less than 1 Minute"
             else:
                 app_id_str = str(app_id)
                 val_num = sum(ord(ch) for ch in app_id_str)
@@ -1671,6 +1858,23 @@ def secretary_timeline_overview(request):
                     "3 Days 5 Hours", "2 Days 14 Hours", "4 Days 6 Hours", "1 Day 22 Hours", "2 Days 3 Hours"
                 ]
                 real_time_taken = durations_list[val_num % len(durations_list)]
+
+            if app.is_approved:
+                approved_by_str = 'Excise Commissioner (IAS)'
+                approval_date_str = steps[4]['event_date'] if (steps and len(steps) >= 5) else (updated_date_str or 'Approved')
+                pending_officer_str = 'N/A (Approved)'
+            elif is_rejected:
+                if is_auto_rejected:
+                    obj_raised_by_str = steps[1].get('user_details') if (len(steps) > 1 and steps[1].get('objection_info')) else 'Admin Officer'
+                    approved_by_str = f'System Auto-Rejection (No Action on Objection raised by {obj_raised_by_str})'
+                else:
+                    approved_by_str = f'Excise Department ({stage_name})'
+                approval_date_str = steps[-1]['event_date'] if steps else updated_date_str
+                pending_officer_str = 'N/A (Application Closed / Rejected)'
+            else:
+                approved_by_str = f'Pending with {stage_name}'
+                approval_date_str = 'Pending Order'
+                pending_officer_str = stage_name
 
             record = {
                 'application_id': app_id,
@@ -1682,18 +1886,18 @@ def secretary_timeline_overview(request):
                 'current_status': stage_name,
                 'status_code': status_code,
                 'days_elapsed': real_time_taken,
-                'approval_status': 'APPROVED' if app.is_approved else 'PENDING',
-                'approved_by': 'Excise Commissioner (IAS)' if app.is_approved else f'Pending with {stage_name}',
-                'approval_date': steps[4]['event_date'] if (steps and len(steps) >= 5 and app.is_approved) else (updated_date_str if app.is_approved else 'Pending Order'),
+                'approval_status': approval_status,
+                'approved_by': approved_by_str,
+                'approval_date': approval_date_str,
                 'time_taken': real_time_taken,
                 'current_stage': stage_name,
-                'pending_officer_name': 'N/A (Approved)' if app.is_approved else stage_name,
+                'pending_officer_name': pending_officer_str,
                 'steps': steps
             }
 
             timeline_records.append(record)
 
-            if not app.is_approved:
+            if not app.is_approved and not is_rejected:
                 pending_queue.append({
                     'application_id': app_id,
                     'applicant_name': applicant,
@@ -1729,6 +1933,7 @@ def secretary_timeline_overview(request):
             lic_type_str = f"Excise {role_str} Badge Application"
 
             stage_name = app.current_stage.name if hasattr(app, 'current_stage') and app.current_stage else ('Approved' if app.is_approved else 'Under Verification')
+            is_rejected = 'reject' in stage_name.lower()
             cat_name = app.license_category.license_category if hasattr(app, 'license_category') and app.license_category else 'Retailer'
             cat_norm = 'Retailer'
 
@@ -1745,20 +1950,20 @@ def secretary_timeline_overview(request):
                 'license_type': lic_type_str,
                 'category': cat_norm,
                 'current_status': stage_name,
-                'status_code': 'APPROVED' if app.is_approved else 'PENDING',
+                'status_code': 'APPROVED' if app.is_approved else ('REJECTED' if is_rejected else 'PENDING'),
                 'days_elapsed': 'Recent',
-                'approval_status': 'APPROVED' if app.is_approved else 'PENDING',
-                'approved_by': 'Excise Authority' if app.is_approved else f'Pending with {stage_name}',
-                'approval_date': updated_date_str if app.is_approved else 'Pending Order',
+                'approval_status': 'APPROVED' if app.is_approved else ('REJECTED' if is_rejected else 'PENDING'),
+                'approved_by': 'Excise Authority' if app.is_approved else (f'Rejected ({stage_name})' if is_rejected else f'Pending with {stage_name}'),
+                'approval_date': updated_date_str if (app.is_approved or is_rejected) else 'Pending Order',
                 'time_taken': 'Within SLA',
                 'current_stage': stage_name,
-                'pending_officer_name': 'N/A (Approved)' if app.is_approved else stage_name,
+                'pending_officer_name': 'N/A' if (app.is_approved or is_rejected) else stage_name,
                 'steps': steps
             }
 
             timeline_records.append(record)
 
-            if not app.is_approved:
+            if not app.is_approved and not is_rejected:
                 pending_queue.append({
                     'application_id': app_id,
                     'applicant_name': full_name,
@@ -1795,6 +2000,7 @@ def secretary_timeline_overview(request):
             lic_type_str = f"License Renewal: {cat_name} ({subcat_name})" if subcat_name else f"License Renewal: {cat_name}"
 
             stage_name = app.current_stage.name if hasattr(app, 'current_stage') and app.current_stage else ('Approved' if app.is_approved else 'Under Renewal Review')
+            is_rejected = 'reject' in stage_name.lower()
             cat_norm = 'Manufacturing' if ('manufacturing' in cat_name.lower() or 'brew' in cat_name.lower() or 'distill' in cat_name.lower()) else ('Retailer' if 'retail' in cat_name.lower() else 'General')
 
             steps = [
@@ -1807,20 +2013,26 @@ def secretary_timeline_overview(request):
                     'event_date': '2026-04-01 10:00 AM',
                     'event_description': f'License renewal application submitted for Old License #{app.old_license_id or app_id}.',
                     'user_details': f'{applicant} (Licensee)',
+                    'forwarded_info': None,
+                    'objection_info': None,
+                    'payment_breakdown': None,
                     'time_taken': 'Day 1',
                     'status_text': 'Completed'
                 },
                 {
                     'step_no': 2,
-                    'icon': '✓' if app.is_approved else '⏳',
-                    'status_class': 'completed' if app.is_approved else 'final-pending',
-                    'badge_class': 'status-completed' if app.is_approved else 'status-final-pending',
+                    'icon': '✓' if app.is_approved else ('❌' if is_rejected else '⏳'),
+                    'status_class': 'completed' if app.is_approved else ('final-rejected' if is_rejected else 'final-pending'),
+                    'badge_class': 'status-completed' if app.is_approved else ('status-rejected' if is_rejected else 'status-final-pending'),
                     'event_title': f'Stage: {stage_name}',
                     'event_date': 'Ongoing Review',
                     'event_description': f'Renewal scrutiny & fee verification under {stage_name}.',
                     'user_details': stage_name,
+                    'forwarded_info': None,
+                    'objection_info': None,
+                    'payment_breakdown': None,
                     'time_taken': 'Ongoing',
-                    'status_text': 'Completed' if app.is_approved else 'In Progress'
+                    'status_text': 'Completed' if app.is_approved else ('REJECTED' if is_rejected else 'In Progress')
                 }
             ]
 
@@ -1832,20 +2044,20 @@ def secretary_timeline_overview(request):
                 'license_type': lic_type_str,
                 'category': cat_norm,
                 'current_status': stage_name,
-                'status_code': 'APPROVED' if app.is_approved else 'PENDING',
+                'status_code': 'APPROVED' if app.is_approved else ('REJECTED' if is_rejected else 'PENDING'),
                 'days_elapsed': 'Recent',
-                'approval_status': 'APPROVED' if app.is_approved else 'PENDING',
-                'approved_by': 'Excise Commissioner (IAS)' if app.is_approved else f'Pending with {stage_name}',
-                'approval_date': 'Completed' if app.is_approved else 'Pending Renewal Order',
+                'approval_status': 'APPROVED' if app.is_approved else ('REJECTED' if is_rejected else 'PENDING'),
+                'approved_by': 'Excise Commissioner (IAS)' if app.is_approved else (f'Rejected ({stage_name})' if is_rejected else f'Pending with {stage_name}'),
+                'approval_date': 'Completed' if app.is_approved else ('Rejected' if is_rejected else 'Pending Renewal Order'),
                 'time_taken': 'Within SLA',
                 'current_stage': stage_name,
-                'pending_officer_name': 'N/A (Approved)' if app.is_approved else stage_name,
+                'pending_officer_name': 'N/A' if (app.is_approved or is_rejected) else stage_name,
                 'steps': steps
             }
 
             timeline_records.append(record)
 
-            if not app.is_approved:
+            if not app.is_approved and not is_rejected:
                 pending_queue.append({
                     'application_id': app_id,
                     'applicant_name': applicant,
@@ -1878,3 +2090,4 @@ def secretary_timeline_overview(request):
         'timeline_records': timeline_records,
         'pending_queue': pending_queue
     }))
+
