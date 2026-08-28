@@ -116,7 +116,13 @@ def scope_permit_queryset(qs, user):
     is_oic = 'oic' in role_name or 'officer' in role_name or getattr(user, 'is_oic_managed', False)
 
     if is_commissioner:
-        return qs.filter(Q(current_stage_id__in=[153, 154, 156, 157, 151, 152]) | Q(status__icontains='approved') | Q(status__icontains='commissioner'))
+        return qs.filter(
+            Q(current_stage_id__in=[151, 152, 153, 154, 156, 157, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170]) |
+            Q(status__icontains='approved') |
+            Q(status__icontains='commissioner') |
+            Q(current_stage__name__icontains='commissioner') |
+            Q(current_stage__name__icontains='approved')
+        )
 
     if is_permit_section or is_oic:
         assignment = getattr(user, 'oic_assignment', None)
@@ -891,84 +897,83 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
             serializer = self.get_serializer(queryset, many=True)
             data = list(serializer.data)
 
-        # Query all schedules ordered by newest first (-id) to find the LATEST schedule state per permit
-        if _is_officer_user(request.user):
-            all_schedules = IMFLRevalidationActivationSchedule.objects.all().select_related('distributor_permit', 'distributor_permit__applicant').order_by('-id')
-        else:
+        # Only append unsubmitted activation schedules for non-officer (licensee/distributor) applicants so they can submit revalidation.
+        # Officers (Commissioner, Permit Section, OIC, etc.) must only see actual submitted revalidations awaiting review/approval.
+        if not _is_officer_user(request.user):
             all_schedules = IMFLRevalidationActivationSchedule.objects.filter(
                 distributor_permit__applicant=request.user
             ).select_related('distributor_permit', 'distributor_permit__applicant').order_by('-id')
             if not all_schedules.exists():
                 all_schedules = IMFLRevalidationActivationSchedule.objects.all().select_related('distributor_permit', 'distributor_permit__applicant').order_by('-id')
 
-        latest_schedules_by_ref = {}
-        for sched in all_schedules:
-            ref_no = str(sched.distributor_permit_ref_no)
-            if ref_no not in latest_schedules_by_ref:
-                latest_schedules_by_ref[ref_no] = sched
+            latest_schedules_by_ref = {}
+            for sched in all_schedules:
+                ref_no = str(sched.distributor_permit_ref_no)
+                if ref_no not in latest_schedules_by_ref:
+                    latest_schedules_by_ref[ref_no] = sched
 
-        pending_permit_refs = set()
-        for item in data:
-            status_str = str(item.get('status') or '').upper()
-            stage_dict = item.get('current_stage') or {}
-            is_final = False
-            if isinstance(stage_dict, dict):
-                is_final = bool(stage_dict.get('is_final'))
+            pending_permit_refs = set()
+            for item in data:
+                status_str = str(item.get('status') or '').upper()
+                stage_dict = item.get('current_stage') or {}
+                is_final = False
+                if isinstance(stage_dict, dict):
+                    is_final = bool(stage_dict.get('is_final'))
 
-            # Only mark permit as "pending" if it has an unapproved revalidation in progress
-            if not is_final and 'APPROVED' not in status_str:
-                dp_id = item.get('distributor_permit') or item.get('distributor_permit_id')
-                if isinstance(dp_id, dict):
-                    ref = dp_id.get('reference_no') or dp_id.get('referenceNo')
-                    if ref:
-                        pending_permit_refs.add(str(ref))
-                    dp_pk = dp_id.get('id')
-                    if dp_pk:
-                        pending_permit_refs.add(str(dp_pk))
-                elif dp_id:
-                    pending_permit_refs.add(str(dp_id))
+                # Only mark permit as "pending" if it has an unapproved revalidation in progress
+                if not is_final and 'APPROVED' not in status_str:
+                    dp_id = item.get('distributor_permit') or item.get('distributor_permit_id')
+                    if isinstance(dp_id, dict):
+                        ref = dp_id.get('reference_no') or dp_id.get('referenceNo')
+                        if ref:
+                            pending_permit_refs.add(str(ref))
+                        dp_pk = dp_id.get('id')
+                        if dp_pk:
+                            pending_permit_refs.add(str(dp_pk))
+                    elif dp_id:
+                        pending_permit_refs.add(str(dp_id))
 
-                dp_ref = item.get('distributor_permit_ref_no') or item.get('distributor_permit_ref')
-                if dp_ref:
-                    pending_permit_refs.add(str(dp_ref))
+                    dp_ref = item.get('distributor_permit_ref_no') or item.get('distributor_permit_ref')
+                    if dp_ref:
+                        pending_permit_refs.add(str(dp_ref))
 
-        for ref_no, sched in latest_schedules_by_ref.items():
-            # Check if the latest schedule entry is actually PROCESSED and has activated_at set
-            if sched.status != IMFLRevalidationActivationSchedule.STATUS_PROCESSED or not sched.activated_at:
-                continue
+            for ref_no, sched in latest_schedules_by_ref.items():
+                # Check if the latest schedule entry is actually PROCESSED and has activated_at set
+                if sched.status != IMFLRevalidationActivationSchedule.STATUS_PROCESSED or not sched.activated_at:
+                    continue
 
-            dp_pk = str(sched.distributor_permit_id) if sched.distributor_permit_id else None
+                dp_pk = str(sched.distributor_permit_id) if sched.distributor_permit_id else None
 
-            # Skip if there is an active unapproved revalidation application currently in progress
-            if ref_no in pending_permit_refs or (dp_pk and dp_pk in pending_permit_refs):
-                continue
+                # Skip if there is an active unapproved revalidation application currently in progress
+                if ref_no in pending_permit_refs or (dp_pk and dp_pk in pending_permit_refs):
+                    continue
 
-            dp = sched.distributor_permit
-            supplier_name = getattr(dp, 'supplier_company_name', 'N/A') if dp else 'N/A'
-            applicant_name = getattr(getattr(dp, 'applicant', None), 'full_name', str(getattr(dp, 'applicant', ''))) if dp else str(request.user)
-            dp_pdetails = getattr(dp, 'permit_wise_details', []) if dp else []
-            data.append({
-                'reference_no': ref_no,
-                'referenceNo': ref_no,
-                'applicationId': ref_no,
-                'distributor_permit': ref_no,
-                'distributor_permit_id': ref_no,
-                'revalidated_permit_number': ref_no,
-                'revalidatedPermitNumber': ref_no,
-                'applicant_name': applicant_name,
-                'applicantName': applicant_name,
-                'supplier_company_name': supplier_name,
-                'supplierName': supplier_name,
-                'status': 'Revalidation Activated',
-                'current_stage': {'name': 'Permit Expired - Ready for Revalidation'},
-                'currentStage': 'Permit Expired - Ready for Revalidation',
-                'is_activated_schedule': True,
-                'can_submit_application': True,
-                'permit_wise_details': dp_pdetails,
-                'permitWiseDetails': dp_pdetails,
-                'created_at': sched.activated_at or sched.updated_at,
-                'submitted_at': sched.activated_at or sched.updated_at,
-            })
+                dp = sched.distributor_permit
+                supplier_name = getattr(dp, 'supplier_company_name', 'N/A') if dp else 'N/A'
+                applicant_name = getattr(getattr(dp, 'applicant', None), 'full_name', str(getattr(dp, 'applicant', ''))) if dp else str(request.user)
+                dp_pdetails = getattr(dp, 'permit_wise_details', []) if dp else []
+                data.append({
+                    'reference_no': ref_no,
+                    'referenceNo': ref_no,
+                    'applicationId': ref_no,
+                    'distributor_permit': ref_no,
+                    'distributor_permit_id': ref_no,
+                    'revalidated_permit_number': ref_no,
+                    'revalidatedPermitNumber': ref_no,
+                    'applicant_name': applicant_name,
+                    'applicantName': applicant_name,
+                    'supplier_company_name': supplier_name,
+                    'supplierName': supplier_name,
+                    'status': 'Revalidation Activated',
+                    'current_stage': {'name': 'Permit Expired - Ready for Revalidation'},
+                    'currentStage': 'Permit Expired - Ready for Revalidation',
+                    'is_activated_schedule': True,
+                    'can_submit_application': True,
+                    'permit_wise_details': dp_pdetails,
+                    'permitWiseDetails': dp_pdetails,
+                    'created_at': sched.activated_at or sched.updated_at,
+                    'submitted_at': sched.activated_at or sched.updated_at,
+                })
 
         if page is not None:
             return self.get_paginated_response(data)
