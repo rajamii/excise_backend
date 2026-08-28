@@ -163,12 +163,13 @@ def dashboard_counts(request):
             "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
         })
 
-    if role in ['site_admin', 'single_window', 'secretary']:
+    if role in ['site_admin', 'site_administrator', 'single_window', 'secretary', 'super_admin']:
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
         rejected_stages = set(stage_sets['rejected'])
-        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
+        payment_stages = set(stage_sets.get('payment', []))
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
 
         from django.contrib.contenttypes.models import ContentType
         from django.db.models import Exists, OuterRef, Q
@@ -184,38 +185,72 @@ def dashboard_counts(request):
         all_qs_annotated = all_qs.annotate(_acted_by_admin=acted_by_admin)
 
         approved_count = all_qs_annotated.filter(
-            Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True)
+            Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True) | Q(is_approved=True)
         ).count()
 
         return Response({
-            "applied": all_qs.filter(current_stage__name__in=applied_stages).count(),
-            "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
+            "applied": all_qs.count(),
+            "pending": all_qs.filter(current_stage__name__in=pending_stages).exclude(is_approved=True).count(),
             "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
             "approved": approved_count,
             "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
+            "awaiting_payment": all_qs.filter(current_stage__name__in=payment_stages).count(),
         })
 
     role_stage_names = _get_role_stage_names(request.user, workflow_id)
     if not role_stage_names:
         return Response({
+            "applied": 0,
             "pending": 0,
             "approved": 0,
             "rejected": 0,
+            "objection": 0,
         })
+
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Exists, OuterRef, Q
+    from auth.workflow.models import Transaction as WorkflowTransaction
+
+    content_type = ContentType.objects.get_for_model(CompanyRegistration)
+    role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+    acted_by_role = Exists(
+        WorkflowTransaction.objects.filter(
+            content_type=content_type,
+            object_id=OuterRef('application_id'),
+            performed_by__role_id=role_id
+        )
+    )
 
     role_objection_stages = set(stage_sets['objection'])
     pending_stages = set(role_stage_names) - role_objection_stages
- 
-    reachable_from_role = _collect_reachable_stage_names(workflow_id, set(role_stage_names))
     role_rejected_stages = set(stage_sets['rejected'])
-    forward_stages = set(reachable_from_role) - pending_stages - role_rejected_stages - role_objection_stages
- 
+
+    pending_count = all_qs.filter(current_stage__name__in=pending_stages).count()
+    approved_count = (
+        all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
+        .annotate(_acted_by_role=acted_by_role)
+        .filter(_acted_by_role=True)
+        .count()
+    )
+    rejected_count = (
+        all_qs.filter(current_stage__name__in=role_rejected_stages)
+        .annotate(_acted_by_role=acted_by_role)
+        .filter(_acted_by_role=True)
+        .count()
+    )
+    objection_count = (
+        all_qs.filter(current_stage__name__in=role_objection_stages)
+        .annotate(_acted_by_role=acted_by_role)
+        .filter(_acted_by_role=True)
+        .count()
+    )
+
     return Response({
-        "applied": 0,
-        "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
-        "approved": all_qs.filter(current_stage__name__in=forward_stages).count(),
-        "rejected": all_qs.filter(current_stage__name__in=role_rejected_stages).count(),
-        "objection": all_qs.filter(current_stage__name__in=role_objection_stages).count(),
+        "applied": pending_count + approved_count + rejected_count + objection_count,
+        "pending": pending_count,
+        "approved": approved_count,
+        "rejected": rejected_count,
+        "objection": objection_count,
     })
 
 
@@ -258,7 +293,7 @@ def application_group(request):
             ).data
         })
 
-    if role in ['site_admin', 'single_window']:
+    if role in ['site_admin', 'site_administrator', 'single_window', 'secretary', 'super_admin']:
         
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
@@ -286,12 +321,39 @@ def application_group(request):
 
     role_stage_names = _get_role_stage_names(request.user, workflow_id)
     if role_stage_names:
-        
+        from django.contrib.contenttypes.models import ContentType
+        from django.db.models import Exists, OuterRef, Q
+        from auth.workflow.models import Transaction as WorkflowTransaction
+
+        content_type = ContentType.objects.get_for_model(CompanyRegistration)
+        role_id = getattr(getattr(request.user, 'role', None), 'id', None)
+        acted_by_role = Exists(
+            WorkflowTransaction.objects.filter(
+                content_type=content_type,
+                object_id=OuterRef('application_id'),
+                performed_by__role_id=role_id
+            )
+        )
+
         role_objection_stages = set(stage_sets['objection'])
-        pending_stages = set(role_stage_names) | role_objection_stages
-        reachable_from_role = _collect_reachable_stage_names(workflow_id, set(role_stage_names))
+        pending_stages = set(role_stage_names) - role_objection_stages
         role_rejected_stages = set(stage_sets['rejected'])
-        forward_stages = set(reachable_from_role) - pending_stages - role_rejected_stages
+
+        approved_qs = (
+            all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
+            .annotate(_acted_by_role=acted_by_role)
+            .filter(_acted_by_role=True)
+        )
+        rejected_qs = (
+            all_qs.filter(current_stage__name__in=role_rejected_stages)
+            .annotate(_acted_by_role=acted_by_role)
+            .filter(_acted_by_role=True)
+        )
+        objection_qs = (
+            all_qs.filter(current_stage__name__in=role_objection_stages)
+            .annotate(_acted_by_role=acted_by_role)
+            .filter(_acted_by_role=True)
+        )
 
         return Response({
             "applied": [],
@@ -299,13 +361,13 @@ def application_group(request):
                 all_qs.filter(current_stage__name__in=pending_stages), many=True
             ).data,
             "objection": CompanyRegistrationSerializer(
-                all_qs.filter(current_stage__name__in=role_objection_stages), many=True
+                objection_qs, many=True
             ).data,
             "approved": CompanyRegistrationSerializer(
-                all_qs.filter(current_stage__name__in=forward_stages), many=True
+                approved_qs, many=True
             ).data,
             "rejected": CompanyRegistrationSerializer(
-                all_qs.filter(current_stage__name__in=role_rejected_stages), many=True
+                rejected_qs, many=True
             ).data
         })
 

@@ -1164,6 +1164,10 @@ def dashboard_counts(request):
     if not wf:
         return Response({"applied": 0, "pending": 0, "objection": 0, "approved": 0, "rejected": 0})
 
+    from django.db.models import Q, Exists, OuterRef
+    from django.contrib.contenttypes.models import ContentType
+    from auth.workflow.models import Transaction as WorkflowTransaction
+
     role = _normalize_role(request.user.role.name if request.user.role else None)
     stage_sets = _get_stage_sets(wf.id)
     all_qs = _filter_by_user_district(LicenseApplication.objects.filter(workflow_id=wf.id), request.user, 'applicant__district')
@@ -1192,6 +1196,18 @@ def dashboard_counts(request):
                 "approved": base_qs.filter(current_stage__name__in=approved_stages).count(),
                 "rejected": base_qs.filter(current_stage__name__in=rejected_stages).count(),
                 "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
+            }
+        )
+
+    if role in ['site_admin', 'site_administrator', 'secretary', 'super_admin']:
+        return Response(
+            {
+                "applied": all_qs.count(),
+                "pending": all_qs.filter(current_stage__name__in=pending_stages).exclude(is_approved=True).count(),
+                "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
+                "approved": all_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True)).count(),
+                "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
+                "awaiting_payment": all_qs.filter(current_stage__name__in=payment_stages).count(),
             }
         )
 
@@ -1277,6 +1293,27 @@ def application_group(request):
                 ).data,
                 "rejected": LicenseApplicationSerializer(
                     base_qs.filter(current_stage__name__in=rejected_stages), many=True
+                ).data,
+            }
+        )
+
+    if role in ['site_admin', 'site_administrator', 'secretary', 'super_admin']:
+        return Response(
+            {
+                "applied": LicenseApplicationSerializer(
+                    all_qs.filter(current_stage__name__in=applied_stages), many=True
+                ).data,
+                "pending": LicenseApplicationSerializer(
+                    all_qs.filter(current_stage__name__in=pending_stages), many=True
+                ).data,
+                "objection": LicenseApplicationSerializer(
+                    all_qs.filter(current_stage__name__in=objection_stages), many=True
+                ).data,
+                "approved": LicenseApplicationSerializer(
+                    all_qs.filter(current_stage__name__in=approved_stages), many=True
+                ).data,
+                "rejected": LicenseApplicationSerializer(
+                    all_qs.filter(current_stage__name__in=rejected_stages), many=True
                 ).data,
             }
         )

@@ -909,7 +909,7 @@ def dashboard_counts(request):
             "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
         })
 
-    if role in ['site_admin', 'single_window', 'secretary']:
+    if role in ['site_admin', 'site_administrator', 'single_window', 'secretary', 'super_admin']:
         applied_stages = set(stage_sets['initial'])
         payment_stages = set(stage_sets.get('payment', []))
         pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages - payment_stages
@@ -928,10 +928,12 @@ def dashboard_counts(request):
         ).count()
 
         return Response({
-            "applied": all_qs.filter(current_stage__name__in=applied_stages).count(),
+            "applied": all_qs.count(),
             "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
             "approved": approved_count,
             "rejected": all_qs.filter(current_stage__name__in=stage_sets['rejected']).count(),
+            "objection": all_qs.filter(current_stage__name__in=stage_sets.get('objection', [])).count(),
+            "awaiting_payment": all_qs.filter(current_stage__name__in=payment_stages).count(),
         })
 
     role_stage_names = _get_role_stage_names(request.user, workflow_id)
@@ -1024,7 +1026,7 @@ def application_group(request):
         }
         return Response(result)
 
-    if role in ['site_admin']:
+    if role in ['site_admin', 'site_administrator', 'secretary', 'super_admin']:
         applied_stages = set(stage_sets['initial'])
         pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
         return Response({

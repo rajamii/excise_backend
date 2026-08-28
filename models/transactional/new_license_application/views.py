@@ -1573,6 +1573,23 @@ def dashboard_counts(request):
             "awaiting_payment": paid_qs.filter(current_stage__name__in=payment_stages).count(),
         })
 
+    if role in ('site_admin', 'site_administrator', 'secretary', 'super_admin'):
+        applied_stages = set(stage_sets['initial'])
+        objection_stages = set(stage_sets['objection'])
+        approved_stages = set(stage_sets['approved'])
+        rejected_stages = set(stage_sets['rejected'])
+        payment_stages = set(stage_sets.get('payment', []))
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
+
+        return Response({
+            "applied": all_qs.count(),
+            "pending": all_qs.filter(current_stage__name__in=pending_stages).exclude(is_approved=True).count(),
+            "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
+            "approved": all_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True)).count(),
+            "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
+            "awaiting_payment": all_qs.filter(current_stage__name__in=payment_stages).count(),
+        })
+
     role_stage_names = _get_role_stage_names(request.user, workflow_id)
     if role_stage_names:
         content_type = ContentType.objects.get_for_model(NewLicenseApplication)
@@ -1611,7 +1628,7 @@ def dashboard_counts(request):
         )
 
         return Response({
-            "applied": all_qs.count(),
+            "applied": pending_count + approved_count + rejected_count + objection_count,
             "pending": pending_count,
             "approved": approved_count,
             "rejected": rejected_count,
@@ -1623,7 +1640,8 @@ def dashboard_counts(request):
     objection_stages = set(stage_sets['objection'])
     approved_stages = set(stage_sets['approved'])
     rejected_stages = set(stage_sets['rejected'])
-    pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
+    payment_stages = set(stage_sets.get('payment', []))
+    pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
 
     content_type = ContentType.objects.get_for_model(NewLicenseApplication)
     acted_by_admin = Exists(
@@ -1635,15 +1653,16 @@ def dashboard_counts(request):
     all_qs_annotated = all_qs.annotate(_acted_by_admin=acted_by_admin)
 
     approved_count = all_qs_annotated.filter(
-        Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True)
+        Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True) | Q(is_approved=True)
     ).count()
 
     return Response({
         "applied": all_qs.count(),
-        "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
+        "pending": all_qs.filter(current_stage__name__in=pending_stages).exclude(is_approved=True).count(),
         "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
         "approved": approved_count,
         "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
+        "awaiting_payment": all_qs.filter(current_stage__name__in=payment_stages).count(),
     })
 
 # Application Grouping
@@ -1693,7 +1712,7 @@ def application_group(request):
             ).data
         })
 
-    if role in ['site_admin']:
+    if role in ['site_admin', 'site_administrator', 'secretary', 'super_admin']:
         all_qs = _with_site_enquiry_revert_annotations(_with_application_fee_payment_annotations(all_qs))
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
@@ -1737,16 +1756,21 @@ def application_group(request):
         )
 
         role_objection_stages = set(stage_sets['objection'])
-        pending_stages = set(role_stage_names) | role_objection_stages
+        pending_stages = set(role_stage_names) - role_objection_stages
         role_rejected_stages = set(stage_sets['rejected'])
         
         approved_qs = (
-            all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages)
+            all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
             .annotate(_acted_by_role=acted_by_role)
             .filter(_acted_by_role=True)
         )
         rejected_qs = (
             all_qs.filter(current_stage__name__in=role_rejected_stages)
+            .annotate(_acted_by_role=acted_by_role)
+            .filter(_acted_by_role=True)
+        )
+        objection_qs = (
+            all_qs.filter(current_stage__name__in=role_objection_stages)
             .annotate(_acted_by_role=acted_by_role)
             .filter(_acted_by_role=True)
         )
@@ -1757,7 +1781,7 @@ def application_group(request):
                  all_qs.filter(current_stage__name__in=pending_stages), many=True
              ).data,
              "objection": NewLicenseApplicationSerializer(
-                 all_qs.filter(current_stage__name__in=role_objection_stages), many=True
+                 objection_qs, many=True
              ).data,
              "approved": NewLicenseApplicationSerializer(
                  approved_qs, many=True
