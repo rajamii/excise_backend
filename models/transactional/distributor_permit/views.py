@@ -509,9 +509,19 @@ class DistributorPermitPerformActionView(APIView):
         if not target_transition and action in ('PAY', 'FORCE_PAY'):
             for t in transitions:
                 cond_action = str((t.condition or {}).get('action') or '').upper()
-                if cond_action == 'PAY' or t.to_stage_id == 156:
+                if cond_action in ('PAY', 'FORCE_PAY') or t.to_stage_id in (155, 156, 151):
                     target_transition = t
                     break
+            if not target_transition:
+                from auth.workflow.models import WorkflowStage, WorkflowTransition
+                to_stage = WorkflowStage.objects.filter(id=156).first() or WorkflowStage.objects.filter(name__icontains='arrival', workflow=application.workflow).first() or WorkflowStage.objects.filter(name__icontains='approved', workflow=application.workflow).first()
+                if to_stage:
+                    target_transition = WorkflowTransition(
+                        workflow=application.workflow,
+                        from_stage=application.current_stage,
+                        to_stage=to_stage,
+                        condition={'role': 'licensee', 'action': 'PAY'}
+                    )
 
         # Fallback transition for Commissioner APPROVE on Cancellation (stage 162 -> 165)
         if not target_transition and action == 'APPROVE' and isinstance(application, IMFLCancellation):
@@ -532,7 +542,7 @@ class DistributorPermitPerformActionView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
-            if action in ('PAY', 'FORCE_PAY'):
+            if action == 'PAY':
                 from decimal import Decimal
                 from django.db.models import Q
                 from models.transactional.wallet.models import WalletBalance
@@ -677,6 +687,9 @@ class DistributorPermitPerformActionView(APIView):
                         source_module="imfl_permit_requisition_education_cess",
                         transaction_type="payment"
                     )
+            elif action == 'FORCE_PAY':
+                # Developer test bypass: skip wallet balance checks and deduction
+                pass
 
             WorkflowService.advance_stage(
                 application=application,
