@@ -1617,7 +1617,10 @@ class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
                 b_num = str(item.get('batch_number') or '').strip()
                 b_type = str(item.get('brand_type') or item.get('liquor_type') or 'WHISKY').strip()
                 s_name = str(item.get('supplier_name') or getattr(permit_app, 'supplier_company_name', '') or '').strip()
-                item_remarks = str(item.get('remarks') or common_remarks).strip()
+                dam_bottles = int(item.get('damaged_bottles') or 0)
+                dam_cases = int(item.get('damaged_cases') or (dam_bottles // pieces_case if pieces_case else 0))
+                good_bottles = max(0, arr_bottles - dam_bottles)
+                good_cases = int(good_bottles // pieces_case if pieces_case else 0)
 
                 record = IMFLBrandWarehouse.objects.create(
                     distributor_permit=permit_app,
@@ -1631,7 +1634,11 @@ class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
                     expected_bottles=exp_bottles,
                     arrived_cases=arr_cases,
                     arrived_bottles=arr_bottles,
-                    current_stock=arr_bottles,
+                    damaged_bottles=dam_bottles,
+                    damaged_cases=dam_cases,
+                    good_bottles=good_bottles,
+                    good_cases=good_cases,
+                    current_stock=good_bottles,
                     total_utilized=0,
                     vehicle_number=v_num,
                     batch_number=b_num,
@@ -1648,14 +1655,28 @@ class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
                     permit_number=p_num,
                     vehicle_number=v_num,
                     brand_name=b_name,
+                    brand_type=b_type,
+                    supplier_name=s_name,
                     size_ml=p_size,
+                    pieces_per_case=pieces_case,
                     expected_cases=exp_cases,
+                    expected_bottles=exp_bottles,
                     arrived_cases=arr_cases,
+                    arrived_bottles=arr_bottles,
+                    damaged_bottles=dam_bottles,
+                    damaged_cases=dam_cases,
+                    good_bottles=good_bottles,
+                    good_cases=good_cases,
+                    batch_number=b_num,
                     remarks=item_remarks,
                     arrived_by=request.user if request.user.is_authenticated else None,
                     arrived_at=common_arrival_date,
-                    status='Submitted'
+                    status='Arrival Approved'
                 )
+
+            if permit_app:
+                permit_app.status = 'Stock Arrival Completed'
+                permit_app.save(update_fields=['status'])
 
         serializer = IMFLBrandWarehouseSerializer(created_records, many=True)
         return Response({
