@@ -14,6 +14,7 @@ from .models import (
     IMFLRevalidationActivationSchedule,
     IMFLArrival,
     IMFLCasesProcessed,
+    IMFLBrandWarehouse,
 )
 
 
@@ -737,5 +738,23 @@ class IMFLCasesProcessedSerializer(serializers.ModelSerializer):
             return ''
         name = getattr(obj.oic_officer, 'get_full_name', lambda: '')() or obj.oic_officer.username
         return name.strip() or obj.oic_officer.username
+
+
+class IMFLBrandWarehouseSerializer(serializers.ModelSerializer):
+    officer_in_charge_name = serializers.SerializerMethodField()
+    application_ref = serializers.CharField(source='distributor_permit.reference_no', read_only=True)
+    pieces_in_case = serializers.IntegerField(source='pieces_per_case', read_only=True)
+
+    class Meta:
+        model = IMFLBrandWarehouse
+        fields = '__all__'
+        read_only_fields = ('created_at', 'updated_at')
+
+    def get_officer_in_charge_name(self, obj):
+        if not obj.officer_in_charge:
+            return ''
+        name = getattr(obj.officer_in_charge, 'get_full_name', lambda: '')() or obj.officer_in_charge.username
+        return name.strip() or obj.officer_in_charge.username
+
 
 

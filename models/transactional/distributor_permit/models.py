@@ -403,4 +403,54 @@ class IMFLCasesProcessed(models.Model):
         return f"{self.permit_number} - {self.vehicle_number} ({self.status})"
 
 
+class IMFLBrandWarehouse(models.Model):
+    distributor_permit = models.ForeignKey(
+        DistributorPermitApplication,
+        on_delete=models.SET_NULL,
+        related_name='brand_warehouse_records',
+        null=True,
+        blank=True
+    )
+    permit_number = models.CharField(max_length=100, db_index=True, blank=True, default='')
+    brand_name = models.CharField(max_length=255, db_index=True)
+    brand_type = models.CharField(max_length=100, blank=True, default='WHISKY')
+    supplier_name = models.CharField(max_length=255, blank=True, default='')
+    distributor_establishment = models.CharField(max_length=255, blank=True, default='')
+    pack_size = models.IntegerField(default=750)
+    pieces_per_case = models.IntegerField(default=12)
+    expected_cases = models.IntegerField(default=0)
+    expected_bottles = models.IntegerField(default=0)
+    arrived_cases = models.IntegerField(default=0)
+    arrived_bottles = models.IntegerField(default=0)
+    current_stock = models.IntegerField(default=0)
+    total_utilized = models.IntegerField(default=0)
+    total_capacity = models.IntegerField(default=0)
+    vehicle_number = models.CharField(max_length=100, blank=True, default='')
+    batch_number = models.CharField(max_length=100, blank=True, default='')
+    arrival_date = models.DateTimeField(default=timezone.now)
+    officer_in_charge = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name='imfl_brand_warehouse_entries',
+        null=True,
+        blank=True
+    )
+    status = models.CharField(max_length=50, default='IN_STOCK')
+    remarks = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'imfl_brand_warehouse'
+        ordering = ['-arrival_date', '-id']
+        indexes = [
+            models.Index(fields=['brand_name', 'pack_size']),
+            models.Index(fields=['permit_number']),
+            models.Index(fields=['arrival_date']),
+        ]
+
+    def __str__(self):
+        return f"{self.brand_name} ({self.pack_size}ml) - {self.current_stock} units"
+
+
 

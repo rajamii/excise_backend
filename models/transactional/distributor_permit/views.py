@@ -3,8 +3,8 @@ from decimal import Decimal
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework import status, viewsets
+from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -16,13 +16,22 @@ from models.masters.supply_chain.liquor_data.models import LiquorData, MasterBra
 from models.masters.supply_chain.transit_permit.models import BrandMlInCases
 from models.masters.license.models import License
 
-from .models import DistributorPermitApplication, DistributorPermitDocument, IMFLRevalidation, IMFLCancellation, IMFLArrival, IMFLCasesProcessed
+from .models import (
+    DistributorPermitApplication,
+    DistributorPermitDocument,
+    IMFLRevalidation,
+    IMFLCancellation,
+    IMFLArrival,
+    IMFLCasesProcessed,
+    IMFLBrandWarehouse,
+)
 from .serializers import (
     DistributorPermitApplicationSerializer,
     DistributorPermitDocumentSerializer,
     DistributorSupplierSerializer,
     IMFLArrivalSerializer,
     IMFLCasesProcessedSerializer,
+    IMFLBrandWarehouseSerializer,
 )
 
 
@@ -1517,6 +1526,178 @@ class IMFLCasesProcessedViewSet(viewsets.ModelViewSet):
             instance.officer_remarks = remarks
             instance.save()
             return Response({'message': 'Stock arrival rejected.', 'status': 'rejected'})
+
+
+class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = IMFLBrandWarehouseSerializer
+    queryset = IMFLBrandWarehouse.objects.select_related('distributor_permit', 'officer_in_charge').all()
+
+    def get_queryset(self):
+        qs = IMFLBrandWarehouse.objects.select_related('distributor_permit', 'officer_in_charge').all()
+        permit_ref = self.request.query_params.get('permit_ref') or self.request.query_params.get('distributor_permit')
+        if permit_ref:
+            qs = qs.filter(Q(permit_number__icontains=permit_ref) | Q(distributor_permit__reference_no__icontains=permit_ref))
+        brand = self.request.query_params.get('brand')
+        if brand:
+            qs = qs.filter(brand_name__icontains=brand)
+        return qs.order_by('-arrival_date', '-id')
+
+    @action(detail=False, methods=['post'], url_path='bulk-update')
+    def bulk_update(self, request):
+        data = request.data
+        permit_ref = data.get('distributor_permit') or data.get('distributor_permit_ref') or data.get('reference_no')
+        common_vehicle = str(data.get('vehicle_number') or '').strip()
+        common_arrival_date = data.get('arrival_date') or timezone.now()
+        common_remarks = str(data.get('remarks') or '').strip()
+        items = data.get('items', [])
+
+        permit_app = None
+        if permit_ref:
+            permit_app = DistributorPermitApplication.objects.filter(reference_no=permit_ref).first()
+
+        created_records = []
+        with transaction.atomic():
+            for item in items:
+                b_name = str(item.get('brand_name') or '').strip()
+                if not b_name:
+                    continue
+                p_num = str(item.get('permit_number') or permit_ref or '').strip()
+                p_size = int(item.get('pack_size') or item.get('size_ml') or 750)
+                pieces_case = int(item.get('pieces_per_case') or item.get('bottles_per_case') or 12)
+                exp_cases = int(item.get('expected_cases') or 0)
+                exp_bottles = int(item.get('expected_bottles') or (exp_cases * pieces_case))
+                arr_cases = int(item.get('arrived_cases') or 0)
+                arr_bottles = int(item.get('arrived_bottles') or (arr_cases * pieces_case))
+                v_num = str(item.get('vehicle_number') or common_vehicle).strip()
+                b_num = str(item.get('batch_number') or '').strip()
+                b_type = str(item.get('brand_type') or item.get('liquor_type') or 'WHISKY').strip()
+                s_name = str(item.get('supplier_name') or getattr(permit_app, 'supplier_company_name', '') or '').strip()
+                item_remarks = str(item.get('remarks') or common_remarks).strip()
+
+                record = IMFLBrandWarehouse.objects.create(
+                    distributor_permit=permit_app,
+                    permit_number=p_num,
+                    brand_name=b_name,
+                    brand_type=b_type,
+                    supplier_name=s_name,
+                    pack_size=p_size,
+                    pieces_per_case=pieces_case,
+                    expected_cases=exp_cases,
+                    expected_bottles=exp_bottles,
+                    arrived_cases=arr_cases,
+                    arrived_bottles=arr_bottles,
+                    current_stock=arr_bottles,
+                    total_utilized=0,
+                    vehicle_number=v_num,
+                    batch_number=b_num,
+                    arrival_date=common_arrival_date,
+                    officer_in_charge=request.user if request.user.is_authenticated else None,
+                    status='IN_STOCK',
+                    remarks=item_remarks
+                )
+                created_records.append(record)
+
+                # Also store corresponding IMFLArrival record
+                IMFLArrival.objects.create(
+                    distributor_permit=permit_app,
+                    permit_number=p_num,
+                    vehicle_number=v_num,
+                    brand_name=b_name,
+                    size_ml=p_size,
+                    expected_cases=exp_cases,
+                    arrived_cases=arr_cases,
+                    remarks=item_remarks,
+                    arrived_by=request.user if request.user.is_authenticated else None,
+                    arrived_at=common_arrival_date,
+                    status='Submitted'
+                )
+
+        serializer = IMFLBrandWarehouseSerializer(created_records, many=True)
+        return Response({
+            'message': f'Successfully updated brand arrival for {len(created_records)} item(s) in IMFL Brand Warehouse.',
+            'count': len(created_records),
+            'records': serializer.data
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['get'], url_path='summary')
+    def summary(self, request):
+        records = IMFLBrandWarehouse.objects.all().order_by('-arrival_date')
+        
+        grouped_brands = {}
+        total_brands_set = set()
+        total_units = 0
+        total_cases = 0
+
+        for r in records:
+            b_key = r.brand_name.strip()
+            total_brands_set.add(b_key)
+            total_units += r.current_stock
+            calc_cases = (r.current_stock // r.pieces_per_case) if r.pieces_per_case else r.arrived_cases
+            total_cases += calc_cases
+
+            if b_key not in grouped_brands:
+                grouped_brands[b_key] = {
+                    'brand_name': r.brand_name,
+                    'brand_type': r.brand_type or 'WHISKY',
+                    'supplier_name': r.supplier_name or 'N/A',
+                    'pack_sizes': {},
+                    'total_stock': 0,
+                    'total_utilized': 0,
+                    'total_capacity': 0,
+                    'last_arrival_date': r.arrival_date,
+                    'recent_entries': []
+                }
+
+            pack_key = str(r.pack_size)
+            if pack_key not in grouped_brands[b_key]['pack_sizes']:
+                grouped_brands[b_key]['pack_sizes'][pack_key] = {
+                    'pack_size': r.pack_size,
+                    'current_stock': 0,
+                    'cases': 0,
+                    'pieces_per_case': r.pieces_per_case,
+                    'status': 'IN_STOCK'
+                }
+
+            pack_obj = grouped_brands[b_key]['pack_sizes'][pack_key]
+            pack_obj['current_stock'] += r.current_stock
+            pack_obj['cases'] += (r.current_stock // r.pieces_per_case) if r.pieces_per_case else r.arrived_cases
+            if pack_obj['current_stock'] <= 0:
+                pack_obj['status'] = 'OUT_OF_STOCK'
+            elif pack_obj['current_stock'] < 50:
+                pack_obj['status'] = 'LOW_STOCK'
+            else:
+                pack_obj['status'] = 'IN_STOCK'
+
+            grouped_brands[b_key]['total_stock'] += r.current_stock
+            grouped_brands[b_key]['total_utilized'] += r.total_utilized
+            grouped_brands[b_key]['total_capacity'] += r.total_capacity
+            if r.arrival_date and (not grouped_brands[b_key]['last_arrival_date'] or r.arrival_date > grouped_brands[b_key]['last_arrival_date']):
+                grouped_brands[b_key]['last_arrival_date'] = r.arrival_date
+
+            if len(grouped_brands[b_key]['recent_entries']) < 5:
+                grouped_brands[b_key]['recent_entries'].append({
+                    'id': r.id,
+                    'permit_number': r.permit_number,
+                    'pack_size': r.pack_size,
+                    'arrived_cases': r.arrived_cases,
+                    'arrived_bottles': r.arrived_bottles,
+                    'arrival_date': r.arrival_date,
+                    'vehicle_number': r.vehicle_number,
+                    'status': r.status,
+                    'remarks': r.remarks
+                })
+
+        stock_list = list(grouped_brands.values())
+
+        return Response({
+            'overview': {
+                'total_brands': len(total_brands_set),
+                'total_stock_units': total_units,
+                'total_cases': total_cases,
+            },
+            'brands': stock_list
+        })
 
 
 @api_view(['GET'])
