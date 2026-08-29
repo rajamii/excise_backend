@@ -182,6 +182,8 @@ def _normalize_imfl_dashboard_tab(raw_tab):
         return 'revalidation'
     if tab in ('cancellation', 'imfl-cancellation', 'distributor-permit-cancellation'):
         return 'cancellation'
+    if tab in ('brand-arrival', 'arrival', 'imfl-brand-arrival', 'distributor-permit-brand-arrival', 'update-brands-arrival'):
+        return 'brand-arrival'
     return 'requisition'
 
 
@@ -190,6 +192,14 @@ def _imfl_dashboard_queryset(request, tab):
         qs = IMFLRevalidation.objects.select_related('applicant', 'current_stage', 'distributor_permit')
     elif tab == 'cancellation':
         qs = IMFLCancellation.objects.select_related('applicant', 'current_stage', 'distributor_permit')
+    elif tab == 'brand-arrival':
+        qs = DistributorPermitApplication.objects.select_related('applicant', 'current_stage').filter(
+            Q(is_excise_duty_fee_paid=True) |
+            Q(current_stage_id__in=(155, 156, 151)) |
+            Q(status__icontains='payslip') |
+            Q(status__icontains='arrival') |
+            Q(status__icontains='approved')
+        )
     else:
         qs = DistributorPermitApplication.objects.select_related('applicant', 'current_stage').all()
     return scope_permit_queryset(qs, request.user)
@@ -256,6 +266,27 @@ def dashboard_counts(request):
         qs = qs.filter(**{f'{date_field}__year': year})
 
     items = list(qs)
+    if tab == 'brand-arrival':
+        from .models import IMFLBrandWarehouse
+        arrived_permit_ids = set(IMFLBrandWarehouse.objects.values_list('distributor_permit_id', flat=True))
+        arrived_permit_nos = set(IMFLBrandWarehouse.objects.values_list('permit_number', flat=True))
+
+        applied = len(items)
+        approved = sum(1 for item in items if item.id in arrived_permit_ids or item.reference_no in arrived_permit_nos or 'arrival approved' in _stage_text(item))
+        rejected = sum(1 for item in items if 'rejected' in _stage_text(item))
+        pending = applied - approved - rejected
+
+        return Response({
+            'tab': tab,
+            'applied': applied,
+            'pending': max(0, pending),
+            'approved': approved,
+            'objection': 0,
+            'rejected': rejected,
+            'awaiting_payment': 0,
+            'under_process': 0
+        })
+
     approved = sum(1 for item in items if _is_final_imfl_item(item) and 'approved' in _stage_text(item))
     rejected = sum(1 for item in items if 'rejected' in _stage_text(item))
     objection = sum(1 for item in items if _is_objection_imfl_item(item))
