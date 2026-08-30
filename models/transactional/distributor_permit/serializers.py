@@ -15,6 +15,7 @@ from .models import (
     IMFLArrival,
     IMFLCasesProcessed,
     IMFLBrandWarehouse,
+    IMFLRetailerStockDetails,
 )
 
 
@@ -749,6 +750,28 @@ class IMFLBrandWarehouseSerializer(serializers.ModelSerializer):
         model = IMFLBrandWarehouse
         fields = '__all__'
         read_only_fields = ('created_at', 'updated_at')
+
+    def get_officer_in_charge_name(self, obj):
+        if not obj.officer_in_charge:
+            return ''
+        name = getattr(obj.officer_in_charge, 'get_full_name', lambda: '')() or obj.officer_in_charge.username
+        return name.strip() or obj.officer_in_charge.username
+
+
+class IMFLRetailerStockDetailsSerializer(serializers.ModelSerializer):
+    distributor_user_name = serializers.SerializerMethodField()
+    officer_in_charge_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = IMFLRetailerStockDetails
+        fields = '__all__'
+        read_only_fields = ('dispatch_reference_no', 'created_at', 'updated_at')
+
+    def get_distributor_user_name(self, obj):
+        if not obj.distributor_user:
+            return ''
+        name = getattr(obj.distributor_user, 'get_full_name', lambda: '')() or obj.distributor_user.username
+        return name.strip() or obj.distributor_user.username
 
     def get_officer_in_charge_name(self, obj):
         if not obj.officer_in_charge:

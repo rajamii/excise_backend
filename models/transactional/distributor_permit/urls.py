@@ -24,6 +24,8 @@ router.register(r'cancellation', views.IMFLCancellationViewSet, basename='cancel
 router.register(r'arrival', views.IMFLArrivalViewSet, basename='arrival')
 router.register(r'cases-processed', views.IMFLCasesProcessedViewSet, basename='cases-processed')
 router.register(r'brand-warehouse', views.IMFLBrandWarehouseViewSet, basename='brand-warehouse')
+router.register(r'retailer-stock', views.IMFLRetailerStockDetailsViewSet, basename='retailer-stock')
+router.register(r'retailer-dispatches', views.IMFLRetailerStockDetailsViewSet, basename='retailer-dispatches')
 
 app_name = 'distributor_permit'
 

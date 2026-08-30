@@ -477,4 +477,65 @@ class IMFLBrandWarehouse(models.Model):
         return f"{self.brand_name} ({self.pack_size}ml) - {self.current_stock} units"
 
 
+class IMFLRetailerStockDetails(models.Model):
+    dispatch_reference_no = models.CharField(max_length=100, unique=True, db_index=True)
+    distributor_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name='imfl_retailer_dispatches',
+        null=True,
+        blank=True
+    )
+    officer_in_charge = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name='imfl_retailer_dispatches_verified',
+        null=True,
+        blank=True
+    )
+    warehouse_record = models.ForeignKey(
+        IMFLBrandWarehouse,
+        on_delete=models.SET_NULL,
+        related_name='retailer_dispatches',
+        null=True,
+        blank=True
+    )
+    retailer_name = models.CharField(max_length=255, db_index=True)
+    retailer_license_no = models.CharField(max_length=100, blank=True, default='')
+    retailer_shop_name = models.CharField(max_length=255, blank=True, default='')
+    retailer_address = models.TextField(blank=True, default='')
+    retailer_contact = models.CharField(max_length=50, blank=True, default='')
+    brand_name = models.CharField(max_length=255, db_index=True)
+    brand_type = models.CharField(max_length=100, blank=True, default='WHISKY')
+    supplier_name = models.CharField(max_length=255, blank=True, default='')
+    pack_size = models.IntegerField(default=750)
+    pieces_per_case = models.IntegerField(default=12)
+    dispatched_cases = models.IntegerField(default=0)
+    dispatched_loose_bottles = models.IntegerField(default=0)
+    dispatched_bottles = models.IntegerField(default=0)
+    hologram_from = models.CharField(max_length=100, blank=True, default='')
+    hologram_to = models.CharField(max_length=100, blank=True, default='')
+    hologram_count = models.IntegerField(default=0)
+    batch_number = models.CharField(max_length=100, blank=True, default='')
+    vehicle_number = models.CharField(max_length=100, blank=True, default='')
+    driver_name = models.CharField(max_length=100, blank=True, default='')
+    driver_phone = models.CharField(max_length=50, blank=True, default='')
+    challan_no = models.CharField(max_length=100, blank=True, default='')
+    dispatch_date = models.DateTimeField(default=timezone.now)
+    status = models.CharField(max_length=50, default='DISPATCHED')
+    remarks = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        db_table = 'imfl_retailers_stock_details'
+        ordering = ['-dispatch_date', '-id']
+        indexes = [
+            models.Index(fields=['dispatch_reference_no']),
+            models.Index(fields=['brand_name', 'pack_size']),
+            models.Index(fields=['retailer_name']),
+            models.Index(fields=['dispatch_date']),
+        ]
+
+    def __str__(self):
+        return f"{self.dispatch_reference_no} - {self.retailer_name}: {self.brand_name} ({self.dispatched_bottles} bottles)"

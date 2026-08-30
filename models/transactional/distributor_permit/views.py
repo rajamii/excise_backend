@@ -24,6 +24,7 @@ from .models import (
     IMFLArrival,
     IMFLCasesProcessed,
     IMFLBrandWarehouse,
+    IMFLRetailerStockDetails,
 )
 from .serializers import (
     DistributorPermitApplicationSerializer,
@@ -32,6 +33,7 @@ from .serializers import (
     IMFLArrivalSerializer,
     IMFLCasesProcessedSerializer,
     IMFLBrandWarehouseSerializer,
+    IMFLRetailerStockDetailsSerializer,
 )
 
 
@@ -1790,6 +1792,56 @@ class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
                     'remarks': r.remarks or ''
                 })
 
+        # Load all retailer dispatches grouped by normalized brand name
+        dispatches = IMFLRetailerStockDetails.objects.all().order_by('-dispatch_date')
+        dispatches_by_brand = {}
+        total_utilized_units_overall = 0
+        total_utilized_cases_overall = 0
+
+        for d in dispatches:
+            d_bkey = str(d.brand_name or '').strip().lower()
+            if d_bkey not in dispatches_by_brand:
+                dispatches_by_brand[d_bkey] = []
+            
+            dispatches_by_brand[d_bkey].append({
+                'id': d.id,
+                'dispatch_reference_no': d.dispatch_reference_no,
+                'retailer_name': d.retailer_name,
+                'retailer_license_no': d.retailer_license_no,
+                'retailer_shop_name': d.retailer_shop_name,
+                'retailer_address': d.retailer_address,
+                'retailer_contact': d.retailer_contact,
+                'pack_size': d.pack_size,
+                'pieces_per_case': d.pieces_per_case,
+                'dispatched_cases': d.dispatched_cases,
+                'dispatched_loose_bottles': d.dispatched_loose_bottles,
+                'dispatched_bottles': d.dispatched_bottles,
+                'hologram_from': d.hologram_from,
+                'hologram_to': d.hologram_to,
+                'hologram_count': d.hologram_count,
+                'batch_number': d.batch_number,
+                'vehicle_number': d.vehicle_number,
+                'driver_name': d.driver_name,
+                'driver_phone': d.driver_phone,
+                'challan_no': d.challan_no,
+                'dispatch_date': d.dispatch_date,
+                'status': d.status,
+                'remarks': d.remarks
+            })
+            total_utilized_units_overall += d.dispatched_bottles
+            total_utilized_cases_overall += d.dispatched_cases
+
+        # Attach dispatches to grouped brands
+        for b_key, b_obj in grouped_brands.items():
+            b_norm = b_key.lower()
+            brand_dispatches = dispatches_by_brand.get(b_norm, [])
+            b_obj['dispatch_history'] = brand_dispatches
+            b_utilized_units = sum(d['dispatched_bottles'] for d in brand_dispatches)
+            b_utilized_cases = sum(d['dispatched_cases'] for d in brand_dispatches)
+            if b_utilized_units > 0:
+                b_obj['total_utilized'] = b_utilized_units
+                b_obj['total_utilized_cases'] = b_utilized_cases
+
         stock_list = list(grouped_brands.values())
 
         return Response({
@@ -1797,9 +1849,249 @@ class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
                 'total_brands': len(total_brands_set),
                 'total_stock_units': total_units,
                 'total_cases': total_cases,
+                'total_utilized_units': total_utilized_units_overall,
+                'total_utilized_cases': total_utilized_cases_overall,
             },
             'brands': stock_list
         })
+
+
+class IMFLRetailerStockDetailsViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = IMFLRetailerStockDetailsSerializer
+
+    def get_queryset(self):
+        qs = IMFLRetailerStockDetails.objects.all()
+        brand_name = self.request.query_params.get('brand_name') or self.request.query_params.get('brandName')
+        if brand_name:
+            qs = qs.filter(brand_name__iexact=str(brand_name).strip())
+        retailer = self.request.query_params.get('retailer')
+        if retailer:
+            qs = qs.filter(Q(retailer_name__icontains=str(retailer).strip()) | Q(retailer_shop_name__icontains=str(retailer).strip()))
+        return qs
+
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
+        
+        # Generate sequential reference e.g. IMFLDISP/2026-27/0001
+        current_year = timezone.now().year
+        next_year_suffix = str(current_year + 1)[-2:]
+        fin_year = f"{current_year}-{next_year_suffix}"
+        
+        last_item = IMFLRetailerStockDetails.objects.filter(
+            dispatch_reference_no__startswith=f"IMFLDISP/{fin_year}/"
+        ).order_by('-id').first()
+        
+        next_seq = 1
+        if last_item and last_item.dispatch_reference_no:
+            try:
+                parts = last_item.dispatch_reference_no.split('/')
+                if len(parts) >= 3:
+                    next_seq = int(parts[-1]) + 1
+            except Exception:
+                next_seq = IMFLRetailerStockDetails.objects.count() + 1
+        
+        dispatch_ref = f"IMFLDISP/{fin_year}/{str(next_seq).zfill(4)}"
+        
+        brand_name = str(data.get('brand_name') or data.get('brandName') or '').strip()
+        pack_size = int(data.get('pack_size') or data.get('packSize') or 750)
+        pieces_per_case = int(data.get('pieces_per_case') or data.get('piecesPerCase') or 12)
+        dispatched_cases = int(data.get('dispatched_cases') or data.get('dispatchedCases') or 0)
+        dispatched_loose = int(data.get('dispatched_loose_bottles') or data.get('dispatchedLooseBottles') or 0)
+        total_bottles = int(data.get('dispatched_bottles') or data.get('dispatchedBottles') or (dispatched_cases * pieces_per_case + dispatched_loose))
+        
+        if total_bottles <= 0:
+            return Response({'error': 'Dispatched quantity must be greater than 0.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Find warehouse records for this brand and pack size
+        all_wh_records = list(IMFLBrandWarehouse.objects.filter(
+            brand_name__iexact=brand_name,
+            pack_size=pack_size
+        ).order_by('arrival_date', 'id'))
+        
+        wh_records = [r for r in all_wh_records if (r.current_stock or 0) > 0]
+        
+        total_available = sum(r.current_stock for r in wh_records)
+        if total_available < total_bottles:
+            return Response({
+                'error': f"Insufficient stock for {brand_name} ({pack_size}ml). Available: {total_available} units, requested: {total_bottles} units."
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Collect all requested hologram numbers from either 'hologram_ranges' list or 'hologram_from'/'hologram_to'
+        raw_ranges = data.get('hologram_ranges') or data.get('hologramRanges')
+        requested_ranges = []
+        if isinstance(raw_ranges, list) and raw_ranges:
+            for item in raw_ranges:
+                if isinstance(item, dict):
+                    f = str(item.get('from') or item.get('hologram_from') or item.get('hologramFrom') or '').strip()
+                    t = str(item.get('to') or item.get('hologram_to') or item.get('hologramTo') or '').strip()
+                    if f and t:
+                        requested_ranges.append((f, t))
+        
+        if not requested_ranges:
+            hg_from_raw = str(data.get('hologram_from') or data.get('hologramFrom') or '').strip()
+            hg_to_raw = str(data.get('hologram_to') or data.get('hologramTo') or '').strip()
+            if hg_from_raw and hg_to_raw:
+                f_parts = [p.strip() for p in re.split(r'[,]+', hg_from_raw) if p.strip()]
+                t_parts = [p.strip() for p in re.split(r'[,]+', hg_to_raw) if p.strip()]
+                for idx in range(min(len(f_parts), len(t_parts))):
+                    requested_ranges.append((f_parts[idx], t_parts[idx]))
+                if not requested_ranges:
+                    requested_ranges.append((hg_from_raw, hg_to_raw))
+        
+        import re
+        def _extract_digits(val):
+            m = re.search(r'\d+$', str(val).strip())
+            return int(m.group(0)) if m else None
+        
+        def _parse_damaged_nums(raw_str):
+            nums = set()
+            if not raw_str or str(raw_str).strip().lower() in ('none', 'null', 'nan', '-'):
+                return nums
+            for part in re.split(r'[\s,]+', str(raw_str)):
+                part = part.strip()
+                if not part or part.lower() in ('none', 'null'):
+                    continue
+                if '-' in part or '→' in part or 'to' in part:
+                    sub = re.split(r'[-→to]+', part)
+                    if len(sub) == 2:
+                        s_d = _extract_digits(sub[0])
+                        e_d = _extract_digits(sub[1])
+                        if s_d is not None and e_d is not None:
+                            for i in range(min(s_d, e_d), max(s_d, e_d) + 1):
+                                nums.add(i)
+                            continue
+                d = _extract_digits(part)
+                if d is not None:
+                    nums.add(d)
+            return nums
+
+        if requested_ranges:
+            # 1. Collect all damaged holograms and valid arrived ranges recorded in warehouse
+            damaged_nums = set()
+            valid_arrived_ranges = []
+            for r in all_wh_records:
+                r_from = _extract_digits(r.hologram_from)
+                r_to = _extract_digits(r.hologram_to)
+                if r_from is not None and r_to is not None and r_to >= r_from:
+                    valid_arrived_ranges.append((r_from, r_to, str(r.hologram_from), str(r.hologram_to)))
+                damaged_nums.update(_parse_damaged_nums(r.damaged_holograms))
+                damaged_nums.update(_parse_damaged_nums(r.damaged_cases_holograms))
+
+            # 2. Collect previously dispatched hologram numbers
+            dispatched_nums = set()
+            for disp in IMFLRetailerStockDetails.objects.filter(brand_name__iexact=brand_name, pack_size=pack_size):
+                disp_from = _extract_digits(disp.hologram_from)
+                disp_to = _extract_digits(disp.hologram_to)
+                if disp_from is not None and disp_to is not None and disp_to >= disp_from:
+                    for num in range(disp_from, disp_to + 1):
+                        dispatched_nums.add(num)
+
+            for (rg_f, rg_t) in requested_ranges:
+                start_hg_num = _extract_digits(rg_f)
+                end_hg_num = _extract_digits(rg_t)
+                if start_hg_num is not None and end_hg_num is not None and end_hg_num >= start_hg_num:
+                    fits_in_arrived = False
+                    for (af, at, af_str, at_str) in valid_arrived_ranges:
+                        if start_hg_num >= af and end_hg_num <= at:
+                            fits_in_arrived = True
+                            break
+                    if valid_arrived_ranges and not fits_in_arrived:
+                        valid_str = ", ".join(f"{af_str} to {at_str}" for (_, _, af_str, at_str) in valid_arrived_ranges)
+                        return Response({
+                            'error': f"Hologram range ({rg_f} to {rg_t}) is outside the arrived warehouse stock range ({valid_str}) for {brand_name} ({pack_size}ml)."
+                        }, status=status.HTTP_400_BAD_REQUEST)
+                    
+                    damaged_conflict = [i for i in range(start_hg_num, end_hg_num + 1) if i in damaged_nums]
+                    if damaged_conflict:
+                        return Response({
+                            'error': f"Hologram(s) {', '.join(map(str, damaged_conflict))} are recorded as DAMAGED for this brand and cannot be dispatched to a retailer."
+                        }, status=status.HTTP_400_BAD_REQUEST)
+                    
+                    disp_conflict = [i for i in range(start_hg_num, end_hg_num + 1) if i in dispatched_nums]
+                    if disp_conflict:
+                        return Response({
+                            'error': f"Hologram(s) {', '.join(map(str, disp_conflict))} have already been dispatched to a retailer."
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Store consolidated strings
+            data['hologram_from'] = ", ".join(r[0] for r in requested_ranges)
+            data['hologram_to'] = ", ".join(r[1] for r in requested_ranges)
+        
+        # Deduct stock sequentially from warehouse records (FIFO)
+        remaining_to_deduct = total_bottles
+        primary_wh_record = wh_records[0] if wh_records else None
+        
+        for r in wh_records:
+            if remaining_to_deduct <= 0:
+                break
+            deduct = min(r.current_stock, remaining_to_deduct)
+            r.current_stock = max(0, r.current_stock - deduct)
+            r.total_utilized = (r.total_utilized or 0) + deduct
+            r.save(update_fields=['current_stock', 'total_utilized', 'updated_at'])
+            remaining_to_deduct -= deduct
+        
+        # Determine distributor and OIC user
+        distributor_user = None
+        oic_user = None
+        if request.user.is_authenticated:
+            if _is_distributor_user(request.user):
+                distributor_user = request.user
+            else:
+                oic_user = request.user
+                try:
+                    from auth.user.models import OICOfficerAssignment
+                    assignment = OICOfficerAssignment.objects.filter(officer=request.user, assignment_type='distributor').first()
+                    if assignment:
+                        distributor_user = assignment.distributor_user
+                except Exception:
+                    pass
+        
+        retailer_name = str(data.get('retailer_name') or data.get('retailerName') or '').strip()
+        retailer_lic = str(data.get('retailer_license_no') or data.get('retailerLicenseNo') or '').strip()
+        retailer_shop = str(data.get('retailer_shop_name') or data.get('retailerShopName') or '').strip()
+        retailer_addr = str(data.get('retailer_address') or data.get('retailerAddress') or '').strip()
+        retailer_cont = str(data.get('retailer_contact') or data.get('retailerContact') or '').strip()
+        brand_type = str(data.get('brand_type') or data.get('brandType') or (primary_wh_record.brand_type if primary_wh_record else 'WHISKY')).strip()
+        supplier_name = str(data.get('supplier_name') or data.get('supplierName') or (primary_wh_record.supplier_name if primary_wh_record else '')).strip()
+        
+        dispatch_record = IMFLRetailerStockDetails.objects.create(
+            dispatch_reference_no=dispatch_ref,
+            distributor_user=distributor_user,
+            officer_in_charge=oic_user or (request.user if request.user.is_authenticated else None),
+            warehouse_record=primary_wh_record,
+            retailer_name=retailer_name,
+            retailer_license_no=retailer_lic,
+            retailer_shop_name=retailer_shop,
+            retailer_address=retailer_addr,
+            retailer_contact=retailer_cont,
+            brand_name=brand_name,
+            brand_type=brand_type,
+            supplier_name=supplier_name,
+            pack_size=pack_size,
+            pieces_per_case=pieces_per_case,
+            dispatched_cases=dispatched_cases,
+            dispatched_loose_bottles=dispatched_loose,
+            dispatched_bottles=total_bottles,
+            hologram_from=str(data.get('hologram_from') or data.get('hologramFrom') or '').strip(),
+            hologram_to=str(data.get('hologram_to') or data.get('hologramTo') or '').strip(),
+            hologram_count=int(data.get('hologram_count') or data.get('hologramCount') or total_bottles),
+            batch_number=str(data.get('batch_number') or data.get('batchNumber') or '').strip(),
+            vehicle_number=str(data.get('vehicle_number') or data.get('vehicleNumber') or '').strip(),
+            driver_name=str(data.get('driver_name') or data.get('driverName') or '').strip(),
+            driver_phone=str(data.get('driver_phone') or data.get('driverPhone') or '').strip(),
+            challan_no=str(data.get('challan_no') or data.get('challanNo') or '').strip(),
+            dispatch_date=data.get('dispatch_date') or data.get('dispatchDate') or timezone.now(),
+            status='DISPATCHED',
+            remarks=str(data.get('remarks') or '').strip()
+        )
+        
+        serializer = self.get_serializer(dispatch_record)
+        return Response({
+            'message': f"Stock dispatch {dispatch_ref} to retailer '{retailer_name}' created successfully.",
+            'dispatch': serializer.data
+        }, status=status.HTTP_201_CREATED)
 
 
 @api_view(['GET'])
