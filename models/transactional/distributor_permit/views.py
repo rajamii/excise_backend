@@ -287,7 +287,7 @@ def dashboard_counts(request):
             'under_process': 0
         })
 
-    approved = sum(1 for item in items if (_is_final_imfl_item(item) and ('approved' in _stage_text(item) or 'completed' in _stage_text(item))) or getattr(item, 'reference_no', '') in arrived_permit_ids or getattr(item, 'reference_no', '') in arrived_permit_nos)
+    approved = sum(1 for item in items if _is_final_imfl_item(item) and 'approved' in _stage_text(item))
     rejected = sum(1 for item in items if 'rejected' in _stage_text(item))
     objection = sum(1 for item in items if _is_objection_imfl_item(item))
     awaiting_payment = sum(1 for item in items if _is_awaiting_payment_imfl_item(item))
@@ -295,8 +295,7 @@ def dashboard_counts(request):
     pending = 0
     under_process = 0
     for item in items:
-        ref_no = getattr(item, 'reference_no', '')
-        if (_is_final_imfl_item(item) and ('approved' in _stage_text(item) or 'completed' in _stage_text(item))) or _is_objection_imfl_item(item) or ref_no in arrived_permit_ids or ref_no in arrived_permit_nos:
+        if _is_final_imfl_item(item) or _is_objection_imfl_item(item):
             continue
         if _is_item_pending_for_user(item, request.user):
             pending += 1
@@ -1690,10 +1689,6 @@ class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
                     arrived_at=common_arrival_date,
                     status='Arrival Approved'
                 )
-
-            if permit_app:
-                permit_app.status = 'Stock Arrival Completed'
-                permit_app.save(update_fields=['status'])
 
         serializer = IMFLBrandWarehouseSerializer(created_records, many=True)
         return Response({
