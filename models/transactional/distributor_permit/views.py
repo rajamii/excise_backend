@@ -266,13 +266,13 @@ def dashboard_counts(request):
         qs = qs.filter(**{f'{date_field}__year': year})
 
     items = list(qs)
-    if tab == 'brand-arrival':
-        from .models import IMFLBrandWarehouse
-        arrived_permit_ids = set(IMFLBrandWarehouse.objects.values_list('distributor_permit_id', flat=True))
-        arrived_permit_nos = set(IMFLBrandWarehouse.objects.values_list('permit_number', flat=True))
+    from .models import IMFLBrandWarehouse, IMFLArrival
+    arrived_permit_ids = set(IMFLBrandWarehouse.objects.values_list('distributor_permit_id', flat=True)) | set(IMFLArrival.objects.values_list('distributor_permit_id', flat=True))
+    arrived_permit_nos = set(IMFLBrandWarehouse.objects.values_list('permit_number', flat=True)) | set(IMFLArrival.objects.values_list('permit_number', flat=True))
 
+    if tab == 'brand-arrival':
         applied = len(items)
-        approved = sum(1 for item in items if item.id in arrived_permit_ids or item.reference_no in arrived_permit_nos or 'arrival approved' in _stage_text(item))
+        approved = sum(1 for item in items if getattr(item, 'reference_no', '') in arrived_permit_ids or getattr(item, 'reference_no', '') in arrived_permit_nos or 'arrival approved' in _stage_text(item) or 'completed' in _stage_text(item) or 'approved' in _stage_text(item))
         rejected = sum(1 for item in items if 'rejected' in _stage_text(item))
         pending = applied - approved - rejected
 
@@ -287,7 +287,7 @@ def dashboard_counts(request):
             'under_process': 0
         })
 
-    approved = sum(1 for item in items if _is_final_imfl_item(item) and 'approved' in _stage_text(item))
+    approved = sum(1 for item in items if (_is_final_imfl_item(item) and ('approved' in _stage_text(item) or 'completed' in _stage_text(item))) or getattr(item, 'reference_no', '') in arrived_permit_ids or getattr(item, 'reference_no', '') in arrived_permit_nos)
     rejected = sum(1 for item in items if 'rejected' in _stage_text(item))
     objection = sum(1 for item in items if _is_objection_imfl_item(item))
     awaiting_payment = sum(1 for item in items if _is_awaiting_payment_imfl_item(item))
@@ -295,7 +295,8 @@ def dashboard_counts(request):
     pending = 0
     under_process = 0
     for item in items:
-        if _is_final_imfl_item(item) or _is_objection_imfl_item(item):
+        ref_no = getattr(item, 'reference_no', '')
+        if (_is_final_imfl_item(item) and ('approved' in _stage_text(item) or 'completed' in _stage_text(item))) or _is_objection_imfl_item(item) or ref_no in arrived_permit_ids or ref_no in arrived_permit_nos:
             continue
         if _is_item_pending_for_user(item, request.user):
             pending += 1
@@ -1626,6 +1627,7 @@ class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
                 hg_count = int(item.get('hologram_count') or arr_bottles)
                 dam_hg = str(item.get('damaged_holograms') or '').strip()
                 dam_cases_hg = str(item.get('damaged_cases_holograms') or '').strip()
+                item_remarks = str(item.get('remarks') or common_remarks).strip()
 
                 record = IMFLBrandWarehouse.objects.create(
                     distributor_permit=permit_app,
@@ -1710,38 +1712,44 @@ class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
         total_cases = 0
 
         for r in records:
-            b_key = r.brand_name.strip()
+            b_name = str(r.brand_name or '').strip().strip("'").strip('"')
+            if not b_name or b_name == '-':
+                continue
+            b_key = b_name
             total_brands_set.add(b_key)
             total_units += r.current_stock
-            calc_cases = (r.current_stock // r.pieces_per_case) if r.pieces_per_case else r.arrived_cases
+            pieces = r.pieces_per_case or 12
+            calc_cases = (r.good_cases if getattr(r, 'good_cases', None) is not None else (r.current_stock // pieces))
+            if calc_cases == 0 and r.current_stock > 0:
+                calc_cases = 1
             total_cases += calc_cases
 
             if b_key not in grouped_brands:
                 grouped_brands[b_key] = {
-                    'brand_name': r.brand_name,
-                    'brand_type': r.brand_type or 'WHISKY',
-                    'supplier_name': r.supplier_name or 'N/A',
+                    'brand_name': b_name,
+                    'brand_type': str(r.brand_type or 'WHISKY').strip().strip("'").strip('"') or 'WHISKY',
+                    'supplier_name': str(r.supplier_name or 'N/A').strip().strip("'").strip('"') or 'N/A',
                     'pack_sizes': {},
                     'total_stock': 0,
                     'total_utilized': 0,
-                    'total_capacity': 0,
+                    'total_capacity': getattr(r, 'total_capacity', 0) or 0,
                     'last_arrival_date': r.arrival_date,
                     'recent_entries': []
                 }
 
-            pack_key = str(r.pack_size)
+            pack_key = str(r.pack_size or 750)
             if pack_key not in grouped_brands[b_key]['pack_sizes']:
                 grouped_brands[b_key]['pack_sizes'][pack_key] = {
-                    'pack_size': r.pack_size,
+                    'pack_size': r.pack_size or 750,
                     'current_stock': 0,
                     'cases': 0,
-                    'pieces_per_case': r.pieces_per_case,
+                    'pieces_per_case': pieces,
                     'status': 'IN_STOCK'
                 }
 
             pack_obj = grouped_brands[b_key]['pack_sizes'][pack_key]
             pack_obj['current_stock'] += r.current_stock
-            pack_obj['cases'] += (r.current_stock // r.pieces_per_case) if r.pieces_per_case else r.arrived_cases
+            pack_obj['cases'] += calc_cases
             if pack_obj['current_stock'] <= 0:
                 pack_obj['status'] = 'OUT_OF_STOCK'
             elif pack_obj['current_stock'] < 50:
@@ -1750,22 +1758,41 @@ class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
                 pack_obj['status'] = 'IN_STOCK'
 
             grouped_brands[b_key]['total_stock'] += r.current_stock
-            grouped_brands[b_key]['total_utilized'] += r.total_utilized
-            grouped_brands[b_key]['total_capacity'] += r.total_capacity
+            grouped_brands[b_key]['total_utilized'] += getattr(r, 'total_utilized', 0) or 0
             if r.arrival_date and (not grouped_brands[b_key]['last_arrival_date'] or r.arrival_date > grouped_brands[b_key]['last_arrival_date']):
                 grouped_brands[b_key]['last_arrival_date'] = r.arrival_date
 
-            if len(grouped_brands[b_key]['recent_entries']) < 5:
+            # Store latest hologram & damage details on brand
+            if not grouped_brands[b_key].get('latest_hologram_from') and r.hologram_from:
+                grouped_brands[b_key]['latest_hologram_from'] = r.hologram_from
+                grouped_brands[b_key]['latest_hologram_to'] = r.hologram_to
+                grouped_brands[b_key]['latest_damaged_holograms'] = r.damaged_holograms
+                grouped_brands[b_key]['latest_damaged_cases_holograms'] = r.damaged_cases_holograms
+                grouped_brands[b_key]['latest_vehicle_number'] = r.vehicle_number
+                grouped_brands[b_key]['latest_permit_number'] = str(r.permit_number or '').strip().strip("'").strip('"')
+
+            if len(grouped_brands[b_key]['recent_entries']) < 20:
                 grouped_brands[b_key]['recent_entries'].append({
                     'id': r.id,
-                    'permit_number': r.permit_number,
-                    'pack_size': r.pack_size,
-                    'arrived_cases': r.arrived_cases,
-                    'arrived_bottles': r.arrived_bottles,
+                    'permit_number': str(r.permit_number or '').strip().strip("'").strip('"'),
+                    'pack_size': r.pack_size or 750,
+                    'expected_cases': r.expected_cases or 0,
+                    'expected_bottles': r.expected_bottles or 0,
+                    'arrived_cases': r.arrived_cases or 0,
+                    'arrived_bottles': r.arrived_bottles or 0,
+                    'damaged_cases': r.damaged_cases or 0,
+                    'damaged_bottles': r.damaged_bottles or 0,
+                    'good_cases': r.good_cases or 0,
+                    'good_bottles': r.good_bottles or r.current_stock or 0,
+                    'hologram_from': r.hologram_from or '',
+                    'hologram_to': r.hologram_to or '',
+                    'hologram_count': r.hologram_count or r.arrived_bottles or 0,
+                    'damaged_holograms': r.damaged_holograms or '',
+                    'damaged_cases_holograms': r.damaged_cases_holograms or '',
                     'arrival_date': r.arrival_date,
-                    'vehicle_number': r.vehicle_number,
-                    'status': r.status,
-                    'remarks': r.remarks
+                    'vehicle_number': r.vehicle_number or 'N/A',
+                    'status': r.status or 'IN_STOCK',
+                    'remarks': r.remarks or ''
                 })
 
         stock_list = list(grouped_brands.values())
