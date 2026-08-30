@@ -341,6 +341,11 @@ class IMFLArrival(models.Model):
     good_bottles = models.IntegerField(default=0)
     good_cases = models.IntegerField(default=0)
     batch_number = models.CharField(max_length=100, blank=True, default='')
+    hologram_from = models.CharField(max_length=100, blank=True, default='')
+    hologram_to = models.CharField(max_length=100, blank=True, default='')
+    hologram_count = models.IntegerField(default=0)
+    damaged_holograms = models.TextField(blank=True, default='')
+    damaged_cases_holograms = models.TextField(blank=True, default='')
     remarks = models.TextField(blank=True, default='')
     arrived_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -441,6 +446,11 @@ class IMFLBrandWarehouse(models.Model):
     total_capacity = models.IntegerField(default=0)
     vehicle_number = models.CharField(max_length=100, blank=True, default='')
     batch_number = models.CharField(max_length=100, blank=True, default='')
+    hologram_from = models.CharField(max_length=100, blank=True, default='')
+    hologram_to = models.CharField(max_length=100, blank=True, default='')
+    hologram_count = models.IntegerField(default=0)
+    damaged_holograms = models.TextField(blank=True, default='')
+    damaged_cases_holograms = models.TextField(blank=True, default='')
     arrival_date = models.DateTimeField(default=timezone.now)
     officer_in_charge = models.ForeignKey(
         settings.AUTH_USER_MODEL,

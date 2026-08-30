@@ -1621,6 +1621,11 @@ class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
                 dam_cases = int(item.get('damaged_cases') or (dam_bottles // pieces_case if pieces_case else 0))
                 good_bottles = max(0, arr_bottles - dam_bottles)
                 good_cases = int(good_bottles // pieces_case if pieces_case else 0)
+                hg_from = str(item.get('hologram_from') or '').strip()
+                hg_to = str(item.get('hologram_to') or '').strip()
+                hg_count = int(item.get('hologram_count') or arr_bottles)
+                dam_hg = str(item.get('damaged_holograms') or '').strip()
+                dam_cases_hg = str(item.get('damaged_cases_holograms') or '').strip()
 
                 record = IMFLBrandWarehouse.objects.create(
                     distributor_permit=permit_app,
@@ -1642,6 +1647,11 @@ class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
                     total_utilized=0,
                     vehicle_number=v_num,
                     batch_number=b_num,
+                    hologram_from=hg_from,
+                    hologram_to=hg_to,
+                    hologram_count=hg_count,
+                    damaged_holograms=dam_hg,
+                    damaged_cases_holograms=dam_cases_hg,
                     arrival_date=common_arrival_date,
                     officer_in_charge=request.user if request.user.is_authenticated else None,
                     status='IN_STOCK',
@@ -1668,6 +1678,11 @@ class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
                     good_bottles=good_bottles,
                     good_cases=good_cases,
                     batch_number=b_num,
+                    hologram_from=hg_from,
+                    hologram_to=hg_to,
+                    hologram_count=hg_count,
+                    damaged_holograms=dam_hg,
+                    damaged_cases_holograms=dam_cases_hg,
                     remarks=item_remarks,
                     arrived_by=request.user if request.user.is_authenticated else None,
                     arrived_at=common_arrival_date,
