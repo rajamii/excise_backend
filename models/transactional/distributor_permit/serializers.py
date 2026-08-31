@@ -14,15 +14,13 @@ from .models import (
     IMFLRevalidationActivationSchedule,
     IMFLArrival,
     IMFLCasesProcessed,
+    IMFLBrandWarehouse,
+    IMFLRetailerStockDetails,
 )
 
 
 class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
-    brand_id = serializers.PrimaryKeyRelatedField(
-        source='brand',
-        queryset=MasterBrandList.objects.all(),
-        write_only=True,
-    )
+    brand_id = serializers.IntegerField(write_only=True)
     brand_master_id = serializers.IntegerField(source='brand_id', read_only=True)
     cases = serializers.IntegerField(write_only=True, required=False, default=1)
 
@@ -64,6 +62,14 @@ class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
             if camel in data and snake not in data:
                 data[snake] = data[camel]
         return super().to_internal_value(data)
+
+    def validate_brand_id(self, value):
+        from .models import IMFLBrand
+        from models.masters.supply_chain.liquor_data.models import MasterBrandList
+
+        if IMFLBrand.objects.filter(id=value).exists() or MasterBrandList.objects.filter(id=value).exists():
+            return value
+        raise serializers.ValidationError(f'Invalid brand ID "{value}" - brand does not exist.')
 
     def validate_cases(self, value):
         if value <= 0:
@@ -233,16 +239,33 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         return application
 
     def _process_and_save_line_items(self, application, line_items):
+        from .models import IMFLBrand
+        from models.masters.supply_chain.liquor_data.models import MasterBrandList
+
         expanded_items = []
         for item in line_items:
-            brand = item['brand']
-            size_ml = int(item['size_ml'])
-            cases = int(item['cases'])
-            brand_name = str(getattr(brand, 'brand_name', '') or '').strip()
-            rates = self._resolve_rates(brand_name, size_ml)
-            pieces_per_case = int(item.get('pieces_per_case') or self._resolve_pieces_per_case(size_ml))
+            raw_brand_id = item.get('brand_id')
+            imfl_brand = IMFLBrand.objects.filter(id=raw_brand_id).first() if raw_brand_id else None
+            master_brand = MasterBrandList.objects.filter(id=raw_brand_id).first() if raw_brand_id else None
 
-            edp = self._decimal(item.get('edp_per_case') or item.get('edp'))
+            brand = master_brand
+            if imfl_brand:
+                brand_name = str(imfl_brand.brand_name or '').strip()
+                size_ml = int(item.get('size_ml') or imfl_brand.size_ml or 750)
+                pieces_per_case = int(item.get('pieces_per_case') or imfl_brand.pieces_per_case or self._resolve_pieces_per_case(size_ml))
+            elif master_brand:
+                brand_name = str(getattr(master_brand, 'brand_name', '') or '').strip()
+                size_ml = int(item.get('size_ml') or 750)
+                pieces_per_case = int(item.get('pieces_per_case') or self._resolve_pieces_per_case(size_ml))
+            else:
+                brand_name = str(item.get('brand_name') or 'IMFL Brand').strip()
+                size_ml = int(item.get('size_ml') or 750)
+                pieces_per_case = int(item.get('pieces_per_case') or self._resolve_pieces_per_case(size_ml))
+
+            cases = int(item.get('cases') or 1)
+            rates = self._resolve_rates(brand_name, size_ml)
+
+            edp = self._decimal(item.get('edp_per_case') or item.get('edp') or (imfl_brand.edp_per_case if imfl_brand else 0))
             if edp <= Decimal('0.00'):
                 edp = rates['edp_per_case']
 
@@ -283,13 +306,13 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         for item in expanded_items:
             rem_cases = item['cases']
             while rem_cases > 0:
-                available_space = 600 - current_permit_cases
+                available_space = 700 - current_permit_cases
                 if available_space <= 0:
                     permits.append((current_permit_index, current_permit_items))
                     current_permit_index += 1
                     current_permit_cases = 0
                     current_permit_items = []
-                    available_space = 600
+                    available_space = 700
 
                 allocated_cases = min(rem_cases, available_space)
 
@@ -716,5 +739,45 @@ class IMFLCasesProcessedSerializer(serializers.ModelSerializer):
             return ''
         name = getattr(obj.oic_officer, 'get_full_name', lambda: '')() or obj.oic_officer.username
         return name.strip() or obj.oic_officer.username
+
+
+class IMFLBrandWarehouseSerializer(serializers.ModelSerializer):
+    officer_in_charge_name = serializers.SerializerMethodField()
+    application_ref = serializers.CharField(source='distributor_permit.reference_no', read_only=True)
+    pieces_in_case = serializers.IntegerField(source='pieces_per_case', read_only=True)
+
+    class Meta:
+        model = IMFLBrandWarehouse
+        fields = '__all__'
+        read_only_fields = ('created_at', 'updated_at')
+
+    def get_officer_in_charge_name(self, obj):
+        if not obj.officer_in_charge:
+            return ''
+        name = getattr(obj.officer_in_charge, 'get_full_name', lambda: '')() or obj.officer_in_charge.username
+        return name.strip() or obj.officer_in_charge.username
+
+
+class IMFLRetailerStockDetailsSerializer(serializers.ModelSerializer):
+    distributor_user_name = serializers.SerializerMethodField()
+    officer_in_charge_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = IMFLRetailerStockDetails
+        fields = '__all__'
+        read_only_fields = ('dispatch_reference_no', 'created_at', 'updated_at')
+
+    def get_distributor_user_name(self, obj):
+        if not obj.distributor_user:
+            return ''
+        name = getattr(obj.distributor_user, 'get_full_name', lambda: '')() or obj.distributor_user.username
+        return name.strip() or obj.distributor_user.username
+
+    def get_officer_in_charge_name(self, obj):
+        if not obj.officer_in_charge:
+            return ''
+        name = getattr(obj.officer_in_charge, 'get_full_name', lambda: '')() or obj.officer_in_charge.username
+        return name.strip() or obj.officer_in_charge.username
+
 
 

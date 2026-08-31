@@ -3,8 +3,8 @@ from decimal import Decimal
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework import status, viewsets
+from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -16,19 +16,40 @@ from models.masters.supply_chain.liquor_data.models import LiquorData, MasterBra
 from models.masters.supply_chain.transit_permit.models import BrandMlInCases
 from models.masters.license.models import License
 
-from .models import DistributorPermitApplication, DistributorPermitDocument, IMFLRevalidation, IMFLCancellation, IMFLArrival, IMFLCasesProcessed
+from .models import (
+    DistributorPermitApplication,
+    DistributorPermitDocument,
+    IMFLRevalidation,
+    IMFLCancellation,
+    IMFLArrival,
+    IMFLCasesProcessed,
+    IMFLBrandWarehouse,
+    IMFLRetailerStockDetails,
+)
 from .serializers import (
     DistributorPermitApplicationSerializer,
     DistributorPermitDocumentSerializer,
     DistributorSupplierSerializer,
     IMFLArrivalSerializer,
     IMFLCasesProcessedSerializer,
+    IMFLBrandWarehouseSerializer,
+    IMFLRetailerStockDetailsSerializer,
 )
 
 
 def _is_distributor_user(user) -> bool:
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+    role_id = getattr(getattr(user, 'role', None), 'id', 0)
     role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').strip().lower()
-    return role_name == 'distributor'
+    if role_name in ('distributor', 'licensee', 'licencee') or role_id in (1, 2, 16):
+        return True
+    try:
+        from models.masters.license.models import License
+        return License.objects.filter(applicant=user, license_category__is_distributor_user=True, is_active=True).exists()
+    except Exception:
+        pass
+    return False
 
 
 def _is_officer_user(user) -> bool:
@@ -96,30 +117,31 @@ def scope_permit_queryset(qs, user):
     role_id = getattr(getattr(user, 'role', None), 'id', 0)
     role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').strip().lower().replace('-', '_').replace(' ', '_')
 
-    # If Officer is a Distributor OIC with an assigned distributor user, scope applications to that distributor
-    assignment = getattr(user, 'oic_assignment', None)
-    if assignment and getattr(assignment, 'assignment_type', '') == 'distributor' and getattr(assignment, 'distributor_user', None):
-        return qs.filter(applicant=assignment.distributor_user)
-
-    # Admin / Staff / Superuser / Site Admin / Distributor / Permit Section / Inspector / OIC / Single Window
-    if (
-        getattr(user, 'is_staff', False)
-        or getattr(user, 'is_superuser', False)
-        or 'admin' in role_name
-        or 'distributor' in role_name
-        or 'permit' in role_name
-        or 'officer' in role_name
-        or 'offcier' in role_name
-        or 'oic' in role_name
-        or 'window' in role_name
-        or role_id in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 16)
-    ):
-        if role_id in (10, 12) or 'commissioner' in role_name:
-            # Commissioner sees applications at or past Forwarded Commissioner or Approved
-            return qs.filter(Q(current_stage_id__in=[153, 154, 156, 157, 151, 152]) | Q(status__icontains='approved') | Q(status__icontains='commissioner'))
+    # Admin / Staff / Superuser / Site Admin
+    if getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False) or 'admin' in role_name or role_id == 15:
         return qs
 
-    # Fallback for applicant
+    # Officers (Commissioner, Permit Section, OIC)
+    is_commissioner = 'commissioner' in role_name or role_id in (10, 12)
+    is_permit_section = 'permit' in role_name or role_id in (5, 6)
+    is_oic = 'oic' in role_name or 'officer' in role_name or getattr(user, 'is_oic_managed', False)
+
+    if is_commissioner:
+        return qs.filter(
+            Q(current_stage_id__in=[151, 152, 153, 154, 156, 157, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170]) |
+            Q(status__icontains='approved') |
+            Q(status__icontains='commissioner') |
+            Q(current_stage__name__icontains='commissioner') |
+            Q(current_stage__name__icontains='approved')
+        )
+
+    if is_permit_section or is_oic:
+        assignment = getattr(user, 'oic_assignment', None)
+        if assignment and getattr(assignment, 'assignment_type', '') == 'distributor' and getattr(assignment, 'distributor_user', None):
+            return qs.filter(applicant=assignment.distributor_user)
+        return qs
+
+    # For all applicant / licensee / distributor users: scope strictly to their own applications!
     return qs.filter(applicant=user)
 
 
@@ -162,6 +184,8 @@ def _normalize_imfl_dashboard_tab(raw_tab):
         return 'revalidation'
     if tab in ('cancellation', 'imfl-cancellation', 'distributor-permit-cancellation'):
         return 'cancellation'
+    if tab in ('brand-arrival', 'arrival', 'imfl-brand-arrival', 'distributor-permit-brand-arrival', 'update-brands-arrival'):
+        return 'brand-arrival'
     return 'requisition'
 
 
@@ -170,6 +194,14 @@ def _imfl_dashboard_queryset(request, tab):
         qs = IMFLRevalidation.objects.select_related('applicant', 'current_stage', 'distributor_permit')
     elif tab == 'cancellation':
         qs = IMFLCancellation.objects.select_related('applicant', 'current_stage', 'distributor_permit')
+    elif tab == 'brand-arrival':
+        qs = DistributorPermitApplication.objects.select_related('applicant', 'current_stage').filter(
+            Q(is_excise_duty_fee_paid=True) |
+            Q(current_stage_id__in=(155, 156, 151)) |
+            Q(status__icontains='payslip') |
+            Q(status__icontains='arrival') |
+            Q(status__icontains='approved')
+        )
     else:
         qs = DistributorPermitApplication.objects.select_related('applicant', 'current_stage').all()
     return scope_permit_queryset(qs, request.user)
@@ -236,7 +268,46 @@ def dashboard_counts(request):
         qs = qs.filter(**{f'{date_field}__year': year})
 
     items = list(qs)
-    approved = sum(1 for item in items if _is_final_imfl_item(item) and 'approved' in _stage_text(item))
+    from .models import IMFLBrandWarehouse, IMFLArrival
+    arrived_permit_ids = set(IMFLBrandWarehouse.objects.values_list('distributor_permit_id', flat=True)) | set(IMFLArrival.objects.values_list('distributor_permit_id', flat=True))
+    arrived_permit_nos = set(IMFLBrandWarehouse.objects.values_list('permit_number', flat=True)) | set(IMFLArrival.objects.values_list('permit_number', flat=True))
+
+    def _is_item_approved(item):
+        text = _stage_text(item)
+        if any(token in text for token in ('approved', 'completed', 'arrival approved', 'stock arrival approved')):
+            return True
+        ref_no = getattr(item, 'reference_no', '')
+        item_id = getattr(item, 'id', None)
+        p_no = getattr(item, 'permit_number', '') or ref_no
+        if item_id in arrived_permit_ids or ref_no in arrived_permit_ids or ref_no in arrived_permit_nos or p_no in arrived_permit_nos:
+            return True
+        return False
+
+    def _is_item_final(item):
+        text = _stage_text(item)
+        if any(token in text for token in ('rejected', 'cancelled', 'canceled')):
+            return True
+        return _is_item_approved(item)
+
+    if tab == 'brand-arrival':
+        unapproved = [item for item in items if not _is_item_approved(item) and 'rejected' not in _stage_text(item)]
+        applied = len(unapproved)
+        pending = applied
+        rejected = sum(1 for item in items if 'rejected' in _stage_text(item))
+        approved = 0
+
+        return Response({
+            'tab': tab,
+            'applied': applied,
+            'pending': pending,
+            'approved': approved,
+            'objection': 0,
+            'rejected': rejected,
+            'awaiting_payment': 0,
+            'under_process': 0
+        })
+
+    approved = sum(1 for item in items if _is_item_approved(item))
     rejected = sum(1 for item in items if 'rejected' in _stage_text(item))
     objection = sum(1 for item in items if _is_objection_imfl_item(item))
     awaiting_payment = sum(1 for item in items if _is_awaiting_payment_imfl_item(item))
@@ -244,7 +315,7 @@ def dashboard_counts(request):
     pending = 0
     under_process = 0
     for item in items:
-        if _is_final_imfl_item(item) or _is_objection_imfl_item(item):
+        if _is_item_final(item) or _is_objection_imfl_item(item):
             continue
         if _is_item_pending_for_user(item, request.user):
             pending += 1
@@ -316,6 +387,26 @@ class DistributorPermitDocumentUploadView(DistributorRoleRequiredMixin, APIView)
 
 class DistributorPermitSuppliersView(DistributorRoleRequiredMixin, APIView):
     def get(self, request):
+        from .models import IMFLSupplier
+        suppliers = IMFLSupplier.objects.all().order_by('id')
+        if suppliers.exists():
+            data = [
+                {
+                    'id': s.id,
+                    'supplier_master_name': s.supplier_master_name or s.supplier_name,
+                    'supplierMasterName': s.supplier_master_name or s.supplier_name,
+                    'supplier_name': s.supplier_master_name or s.supplier_name,
+                    'company_name': s.supplier_name,
+                    'companyName': s.supplier_name,
+                    'address': s.address,
+                    'route_details': s.route_details,
+                    'routeDetails': s.route_details,
+                    'state': s.address.split(',')[-1].strip() if ',' in s.address else '',
+                }
+                for s in suppliers
+            ]
+            return Response(data)
+
         active_only = str(request.query_params.get('active_only') or '1').strip().lower()
         rows = MasterHologramSupplier.objects.all().order_by('company_name')
         if active_only not in {'0', 'false', 'no', 'n'}:
@@ -326,7 +417,35 @@ class DistributorPermitSuppliersView(DistributorRoleRequiredMixin, APIView):
 
 class DistributorPermitBrandMasterView(DistributorRoleRequiredMixin, APIView):
     def get(self, request):
+        from .models import IMFLBrand
         query = str(request.query_params.get('q') or '').strip()
+        supplier_id = request.query_params.get('supplier_id') or request.query_params.get('supplierId')
+
+        imfl_qs = IMFLBrand.objects.select_related('supplier').all().order_by('brand_name')
+        if query:
+            imfl_qs = imfl_qs.filter(brand_name__icontains=query)
+        if supplier_id:
+            imfl_qs = imfl_qs.filter(supplier_id=supplier_id)
+
+        if imfl_qs.exists():
+            data = [
+                {
+                    'brandId': b.id,
+                    'brandName': b.brand_name,
+                    'sizeMl': b.size_ml,
+                    'piecesPerCase': b.pieces_per_case,
+                    'edpPerCase': b.edp_per_case,
+                    'importPassFeePerCase': b.import_pass_fee_per_case,
+                    'mrpPerBottle': b.mrp_per_bottle,
+                    'additionalEdPerCase': b.additional_ed_per_case,
+                    'educationCessPerCase': b.education_cess_per_case,
+                    'supplierId': b.supplier_id,
+                    'supplierName': b.supplier.supplier_name if b.supplier else '',
+                }
+                for b in imfl_qs
+            ]
+            return Response({'success': True, 'data': data, 'total': len(data)})
+
         brand_qs = MasterBrandList.objects.all().order_by('brand_name')
         if query:
             brand_qs = brand_qs.filter(brand_name__icontains=query)
@@ -441,9 +560,19 @@ class DistributorPermitPerformActionView(APIView):
         if not target_transition and action in ('PAY', 'FORCE_PAY'):
             for t in transitions:
                 cond_action = str((t.condition or {}).get('action') or '').upper()
-                if cond_action == 'PAY' or t.to_stage_id == 156:
+                if cond_action in ('PAY', 'FORCE_PAY') or t.to_stage_id in (155, 156, 151):
                     target_transition = t
                     break
+            if not target_transition:
+                from auth.workflow.models import WorkflowStage, WorkflowTransition
+                to_stage = WorkflowStage.objects.filter(id=156).first() or WorkflowStage.objects.filter(name__icontains='arrival', workflow=application.workflow).first() or WorkflowStage.objects.filter(name__icontains='approved', workflow=application.workflow).first()
+                if to_stage:
+                    target_transition = WorkflowTransition(
+                        workflow=application.workflow,
+                        from_stage=application.current_stage,
+                        to_stage=to_stage,
+                        condition={'role': 'licensee', 'action': 'PAY'}
+                    )
 
         # Fallback transition for Commissioner APPROVE on Cancellation (stage 162 -> 165)
         if not target_transition and action == 'APPROVE' and isinstance(application, IMFLCancellation):
@@ -464,6 +593,155 @@ class DistributorPermitPerformActionView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
+            if action == 'PAY':
+                from decimal import Decimal
+                from django.db.models import Q
+                from models.transactional.wallet.models import WalletBalance
+                from models.transactional.wallet.wallet_service import debit_wallet_balance
+
+                total_import_fee = Decimal('0.00')
+                total_add_ed = Decimal('0.00')
+                total_edu_cess = Decimal('0.00')
+
+                line_items = list(getattr(application, 'line_items', []).all() if hasattr(application, 'line_items') else [])
+                if line_items:
+                    for item in line_items:
+                        cases = Decimal(str(getattr(item, 'cases', 0) or getattr(item, 'no_of_cases', 0) or getattr(item, 'quantity', 0) or 0))
+                        import_fee_rate = Decimal(str(getattr(item, 'import_pass_fee_per_case', 0) or getattr(item, 'import_pass_fee', 0) or 0))
+                        add_ed_rate = Decimal(str(getattr(item, 'additional_ed_per_case', 0) or getattr(item, 'additional_ed', 0) or 0))
+                        cess_rate = Decimal(str(getattr(item, 'education_cess_per_case', 0) or getattr(item, 'education_cess', 0) or 0))
+
+                        total_import_fee += (import_fee_rate * cases)
+                        total_add_ed += (add_ed_rate * cases)
+                        total_edu_cess += (cess_rate * cases)
+
+                if total_import_fee == 0 and total_add_ed == 0 and total_edu_cess == 0:
+                    details = getattr(application, 'permit_wise_details', []) or []
+                    if isinstance(details, list):
+                        for p in details:
+                            if isinstance(p, dict):
+                                items = p.get('line_items') or p.get('items') or []
+                                for item in items:
+                                    if isinstance(item, dict):
+                                        cases = Decimal(str(item.get('cases', 0) or 0))
+                                        import_fee = Decimal(str(item.get('total_import') or item.get('totalImport') or (item.get('import_pass_fee_per_case', 0) * cases)))
+                                        add_ed = Decimal(str(item.get('total_additional_ed') or item.get('totalAddEd') or (item.get('additional_ed_per_case', 0) * cases)))
+                                        cess = Decimal(str(item.get('total_education_cess') or item.get('cess') or 0))
+
+                                        total_import_fee += import_fee
+                                        total_add_ed += add_ed
+                                        total_edu_cess += cess
+
+                excise_amount = (total_import_fee + total_add_ed).quantize(Decimal('0.01'))
+                cess_amount = total_edu_cess.quantize(Decimal('0.01'))
+
+                user_obj = getattr(application, 'applicant', None) or request.user
+                username = str(getattr(user_obj, 'username', '') or '').strip()
+
+                candidates = [username]
+                from models.masters.license.models import License
+                for lic in License.objects.filter(applicant=user_obj, is_active=True):
+                    if lic.license_id:
+                        candidates.append(str(lic.license_id).strip())
+
+                wallet_filter = Q(user_id__iexact=username) | Q(licensee_id__in=candidates)
+                if hasattr(WalletBalance, 'applicant'):
+                    wallet_filter |= Q(applicant=user_obj)
+
+                excise_wallet = WalletBalance.objects.filter(
+                    wallet_filter,
+                    wallet_type__code__iexact='excise'
+                ).order_by('-current_balance', 'wallet_balance_id').first()
+
+                if not excise_wallet and excise_amount > 0:
+                    return Response({'status': 'error', 'message': f'Excise Wallet not found for user {username}.'}, status=status.HTTP_400_BAD_REQUEST)
+
+                if excise_wallet and Decimal(str(excise_wallet.current_balance or 0)) < excise_amount:
+                    return Response({
+                        'status': 'error',
+                        'message': f'Insufficient Excise Wallet balance (Required: ₹{excise_amount}, Available: ₹{excise_wallet.current_balance}).'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+                cess_wallet = None
+                if cess_amount > 0:
+                    cess_wallet = WalletBalance.objects.filter(
+                        wallet_filter,
+                        wallet_type__code__iexact='education_cess'
+                    ).order_by('-current_balance', 'wallet_balance_id').first()
+
+                    if not cess_wallet:
+                        return Response({'status': 'error', 'message': f'Education Cess Wallet not found for user {username}.'}, status=status.HTTP_400_BAD_REQUEST)
+
+                    if Decimal(str(cess_wallet.current_balance or 0)) < cess_amount:
+                        return Response({
+                            'status': 'error',
+                            'message': f'Insufficient Education Cess Wallet balance (Required: ₹{cess_amount}, Available: ₹{cess_wallet.current_balance}).'
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+                import uuid
+                ref_no_str = application.reference_no
+
+                if excise_wallet and excise_amount > 0:
+                    if total_import_fee > 0 and total_add_ed > 0:
+                        ed_txn_id = f"PAY-EXCISE-ED-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
+                        debit_wallet_balance(
+                            transaction_id=ed_txn_id,
+                            licensee_id=excise_wallet.licensee_id,
+                            wallet_type="excise",
+                            head_of_account=excise_wallet.head_of_account,
+                            amount=total_import_fee,
+                            user_id=username,
+                            remarks=f"IMFL Requisition Excise Duty (Import Pass Fee ₹{total_import_fee}) for Ref #{ref_no_str}",
+                            reference_no=ref_no_str,
+                            source_module="imfl_permit_requisition_excise",
+                            transaction_type="payment"
+                        )
+                        add_txn_id = f"PAY-EXCISE-ADD-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
+                        debit_wallet_balance(
+                            transaction_id=add_txn_id,
+                            licensee_id=excise_wallet.licensee_id,
+                            wallet_type="additional_excise",
+                            head_of_account=excise_wallet.head_of_account,
+                            amount=total_add_ed,
+                            user_id=username,
+                            remarks=f"IMFL Requisition Additional Excise Duty (Add. ED ₹{total_add_ed}) for Ref #{ref_no_str}",
+                            reference_no=ref_no_str,
+                            source_module="imfl_permit_requisition_additional_ed",
+                            transaction_type="payment"
+                        )
+                    else:
+                        excise_txn_id = f"PAY-EXCISE-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
+                        debit_wallet_balance(
+                            transaction_id=excise_txn_id,
+                            licensee_id=excise_wallet.licensee_id,
+                            wallet_type="excise",
+                            head_of_account=excise_wallet.head_of_account,
+                            amount=excise_amount,
+                            user_id=username,
+                            remarks=f"IMFL Requisition Excise Duty Fee Payment for Ref #{ref_no_str}",
+                            reference_no=ref_no_str,
+                            source_module="imfl_permit_requisition_excise",
+                            transaction_type="payment"
+                        )
+
+                if cess_wallet and cess_amount > 0:
+                    cess_txn_id = f"PAY-CESS-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
+                    debit_wallet_balance(
+                        transaction_id=cess_txn_id,
+                        licensee_id=cess_wallet.licensee_id,
+                        wallet_type="education_cess",
+                        head_of_account=cess_wallet.head_of_account,
+                        amount=cess_amount,
+                        user_id=username,
+                        remarks=f"IMFL Requisition Education Duty Payment (Education Cess ₹{cess_amount}) for Ref #{ref_no_str}",
+                        reference_no=ref_no_str,
+                        source_module="imfl_permit_requisition_education_cess",
+                        transaction_type="payment"
+                    )
+            elif action == 'FORCE_PAY':
+                # Developer test bypass: skip wallet balance checks and deduction
+                pass
+
             WorkflowService.advance_stage(
                 application=application,
                 user=request.user,
@@ -692,84 +970,83 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
             serializer = self.get_serializer(queryset, many=True)
             data = list(serializer.data)
 
-        # Query all schedules ordered by newest first (-id) to find the LATEST schedule state per permit
-        if _is_officer_user(request.user):
-            all_schedules = IMFLRevalidationActivationSchedule.objects.all().select_related('distributor_permit', 'distributor_permit__applicant').order_by('-id')
-        else:
+        # Only append unsubmitted activation schedules for non-officer (licensee/distributor) applicants so they can submit revalidation.
+        # Officers (Commissioner, Permit Section, OIC, etc.) must only see actual submitted revalidations awaiting review/approval.
+        if not _is_officer_user(request.user):
             all_schedules = IMFLRevalidationActivationSchedule.objects.filter(
                 distributor_permit__applicant=request.user
             ).select_related('distributor_permit', 'distributor_permit__applicant').order_by('-id')
             if not all_schedules.exists():
                 all_schedules = IMFLRevalidationActivationSchedule.objects.all().select_related('distributor_permit', 'distributor_permit__applicant').order_by('-id')
 
-        latest_schedules_by_ref = {}
-        for sched in all_schedules:
-            ref_no = str(sched.distributor_permit_ref_no)
-            if ref_no not in latest_schedules_by_ref:
-                latest_schedules_by_ref[ref_no] = sched
+            latest_schedules_by_ref = {}
+            for sched in all_schedules:
+                ref_no = str(sched.distributor_permit_ref_no)
+                if ref_no not in latest_schedules_by_ref:
+                    latest_schedules_by_ref[ref_no] = sched
 
-        pending_permit_refs = set()
-        for item in data:
-            status_str = str(item.get('status') or '').upper()
-            stage_dict = item.get('current_stage') or {}
-            is_final = False
-            if isinstance(stage_dict, dict):
-                is_final = bool(stage_dict.get('is_final'))
+            pending_permit_refs = set()
+            for item in data:
+                status_str = str(item.get('status') or '').upper()
+                stage_dict = item.get('current_stage') or {}
+                is_final = False
+                if isinstance(stage_dict, dict):
+                    is_final = bool(stage_dict.get('is_final'))
 
-            # Only mark permit as "pending" if it has an unapproved revalidation in progress
-            if not is_final and 'APPROVED' not in status_str:
-                dp_id = item.get('distributor_permit') or item.get('distributor_permit_id')
-                if isinstance(dp_id, dict):
-                    ref = dp_id.get('reference_no') or dp_id.get('referenceNo')
-                    if ref:
-                        pending_permit_refs.add(str(ref))
-                    dp_pk = dp_id.get('id')
-                    if dp_pk:
-                        pending_permit_refs.add(str(dp_pk))
-                elif dp_id:
-                    pending_permit_refs.add(str(dp_id))
+                # Only mark permit as "pending" if it has an unapproved revalidation in progress
+                if not is_final and 'APPROVED' not in status_str:
+                    dp_id = item.get('distributor_permit') or item.get('distributor_permit_id')
+                    if isinstance(dp_id, dict):
+                        ref = dp_id.get('reference_no') or dp_id.get('referenceNo')
+                        if ref:
+                            pending_permit_refs.add(str(ref))
+                        dp_pk = dp_id.get('id')
+                        if dp_pk:
+                            pending_permit_refs.add(str(dp_pk))
+                    elif dp_id:
+                        pending_permit_refs.add(str(dp_id))
 
-                dp_ref = item.get('distributor_permit_ref_no') or item.get('distributor_permit_ref')
-                if dp_ref:
-                    pending_permit_refs.add(str(dp_ref))
+                    dp_ref = item.get('distributor_permit_ref_no') or item.get('distributor_permit_ref')
+                    if dp_ref:
+                        pending_permit_refs.add(str(dp_ref))
 
-        for ref_no, sched in latest_schedules_by_ref.items():
-            # Check if the latest schedule entry is actually PROCESSED and has activated_at set
-            if sched.status != IMFLRevalidationActivationSchedule.STATUS_PROCESSED or not sched.activated_at:
-                continue
+            for ref_no, sched in latest_schedules_by_ref.items():
+                # Check if the latest schedule entry is actually PROCESSED and has activated_at set
+                if sched.status != IMFLRevalidationActivationSchedule.STATUS_PROCESSED or not sched.activated_at:
+                    continue
 
-            dp_pk = str(sched.distributor_permit_id) if sched.distributor_permit_id else None
+                dp_pk = str(sched.distributor_permit_id) if sched.distributor_permit_id else None
 
-            # Skip if there is an active unapproved revalidation application currently in progress
-            if ref_no in pending_permit_refs or (dp_pk and dp_pk in pending_permit_refs):
-                continue
+                # Skip if there is an active unapproved revalidation application currently in progress
+                if ref_no in pending_permit_refs or (dp_pk and dp_pk in pending_permit_refs):
+                    continue
 
-            dp = sched.distributor_permit
-            supplier_name = getattr(dp, 'supplier_company_name', 'N/A') if dp else 'N/A'
-            applicant_name = getattr(getattr(dp, 'applicant', None), 'full_name', str(getattr(dp, 'applicant', ''))) if dp else str(request.user)
-            dp_pdetails = getattr(dp, 'permit_wise_details', []) if dp else []
-            data.append({
-                'reference_no': ref_no,
-                'referenceNo': ref_no,
-                'applicationId': ref_no,
-                'distributor_permit': ref_no,
-                'distributor_permit_id': ref_no,
-                'revalidated_permit_number': ref_no,
-                'revalidatedPermitNumber': ref_no,
-                'applicant_name': applicant_name,
-                'applicantName': applicant_name,
-                'supplier_company_name': supplier_name,
-                'supplierName': supplier_name,
-                'status': 'Revalidation Activated',
-                'current_stage': {'name': 'Permit Expired - Ready for Revalidation'},
-                'currentStage': 'Permit Expired - Ready for Revalidation',
-                'is_activated_schedule': True,
-                'can_submit_application': True,
-                'permit_wise_details': dp_pdetails,
-                'permitWiseDetails': dp_pdetails,
-                'created_at': sched.activated_at or sched.updated_at,
-                'submitted_at': sched.activated_at or sched.updated_at,
-            })
+                dp = sched.distributor_permit
+                supplier_name = getattr(dp, 'supplier_company_name', 'N/A') if dp else 'N/A'
+                applicant_name = getattr(getattr(dp, 'applicant', None), 'full_name', str(getattr(dp, 'applicant', ''))) if dp else str(request.user)
+                dp_pdetails = getattr(dp, 'permit_wise_details', []) if dp else []
+                data.append({
+                    'reference_no': ref_no,
+                    'referenceNo': ref_no,
+                    'applicationId': ref_no,
+                    'distributor_permit': ref_no,
+                    'distributor_permit_id': ref_no,
+                    'revalidated_permit_number': ref_no,
+                    'revalidatedPermitNumber': ref_no,
+                    'applicant_name': applicant_name,
+                    'applicantName': applicant_name,
+                    'supplier_company_name': supplier_name,
+                    'supplierName': supplier_name,
+                    'status': 'Revalidation Activated',
+                    'current_stage': {'name': 'Permit Expired - Ready for Revalidation'},
+                    'currentStage': 'Permit Expired - Ready for Revalidation',
+                    'is_activated_schedule': True,
+                    'can_submit_application': True,
+                    'permit_wise_details': dp_pdetails,
+                    'permitWiseDetails': dp_pdetails,
+                    'created_at': sched.activated_at or sched.updated_at,
+                    'submitted_at': sched.activated_at or sched.updated_at,
+                })
 
         if page is not None:
             return self.get_paginated_response(data)
@@ -816,6 +1093,57 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
         )
         invalidate_dashboard_counts_cache()
 
+        # Debit Rs.1000 revalidation fee per permit from Excise wallet
+        try:
+            from decimal import Decimal
+            permit_numbers_in_details = list({
+                str(p.get('permit_number', '')).strip()
+                for p in p_details
+                if isinstance(p, dict) and p.get('permit_number')
+            }) if p_details else []
+            num_permits = len(permit_numbers_in_details) or 1
+            revalidation_fee = Decimal('1000.00') * num_permits
+
+            user_obj = self.request.user
+            dist_applicant = getattr(distributor_permit, 'applicant', None) or user_obj
+            username = str(getattr(user_obj, 'username', '') or getattr(dist_applicant, 'username', '') or '').strip()
+
+            raw_licensee_id = str(
+                getattr(distributor_permit, 'licensee_id', None) or
+                getattr(dist_applicant, 'licensee_id', None) or
+                getattr(dist_applicant, 'username', None) or
+                username
+            ).strip()
+
+            from django.db.models import Q
+            from models.transactional.wallet.models import WalletBalance
+            wb = WalletBalance.objects.filter(
+                Q(licensee_id__iexact=raw_licensee_id) |
+                Q(user_id__iexact=raw_licensee_id) |
+                Q(user_id__iexact=username)
+            ).first()
+
+            licensee_id = str(wb.licensee_id).strip() if (wb and wb.licensee_id) else raw_licensee_id
+            from models.transactional.wallet.wallet_service import debit_wallet_balance
+
+            debit_wallet_balance(
+                transaction_id=f'PAY-EXCISE-REVAL-FEE-{ref_no}',
+                licensee_id=licensee_id,
+                wallet_type='excise',
+                head_of_account='0039-00-105-45-01',
+                amount=revalidation_fee,
+                user_id=username,
+                source_module='imfl_permit_revalidation_fee',
+                reference_no=ref_no,
+                remarks=f'IMFL Permit Revalidation Fee (Rs. {revalidation_fee} for {num_permits} permit(s)) for Ref #{ref_no}'
+            )
+        except Exception as err:
+            logging.getLogger(__name__).error(
+                "IMFL revalidation wallet fee FAILED for %s: %s\n%s",
+                ref_no, err, traceback.format_exc()
+            )
+
+
     @action(detail=True, methods=['post'], url_path='perform_action')
     def perform_action(self, request, reference_no=None):
         return DistributorPermitPerformActionView().post(request, reference_no=reference_no)
@@ -858,7 +1186,7 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
             else:
                 p_details = app_pdetails
 
-        serializer.save(
+        cancellation_obj = serializer.save(
             reference_no=ref_no,
             applicant=self.request.user,
             cancelled_permit_number=target_permit_no,
@@ -868,6 +1196,151 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
             current_stage=initial_stage,
             status=status_name
         )
+
+        try:
+            total_import_fee = Decimal('0.00')
+            total_add_ed = Decimal('0.00')
+            total_edu_cess = Decimal('0.00')
+
+            line_items = []
+            if distributor_permit:
+                app_line_items = list(getattr(distributor_permit, 'line_items', []).all() if hasattr(distributor_permit, 'line_items') else [])
+                if target_permit_no and app_line_items:
+                    matched = [item for item in app_line_items if str(getattr(item, 'permit_number', '')).lower() == str(target_permit_no).lower()]
+                    if matched:
+                        line_items = matched
+
+            if p_details:
+                for p in p_details:
+                    if isinstance(p, dict):
+                        p_cases = Decimal(str(p.get('total_cases', 0) or p.get('cases', 0) or 0))
+                        p_import = Decimal(str(p.get('total_import_fee', 0) or p.get('total_import', 0) or 0))
+                        p_add_ed = Decimal(str(p.get('total_additional_ed', 0) or 0))
+                        p_cess = Decimal(str(p.get('total_education_cess', 0) or 0))
+
+                        items = p.get('line_items') or p.get('items') or []
+                        if items:
+                            for item in items:
+                                if isinstance(item, dict):
+                                    cases = Decimal(str(item.get('cases', 0) or p_cases or 0))
+                                    imp_fee = Decimal(str(item.get('total_import') or item.get('totalImport') or (Decimal(str(item.get('import_pass_fee_per_case', 1400) or 1400)) * cases)))
+                                    add_ed = Decimal(str(item.get('total_additional_ed') or item.get('totalAddEd') or (Decimal(str(item.get('additional_ed_per_case', 350) or 350)) * cases)))
+                                    cess = Decimal(str(item.get('total_education_cess') or item.get('cess') or (Decimal(str(item.get('education_cess_per_case', 60) or 60)) * cases)))
+
+                                    total_import_fee += imp_fee
+                                    total_add_ed += add_ed
+                                    total_edu_cess += cess
+                        else:
+                            total_import_fee += p_import if p_import > 0 else (Decimal('1400.00') * p_cases)
+                            total_add_ed += p_add_ed
+                            total_edu_cess += p_cess if p_cess > 0 else (Decimal('60.00') * p_cases)
+
+            if total_import_fee == 0 and line_items:
+                for item in line_items:
+                    imp_rate = Decimal(str(getattr(item, 'import_pass_fee_per_case', 1400) or 1400))
+                    add_rate = Decimal(str(getattr(item, 'additional_ed_per_case', 350) or 350))
+                    cess_rate = Decimal(str(getattr(item, 'education_cess_per_case', 60) or 60))
+                    cases = Decimal('1.00')
+                    total_import_fee += (imp_rate * cases)
+                    total_add_ed += (add_rate * cases)
+                    total_edu_cess += (cess_rate * cases)
+
+            # Cancellation fee = Rs.1000 per permit being cancelled
+            permit_numbers_in_details = list({
+                str(p.get('permit_number', '')).strip()
+                for p in p_details
+                if isinstance(p, dict) and p.get('permit_number')
+            }) if p_details else []
+            num_permits = len(permit_numbers_in_details) or 1
+            cancellation_fee = Decimal('1000.00') * num_permits
+
+            user_obj = self.request.user
+            dist_applicant = getattr(distributor_permit, 'applicant', None) or user_obj
+            username = str(getattr(user_obj, 'username', '') or getattr(dist_applicant, 'username', '') or '').strip()
+
+            raw_licensee_id = str(
+                getattr(distributor_permit, 'licensee_id', None) or
+                getattr(dist_applicant, 'licensee_id', None) or
+                getattr(dist_applicant, 'username', None) or
+                username
+            ).strip()
+
+            from django.db.models import Q
+            from models.transactional.wallet.models import WalletBalance
+            wb = WalletBalance.objects.filter(
+                Q(licensee_id__iexact=raw_licensee_id) |
+                Q(user_id__iexact=raw_licensee_id) |
+                Q(user_id__iexact=username)
+            ).first()
+
+            licensee_id = str(wb.licensee_id).strip() if (wb and wb.licensee_id) else raw_licensee_id
+            from models.transactional.wallet.wallet_service import debit_wallet_balance, credit_wallet_balance
+
+            # 1. Debit Cancellation Processing Fee (Rs.1000 per permit) from Excise wallet
+            debit_wallet_balance(
+                transaction_id=f"PAY-EXCISE-CAN-FEE-{ref_no}",
+                licensee_id=licensee_id,
+                wallet_type="excise",
+                head_of_account="0039-00-105-45-01",
+                amount=cancellation_fee,
+                user_id=username,
+                source_module="imfl_permit_cancellation_fee",
+                reference_no=ref_no,
+                remarks=f"IMFL Cancellation Processing Fee (Rs. {cancellation_fee} for {num_permits} permit(s)) for Ref #{ref_no}"
+            )
+
+            # 2. Credit Excise Duty Refund (Import Pass Fee) — Excise wallet
+            if total_import_fee > 0:
+                credit_wallet_balance(
+                    transaction_id=f"PAY-EXCISE-ED-REFUND-{ref_no}",
+                    licensee_id=licensee_id,
+                    wallet_type="excise",
+                    head_of_account="0039-00-105-45-01",
+                    amount=total_import_fee,
+                    user_id=username,
+                    source_module="imfl_permit_cancellation_excise",
+                    transaction_type="refund",
+                    reference_no=ref_no,
+                    remarks=f"IMFL Cancellation Excise Duty Refund (Import Pass Fee Rs. {total_import_fee}) for Ref #{ref_no}"
+                )
+
+            # 3. Credit Additional Excise Duty Refund — stored as additional_excise (uses excise wallet balance row)
+            if total_add_ed > 0:
+                credit_wallet_balance(
+                    transaction_id=f"PAY-EXCISE-ADD-REFUND-{ref_no}",
+                    licensee_id=licensee_id,
+                    wallet_type="additional_excise",
+                    head_of_account="0039-00-105-45-01",
+                    amount=total_add_ed,
+                    user_id=username,
+                    source_module="imfl_permit_cancellation_additional_ed",
+                    transaction_type="refund",
+                    reference_no=ref_no,
+                    remarks=f"IMFL Cancellation Additional Excise Duty Refund (Add. ED Rs. {total_add_ed}) for Ref #{ref_no}"
+                )
+
+            # 4. Credit Education Cess Refund — Education Cess wallet
+            if total_edu_cess > 0:
+                credit_wallet_balance(
+                    transaction_id=f"PAY-CESS-REFUND-{ref_no}",
+                    licensee_id=licensee_id,
+                    wallet_type="education_cess",
+                    head_of_account="0045-00-112-45-03",
+                    amount=total_edu_cess,
+                    user_id=username,
+                    source_module="imfl_permit_cancellation_education_cess",
+                    transaction_type="refund",
+                    reference_no=ref_no,
+                    remarks=f"IMFL Cancellation Education Cess Refund (Rs. {total_edu_cess}) for Ref #{ref_no}"
+                )
+        except Exception as err:
+            import logging
+            import traceback
+            logging.getLogger(__name__).error(
+                "IMFL cancellation wallet refund FAILED for %s: %s\n%s",
+                ref_no, err, traceback.format_exc()
+            )
+
 
     @action(detail=True, methods=['post'], url_path='perform_action')
     def perform_action(self, request, reference_no=None):
@@ -973,62 +1446,6 @@ class IMFLArrivalViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='perform-action')
     def perform_action_hyphen(self, request, reference_no=None):
         return DistributorPermitPerformActionView().post(request, reference_no=reference_no)
-
-
-class IMFLCancellationViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
-    serializer_class = IMFLCancellationSerializer
-    lookup_field = 'reference_no'
-    lookup_value_regex = '.+'
-
-    def get_queryset(self):
-        qs = IMFLCancellation.objects.select_related('distributor_permit', 'applicant', 'current_stage').all()
-        return scope_permit_queryset(qs, self.request.user)
-
-    def perform_create(self, serializer):
-        from django.utils import timezone
-        from auth.workflow.models import Workflow, WorkflowStage
-        from auth.workflow.constants import WORKFLOW_IDS
-
-        ref_no = DistributorPermitApplication.generate_reference_no(app_type='cancellation')
-        workflow_id = WORKFLOW_IDS.get('IMFL_CANCELLATION', 17)
-        workflow = Workflow.objects.filter(id=workflow_id).first()
-        initial_stage = WorkflowStage.objects.filter(id=162).first() or (workflow.stages.filter(is_initial=True).first() if workflow else None)
-        status_name = initial_stage.name if initial_stage else 'Forwarded To Commissioner'
-
-        target_permit_no = self.request.data.get('cancelled_permit_number') or self.request.data.get('cancelledPermitNumber') or ''
-        p_details = self.request.data.get('permit_wise_details') or self.request.data.get('permitWiseDetails') or []
-
-        distributor_permit = serializer.validated_data.get('distributor_permit')
-        if distributor_permit and not p_details:
-            app_pdetails = getattr(distributor_permit, 'permit_wise_details', []) or []
-            if target_permit_no:
-                matched = [p for p in app_pdetails if str(p.get('permit_number', '')).lower() == str(target_permit_no).lower()]
-                p_details = matched if matched else app_pdetails
-            else:
-                p_details = app_pdetails
-
-        serializer.save(
-            reference_no=ref_no,
-            applicant=self.request.user,
-            cancelled_permit_number=target_permit_no,
-            permit_wise_details=p_details,
-            submitted_at=timezone.now(),
-            workflow=workflow,
-            current_stage=initial_stage,
-            status=status_name
-        )
-
-    @action(detail=True, methods=['post'], url_path='perform_action')
-    def perform_action(self, request, reference_no=None):
-        handler = DistributorPermitPerformActionView()
-        return handler.post(request, reference_no=reference_no)
-
-    @action(detail=True, methods=['post'], url_path='perform-action')
-    def perform_action_hyphen(self, request, reference_no=None):
-        handler = DistributorPermitPerformActionView()
-        return handler.post(request, reference_no=reference_no)
-
 
 class IMFLArrivalViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
@@ -1173,3 +1590,566 @@ class IMFLCasesProcessedViewSet(viewsets.ModelViewSet):
             instance.officer_remarks = remarks
             instance.save()
             return Response({'message': 'Stock arrival rejected.', 'status': 'rejected'})
+
+
+class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = IMFLBrandWarehouseSerializer
+    queryset = IMFLBrandWarehouse.objects.select_related('distributor_permit', 'officer_in_charge').all()
+
+    def get_queryset(self):
+        qs = IMFLBrandWarehouse.objects.select_related('distributor_permit', 'officer_in_charge').all()
+        permit_ref = self.request.query_params.get('permit_ref') or self.request.query_params.get('distributor_permit')
+        if permit_ref:
+            qs = qs.filter(Q(permit_number__icontains=permit_ref) | Q(distributor_permit__reference_no__icontains=permit_ref))
+        brand = self.request.query_params.get('brand')
+        if brand:
+            qs = qs.filter(brand_name__icontains=brand)
+        return qs.order_by('-arrival_date', '-id')
+
+    @action(detail=False, methods=['post'], url_path='bulk-update')
+    def bulk_update(self, request):
+        data = request.data
+        permit_ref = data.get('distributor_permit') or data.get('distributor_permit_ref') or data.get('reference_no')
+        common_vehicle = str(data.get('vehicle_number') or '').strip()
+        common_arrival_date = data.get('arrival_date') or timezone.now()
+        common_remarks = str(data.get('remarks') or '').strip()
+        items = data.get('items', [])
+
+        permit_app = None
+        if permit_ref:
+            permit_app = DistributorPermitApplication.objects.filter(reference_no=permit_ref).first()
+
+        created_records = []
+        with transaction.atomic():
+            for item in items:
+                b_name = str(item.get('brand_name') or '').strip()
+                if not b_name:
+                    continue
+                p_num = str(item.get('permit_number') or permit_ref or '').strip()
+                p_size = int(item.get('pack_size') or item.get('size_ml') or 750)
+                pieces_case = int(item.get('pieces_per_case') or item.get('bottles_per_case') or 12)
+                exp_cases = int(item.get('expected_cases') or 0)
+                exp_bottles = int(item.get('expected_bottles') or (exp_cases * pieces_case))
+                arr_cases = int(item.get('arrived_cases') or 0)
+                arr_bottles = int(item.get('arrived_bottles') or (arr_cases * pieces_case))
+                v_num = str(item.get('vehicle_number') or common_vehicle).strip()
+                b_num = str(item.get('batch_number') or '').strip()
+                b_type = str(item.get('brand_type') or item.get('liquor_type') or 'WHISKY').strip()
+                s_name = str(item.get('supplier_name') or getattr(permit_app, 'supplier_company_name', '') or '').strip()
+                dam_bottles = int(item.get('damaged_bottles') or 0)
+                dam_cases = int(item.get('damaged_cases') or (dam_bottles // pieces_case if pieces_case else 0))
+                good_bottles = max(0, arr_bottles - dam_bottles)
+                good_cases = int(good_bottles // pieces_case if pieces_case else 0)
+                hg_from = str(item.get('hologram_from') or '').strip()
+                hg_to = str(item.get('hologram_to') or '').strip()
+                hg_count = int(item.get('hologram_count') or arr_bottles)
+                dam_hg = str(item.get('damaged_holograms') or '').strip()
+                dam_cases_hg = str(item.get('damaged_cases_holograms') or '').strip()
+                item_remarks = str(item.get('remarks') or common_remarks).strip()
+
+                record = IMFLBrandWarehouse.objects.create(
+                    distributor_permit=permit_app,
+                    permit_number=p_num,
+                    brand_name=b_name,
+                    brand_type=b_type,
+                    supplier_name=s_name,
+                    pack_size=p_size,
+                    pieces_per_case=pieces_case,
+                    expected_cases=exp_cases,
+                    expected_bottles=exp_bottles,
+                    arrived_cases=arr_cases,
+                    arrived_bottles=arr_bottles,
+                    damaged_bottles=dam_bottles,
+                    damaged_cases=dam_cases,
+                    good_bottles=good_bottles,
+                    good_cases=good_cases,
+                    current_stock=good_bottles,
+                    total_utilized=0,
+                    vehicle_number=v_num,
+                    batch_number=b_num,
+                    hologram_from=hg_from,
+                    hologram_to=hg_to,
+                    hologram_count=hg_count,
+                    damaged_holograms=dam_hg,
+                    damaged_cases_holograms=dam_cases_hg,
+                    arrival_date=common_arrival_date,
+                    officer_in_charge=request.user if request.user.is_authenticated else None,
+                    status='IN_STOCK',
+                    remarks=item_remarks
+                )
+                created_records.append(record)
+
+                # Also store corresponding IMFLArrival record
+                IMFLArrival.objects.create(
+                    distributor_permit=permit_app,
+                    permit_number=p_num,
+                    vehicle_number=v_num,
+                    brand_name=b_name,
+                    brand_type=b_type,
+                    supplier_name=s_name,
+                    size_ml=p_size,
+                    pieces_per_case=pieces_case,
+                    expected_cases=exp_cases,
+                    expected_bottles=exp_bottles,
+                    arrived_cases=arr_cases,
+                    arrived_bottles=arr_bottles,
+                    damaged_bottles=dam_bottles,
+                    damaged_cases=dam_cases,
+                    good_bottles=good_bottles,
+                    good_cases=good_cases,
+                    batch_number=b_num,
+                    hologram_from=hg_from,
+                    hologram_to=hg_to,
+                    hologram_count=hg_count,
+                    damaged_holograms=dam_hg,
+                    damaged_cases_holograms=dam_cases_hg,
+                    remarks=item_remarks,
+                    arrived_by=request.user if request.user.is_authenticated else None,
+                    arrived_at=common_arrival_date,
+                    status='Arrival Approved'
+                )
+
+        serializer = IMFLBrandWarehouseSerializer(created_records, many=True)
+        return Response({
+            'message': f'Successfully updated brand arrival for {len(created_records)} item(s) in IMFL Brand Warehouse.',
+            'count': len(created_records),
+            'records': serializer.data
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['get'], url_path='summary')
+    def summary(self, request):
+        records = IMFLBrandWarehouse.objects.all().order_by('-arrival_date')
+        
+        grouped_brands = {}
+        total_brands_set = set()
+        total_units = 0
+        total_cases = 0
+
+        for r in records:
+            b_name = str(r.brand_name or '').strip().strip("'").strip('"')
+            if not b_name or b_name == '-':
+                continue
+            b_key = b_name
+            total_brands_set.add(b_key)
+            total_units += r.current_stock
+            pieces = r.pieces_per_case or 12
+            calc_cases = (r.good_cases if getattr(r, 'good_cases', None) is not None else (r.current_stock // pieces))
+            if calc_cases == 0 and r.current_stock > 0:
+                calc_cases = 1
+            total_cases += calc_cases
+
+            if b_key not in grouped_brands:
+                grouped_brands[b_key] = {
+                    'brand_name': b_name,
+                    'brand_type': str(r.brand_type or 'WHISKY').strip().strip("'").strip('"') or 'WHISKY',
+                    'supplier_name': str(r.supplier_name or 'N/A').strip().strip("'").strip('"') or 'N/A',
+                    'pack_sizes': {},
+                    'total_stock': 0,
+                    'total_utilized': 0,
+                    'total_capacity': getattr(r, 'total_capacity', 0) or 0,
+                    'last_arrival_date': r.arrival_date,
+                    'recent_entries': []
+                }
+
+            pack_key = str(r.pack_size or 750)
+            if pack_key not in grouped_brands[b_key]['pack_sizes']:
+                grouped_brands[b_key]['pack_sizes'][pack_key] = {
+                    'pack_size': r.pack_size or 750,
+                    'current_stock': 0,
+                    'cases': 0,
+                    'pieces_per_case': pieces,
+                    'status': 'IN_STOCK'
+                }
+
+            pack_obj = grouped_brands[b_key]['pack_sizes'][pack_key]
+            pack_obj['current_stock'] += r.current_stock
+            pack_obj['cases'] += calc_cases
+            if pack_obj['current_stock'] <= 0:
+                pack_obj['status'] = 'OUT_OF_STOCK'
+            elif pack_obj['current_stock'] < 50:
+                pack_obj['status'] = 'LOW_STOCK'
+            else:
+                pack_obj['status'] = 'IN_STOCK'
+
+            grouped_brands[b_key]['total_stock'] += r.current_stock
+            grouped_brands[b_key]['total_utilized'] += getattr(r, 'total_utilized', 0) or 0
+            if r.arrival_date and (not grouped_brands[b_key]['last_arrival_date'] or r.arrival_date > grouped_brands[b_key]['last_arrival_date']):
+                grouped_brands[b_key]['last_arrival_date'] = r.arrival_date
+
+            # Store latest hologram & damage details on brand
+            if not grouped_brands[b_key].get('latest_hologram_from') and r.hologram_from:
+                grouped_brands[b_key]['latest_hologram_from'] = r.hologram_from
+                grouped_brands[b_key]['latest_hologram_to'] = r.hologram_to
+                grouped_brands[b_key]['latest_damaged_holograms'] = r.damaged_holograms
+                grouped_brands[b_key]['latest_damaged_cases_holograms'] = r.damaged_cases_holograms
+                grouped_brands[b_key]['latest_vehicle_number'] = r.vehicle_number
+                grouped_brands[b_key]['latest_permit_number'] = str(r.permit_number or '').strip().strip("'").strip('"')
+
+            if len(grouped_brands[b_key]['recent_entries']) < 20:
+                grouped_brands[b_key]['recent_entries'].append({
+                    'id': r.id,
+                    'permit_number': str(r.permit_number or '').strip().strip("'").strip('"'),
+                    'pack_size': r.pack_size or 750,
+                    'expected_cases': r.expected_cases or 0,
+                    'expected_bottles': r.expected_bottles or 0,
+                    'arrived_cases': r.arrived_cases or 0,
+                    'arrived_bottles': r.arrived_bottles or 0,
+                    'damaged_cases': r.damaged_cases or 0,
+                    'damaged_bottles': r.damaged_bottles or 0,
+                    'good_cases': r.good_cases or 0,
+                    'good_bottles': r.good_bottles or r.current_stock or 0,
+                    'hologram_from': r.hologram_from or '',
+                    'hologram_to': r.hologram_to or '',
+                    'hologram_count': r.hologram_count or r.arrived_bottles or 0,
+                    'damaged_holograms': r.damaged_holograms or '',
+                    'damaged_cases_holograms': r.damaged_cases_holograms or '',
+                    'arrival_date': r.arrival_date,
+                    'vehicle_number': r.vehicle_number or 'N/A',
+                    'status': r.status or 'IN_STOCK',
+                    'remarks': r.remarks or ''
+                })
+
+        # Load all retailer dispatches grouped by normalized brand name
+        dispatches = IMFLRetailerStockDetails.objects.all().order_by('-dispatch_date')
+        dispatches_by_brand = {}
+        total_utilized_units_overall = 0
+        total_utilized_cases_overall = 0
+
+        for d in dispatches:
+            d_bkey = str(d.brand_name or '').strip().lower()
+            if d_bkey not in dispatches_by_brand:
+                dispatches_by_brand[d_bkey] = []
+            
+            dispatches_by_brand[d_bkey].append({
+                'id': d.id,
+                'dispatch_reference_no': d.dispatch_reference_no,
+                'retailer_name': d.retailer_name,
+                'retailer_license_no': d.retailer_license_no,
+                'retailer_shop_name': d.retailer_shop_name,
+                'retailer_address': d.retailer_address,
+                'retailer_contact': d.retailer_contact,
+                'pack_size': d.pack_size,
+                'pieces_per_case': d.pieces_per_case,
+                'dispatched_cases': d.dispatched_cases,
+                'dispatched_loose_bottles': d.dispatched_loose_bottles,
+                'dispatched_bottles': d.dispatched_bottles,
+                'hologram_from': d.hologram_from,
+                'hologram_to': d.hologram_to,
+                'hologram_count': d.hologram_count,
+                'batch_number': d.batch_number,
+                'vehicle_number': d.vehicle_number,
+                'driver_name': d.driver_name,
+                'driver_phone': d.driver_phone,
+                'challan_no': d.challan_no,
+                'dispatch_date': d.dispatch_date,
+                'status': d.status,
+                'remarks': d.remarks
+            })
+            total_utilized_units_overall += d.dispatched_bottles
+            total_utilized_cases_overall += d.dispatched_cases
+
+        # Attach dispatches to grouped brands
+        for b_key, b_obj in grouped_brands.items():
+            b_norm = b_key.lower()
+            brand_dispatches = dispatches_by_brand.get(b_norm, [])
+            b_obj['dispatch_history'] = brand_dispatches
+            b_utilized_units = sum(d['dispatched_bottles'] for d in brand_dispatches)
+            b_utilized_cases = sum(d['dispatched_cases'] for d in brand_dispatches)
+            if b_utilized_units > 0:
+                b_obj['total_utilized'] = b_utilized_units
+                b_obj['total_utilized_cases'] = b_utilized_cases
+
+        stock_list = list(grouped_brands.values())
+
+        return Response({
+            'overview': {
+                'total_brands': len(total_brands_set),
+                'total_stock_units': total_units,
+                'total_cases': total_cases,
+                'total_utilized_units': total_utilized_units_overall,
+                'total_utilized_cases': total_utilized_cases_overall,
+            },
+            'brands': stock_list
+        })
+
+
+class IMFLRetailerStockDetailsViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = IMFLRetailerStockDetailsSerializer
+
+    def get_queryset(self):
+        qs = IMFLRetailerStockDetails.objects.all()
+        brand_name = self.request.query_params.get('brand_name') or self.request.query_params.get('brandName')
+        if brand_name:
+            qs = qs.filter(brand_name__iexact=str(brand_name).strip())
+        retailer = self.request.query_params.get('retailer')
+        if retailer:
+            qs = qs.filter(Q(retailer_name__icontains=str(retailer).strip()) | Q(retailer_shop_name__icontains=str(retailer).strip()))
+        return qs
+
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
+        
+        # Generate sequential reference e.g. IMFLDISP/2026-27/0001
+        current_year = timezone.now().year
+        next_year_suffix = str(current_year + 1)[-2:]
+        fin_year = f"{current_year}-{next_year_suffix}"
+        
+        last_item = IMFLRetailerStockDetails.objects.filter(
+            dispatch_reference_no__startswith=f"IMFLDISP/{fin_year}/"
+        ).order_by('-id').first()
+        
+        next_seq = 1
+        if last_item and last_item.dispatch_reference_no:
+            try:
+                parts = last_item.dispatch_reference_no.split('/')
+                if len(parts) >= 3:
+                    next_seq = int(parts[-1]) + 1
+            except Exception:
+                next_seq = IMFLRetailerStockDetails.objects.count() + 1
+        
+        dispatch_ref = f"IMFLDISP/{fin_year}/{str(next_seq).zfill(4)}"
+        
+        brand_name = str(data.get('brand_name') or data.get('brandName') or '').strip()
+        pack_size = int(data.get('pack_size') or data.get('packSize') or 750)
+        pieces_per_case = int(data.get('pieces_per_case') or data.get('piecesPerCase') or 12)
+        dispatched_cases = int(data.get('dispatched_cases') or data.get('dispatchedCases') or 0)
+        dispatched_loose = int(data.get('dispatched_loose_bottles') or data.get('dispatchedLooseBottles') or 0)
+        total_bottles = int(data.get('dispatched_bottles') or data.get('dispatchedBottles') or (dispatched_cases * pieces_per_case + dispatched_loose))
+        
+        if total_bottles <= 0:
+            return Response({'error': 'Dispatched quantity must be greater than 0.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Find warehouse records for this brand and pack size
+        all_wh_records = list(IMFLBrandWarehouse.objects.filter(
+            brand_name__iexact=brand_name,
+            pack_size=pack_size
+        ).order_by('arrival_date', 'id'))
+        
+        wh_records = [r for r in all_wh_records if (r.current_stock or 0) > 0]
+        
+        total_available = sum(r.current_stock for r in wh_records)
+        if total_available < total_bottles:
+            return Response({
+                'error': f"Insufficient stock for {brand_name} ({pack_size}ml). Available: {total_available} units, requested: {total_bottles} units."
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Collect all requested hologram numbers from either 'hologram_ranges' list or 'hologram_from'/'hologram_to'
+        raw_ranges = data.get('hologram_ranges') or data.get('hologramRanges')
+        requested_ranges = []
+        if isinstance(raw_ranges, list) and raw_ranges:
+            for item in raw_ranges:
+                if isinstance(item, dict):
+                    f = str(item.get('from') or item.get('hologram_from') or item.get('hologramFrom') or '').strip()
+                    t = str(item.get('to') or item.get('hologram_to') or item.get('hologramTo') or '').strip()
+                    if f and t:
+                        requested_ranges.append((f, t))
+        
+        if not requested_ranges:
+            hg_from_raw = str(data.get('hologram_from') or data.get('hologramFrom') or '').strip()
+            hg_to_raw = str(data.get('hologram_to') or data.get('hologramTo') or '').strip()
+            if hg_from_raw and hg_to_raw:
+                f_parts = [p.strip() for p in re.split(r'[,]+', hg_from_raw) if p.strip()]
+                t_parts = [p.strip() for p in re.split(r'[,]+', hg_to_raw) if p.strip()]
+                for idx in range(min(len(f_parts), len(t_parts))):
+                    requested_ranges.append((f_parts[idx], t_parts[idx]))
+                if not requested_ranges:
+                    requested_ranges.append((hg_from_raw, hg_to_raw))
+        
+        import re
+        def _extract_digits(val):
+            m = re.search(r'\d+$', str(val).strip())
+            return int(m.group(0)) if m else None
+        
+        def _parse_damaged_nums(raw_str):
+            nums = set()
+            if not raw_str or str(raw_str).strip().lower() in ('none', 'null', 'nan', '-'):
+                return nums
+            for part in re.split(r'[\s,]+', str(raw_str)):
+                part = part.strip()
+                if not part or part.lower() in ('none', 'null'):
+                    continue
+                if '-' in part or '→' in part or 'to' in part:
+                    sub = re.split(r'[-→to]+', part)
+                    if len(sub) == 2:
+                        s_d = _extract_digits(sub[0])
+                        e_d = _extract_digits(sub[1])
+                        if s_d is not None and e_d is not None:
+                            for i in range(min(s_d, e_d), max(s_d, e_d) + 1):
+                                nums.add(i)
+                            continue
+                d = _extract_digits(part)
+                if d is not None:
+                    nums.add(d)
+            return nums
+
+        if requested_ranges:
+            # 1. Collect all damaged holograms and valid arrived ranges recorded in warehouse
+            damaged_nums = set()
+            valid_arrived_ranges = []
+            for r in all_wh_records:
+                r_from = _extract_digits(r.hologram_from)
+                r_to = _extract_digits(r.hologram_to)
+                if r_from is not None and r_to is not None and r_to >= r_from:
+                    valid_arrived_ranges.append((r_from, r_to, str(r.hologram_from), str(r.hologram_to)))
+                damaged_nums.update(_parse_damaged_nums(r.damaged_holograms))
+                damaged_nums.update(_parse_damaged_nums(r.damaged_cases_holograms))
+
+            # 2. Collect previously dispatched hologram numbers
+            dispatched_nums = set()
+            for disp in IMFLRetailerStockDetails.objects.filter(brand_name__iexact=brand_name, pack_size=pack_size):
+                disp_from = _extract_digits(disp.hologram_from)
+                disp_to = _extract_digits(disp.hologram_to)
+                if disp_from is not None and disp_to is not None and disp_to >= disp_from:
+                    for num in range(disp_from, disp_to + 1):
+                        dispatched_nums.add(num)
+
+            for (rg_f, rg_t) in requested_ranges:
+                start_hg_num = _extract_digits(rg_f)
+                end_hg_num = _extract_digits(rg_t)
+                if start_hg_num is not None and end_hg_num is not None and end_hg_num >= start_hg_num:
+                    fits_in_arrived = False
+                    for (af, at, af_str, at_str) in valid_arrived_ranges:
+                        if start_hg_num >= af and end_hg_num <= at:
+                            fits_in_arrived = True
+                            break
+                    if valid_arrived_ranges and not fits_in_arrived:
+                        valid_str = ", ".join(f"{af_str} to {at_str}" for (_, _, af_str, at_str) in valid_arrived_ranges)
+                        return Response({
+                            'error': f"Hologram range ({rg_f} to {rg_t}) is outside the arrived warehouse stock range ({valid_str}) for {brand_name} ({pack_size}ml)."
+                        }, status=status.HTTP_400_BAD_REQUEST)
+                    
+                    damaged_conflict = [i for i in range(start_hg_num, end_hg_num + 1) if i in damaged_nums]
+                    if damaged_conflict:
+                        return Response({
+                            'error': f"Hologram(s) {', '.join(map(str, damaged_conflict))} are recorded as DAMAGED for this brand and cannot be dispatched to a retailer."
+                        }, status=status.HTTP_400_BAD_REQUEST)
+                    
+                    disp_conflict = [i for i in range(start_hg_num, end_hg_num + 1) if i in dispatched_nums]
+                    if disp_conflict:
+                        return Response({
+                            'error': f"Hologram(s) {', '.join(map(str, disp_conflict))} have already been dispatched to a retailer."
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+            # Store consolidated strings
+            data['hologram_from'] = ", ".join(r[0] for r in requested_ranges)
+            data['hologram_to'] = ", ".join(r[1] for r in requested_ranges)
+        
+        # Deduct stock sequentially from warehouse records (FIFO)
+        remaining_to_deduct = total_bottles
+        primary_wh_record = wh_records[0] if wh_records else None
+        
+        for r in wh_records:
+            if remaining_to_deduct <= 0:
+                break
+            deduct = min(r.current_stock, remaining_to_deduct)
+            r.current_stock = max(0, r.current_stock - deduct)
+            r.total_utilized = (r.total_utilized or 0) + deduct
+            r.save(update_fields=['current_stock', 'total_utilized', 'updated_at'])
+            remaining_to_deduct -= deduct
+        
+        # Determine distributor and OIC user
+        distributor_user = None
+        oic_user = None
+        if request.user.is_authenticated:
+            if _is_distributor_user(request.user):
+                distributor_user = request.user
+            else:
+                oic_user = request.user
+                try:
+                    from auth.user.models import OICOfficerAssignment
+                    assignment = OICOfficerAssignment.objects.filter(officer=request.user, assignment_type='distributor').first()
+                    if assignment:
+                        distributor_user = assignment.distributor_user
+                except Exception:
+                    pass
+        
+        retailer_name = str(data.get('retailer_name') or data.get('retailerName') or '').strip()
+        retailer_lic = str(data.get('retailer_license_no') or data.get('retailerLicenseNo') or '').strip()
+        retailer_shop = str(data.get('retailer_shop_name') or data.get('retailerShopName') or '').strip()
+        retailer_addr = str(data.get('retailer_address') or data.get('retailerAddress') or '').strip()
+        retailer_cont = str(data.get('retailer_contact') or data.get('retailerContact') or '').strip()
+        brand_type = str(data.get('brand_type') or data.get('brandType') or (primary_wh_record.brand_type if primary_wh_record else 'WHISKY')).strip()
+        supplier_name = str(data.get('supplier_name') or data.get('supplierName') or (primary_wh_record.supplier_name if primary_wh_record else '')).strip()
+        
+        dispatch_record = IMFLRetailerStockDetails.objects.create(
+            dispatch_reference_no=dispatch_ref,
+            distributor_user=distributor_user,
+            officer_in_charge=oic_user or (request.user if request.user.is_authenticated else None),
+            warehouse_record=primary_wh_record,
+            retailer_name=retailer_name,
+            retailer_license_no=retailer_lic,
+            retailer_shop_name=retailer_shop,
+            retailer_address=retailer_addr,
+            retailer_contact=retailer_cont,
+            brand_name=brand_name,
+            brand_type=brand_type,
+            supplier_name=supplier_name,
+            pack_size=pack_size,
+            pieces_per_case=pieces_per_case,
+            dispatched_cases=dispatched_cases,
+            dispatched_loose_bottles=dispatched_loose,
+            dispatched_bottles=total_bottles,
+            hologram_from=str(data.get('hologram_from') or data.get('hologramFrom') or '').strip(),
+            hologram_to=str(data.get('hologram_to') or data.get('hologramTo') or '').strip(),
+            hologram_count=int(data.get('hologram_count') or data.get('hologramCount') or total_bottles),
+            batch_number=str(data.get('batch_number') or data.get('batchNumber') or '').strip(),
+            vehicle_number=str(data.get('vehicle_number') or data.get('vehicleNumber') or '').strip(),
+            driver_name=str(data.get('driver_name') or data.get('driverName') or '').strip(),
+            driver_phone=str(data.get('driver_phone') or data.get('driverPhone') or '').strip(),
+            challan_no=str(data.get('challan_no') or data.get('challanNo') or '').strip(),
+            dispatch_date=data.get('dispatch_date') or data.get('dispatchDate') or timezone.now(),
+            status='DISPATCHED',
+            remarks=str(data.get('remarks') or '').strip()
+        )
+        
+        serializer = self.get_serializer(dispatch_record)
+        return Response({
+            'message': f"Stock dispatch {dispatch_ref} to retailer '{retailer_name}' created successfully.",
+            'dispatch': serializer.data
+        }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def distributor_permit_wallet_balances(request):
+    from django.db.models import Q
+    from models.transactional.wallet.models import WalletBalance
+    from models.masters.license.models import License
+    from models.transactional.wallet.wallet_initializer import initialize_wallet_balances_for_license
+
+    user = request.user
+    user_id = str(getattr(user, 'username', '') or '').strip()
+
+    # Expand candidate license IDs for this user
+    candidates = [user_id]
+    user_licenses = list(License.objects.filter(applicant=user, is_active=True))
+    for lic in user_licenses:
+        if lic.license_id:
+            candidates.append(str(lic.license_id).strip())
+            # Initialize wallets for user's license if missing
+            try:
+                initialize_wallet_balances_for_license(lic)
+            except Exception:
+                pass
+
+    wallet_filter = Q(user_id__iexact=user_id) | Q(licensee_id__in=candidates)
+    if hasattr(WalletBalance, 'applicant'):
+        wallet_filter |= Q(applicant=user)
+
+    excise_wb = WalletBalance.objects.filter(
+        wallet_filter,
+        wallet_type__code__iexact='excise'
+    ).order_by('-current_balance', 'wallet_balance_id').first()
+
+    cess_wb = WalletBalance.objects.filter(
+        wallet_filter,
+        wallet_type__code__iexact='education_cess'
+    ).order_by('-current_balance', 'wallet_balance_id').first()
+
+    return Response({
+        'excise_balance': float(excise_wb.current_balance) if excise_wb else 0.0,
+        'education_cess_balance': float(cess_wb.current_balance) if cess_wb else 0.0,
+    })

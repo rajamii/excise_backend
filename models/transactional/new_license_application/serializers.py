@@ -426,3 +426,13 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         except Exception:
             pass
         return None
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        cat = getattr(instance, 'license_category', None)
+        if cat:
+            rep['isSpecialPermitAllowed'] = getattr(cat, 'is_special_permit_allowed', False)
+            rep['is_special_permit_allowed'] = getattr(cat, 'is_special_permit_allowed', False)
+            rep['isDistributorUser'] = getattr(cat, 'is_distributor_user', False)
+            rep['is_distributor_user'] = getattr(cat, 'is_distributor_user', False)
+        return rep

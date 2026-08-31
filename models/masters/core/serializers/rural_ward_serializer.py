@@ -4,8 +4,12 @@ from models.masters.core.models import RuralWard, Block
 
 class RuralWardSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
+    gpu_name = serializers.CharField(
+        source='block.gpu_name',
+        read_only=True
+    )
     block_name = serializers.CharField(
-        source='block.block_name',
+        source='block.gpu_name',
         read_only=True
     )
     created_by_username = serializers.CharField(
@@ -20,6 +24,7 @@ class RuralWardSerializer(serializers.ModelSerializer):
             'ward_name',
             'ward_number',
             'block',
+            'gpu_name',
             'block_name',
             'population',
             'area_sq_km',

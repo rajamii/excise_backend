@@ -11,6 +11,8 @@ class LicenseSerializer(serializers.ModelSerializer):
     license_sub_category_name = serializers.CharField(source='license_sub_category.description', read_only=True)
     excise_district_name = serializers.CharField(source='excise_district.district', read_only=True)
     source_type_display = serializers.CharField(source='get_source_type_display', read_only=True)
+    is_special_permit_allowed = serializers.BooleanField(source='license_category.is_special_permit_allowed', read_only=True)
+    is_distributor_user = serializers.BooleanField(source='license_category.is_distributor_user', read_only=True)
 
     class Meta:
         model = License
@@ -29,7 +31,19 @@ class LicenseSerializer(serializers.ModelSerializer):
             'is_active',
             'print_count',
             'is_print_fee_paid',
+            'is_special_permit_allowed',
+            'is_distributor_user',
         ]
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        cat = getattr(instance, 'license_category', None)
+        if cat:
+            rep['isSpecialPermitAllowed'] = getattr(cat, 'is_special_permit_allowed', False)
+            rep['is_special_permit_allowed'] = getattr(cat, 'is_special_permit_allowed', False)
+            rep['isDistributorUser'] = getattr(cat, 'is_distributor_user', False)
+            rep['is_distributor_user'] = getattr(cat, 'is_distributor_user', False)
+        return rep
 
 
 class LicenseDetailSerializer(serializers.ModelSerializer):

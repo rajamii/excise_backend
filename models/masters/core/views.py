@@ -1428,7 +1428,7 @@ def block_delete(request, pk):
     block.is_active = False
     block.save()
     return Response(
-        {'message': f'Block "{block.block_name}" deactivated successfully.'},
+        {'message': f'GPU "{block.gpu_name}" deactivated successfully.'},
         status=status.HTTP_200_OK
     )
 

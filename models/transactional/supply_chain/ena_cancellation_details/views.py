@@ -649,12 +649,6 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
 
-        # Server-side self-heal for licensee view:
-        # when a cancellation exists but wallet debit row is missing, create it idempotently.
-        if self._is_licensee_user(request.user):
-            for cancellation in queryset:
-                self._try_auto_sync_wallet_debit(cancellation, request.user)
-
         cached_data = get_cached_api_response(request, "supply_chain_ena_cancellations")
         if cached_data is not None:
             return _mark_cache_response(Response(cached_data), "HIT")

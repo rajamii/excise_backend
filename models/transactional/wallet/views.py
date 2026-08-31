@@ -285,15 +285,22 @@ def wallet_history_list(request, licensee_id):
 
     scope = str(request.query_params.get("scope") or "").strip().lower()
     if scope == "license":
-        qs = qs.filter(wallet_type__in=["license_fee", "security_deposit"])
+        qs = qs.filter(wallet_type__code__in=["license_fee", "security_deposit"])
     elif scope == "wallets":
-        qs = qs.exclude(wallet_type__in=["license_fee", "security_deposit"])
-    elif scope in {"excise", "education_cess", "hologram"}:
-        qs = qs.filter(wallet_type__iexact=scope)
+        qs = qs.exclude(wallet_type__code__in=["license_fee", "security_deposit"])
+    elif scope in {"excise", "education_cess", "hologram", "additional_excise"}:
+        matching_codes = [scope]
+        if scope == "excise":
+            matching_codes = ["excise", "additional_excise", "additional_ed"]
+        qs = qs.filter(wallet_type__code__in=matching_codes)
 
     wallet_type = request.query_params.get("wallet_type")
     if wallet_type:
-        qs = qs.filter(wallet_type__iexact=wallet_type)
+        wallet_type = _normalize_wallet_type(wallet_type)
+        matching_codes = [wallet_type]
+        if wallet_type == "excise":
+            matching_codes = ["excise", "additional_excise", "additional_ed"]
+        qs = qs.filter(wallet_type__code__in=matching_codes)
 
     head_of_account = request.query_params.get("head_of_account")
     if head_of_account:

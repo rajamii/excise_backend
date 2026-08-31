@@ -65,8 +65,11 @@ def _get_stage_sets(workflow_id: int):
         key=lambda name: _extract_level_index(name) or 0
     )
     level_indexes = {name: _extract_level_index(name) for name in level_stage_names}
-    objection_stage_names = {name for name in stage_names if 'objection' in str(name).lower()}
-    rejected_stage_names = {name for name in stage_names if 'rejected' in str(name).lower()}
+    objection_stage_names = {
+        name for name in stage_names
+        if 'objection' in str(name).lower() and 'reject' not in str(name).lower() and not stages.filter(name=name, is_final=True).exists()
+    }
+    rejected_stage_names = {name for name in stage_names if 'rejected' in str(name).lower() or 'reject' in str(name).lower()}
     approved_stage_names = {
         stage.name for stage in stages
         if stage.is_final and 'rejected' not in stage.name.lower()
@@ -909,7 +912,7 @@ def dashboard_counts(request):
             "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
         })
 
-    if role in ['site_admin', 'single_window', 'secretary']:
+    if role in ['site_admin', 'site_administrator', 'single_window', 'secretary', 'super_admin']:
         applied_stages = set(stage_sets['initial'])
         payment_stages = set(stage_sets.get('payment', []))
         pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages - payment_stages
@@ -928,10 +931,12 @@ def dashboard_counts(request):
         ).count()
 
         return Response({
-            "applied": all_qs.filter(current_stage__name__in=applied_stages).count(),
+            "applied": all_qs.count(),
             "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
             "approved": approved_count,
             "rejected": all_qs.filter(current_stage__name__in=stage_sets['rejected']).count(),
+            "objection": all_qs.filter(current_stage__name__in=stage_sets.get('objection', [])).count(),
+            "awaiting_payment": all_qs.filter(current_stage__name__in=payment_stages).count(),
         })
 
     role_stage_names = _get_role_stage_names(request.user, workflow_id)
@@ -1024,7 +1029,7 @@ def application_group(request):
         }
         return Response(result)
 
-    if role in ['site_admin']:
+    if role in ['site_admin', 'site_administrator', 'secretary', 'super_admin']:
         applied_stages = set(stage_sets['initial'])
         pending_stages = _get_in_progress_stage_names(stage_sets) - applied_stages
         return Response({
