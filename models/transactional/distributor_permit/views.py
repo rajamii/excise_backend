@@ -272,16 +272,34 @@ def dashboard_counts(request):
     arrived_permit_ids = set(IMFLBrandWarehouse.objects.values_list('distributor_permit_id', flat=True)) | set(IMFLArrival.objects.values_list('distributor_permit_id', flat=True))
     arrived_permit_nos = set(IMFLBrandWarehouse.objects.values_list('permit_number', flat=True)) | set(IMFLArrival.objects.values_list('permit_number', flat=True))
 
+    def _is_item_approved(item):
+        text = _stage_text(item)
+        if any(token in text for token in ('approved', 'completed', 'arrival approved', 'stock arrival approved')):
+            return True
+        ref_no = getattr(item, 'reference_no', '')
+        item_id = getattr(item, 'id', None)
+        p_no = getattr(item, 'permit_number', '') or ref_no
+        if item_id in arrived_permit_ids or ref_no in arrived_permit_ids or ref_no in arrived_permit_nos or p_no in arrived_permit_nos:
+            return True
+        return False
+
+    def _is_item_final(item):
+        text = _stage_text(item)
+        if any(token in text for token in ('rejected', 'cancelled', 'canceled')):
+            return True
+        return _is_item_approved(item)
+
     if tab == 'brand-arrival':
-        applied = len(items)
-        approved = sum(1 for item in items if getattr(item, 'reference_no', '') in arrived_permit_ids or getattr(item, 'reference_no', '') in arrived_permit_nos or 'arrival approved' in _stage_text(item) or 'completed' in _stage_text(item) or 'approved' in _stage_text(item))
+        unapproved = [item for item in items if not _is_item_approved(item) and 'rejected' not in _stage_text(item)]
+        applied = len(unapproved)
+        pending = applied
         rejected = sum(1 for item in items if 'rejected' in _stage_text(item))
-        pending = applied - approved - rejected
+        approved = 0
 
         return Response({
             'tab': tab,
             'applied': applied,
-            'pending': max(0, pending),
+            'pending': pending,
             'approved': approved,
             'objection': 0,
             'rejected': rejected,
@@ -289,7 +307,7 @@ def dashboard_counts(request):
             'under_process': 0
         })
 
-    approved = sum(1 for item in items if _is_final_imfl_item(item) and 'approved' in _stage_text(item))
+    approved = sum(1 for item in items if _is_item_approved(item))
     rejected = sum(1 for item in items if 'rejected' in _stage_text(item))
     objection = sum(1 for item in items if _is_objection_imfl_item(item))
     awaiting_payment = sum(1 for item in items if _is_awaiting_payment_imfl_item(item))
@@ -297,7 +315,7 @@ def dashboard_counts(request):
     pending = 0
     under_process = 0
     for item in items:
-        if _is_final_imfl_item(item) or _is_objection_imfl_item(item):
+        if _is_item_final(item) or _is_objection_imfl_item(item):
             continue
         if _is_item_pending_for_user(item, request.user):
             pending += 1
