@@ -643,6 +643,7 @@ def dashboard_counts(request):
 @api_view(['GET'])
 @permission_classes([HasCompanyCollaborationViewPermission, HasStagePermission])
 @parser_classes([JSONParser])
+@dashboard_counts_cache("company_collaboration:list")
 def application_group(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
     base_qs = CompanyCollaboration.objects

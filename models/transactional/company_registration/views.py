@@ -249,6 +249,7 @@ def dashboard_counts(request):
 @api_view(['GET'])
 # @permission_classes([HasAppPermission('company_registration', 'view')])
 @parser_classes([JSONParser])
+@dashboard_counts_cache("company_registration:list")
 def application_group(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['COMPANY_REGISTRATION']

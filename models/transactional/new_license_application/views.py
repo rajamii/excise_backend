@@ -1670,6 +1670,7 @@ def dashboard_counts(request):
 @permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
 @parser_classes([JSONParser])
+@dashboard_counts_cache("new_license_application:list")
 def application_group(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['LICENSE_APPROVAL']

@@ -12,9 +12,20 @@ logger = logging.getLogger(__name__)
 DASHBOARD_COUNTS_CACHE_PREFIX = "dashboard_counts"
 DEFAULT_DASHBOARD_COUNTS_CACHE_TIMEOUT = 600
 DEFAULT_DASHBOARD_CACHE_FAILURE_COOLDOWN = 60
-IGNORED_CACHE_QUERY_PARAMS = {"cb", "_", "_t", "cache_buster", "cachebuster"}
-BYPASS_CACHE_QUERY_PARAMS = {"cb", "_", "cache_buster", "cachebuster"}
+IGNORED_CACHE_QUERY_PARAMS = {
+    "cb",
+    "_",
+    "_t",
+    "cache_buster",
+    "cachebuster",
+    "nocache",
+    "refresh",
+    "force_refresh",
+    "bypass_cache",
+}
+BYPASS_CACHE_QUERY_PARAMS = {"nocache", "refresh", "force_refresh", "bypass_cache"}
 _cache_disabled_until = 0.0
+_memory_fallback_cache: dict[str, tuple[any, float]] = {}
 
 
 def _dashboard_cache_available() -> bool:
@@ -31,17 +42,31 @@ def _mark_dashboard_cache_unavailable() -> None:
     _cache_disabled_until = time.monotonic() + max(1, int(cooldown))
 
 
+def _clean_expired_memory_fallback() -> None:
+    now = time.time()
+    expired = [k for k, (_, exp) in _memory_fallback_cache.items() if exp < now]
+    for k in expired:
+        _memory_fallback_cache.pop(k, None)
+
+
 def _request_cache_key(request, namespace: str) -> str:
     user = getattr(request, "user", None)
     role = getattr(user, "role", None)
-    query_params = getattr(request, "query_params", None)
+    query_params = getattr(request, "query_params", request.GET if hasattr(request, "GET") else None)
     query_items = []
     if query_params is not None:
+        if hasattr(query_params, "lists"):
+            raw_items = query_params.lists()
+        elif hasattr(query_params, "items"):
+            raw_items = [(k, [v] if not isinstance(v, list) else v) for k, v in query_params.items()]
+        else:
+            raw_items = []
+
         query_items = sorted(
             (key, value)
-            for key, values in query_params.lists()
+            for key, values in raw_items
             if str(key).lower() not in IGNORED_CACHE_QUERY_PARAMS
-            for value in values
+            for value in (values if isinstance(values, list) else [values])
         )
 
     query_string = urlencode(query_items, doseq=True)
@@ -57,18 +82,33 @@ def _request_cache_key(request, namespace: str) -> str:
 
 
 def get_cached_api_response(request, namespace: str):
-    cache_key = _request_cache_key(request, namespace)
-    query_params = getattr(request, 'query_params', request.GET if hasattr(request, 'GET') else {})
+    query_params = getattr(request, "query_params", request.GET if hasattr(request, "GET") else {})
     has_cache_buster = any(k in query_params for k in BYPASS_CACHE_QUERY_PARAMS)
-    if not _dashboard_cache_available() or has_cache_buster:
+    if has_cache_buster:
         return None
 
-    try:
-        return cache.get(cache_key)
-    except Exception as exc:
-        _mark_dashboard_cache_unavailable()
-        logger.info("API response cache unavailable; using database fallback: %s", exc)
-        return None
+    cache_key = _request_cache_key(request, namespace)
+
+    # 1. Try Redis cache if available
+    if _dashboard_cache_available():
+        try:
+            val = cache.get(cache_key)
+            if val is not None:
+                return val
+        except Exception as exc:
+            _mark_dashboard_cache_unavailable()
+            logger.info("Redis cache unavailable; falling back to memory/DB: %s", exc)
+
+    # 2. Check in-memory fallback cache
+    _clean_expired_memory_fallback()
+    cached_entry = _memory_fallback_cache.get(cache_key)
+    if cached_entry:
+        data, exp = cached_entry
+        if exp >= time.time():
+            return data
+        _memory_fallback_cache.pop(cache_key, None)
+
+    return None
 
 
 def _mark_cache_response(response, status_value: str):
@@ -90,23 +130,26 @@ def set_cached_api_response(request, namespace: str, response_data, timeout=None
             DEFAULT_DASHBOARD_COUNTS_CACHE_TIMEOUT,
         )
 
-    if not _dashboard_cache_available():
-        return
-
     cache_key = _request_cache_key(request, namespace)
-    try:
-        cache.set(cache_key, response_data, timeout=timeout)
-    except Exception as exc:
-        _mark_dashboard_cache_unavailable()
-        logger.info("API response cache unavailable; skipped cache write: %s", exc)
+
+    # 1. Always store in local memory fallback
+    _memory_fallback_cache[cache_key] = (response_data, time.time() + timeout)
+
+    # 2. Store in Redis cache if available
+    if _dashboard_cache_available():
+        try:
+            cache.set(cache_key, response_data, timeout=timeout)
+        except Exception as exc:
+            _mark_dashboard_cache_unavailable()
+            logger.info("Redis cache unavailable; skipped Redis write: %s", exc)
 
 
 def dashboard_counts_cache(namespace: str):
     """
-    Cache dashboard count API responses per user/role/query string.
+    Cache dashboard count and list API responses per user/role/query string.
 
     Cache failures are deliberately non-fatal so Redis outages never block the
-    dashboard; callers fall back to the database path transparently.
+    dashboard; callers fall back to in-memory/database paths transparently.
     """
     timeout = getattr(
         settings,
@@ -117,8 +160,8 @@ def dashboard_counts_cache(namespace: str):
     def decorator(view_func):
         @wraps(view_func)
         def wrapper(request, *args, **kwargs):
-            query_params = getattr(request, "query_params", {})
-            has_cache_buster = any(k in query_params for k in ["_t", "cb", "_", "nocache", "refresh", "cache_buster"])
+            query_params = getattr(request, "query_params", request.GET if hasattr(request, "GET") else {})
+            has_cache_buster = any(k in query_params for k in BYPASS_CACHE_QUERY_PARAMS)
             if not has_cache_buster:
                 cached_data = get_cached_api_response(request, namespace)
                 if cached_data is not None:
@@ -143,6 +186,9 @@ def dashboard_counts_cache(namespace: str):
 
 
 def invalidate_dashboard_counts_cache() -> None:
+    global _memory_fallback_cache
+    _memory_fallback_cache.clear()
+
     if _dashboard_cache_available():
         try:
             from django_redis import get_redis_connection
@@ -155,4 +201,4 @@ def invalidate_dashboard_counts_cache() -> None:
                 logger.info("Django cache cleared as fallback.")
             except Exception as e2:
                 _mark_dashboard_cache_unavailable()
-                logger.info("Skipped cache invalidation; using database fallback: %s", e2)
+                logger.info("Skipped Redis invalidation; local memory cache cleared: %s", e2)
