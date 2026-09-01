@@ -1329,8 +1329,10 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
 
         if module_code == DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE:
             if status_code == "S":
+                app = None
+                user = None
+                application_id = str(getattr(tx, "payer_id", "") or "").strip()
                 try:                 
-                    application_id = str(getattr(tx, "payer_id", "") or "").strip()
                     app = (
                         NewLicenseApplication.objects.select_related("workflow", "current_stage", "applicant")
                         .filter(application_id__iexact=application_id)
@@ -1340,7 +1342,6 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                         raise ValueError(f"NewLicenseApplication not found for application_id={application_id}")
 
                     username = str(getattr(tx, "user_id", "") or "").strip()
-                    user = None
                     if username:
                         user = CustomUser.objects.select_related("role").filter(username__iexact=username).first()
                     if not user:
@@ -1348,9 +1349,9 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
 
                     _ensure_new_license_app_submitted(app, user)
                 except Exception as e:
-                    logger.error(f"Error auto-submitting workflow for {application_id}: {e}", exc_info=True)
-                    
-                    
+                    logger.error(f"Error auto-submitting workflow for application_id={application_id}: {e}", exc_info=True)
+
+                if app:
                     sbm_submitted = False
                     sbm_application_id = ""
                     sbm_submit_error = ""
@@ -1407,6 +1408,7 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                             sb.refresh_from_db()
                             if getattr(getattr(sb, "current_stage", None), "is_initial", False):
                                 try:
+                                    from auth.workflow.services import WorkflowService
                                     WorkflowService.submit_application(
                                         application=sb,
                                         user=user,
@@ -1422,6 +1424,10 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                                     )
                                     sbm_submit_error = f"sbm_workflow_submit_failed: {_submit_exc}"
 
+                            logger.info(
+                                f"SB auto-submit complete. Submitted: {sbm_submitted}, "
+                                f"ID: {sbm_application_id}, Error: {sbm_submit_error}"
+                            )
                     except Exception as _sbm_exc:
                         logger.exception(
                             "SB auto-submit failed for NLI application_id=%s: %s",
@@ -1433,9 +1439,6 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                         f"SB auto-submit complete. Submitted: {sbm_submitted}, "
                         f"ID: {sbm_application_id}, Error: {sbm_submit_error}"
                     )
-
-                except Exception as exc:
-                    logger.exception("Failed to auto-submit new license application for txn_ref=%s: %s", txn_ref, exc)
             elif status_code == "F":
                 try:
                     application_id = str(getattr(tx, "payer_id", "") or "").strip()
