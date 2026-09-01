@@ -13,9 +13,11 @@ DASHBOARD_MODEL_LABELS = (
     ("license_renewal_application", "LicenseApplication"),
     ("salesman_barman", "SalesmanBarmanModel"),
     ("special_permit", "SpecialPermitApplication"),
+    ("label_registration", "LabelRegistration"),
     ("distributor_permit", "DistributorPermitApplication"),
     ("distributor_permit", "IMFLRevalidation"),
     ("distributor_permit", "IMFLCancellation"),
+    ("site_enquiry", "SiteEnquiryReport"),
 )
 
 

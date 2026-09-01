@@ -27,12 +27,12 @@ def validate_uploaded_file(
     max_size_bytes: int | None = None,
     field_label: str = 'File',
 ) -> None:
-    if file_obj is None:
+    if file_obj is None or not file_obj or not getattr(file_obj, 'name', None):
         return
 
-    file_name = Path(getattr(file_obj, 'name', '') or '').name
+    file_name = Path(str(getattr(file_obj, 'name', '') or '')).name
     if not file_name:
-        raise ValidationError(f'{field_label} name is invalid.')
+        return
 
     file_size = int(getattr(file_obj, 'size', 0) or 0)
     if file_size <= 0:

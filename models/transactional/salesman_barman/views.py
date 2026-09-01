@@ -994,6 +994,7 @@ def dashboard_counts(request):
 @permission_classes([HasAppPermission('salesman_barman_registration', 'view'), HasStagePermission])
 @api_view(['GET'])
 @parser_classes([JSONParser])
+@dashboard_counts_cache("salesman_barman:list")
 def application_group(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['SALESMAN_BARMAN']

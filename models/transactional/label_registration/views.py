@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from auth.workflow.models import Workflow
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
+from models.transactional.dashboard_cache import dashboard_counts_cache
 from .models import LabelRegistration, LabelRegistrationDocument
 from .serializers import LabelRegistrationSerializer
 
@@ -242,6 +243,7 @@ def label_registration_detail(request, application_id):
 
 @api_view(['GET'])
 @permission_classes([HasStagePermission])
+@dashboard_counts_cache("label_registration:counts")
 def dashboard_counts(request):
     role = _normalize_role(request.user.role.name if getattr(request.user, 'role', None) else None)
     base_qs = LabelRegistration.objects
@@ -282,6 +284,7 @@ def dashboard_counts(request):
 @api_view(['GET'])
 @parser_classes([JSONParser])
 @permission_classes([HasStagePermission])
+@dashboard_counts_cache("label_registration:list")
 def application_group(request):
     role = _normalize_role(request.user.role.name if getattr(request.user, 'role', None) else None)
     base_qs = _filter_by_role(request)

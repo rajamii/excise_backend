@@ -334,9 +334,9 @@ def _create_application(request) -> Response:
 
             # Files copy
             undertaking_file = request.FILES.get('undertaking')
-            excise_license_file = request.FILES.get('excise_license')
-            deed_of_partnership_file = request.FILES.get('deed_of_partnership')
-            memorandum_of_association_file = request.FILES.get('memorandum_of_association')
+            excise_license_file = request.FILES.get('excise_license') or request.FILES.get('exciseLicense')
+            deed_of_partnership_file = request.FILES.get('deed_of_partnership') or request.FILES.get('deedOfPartnership')
+            memorandum_of_association_file = request.FILES.get('memorandum_of_association') or request.FILES.get('memorandumOfAssociation')
 
             # Create RegCompany
             reg_app = RegCompany.objects.create(
@@ -643,6 +643,7 @@ def dashboard_counts(request):
 @api_view(['GET'])
 @permission_classes([HasCompanyCollaborationViewPermission, HasStagePermission])
 @parser_classes([JSONParser])
+@dashboard_counts_cache("company_collaboration:list")
 def application_group(request):
     role = _normalize_role(request.user.role.name if request.user.role else None)
     base_qs = CompanyCollaboration.objects
