@@ -3,10 +3,7 @@ from models.masters.core.models import PoliceStation
 
 class PoliceStationSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
-    district = serializers.CharField(
-        source='district_code.district', 
-        read_only=True
-    )
+    district = serializers.SerializerMethodField()
 
     class Meta:
         model = PoliceStation
@@ -36,3 +33,9 @@ class PoliceStationSerializer(serializers.ModelSerializer):
 
     def get_status(self, obj):
         return "Active" if obj.is_active else "Inactive"
+
+    def get_district(self, obj):
+        """Safely get district name, handling NULL district_code"""
+        if obj.district_code:
+            return obj.district_code.district
+        return None

@@ -19,47 +19,10 @@ def _looks_like_brewery(text: str) -> bool:
     t = str(text or "").strip().lower()
     return ("brew" in t) or ("beer" in t)
 
-# COMMON_EDUCATION_CESS_HOA = "0045-00-112-45-03"
-# COMMON_HOLOGRAM_HOA = "0039-00-800-45-01"
-# COMMON_SECURITY_DEPOSIT_HOA = "non"
-# COMMON_LICENSE_FEE_HOA = "0039-00-800-45-02"
 
-# HOA_CANDIDATES = {
-#     "distillery": {
-#         "excise": ["0039-00-105-45-01"],
-#         "education_cess": [COMMON_EDUCATION_CESS_HOA],
-#         "hologram": [COMMON_HOLOGRAM_HOA],
-#         "security_deposit": [COMMON_SECURITY_DEPOSIT_HOA],
-#         "license_fee": [COMMON_LICENSE_FEE_HOA],
-#     },
-#     "brewery": {
-#         "excise": ["0038-00-102-45-00"],
-#         "education_cess": [COMMON_EDUCATION_CESS_HOA],
-#         "hologram": [COMMON_HOLOGRAM_HOA],
-#         "security_deposit": [COMMON_SECURITY_DEPOSIT_HOA],
-#         "license_fee": [COMMON_LICENSE_FEE_HOA],
-#     },
-#     "other": {
-#         "security_deposit": [COMMON_SECURITY_DEPOSIT_HOA],
-#         "license_fee": [COMMON_LICENSE_FEE_HOA],
-#     },
-# }
-
-# WALLET_LABELS = {
-#     "excise": "Excise / Additional Wallet",
-#     "education_cess": "Education Cess Wallet",
-#     "hologram": "Hologram",
-#     "security_deposit": "Security Deposit Wallet",
-#     "license_fee": "License Fee Wallet",
-# }
-
-
-# @lru_cache(maxsize=1)
-# def _hoa_master_table_exists() -> bool:
-#     try:
-#         return MasterHeadOfAccount._meta.db_table in set(connection.introspection.table_names())
-#     except Exception:
-#         return False
+def _looks_like_distributor(text: str) -> bool:
+    t = str(text or "").strip().lower()
+    return "distribut" in t
 
 
 def _resolve_module_type(license_obj) -> str:
@@ -70,8 +33,22 @@ def _resolve_module_type(license_obj) -> str:
         return "distillery"
     if _looks_like_brewery(sub_desc):
         return "brewery"
-    if sub_desc:
-        return "other"
+    if _looks_like_distributor(sub_desc):
+        return "distributor"
+
+    category = getattr(license_obj, "license_category", None)
+    cat_desc = str(
+        getattr(category, "name", None)
+        or getattr(category, "description", None)
+        or getattr(category, "license_category", None)
+        or ""
+    ).strip().lower()
+    if _looks_like_distributor(cat_desc):
+        return "distributor"
+    if _looks_like_distillery(cat_desc):
+        return "distillery"
+    if _looks_like_brewery(cat_desc):
+        return "brewery"
 
     # Fallback: Some deployments use stable numeric IDs (frontend also uses these).
     # Only apply when description is missing.
@@ -83,6 +60,8 @@ def _resolve_module_type(license_obj) -> str:
         return "distillery"
     if sid == 1:
         return "brewery"
+    if sid == 31:
+        return "distributor"
 
     source_type = str(getattr(license_obj, "source_type", "") or "").strip().lower()
     if source_type in {"salesman_barman", "license_application"}:
@@ -95,7 +74,12 @@ def _resolve_module_type(license_obj) -> str:
         return "distillery"
     if _looks_like_brewery(type_name):
         return "brewery"
+    if _looks_like_distributor(type_name):
+        return "distributor"
     if type_name:
+        return "other"
+
+    if sub_desc:
         return "other"
 
     logger.warning(
@@ -302,7 +286,7 @@ def initialize_wallet_balances_for_license(license_obj) -> None:
     )
     now = timezone.now()
 
-    if module_type in {"distillery", "brewery"}:
+    if module_type in {"distillery", "brewery", "distributor"}:
         wallet_types = ["excise", "education_cess", "hologram", "security_deposit", "license_fee"]
     else:
         wallet_types = ["security_deposit", "license_fee"]

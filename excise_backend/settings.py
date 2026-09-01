@@ -160,9 +160,9 @@ REST_FRAMEWORK = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'sems_db',       # Database name
+        'NAME': 'server_sems_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'postgres',  # Your PostgreSQL password
+        'PASSWORD': 'sameer123',  # Your PostgreSQL password
         'HOST': 'localhost',        
         'PORT': '5432',             # Default PostgreSQL port
         'CONN_MAX_AGE': 300,         # Don't reuse connections — avoids aborted transaction state

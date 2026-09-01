@@ -216,6 +216,11 @@ def _resolve_wallet_row_licensee_id(licensee_id: str, user_id: str = "") -> str:
     return _resolve_approved_license_id(raw_lic) or raw_lic
 
 
+def _looks_like_distributor(text: str) -> bool:
+    t = str(text or "").strip().lower()
+    return "distribut" in t
+
+
 def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = "") -> str:
     value = str(license_id_value or "").strip()
     if not value:
@@ -248,6 +253,22 @@ def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = 
         return "distillery"
     if _looks_like_brewery(sub_desc):
         return "brewery"
+    if _looks_like_distributor(sub_desc):
+        return "distributor"
+
+    category = getattr(lic, "license_category", None)
+    cat_desc = str(
+        getattr(category, "name", None)
+        or getattr(category, "description", None)
+        or getattr(category, "license_category", None)
+        or ""
+    ).strip().lower()
+    if _looks_like_distributor(cat_desc):
+        return "distributor"
+    if _looks_like_distillery(cat_desc):
+        return "distillery"
+    if _looks_like_brewery(cat_desc):
+        return "brewery"
 
     # Fallback: Some deployments rely on stable numeric IDs (frontend uses these too).
     # Only apply when the description does not provide a hint.
@@ -259,6 +280,8 @@ def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = 
         return "distillery"
     if sid == 1:
         return "brewery"
+    if sid == 31:
+        return "distributor"
 
     source_type = str(getattr(lic, "source_type", "") or "").strip().lower()
     if source_type in {"salesman_barman", "license_application"}:
@@ -271,6 +294,8 @@ def _resolve_module_type_from_license_id(license_id_value: str, fallback: str = 
         return "distillery"
     if _looks_like_brewery(type_name):
         return "brewery"
+    if _looks_like_distributor(type_name):
+        return "distributor"
 
     return str(fallback or "").strip()
 
