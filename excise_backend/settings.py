@@ -263,7 +263,11 @@ BILLDESK_GATEWAY_URL = os.getenv(
     "BILLDESK_GATEWAY_URL",
     "https://uat1.billdesk.com/u2/payments/ve1_2/orders/create",
 ).strip()
-BILLDESK_ENCRYPTION_KEY = os.getenv("BILLDESK_ENCRYPTION_KEY", "").strip()
+
+BILLDESK_ENCRYPTION_KEY = os.getenv(
+    "BILLDESK_ENCRYPTION_KEY",
+    "YXIpsQAfhNSJgm22Gcb3YVSkNFIVN9xz"
+    ).strip()
 
 # Where Django redirects the user after BillDesk response is validated.
 PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL = os.getenv(

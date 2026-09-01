@@ -4,17 +4,20 @@ import secrets
 from datetime import timedelta
 import json
 import base64
+import time
 from django.db import transaction
 try:
     import requests
 except ModuleNotFoundError:
     requests = None
-import time
 from excise_backend.settings import BILLDESK_GATEWAY_URL
-from .billdesk_utils import generate_billdesk_jws, verify_billdesk_jws
+from .billdesk_utils import (
+    decrypt_and_verify_billdesk_response,
+    generate_billdesk_nested_jose,
+)
 from django.conf import settings
 from django.db.utils import OperationalError, ProgrammingError
-from django.http import HttpResponse, HttpResponseBadRequest
+from django.http import HttpResponse, HttpResponseBadRequest, request
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.urls import reverse
@@ -237,89 +240,110 @@ def _decode_jws_payload(jws_token: str) -> dict:
     payload_json = base64.urlsafe_b64decode(payload_b64 + padding).decode('utf-8')
     return json.loads(payload_json)
 
-def _create_billdesk_order(merchant_id, client_id, secret_key, tx_id, amount_str, return_url, additional_info_dict, request, device_data=None):
-    """Makes the server-to-server call to BillDesk to create an order."""
-    if device_data is None:
-        device_data = {}
+def _create_billdesk_order(
+    merchant_id,
+    client_id,
+    secret_key,
+    tx_id,
+    amount_str,
+    return_url,
+    additional_info_dict,
+    request,
+    device_data=None,
+):
+  if device_data is None:
+    device_data = {}
 
-    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-    if x_forwarded_for:
-        client_ip = x_forwarded_for.split(',')[0].strip()
-    else:
-        client_ip = request.META.get('REMOTE_ADDR', '127.0.0.1')
+  x_real_ip = request.META.get('HTTP_X_REAL_IP')
+  x_cf_ip = request.META.get('HTTP_CF_CONNECTING_IP')
+  x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+  if x_cf_ip:
+    client_ip = x_cf_ip.split(',')[0].strip()
+  elif x_real_ip:
+    client_ip = x_real_ip.split(',')[0].strip()
+  elif x_forwarded_for:
+    client_ip = x_forwarded_for.split(',')[0].strip()
+  else:
+    client_ip = request.META.get('REMOTE_ADDR', '127.0.0.1')
 
-    order_date = timezone.localtime(timezone.now()).strftime("%Y-%m-%dT%H:%M:%S+05:30")
-    
-    payload = {
-        "mercid": merchant_id,
-        "orderid": tx_id,
-        "amount": amount_str,
-        "order_date": order_date,
-        "currency": "356",
-        "ru": return_url,
-        "itemcode": "DIRECT",
-        "additional_info": additional_info_dict,
-        "device": {
-            "init_channel": "internet",
-            "ip": client_ip, 
-            "user_agent": device_data.get("user_agent") or request.META.get('HTTP_USER_AGENT', 'Mozilla/5.0')[:250],
-            "accept_header": device_data.get("accept_header", "text/html"),
-            "browser_tz": str(device_data.get("browser_tz", "-330")),
-            "browser_color_depth": str(device_data.get("browser_color_depth", "32")),
-            "browser_java_enabled": str(device_data.get("browser_java_enabled", "false")).lower(),
-            "browser_screen_height": str(device_data.get("browser_screen_height", "1080")),
-            "browser_screen_width": str(device_data.get("browser_screen_width", "1920")),
-            "browser_language": device_data.get("browser_language", "en-US"),
-            "browser_javascript_enabled": str(device_data.get("browser_javascript_enabled", "true")).lower()
-        }
-    }
-    
-    jws_token = generate_billdesk_jws(client_id, secret_key, payload)
-    
-    headers = {
+  order_date = timezone.localtime(timezone.now()).strftime("%Y-%m-%dT%H:%M:%S+05:30")
+
+  payload = {
+      "mercid": merchant_id,
+      "orderid": tx_id,
+      "amount": amount_str,
+      "order_date": order_date,
+      "currency": "356",
+      "ru": return_url,
+      "itemcode": "DIRECT",
+      "additional_info": additional_info_dict,
+      "device": {
+          "init_channel": "internet",
+          "ip": client_ip,
+          "user_agent": (
+              device_data.get("user_agent")
+              or request.META.get("HTTP_USER_AGENT", "Mozilla/5.0")[:250]
+          ),
+          "accept_header": device_data.get("accept_header", "text/html"),
+          "browser_tz": str(device_data.get("browser_tz", "-330")),
+          "browser_color_depth": str(
+              device_data.get("browser_color_depth", "32")
+          ),
+          "browser_java_enabled": str(
+              device_data.get("browser_java_enabled", "false")
+          ).lower(),
+          "browser_screen_height": str(
+              device_data.get("browser_screen_height", "1080")
+          ),
+          "browser_screen_width": str(
+              device_data.get("browser_screen_width", "1920")
+          ),
+          "browser_language": device_data.get("browser_language", "en-US"),
+          "browser_javascript_enabled": str(
+              device_data.get("browser_javascript_enabled", "true")
+          ).lower(),
+      },
+  }
+
+  nested_jose_token = generate_billdesk_nested_jose(client_id, payload)
+
+  headers = {
         "Content-Type": "application/jose",
         "Accept": "application/jose",
         "BD-Traceid": tx_id,
-        "BD-Timestamp": str(int(time.time() * 1000))
+        "BD-Timestamp": str(int(timezone.now().timestamp() * 1000))
     }
-    
-    # UAT URL
-    api_url = BILLDESK_GATEWAY_URL
-    
-    response = requests.post(api_url, data=jws_token, headers=headers)
-    
-    if response.status_code == 200:
-        resp_jws = response.text
-        resp_data = _decode_jws_payload(resp_jws)
-        
-        bdorderid = resp_data.get("bdorderid")
-        auth_token = None
-        
-        for link in resp_data.get("links", []):
-            if link.get("rel") == "redirect":
-                auth_token = link.get("headers", {}).get("authorization")
-                break
-                
-        return {
-            "success": True, 
-            "bdorderid": bdorderid, 
-            "authorization": auth_token, 
-            "request_string": jws_token
-        }
-    else:
-        logger.error(f"BillDesk Create Order Failed: {response.text}")
-        
-        error_details = response.text
-        try:
-            if '.' in response.text:
-                decoded_payload = _decode_jws_payload(response.text)
-                if decoded_payload:
-                    error_details = decoded_payload
-        except Exception as e:
-            logger.warning(f"Could not decode error JWS payload: {e}")
-            
-        return {"success": False, "error": error_details}
 
+  api_url = BILLDESK_GATEWAY_URL
+
+  response = requests.post(api_url, data=nested_jose_token, headers=headers)
+
+  if response.status_code == 200:
+    resp_data = decrypt_and_verify_billdesk_response(response.text)
+    bdorderid = resp_data.get("bdorderid")
+    auth_token = None
+
+    for link in resp_data.get("links", []):
+      if link.get("rel") == "redirect":
+        auth_token = link.get("headers", {}).get("authorization")
+        break
+
+    return {
+        "success": True,
+        "bdorderid": bdorderid,
+        "rdata": auth_token,
+        "authorization": auth_token,
+        "merchant_id": merchant_id,
+        "request_string": nested_jose_token,
+    }
+  else:
+    logger.error(f"BillDesk Create Order Failed: {response.text}")
+    error_details = response.text
+    try:
+      error_details = decrypt_and_verify_billdesk_response(response.text)
+    except Exception:
+      pass
+    return {"success": False, "error": error_details}
 
 def _build_full_name_from_user(user) -> str:
     if not user:
@@ -1124,12 +1148,18 @@ def billdesk_initiate_new_license_application_fee(request):
 
 
 def _process_billdesk_transaction(transaction_response: str) -> bool:
-
+    # 1. Decrypt and verify the incoming SYM-JOSE response
     try:
-        resp_data = _decode_jws_payload(transaction_response)
+        resp_data = decrypt_and_verify_billdesk_response(transaction_response)
+        checksum_ok = True
     except Exception as e:
-        logger.error(f"Failed to decode JWS: {e}")
-        return False
+        logger.critical(f"SECURITY ALERT: BillDesk JWS/JWE Verification Failed: {e}")
+        try:
+            # Fallback decode for logging/auditing if possible
+            resp_data = _decode_jws_payload(transaction_response)
+        except Exception:
+            resp_data = {}
+        checksum_ok = False
 
     txn_ref = resp_data.get("orderid", "")
     bank_ref = resp_data.get("bank_ref_no", "")
@@ -1153,28 +1183,11 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
         add_info.get("additional_info7", "")
     ]
 
-    gateway = PaymentGatewayParameters.objects.filter(
-        is_active=True, 
-        payment_gateway_name__iexact="Billdesk"
-    ).order_by("sl_no").first()
-    
-    encryption_key = str(getattr(settings, "BILLDESK_ENCRYPTION_KEY", "") or getattr(gateway, "encryption_key", "") or "").strip()
-
     tx = PaymentBilldeskTransaction.objects.filter(utr=txn_ref).first()
     if tx is None and txn_ref:
         tx = PaymentBilldeskTransaction.objects.filter(transaction_id_no_hoa=txn_ref).first()
 
-    checksum_ok = False
-    if encryption_key:
-        checksum_ok = verify_billdesk_jws(transaction_response, encryption_key)
-    else:
-        logger.error("Encryption key missing from Gateway Parameters.")
-
-    if not checksum_ok:
-        logger.critical(f"SECURITY ALERT: Invalid JWS Signature detected for order {txn_ref}!")
-        status_code = "F" 
-    else:
-        status_code = "S" if auth_status == "0300" else "F"
+    status_code = "S" if (auth_status == "0300" and checksum_ok) else "F"
 
     if tx:
         try:
@@ -1182,14 +1195,11 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
         except Exception:
             parsed_amount = None
 
-        status_code = "S" if auth_status == "0300" and checksum_ok else "F"
-
         # Check if transaction is already marked as success BEFORE processing
-        if tx and getattr(tx, "payment_status", "") == "S":
-           
+        if getattr(tx, "payment_status", "") == "S":
             return True
         
-        # Save the raw JWS string to the DB for auditing
+        # Save the raw response string to the DB for auditing
         tx.response_string = transaction_response 
         tx.response_merchantid = resp_merchantid or None
         tx.response_txnreferenceno = txn_ref or None
@@ -1227,12 +1237,13 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                     if not app:
                         raise ValueError(f"NewLicenseApplication not found for application_id={application_id}")
 
+                    # FIXED: Restored update_fields so draft validation doesn't crash the save
                     try:
                         if not getattr(app, "is_application_fee_paid", False):
                             app.is_application_fee_paid = True
-                            app.save(update_fields=["is_application_fee_paid"])
-                    except Exception:
-                        pass
+                            app.save(update_fields=["is_application_fee_paid"]) 
+                    except Exception as e:
+                        logger.error(f"Error updating application fee status: {e}", exc_info=True)
 
                     try:
                         stage = getattr(app, "current_stage", None)
@@ -1246,23 +1257,20 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                             if initial and getattr(app, "current_stage_id", None) != getattr(initial, "id", None):
                                 app.current_stage = initial
                                 app.save(update_fields=["current_stage"])
-                    except Exception:
-                        pass
-
-                    username = str(getattr(tx, "user_id", "") or "").strip()
-                    user = None
-                    if username:
-                        user = CustomUser.objects.filter(username__iexact=username).first()
-                    if not user:
-                        user = getattr(app, "applicant", None)
-
-                    if getattr(getattr(app, "current_stage", None), "is_initial", False):
-                        WorkflowService.submit_application(
-                            application=app,
-                            user=user,
-                            remarks="Application fee paid via BillDesk (auto-submitted)",
-                        )
-
+                                
+                        # Auto-submit
+                        if getattr(getattr(app, "current_stage", None), "is_initial", False):
+                            username = str(getattr(tx, "user_id", "") or "").strip()
+                            user = CustomUser.objects.filter(username__iexact=username).first() if username else getattr(app, "applicant", None)
+                            
+                            WorkflowService.submit_application(
+                                application=app,
+                                user=user,
+                                remarks="Application fee paid via BillDesk (auto-submitted)",
+                            )
+                    except Exception as e:
+                        logger.error(f"Error auto-submitting workflow for {application_id}: {e}", exc_info=True)
+                    
                     
                     sbm_submitted = False
                     sbm_application_id = ""
@@ -1409,7 +1417,6 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                 except Exception as exc:
                     logger.exception("Failed to update Company Collaboration stage for txn_ref=%s: %s", txn_ref, exc)
         else:
-            # Persist wallet_transactions entry for license fee / security deposit on successful payment.
             if status_code == "S":
                 try:
                     req_type = str(tx.request_additionalinfo2 or "").strip().upper()
@@ -1423,7 +1430,6 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                         credit_wallet_type = "license_fee"
                         credit_hoa = str(tx.request_additionalinfo1 or "").strip() or LICENSE_FEE_HOA
                     elif req_type == "SIKFDR":
-                        # For SIKFDR, AdditionalInfo4 stores the account holder name, not the licensee id.
                         credit_licensee_id = str(tx.payer_id or "").strip()
                         credit_name = str(tx.request_additionalinfo1 or "").strip()
                         credit_wallet_type = "security_deposit"
@@ -1447,7 +1453,6 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                             remarks="BillDesk payment success",
                         )
 
-                        # Auto security fee payment logic for applications upon security deposit wallet recharge
                         if credit_wallet_type == "security_deposit":
                             try:
                                 from django.db.models import Q
@@ -1542,6 +1547,7 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                         )
                 except Exception as exc:
                     logger.exception("Failed to log failed wallet transaction for txn_ref=%s: %s", txn_ref, exc)
+
     return {
         "success": True,
         "sbm_submitted": locals().get("sbm_submitted", False),
@@ -1655,7 +1661,7 @@ def billdesk_response(request):
         <body>
             <div class="container">
                 <h2 style="color: #4CAF50;">Payment Processed Successfully!</h2>
-                <p>Please wait, redirecting you back to the application in a few seconds...</p>
+                <p>Returning you to the dashboard...</p>
                 <div class="spinner"></div>
             </div>
 
@@ -1664,12 +1670,8 @@ def billdesk_response(request):
                     var targetUrl = "{redirect_url}";
                     
                     try {{
+                        // FIXED: Do NOT redirect window.opener. Just close the popup so the WebSDK responseHandler can fire!
                         if (window.opener && !window.opener.closed) {{
-                            if (window.opener.top) {{
-                                window.opener.top.location.href = targetUrl;
-                            }} else {{
-                                window.opener.location.href = targetUrl;
-                            }}
                             window.close();
                             return;
                         }}
@@ -1690,7 +1692,8 @@ def billdesk_response(request):
                     }}, 500);
                 }}
 
-                setTimeout(executeRedirect, 2500);
+                // Reduced timeout for a snappy close
+                setTimeout(executeRedirect, 500);
             </script>
         </body>
     </html>
