@@ -53,7 +53,8 @@ from decimal import Decimal
 
 def _with_application_fee_payment_annotations(qs):
     """
-    Annotate NewLicenseApplication queryset with latest BillDesk application-fee payment info.
+    Annotate NewLicenseApplication queryset with latest BillDesk application-fee payment info
+    and auto-heal any paid applications stuck in initial stage.
 
     - application_fee_payment_status: 'P'/'S'/'F'
     - application_fee_transaction_id: utr
@@ -68,12 +69,27 @@ def _with_application_fee_payment_annotations(qs):
             payment_module_code="001",
         ).order_by("-transaction_date", "-utr")
 
-        return qs.annotate(
+        annotated_qs = qs.annotate(
             application_fee_payment_status=Subquery(base.values("payment_status")[:1]),
             application_fee_transaction_id=Subquery(base.values("utr")[:1]),
             application_fee_payment_date=Subquery(base.values("transaction_date")[:1]),
             application_fee_error=Subquery(base.values("response_errordescription")[:1]),
         )
+
+        try:
+            for app in list(annotated_qs):
+                st = str(getattr(app, "application_fee_payment_status", "") or "").strip().upper()
+                if st == "S":
+                    needs_update = not getattr(app, "is_application_fee_paid", False)
+                    current_stage = getattr(app, "current_stage", None)
+                    needs_submit = not current_stage or getattr(current_stage, "is_initial", False)
+                    if needs_update or needs_submit:
+                        from models.transactional.payment_gateway.views import _ensure_new_license_app_submitted
+                        _ensure_new_license_app_submitted(app, getattr(app, "applicant", None))
+        except Exception:
+            pass
+
+        return annotated_qs
     except Exception:
         return qs
 

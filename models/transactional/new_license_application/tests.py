@@ -45,9 +45,9 @@ class NewLicenseDashboardCountsTests(TestCase):
         self.licensee_user.username = 'licensee_user'
         self.licensee_user.save(update_fields=['username'])
 
-        self.workflow = Workflow.objects.create(id=1, name='License Approval')
+        self.workflow, _ = Workflow.objects.get_or_create(id=1, defaults={'name': 'License Approval'})
         self.stages = {
-            name: WorkflowStage.objects.create(workflow=self.workflow, name=name)
+            name: WorkflowStage.objects.get_or_create(workflow=self.workflow, name=name)[0]
             for name in [
                 'Applied', 'Awaiting Payment', 'approved', 'Objection'
             ]
@@ -55,7 +55,7 @@ class NewLicenseDashboardCountsTests(TestCase):
         
         self.client.force_authenticate(user=self.licensee_user)
 
-    def _create_application(self, application_id, stage):
+    def _create_application(self, application_id, stage, is_application_fee_paid=True):
         return NewLicenseApplication.objects.create(
             application_id=application_id,
             workflow=self.workflow,
@@ -68,15 +68,12 @@ class NewLicenseDashboardCountsTests(TestCase):
             site_type="New",
             applicant_name="Test Applicant",
             father_husband_name="Test Father",
-            dob="2000-01-01",
+            dob="1990-01-01",
             gender="Male",
             nationality="Indian",
-            residential_status="Resident",
-            present_address="Present Address",
-            permanent_address="Permanent Address",
             pan="ABCDE1234F",
-            email="test@example.com",
-            mobile_number="9999999999",
+            email="test@company.com",
+            mobile_number="9999999901",
             mode_of_operation="Self",
             has_sikkim_certificate="Yes",
             has_excise_license="No",
@@ -93,11 +90,11 @@ class NewLicenseDashboardCountsTests(TestCase):
             construction_type="Permanent",
             site_owned="Yes",
             noc_obtained="Yes",
-            is_application_fee_paid=True
+            is_application_fee_paid=is_application_fee_paid
         )
 
     def test_dashboard_counts_separated_awaiting_payment(self):
-        self._create_application('NA/225/2026-27/0001', self.stages['Awaiting Payment'])
+        self._create_application('NA/225/2026-27/0001', self.stages['Awaiting Payment'], is_application_fee_paid=True)
 
         url = reverse("new_license_application:dashboard-counts")
         resp = self.client.get(url)
@@ -106,7 +103,7 @@ class NewLicenseDashboardCountsTests(TestCase):
         self.assertEqual(resp.data.get("pending"), 0)
 
     def test_dashboard_counts_initial_pending(self):
-        self._create_application('NA/225/2026-27/0002', self.stages['Applied'])
+        self._create_application('NA/225/2026-27/0002', self.stages['Applied'], is_application_fee_paid=False)
 
         url = reverse("new_license_application:dashboard-counts")
         resp = self.client.get(url)
@@ -146,8 +143,8 @@ class NewLicenseCompanyApplicationTests(TestCase):
         self.licensee_user.username = 'licensee_user'
         self.licensee_user.save(update_fields=['username'])
 
-        self.workflow = Workflow.objects.create(id=1, name='License Approval')
-        self.initial_stage = WorkflowStage.objects.create(workflow=self.workflow, name='Applied', is_initial=True)
+        self.workflow, _ = Workflow.objects.get_or_create(id=1, defaults={'name': 'License Approval'})
+        self.initial_stage, _ = WorkflowStage.objects.get_or_create(workflow=self.workflow, name='Applied', defaults={'is_initial': True})
         
         self.client.force_authenticate(user=self.licensee_user)
 

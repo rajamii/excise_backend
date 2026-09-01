@@ -1147,6 +1147,89 @@ def billdesk_initiate_new_license_application_fee(request):
     )
 
 
+def _ensure_new_license_app_submitted(app, user=None, remarks="Application fee paid via BillDesk (auto-submitted)"):
+    """
+    Persist application fee payment status and submit the application from initial stage to next stage.
+    """
+    if not app:
+        return False
+
+    # 1. Ensure application fee paid flag is set
+    try:
+        if not getattr(app, "is_application_fee_paid", False):
+            app.is_application_fee_paid = True
+            app.save(update_fields=["is_application_fee_paid"])
+    except Exception as exc:
+        logger.warning("Failed to update is_application_fee_paid for %s: %s", getattr(app, "application_id", ""), exc)
+
+    # 2. If a previous attempt incorrectly pushed the application into a rejected/final stage, restore it to initial
+    try:
+        stage = getattr(app, "current_stage", None)
+        stage_name = str(getattr(stage, "name", "") or "").strip().lower()
+        is_rejected_or_final = bool(
+            (stage_name and "reject" in stage_name)
+            or bool(getattr(stage, "is_final", False))
+        )
+        if is_rejected_or_final and getattr(app, "workflow", None):
+            initial = app.workflow.stages.filter(is_initial=True).order_by("id").first()
+            if initial and getattr(app, "current_stage_id", None) != getattr(initial, "id", None):
+                app.current_stage = initial
+                app.save(update_fields=["current_stage"])
+    except Exception as exc:
+        logger.warning("Failed to restore initial stage for %s: %s", getattr(app, "application_id", ""), exc)
+
+    # 3. Resolve user with role
+    if not user:
+        user = getattr(app, "applicant", None)
+    if user and not getattr(user, "role", None) and getattr(app, "applicant", None):
+        user = getattr(app, "applicant", None)
+
+    # 4. Auto-submit if still at initial stage
+    stage = getattr(app, "current_stage", None)
+    if not stage or getattr(stage, "is_initial", False):
+        submitted = False
+        try:
+            from auth.workflow.services import WorkflowService
+            WorkflowService.submit_application(
+                application=app,
+                user=user,
+                remarks=remarks,
+            )
+            submitted = True
+        except Exception as exc:
+            logger.warning("WorkflowService.submit_application failed for %s: %s; trying fallback transition advance.", getattr(app, "application_id", ""), exc)
+
+        if not submitted and getattr(app, "workflow", None):
+            try:
+                from auth.workflow.models import WorkflowTransition, Transaction as WorkflowTransaction
+                from django.contrib.contenttypes.models import ContentType
+
+                initial_stage = app.workflow.stages.filter(is_initial=True).order_by("id").first()
+                if initial_stage:
+                    transition = WorkflowTransition.objects.filter(
+                        workflow=app.workflow, from_stage=initial_stage
+                    ).select_related("to_stage").first()
+                    if transition and transition.to_stage:
+                        app.current_stage = transition.to_stage
+                        app.save(update_fields=["current_stage"])
+                        ct = ContentType.objects.get_for_model(app)
+                        WorkflowTransaction.objects.create(
+                            content_type=ct,
+                            object_id=str(app.pk),
+                            performed_by=user,
+                            forwarded_by=getattr(user, "role", None),
+                            forwarded_to=None,
+                            stage=transition.to_stage,
+                            remarks=f"{remarks} (fallback)",
+                        )
+                        submitted = True
+            except Exception as e:
+                logger.exception("Fallback transition advance failed for %s: %s", getattr(app, "application_id", ""), e)
+
+        return submitted
+    return True
+
+
 def _process_billdesk_transaction(transaction_response: str) -> bool:
     # 1. Decrypt and verify the incoming SYM-JOSE response
     try:
@@ -1197,6 +1280,25 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
 
         # Check if transaction is already marked as success BEFORE processing
         if getattr(tx, "payment_status", "") == "S":
+            module_code = str(getattr(tx, "payment_module_code", "") or "").strip()
+            if module_code == DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE:
+                try:
+                    application_id = str(getattr(tx, "payer_id", "") or "").strip()
+                    app = (
+                        NewLicenseApplication.objects.select_related("workflow", "current_stage", "applicant")
+                        .filter(application_id__iexact=application_id)
+                        .first()
+                    )
+                    if app:
+                        username = str(getattr(tx, "user_id", "") or "").strip()
+                        user = None
+                        if username:
+                            user = CustomUser.objects.select_related("role").filter(username__iexact=username).first()
+                        if not user:
+                            user = getattr(app, "applicant", None)
+                        _ensure_new_license_app_submitted(app, user)
+                except Exception as e:
+                    logger.warning("Error auto-submitting existing successful NLI payment for %s: %s", getattr(tx, "payer_id", ""), e)
             return True
         
         # Save the raw response string to the DB for auditing
@@ -1237,39 +1339,16 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                     if not app:
                         raise ValueError(f"NewLicenseApplication not found for application_id={application_id}")
 
-                    # FIXED: Restored update_fields so draft validation doesn't crash the save
-                    try:
-                        if not getattr(app, "is_application_fee_paid", False):
-                            app.is_application_fee_paid = True
-                            app.save(update_fields=["is_application_fee_paid"]) 
-                    except Exception as e:
-                        logger.error(f"Error updating application fee status: {e}", exc_info=True)
+                    username = str(getattr(tx, "user_id", "") or "").strip()
+                    user = None
+                    if username:
+                        user = CustomUser.objects.select_related("role").filter(username__iexact=username).first()
+                    if not user:
+                        user = getattr(app, "applicant", None)
 
-                    try:
-                        stage = getattr(app, "current_stage", None)
-                        stage_name = str(getattr(stage, "name", "") or "").strip().lower()
-                        is_rejected_or_final = bool(
-                            (stage_name and "reject" in stage_name)
-                            or bool(getattr(stage, "is_final", False))
-                        )
-                        if is_rejected_or_final and getattr(app, "workflow", None):
-                            initial = app.workflow.stages.filter(is_initial=True).order_by("id").first()
-                            if initial and getattr(app, "current_stage_id", None) != getattr(initial, "id", None):
-                                app.current_stage = initial
-                                app.save(update_fields=["current_stage"])
-                                
-                        # Auto-submit
-                        if getattr(getattr(app, "current_stage", None), "is_initial", False):
-                            username = str(getattr(tx, "user_id", "") or "").strip()
-                            user = CustomUser.objects.filter(username__iexact=username).first() if username else getattr(app, "applicant", None)
-                            
-                            WorkflowService.submit_application(
-                                application=app,
-                                user=user,
-                                remarks="Application fee paid via BillDesk (auto-submitted)",
-                            )
-                    except Exception as e:
-                        logger.error(f"Error auto-submitting workflow for {application_id}: {e}", exc_info=True)
+                    _ensure_new_license_app_submitted(app, user)
+                except Exception as e:
+                    logger.error(f"Error auto-submitting workflow for {application_id}: {e}", exc_info=True)
                     
                     
                     sbm_submitted = False
