@@ -439,11 +439,11 @@ def subdivision_delete(request, pk):
 @permission_classes([HasAppPermission('masters', 'view')])
 @api_view(['GET'])
 def policestation_list(request):
-    """List active police stations, optionally filtered by subdivision_code."""
+    """List active police stations, optionally filtered by district_code."""
     queryset = masters_model.PoliceStation.objects.filter(is_active=True)
-    subdivision_code = request.query_params.get('subdivision_code')
-    if subdivision_code:
-        queryset = queryset.filter(subdivision_code=subdivision_code)
+    district_code = request.query_params.get('district_code') or request.query_params.get('subdivision_code')
+    if district_code:
+        queryset = queryset.filter(district_code=district_code)
     serializer = PoliceStationSerializer(queryset, many=True, context={'request': request})
     return Response(serializer.data)
 

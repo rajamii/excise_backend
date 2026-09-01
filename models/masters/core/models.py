@@ -185,13 +185,13 @@ class PoliceStation(models.Model):
     )
     police_station_code = models.IntegerField(unique=True, default=11999)
     is_active = models.BooleanField(default=True)
-    subdivision_code = models.ForeignKey(
-        Subdivision,
-        to_field='subdivision_code',
+    district_code = models.ForeignKey(
+        District,
+        to_field='district_code',
         on_delete=models.CASCADE,
         related_name='police_stations',
         null=True,
-        db_column='subdivision_code'
+        db_column='district_code'
     )
 
     class Meta:

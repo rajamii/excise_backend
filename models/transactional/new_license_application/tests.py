@@ -24,7 +24,7 @@ class NewLicenseDashboardCountsTests(TestCase):
         self.state = State.objects.create(state="Sikkim", state_code=11, is_active=True)
         self.district = District.objects.create(district="Gangtok", district_code=225, is_active=True, state_code=self.state)
         self.subdivision = Subdivision.objects.create(subdivision="Gangtok Subdivision", subdivision_code=1553, is_active=True, district_code=self.district)
-        self.police_station = PoliceStation.objects.create(police_station="Gangtok PS", subdivision_code=self.subdivision)
+        self.police_station = PoliceStation.objects.create(police_station="Gangtok PS", district_code=self.district)
 
         self.category = LicenseCategory.objects.create(license_category="Test Category")
         self.subcategory = LicenseSubcategory.objects.create(description="FLR Shop", category=self.category)
@@ -120,7 +120,7 @@ class NewLicenseCompanyApplicationTests(TestCase):
         self.state = State.objects.create(state="Sikkim", state_code=11, is_active=True)
         self.district = District.objects.create(district="Gangtok", district_code=225, is_active=True, state_code=self.state)
         self.subdivision = Subdivision.objects.create(subdivision="Gangtok Subdivision", subdivision_code=1553, is_active=True, district_code=self.district)
-        self.police_station = PoliceStation.objects.create(police_station="Gangtok PS", subdivision_code=self.subdivision)
+        self.police_station = PoliceStation.objects.create(police_station="Gangtok PS", district_code=self.district)
 
         self.category = LicenseCategory.objects.create(license_category="Test Category")
         self.subcategory = LicenseSubcategory.objects.create(description="FLR Shop", category=self.category)

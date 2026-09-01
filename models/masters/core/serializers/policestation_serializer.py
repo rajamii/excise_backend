@@ -1,11 +1,10 @@
 from rest_framework import serializers
 from models.masters.core.models import PoliceStation
-from .subdivision_serializer import SubdivisionSerializer  # Optional, for nesting
 
 class PoliceStationSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
-    subdivision = serializers.CharField(
-        source='subdivision_code.subdivision', 
+    district = serializers.CharField(
+        source='district_code.district', 
         read_only=True
     )
 
@@ -15,8 +14,8 @@ class PoliceStationSerializer(serializers.ModelSerializer):
             'id',
             'police_station',
             'police_station_code',
-            'subdivision_code',
-            'subdivision',
+            'district_code',
+            'district',
             'is_active',
             'status'
         ]
