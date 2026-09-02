@@ -38,6 +38,7 @@ class EnaTransitPermitDetail(models.Model):
     excise_duty_rs_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
     education_cess_rs_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
     additional_excise_duty_rs_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
+    bottling_fee_rs_per_case = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
     
     # New field
     manufacturing_unit_name = models.CharField(max_length=255, default='', blank=True)
@@ -46,6 +47,7 @@ class EnaTransitPermitDetail(models.Model):
     total_education_cess = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
     total_excise_duty = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
     total_additional_excise = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
+    total_bottling_fee = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
     total_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0.00, blank=True)
 
     # Route and Transport fields (added via migration 0004)

@@ -215,6 +215,7 @@ class SubmitTransitPermitAPIView(views.APIView):
         ensure_rate('excise_duty', 'excise_duty_rs_per_case')
         ensure_rate('education_cess', 'education_cess_rs_per_case')
         ensure_rate('additional_excise', 'additional_excise_duty_rs_per_case')
+        ensure_rate('bottling_fee', 'bottling_fee')
 
         return product
 
@@ -367,13 +368,15 @@ class SubmitTransitPermitAPIView(views.APIView):
 
         excise_duty_total = Decimal("0.00")
         additional_excise_total = Decimal("0.00")
+        bottling_fee_total = Decimal("0.00")
         education_total = Decimal("0.00")
         for row in permit_rows:
             excise_duty_total += Decimal(str(row.total_excise_duty or 0))
             additional_excise_total += Decimal(str(row.total_additional_excise or 0))
+            bottling_fee_total += Decimal(str(row.total_bottling_fee or 0))
             education_total += Decimal(str(row.total_education_cess or 0))
 
-        excise_total = (excise_duty_total + additional_excise_total).quantize(Decimal("0.01"))
+        excise_total = (excise_duty_total + additional_excise_total + bottling_fee_total).quantize(Decimal("0.01"))
         if excise_total <= 0 and education_total <= 0:
             return
 
@@ -414,7 +417,7 @@ class SubmitTransitPermitAPIView(views.APIView):
             now_ts = timezone.now()
 
             if excise_wallet and excise_total > 0:
-                # Track excise duty and additional excise separately, but both debit the same excise wallet.
+                # Track excise duty, additional excise, and bottling fee separately, but all debit the same excise wallet.
                 excise_before = Decimal(str(excise_wallet.current_balance or 0))
                 running_balance = excise_before
 
@@ -486,6 +489,35 @@ class SubmitTransitPermitAPIView(views.APIView):
                         source_module='transit_permit',
                         payment_status='success',
                         remarks='Transit - Additional Excise Duty',
+                        created_at=now_ts,
+                    )
+
+                if bottling_fee_total > 0:
+                    bottling_fee_transaction_id = f"TRP-{bill_no}-BOTTLING_FEE"
+                    _ensure_not_exists(bottling_fee_transaction_id)
+
+                    before = running_balance
+                    after = before - bottling_fee_total
+                    running_balance = after
+
+                    WalletTransaction.objects.create(
+                        wallet_balance=excise_wallet,
+                        transaction_id=bottling_fee_transaction_id,
+                        licensee_id=license_id,
+                        licensee_name=excise_wallet.licensee_name,
+                        user_id=username or excise_wallet.user_id,
+                        module_type=excise_wallet.module_type,
+                        wallet_type_id='transit_permit_bottling_fee',
+                        head_of_account=excise_wallet.head_of_account,
+                        entry_type='DR',
+                        transaction_type='debit',
+                        amount=bottling_fee_total,
+                        balance_before=before,
+                        balance_after=after,
+                        reference_no=bill_no,
+                        source_module='transit_permit',
+                        payment_status='success',
+                        remarks='Transit - Bottling Fee',
                         created_at=now_ts,
                     )
 
@@ -672,6 +704,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                             excise_duty_rs_per_case=product.get('excise_duty', 0.00),
                             education_cess_rs_per_case=product.get('education_cess', 0.00),
                             additional_excise_duty_rs_per_case=product.get('additional_excise', 0.00),
+                            bottling_fee_rs_per_case=product.get('bottling_fee', 0.00),
                             
                             # Save Historical Bottles Per Case
                             bottles_per_case=self._get_bottles_per_case(product.get('size'), product.get('brand')),
@@ -682,10 +715,12 @@ class SubmitTransitPermitAPIView(views.APIView):
                             total_excise_duty=float(product.get('excise_duty', 0.00)) * int(product.get('cases', 0)),
                             total_education_cess=float(product.get('education_cess', 0.00)) * int(product.get('cases', 0)),
                             total_additional_excise=float(product.get('additional_excise', 0.00)) * int(product.get('cases', 0)),
+                            total_bottling_fee=float(product.get('bottling_fee', 0.00)) * int(product.get('cases', 0)),
                             total_amount=(
                                 (float(product.get('excise_duty', 0.00)) + 
                                  float(product.get('education_cess', 0.00)) + 
-                                 float(product.get('additional_excise', 0.00))) * int(product.get('cases', 0))
+                                 float(product.get('additional_excise', 0.00)) +
+                                 float(product.get('bottling_fee', 0.00))) * int(product.get('cases', 0))
                             )
                         )
 

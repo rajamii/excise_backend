@@ -249,6 +249,7 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
                 ('excise_duty_rs_per_case', 'excise_duty_rs_per_case'),
                 ('education_cess_rs_per_case', 'education_cess_rs_per_case'),
                 ('additional_excise_duty_rs_per_case', 'additional_excise_duty_rs_per_case'),
+                ('bottling_fee_rs_per_case', 'bottling_fee'),
             ]
             for api_field, warehouse_attr in per_case_fields:
                 current = self._parse_decimal(data.get(api_field))
@@ -272,6 +273,7 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
             excise_per_case = self._parse_decimal(data.get('excise_duty_rs_per_case'))
             education_per_case = self._parse_decimal(data.get('education_cess_rs_per_case'))
             additional_per_case = self._parse_decimal(data.get('additional_excise_duty_rs_per_case'))
+            bottling_per_case = self._parse_decimal(data.get('bottling_fee_rs_per_case'))
 
             if self._parse_decimal(data.get('total_excise_duty')) <= 0 and excise_per_case > 0:
                 data['total_excise_duty'] = str(excise_per_case * cases)
@@ -279,9 +281,11 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
                 data['total_education_cess'] = str(education_per_case * cases)
             if self._parse_decimal(data.get('total_additional_excise')) <= 0 and additional_per_case > 0:
                 data['total_additional_excise'] = str(additional_per_case * cases)
+            if self._parse_decimal(data.get('total_bottling_fee')) <= 0 and bottling_per_case > 0:
+                data['total_bottling_fee'] = str(bottling_per_case * cases)
 
             if self._parse_decimal(data.get('total_amount')) <= 0:
-                total_per_case = excise_per_case + education_per_case + additional_per_case
+                total_per_case = excise_per_case + education_per_case + additional_per_case + bottling_per_case
                 if total_per_case > 0:
                     data['total_amount'] = str(total_per_case * cases)
         except Exception:
@@ -380,6 +384,7 @@ class TransitPermitProductSerializer(serializers.Serializer):
     excise_duty = serializers.DecimalField(max_digits=15, decimal_places=2, required=False) # Maps to exciseDuty
     education_cess = serializers.DecimalField(max_digits=15, decimal_places=2, required=False) # Maps to educationCess
     additional_excise = serializers.DecimalField(max_digits=15, decimal_places=2, required=False) # Maps to additionalExcise
+    bottling_fee = serializers.DecimalField(max_digits=15, decimal_places=2, required=False) # Maps to bottlingFee
     manufacturing_unit_name = serializers.CharField(required=False, allow_blank=True) # New field
 
 
