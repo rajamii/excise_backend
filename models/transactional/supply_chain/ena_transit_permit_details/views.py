@@ -496,6 +496,19 @@ class SubmitTransitPermitAPIView(views.APIView):
                     bottling_fee_transaction_id = f"TRP-{bill_no}-BOTTLING_FEE"
                     _ensure_not_exists(bottling_fee_transaction_id)
 
+                    try:
+                        from models.transactional.wallet.models import MasterWalletType
+                        MasterWalletType.objects.get_or_create(
+                            code='transit_permit_bottling_fee',
+                            defaults={
+                                'name': 'Transit Permit Bottling Fee',
+                                'description': 'Transit Permit Bottling Fee Wallet Category',
+                                'is_active': True
+                            }
+                        )
+                    except Exception:
+                        pass
+
                     before = running_balance
                     after = before - bottling_fee_total
                     running_balance = after
@@ -824,9 +837,11 @@ class GetTransitPermitAPIView(generics.ListAPIView):
                 queryset = queryset.filter(bill_no__iexact=bill_no)
         return queryset
 
-    @dashboard_counts_cache("supply_chain_transit_permits")
     def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
+        bill_no = request.query_params.get('bill_no') or request.query_params.get('billNo')
+        if bill_no:
+            return super().get(request, *args, **kwargs)
+        return dashboard_counts_cache("supply_chain_transit_permits")(super().get)(request, *args, **kwargs)
 
 class GetTransitPermitDetailAPIView(generics.RetrieveAPIView):
     serializer_class = EnaTransitPermitDetailSerializer
