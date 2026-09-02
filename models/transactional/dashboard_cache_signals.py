@@ -17,6 +17,7 @@ DASHBOARD_MODEL_LABELS = (
     ("distributor_permit", "DistributorPermitApplication"),
     ("distributor_permit", "IMFLRevalidation"),
     ("distributor_permit", "IMFLCancellation"),
+    ("ena_transit_permit_details", "EnaTransitPermitDetail"),
     ("site_enquiry", "SiteEnquiryReport"),
 )
 

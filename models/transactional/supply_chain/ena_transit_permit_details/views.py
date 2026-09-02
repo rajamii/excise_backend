@@ -838,10 +838,7 @@ class GetTransitPermitAPIView(generics.ListAPIView):
         return queryset
 
     def get(self, request, *args, **kwargs):
-        bill_no = request.query_params.get('bill_no') or request.query_params.get('billNo')
-        if bill_no:
-            return super().get(request, *args, **kwargs)
-        return dashboard_counts_cache("supply_chain_transit_permits")(super().get)(request, *args, **kwargs)
+        return super().get(request, *args, **kwargs)
 
 class GetTransitPermitDetailAPIView(generics.RetrieveAPIView):
     serializer_class = EnaTransitPermitDetailSerializer
