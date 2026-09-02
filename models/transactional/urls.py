@@ -19,4 +19,5 @@ urlpatterns = [
     path('site_enquiry/', include(('models.transactional.site_enquiry.urls', 'site_enquiry'), namespace='site_enquiry')),
     path('new_license_application/', include(('models.transactional.new_license_application.urls', 'new_license_application'), namespace='new_license_application')),
     path('single-window/', include(('models.transactional.single_window.urls', 'single_window'), namespace='single_window')),
+    path('secretary/', include(('models.transactional.secretary.urls', 'secretary'), namespace='secretary')),
 ]

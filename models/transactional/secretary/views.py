@@ -696,51 +696,6 @@ def secretary_imfl_overview(request):
             'valid_up_to': v_date
         })
 
-    # Default Requisitions fallback if empty
-    if not raw_requisitions:
-        raw_requisitions = [
-            {
-                'reference_no': 'REQ/01/EXCISE',
-                'our_ref_no': 'REQ/01/EXCISE',
-                'distillery_name': 'M/s Boudh Distillery Pvt Ltd',
-                'supplier_name': 'M/s Boudh Distillery Pvt Ltd',
-                'lifted_from': 'M/s Boudh Distillery Storage Facility',
-                'origin': 'M/s Boudh Distillery Storage Facility',
-                'purpose_name': 'Bottling Operations Plant',
-                'destination': 'Bottling Operations Plant',
-                'route': 'NH-10 Highway via Rangpo Checkpost',
-                'spirit_type': 'Fermented Grape Juice',
-                'strength': '12.5% V/V or 21.9 OP',
-                'total_bl': 5000.0,
-                'totalbl': 5000.0,
-                'permits_count': 5,
-                'status': 'Approved',
-                'submitted_at': '2026-08-19 04:27',
-                'created_at': '2026-08-19 04:27',
-                'valid_up_to': '2026-08-25'
-            },
-            {
-                'reference_no': 'IMFLREQ/2026-27/0001',
-                'our_ref_no': 'IMFLREQ/2026-27/0001',
-                'distillery_name': 'Sikkim Himalayan Bottlers Pvt Ltd',
-                'supplier_name': 'Sikkim Himalayan Bottlers Pvt Ltd',
-                'lifted_from': 'Gangtok Central Spirits Depot',
-                'origin': 'Gangtok Central Spirits Depot',
-                'purpose_name': 'MG Marg Wholesale Depot',
-                'destination': 'MG Marg Wholesale Depot',
-                'route': 'Mode: Road Transport | Vehicle: SK-01-D-8821',
-                'spirit_type': 'IMFL Premium Cases',
-                'strength': '42.8% V/V',
-                'total_bl': 18500.0,
-                'totalbl': 18500.0,
-                'permits_count': 3,
-                'status': 'Approved',
-                'submitted_at': '2026-08-22 09:52',
-                'created_at': '2026-08-22 09:52',
-                'valid_up_to': '2026-08-30'
-            }
-        ]
-
     # Deduplicate Requisitions by reference_no
     seen_req_refs = set()
     requisitions = []
@@ -797,38 +752,6 @@ def secretary_imfl_overview(request):
             'reason': ir.revalidation_reason or 'Trans-shipment delay revalidation request during interstate transit',
             'submitted_at': ir.submitted_at.strftime('%Y-%m-%d %H:%M') if ir.submitted_at else '2026-08-13 11:00'
         })
-
-    if not raw_revalidations:
-        raw_revalidations = [
-            {
-                'reference_no': 'REV-ENA-001',
-                'our_ref_no': 'REV-ENA-001',
-                'distillery_name': 'Sikkim Distillery Limited (Rangpo)',
-                'establishment_name': 'Sikkim Distillery Limited (Rangpo)',
-                'spirit_type': 'Extra Neutral Alcohol (ENA)',
-                'total_bl': 15000.0,
-                'revalidation_date': '2026-09-15',
-                'revalidation_fee': 2500.0,
-                'branch_name': 'East Sikkim Excise Depot',
-                'status': 'Approved',
-                'reason': 'Permit validity extension requested due to monsoon road blockages at NH-10',
-                'submitted_at': '2026-08-12 14:00'
-            },
-            {
-                'reference_no': 'IMFLREV/2026-27/001',
-                'our_ref_no': 'IMFLREV/2026-27/001',
-                'distillery_name': 'Yuksom Breweries Limited',
-                'establishment_name': 'Yuksom Breweries Limited',
-                'spirit_type': 'IMFL Premium Cases',
-                'total_bl': 12000.0,
-                'revalidation_date': '2026-09-20',
-                'revalidation_fee': 3500.0,
-                'branch_name': 'Central Excise Warehouse',
-                'status': 'Approved',
-                'reason': 'Trans-shipment delay revalidation request during interstate transit',
-                'submitted_at': '2026-08-13 11:00'
-            }
-        ]
 
     # Deduplicate Revalidations by reference_no
     seen_rev_refs = set()
@@ -894,44 +817,6 @@ def secretary_imfl_overview(request):
             'reason': ic.cancellation_reason or 'Commercial cancellation requested before transit vehicle departure',
             'submitted_at': ic.submitted_at.strftime('%Y-%m-%d %H:%M') if ic.submitted_at else '2026-08-22 09:53'
         })
-
-    if not raw_cancellations:
-        raw_cancellations = [
-            {
-                'reference_no': 'CNC-ENA-001',
-                'our_ref_no': 'CNC-ENA-001',
-                'requisition_ref': 'REQ-ENA-001',
-                'requisition_ref_no': 'REQ-ENA-001',
-                'distillery_name': 'Yuksom Breweries Limited (Gyalshing)',
-                'establishment_name': 'Yuksom Breweries Limited (Gyalshing)',
-                'spirit_type': 'Extra Neutral Alcohol (ENA)',
-                'cancelled_bl': 8000.0,
-                'total_bl': 8000.0,
-                'cancellation_fee': 1500.0,
-                'cancelled_permit_no': 'PERMIT/2026/01',
-                'cancelled_permit_number': 'PERMIT/2026/01',
-                'status': 'Approved',
-                'reason': 'Order quantity revised by licensee prior to dispatch from distillery',
-                'submitted_at': '2026-08-14 16:30'
-            },
-            {
-                'reference_no': 'IMFLCNC/2026-27/001',
-                'our_ref_no': 'IMFLCNC/2026-27/001',
-                'requisition_ref': 'IMFLREQ/2026-27/0001',
-                'requisition_ref_no': 'IMFLREQ/2026-27/0001',
-                'distillery_name': 'Sikkim Himalayan Bottlers Pvt Ltd',
-                'establishment_name': 'Sikkim Himalayan Bottlers Pvt Ltd',
-                'spirit_type': 'IMFL Premium Cases',
-                'cancelled_bl': 6500.0,
-                'total_bl': 6500.0,
-                'cancellation_fee': 2000.0,
-                'cancelled_permit_no': 'IMFL/CNC/2026/09',
-                'cancelled_permit_number': 'IMFL/CNC/2026/09',
-                'status': 'Approved',
-                'reason': 'Commercial cancellation requested before transit vehicle departure',
-                'submitted_at': '2026-08-15 09:45'
-            }
-        ]
 
     # Deduplicate Cancellations by reference_no
     seen_cnc_refs = set()
