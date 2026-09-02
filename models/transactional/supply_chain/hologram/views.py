@@ -16,7 +16,7 @@ from auth.workflow.constants import WORKFLOW_IDS
 from models.masters.supply_chain.profile.models import UserManufacturingUnit
 from models.masters.supply_chain.hologram_supplier.models import MasterHologramSupplier
 from models.transactional.supply_chain.access_control import scope_by_profile_or_workflow
-from models.transactional.dashboard_cache import dashboard_counts_cache
+from models.transactional.dashboard_cache import dashboard_counts_cache, invalidate_dashboard_counts_cache
 from utils.simple_pdf import PdfPage, build_text_pdf, paginate_lines
 
 HOLOGRAM_REF_PREFIX = 'HQR'
@@ -507,6 +507,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 performed_by=self.request.user,
                 remarks='Hologram Procurement Application Submitted'
             )
+            invalidate_dashboard_counts_cache()
 
     @action(detail=True, methods=['post'])
     def perform_action(self, request, pk=None):

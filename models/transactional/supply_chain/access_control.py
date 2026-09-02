@@ -292,18 +292,30 @@ def scope_by_profile_or_workflow(user, queryset, workflow_id, licensee_field='li
         for alias in _expand_license_aliases(value):
             scoped_values.add(alias)
 
-    # Direct applicant/licensee filtering for models that store applicant foreign key or licensee_id
-    has_applicant_field = any(f.name == 'applicant' for f in queryset.model._meta.get_fields())
-    has_licensee_field = any(f.name == licensee_field for f in queryset.model._meta.get_fields())
+    # Direct applicant/licensee filtering for models that store applicant foreign key, license FK, licensee FK, or licensee_id
+    model_field_names = {f.name for f in queryset.model._meta.get_fields()}
+    base_licensee_field = str(licensee_field).split('__')[0]
+    has_applicant_field = 'applicant' in model_field_names
+    has_licensee_field = base_licensee_field in model_field_names or licensee_field in model_field_names
+    has_license_field = 'license' in model_field_names
+    has_licensee_rel = 'licensee' in model_field_names
 
-    if has_applicant_field or (has_licensee_field and scoped_values):
+    if has_applicant_field or has_licensee_field or has_license_field or has_licensee_rel:
         filter_q = Q()
         if has_applicant_field and user and user.is_authenticated:
             filter_q |= Q(applicant=user)
+        if has_license_field and user and user.is_authenticated:
+            filter_q |= Q(license__applicant=user)
+            if scoped_values:
+                filter_q |= Q(license__license_id__in=list(scoped_values))
+        if has_licensee_rel and user and user.is_authenticated:
+            filter_q |= Q(licensee__user=user)
+            if scoped_values:
+                filter_q |= Q(licensee__licensee_id__in=list(scoped_values))
         if has_licensee_field and scoped_values:
             filter_q |= Q(**{f'{licensee_field}__in': list(scoped_values)})
         if filter_q:
-            return queryset.filter(filter_q)
+            return queryset.filter(filter_q).distinct()
 
     # OIC users without an assignment should not see cross-license records.
     if is_oic_user:

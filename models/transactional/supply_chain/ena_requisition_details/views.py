@@ -20,7 +20,7 @@ from .models import (
 )
 from .serializers import EnaRequisitionDetailSerializer, RequisitionBulkLiterDetailSerializer
 from auth.workflow.constants import WORKFLOW_IDS
-from models.transactional.dashboard_cache import dashboard_counts_cache
+from models.transactional.dashboard_cache import dashboard_counts_cache, invalidate_dashboard_counts_cache
 from models.transactional.supply_chain.access_control import (
     has_workflow_access,
     scope_by_profile_or_workflow,
@@ -228,6 +228,10 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
             queryset = queryset.filter(our_ref_no=our_ref_no)
         return queryset
     
+    def perform_create(self, serializer):
+        super().perform_create(serializer)
+        invalidate_dashboard_counts_cache()
+
     def get_serializer_context(self):
         """
         Ensure request is passed to serializer context

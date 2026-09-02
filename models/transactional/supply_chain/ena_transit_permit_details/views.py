@@ -16,7 +16,7 @@ from .serializers import (
 )
 from .models import EnaTransitPermitDetail
 from auth.workflow.constants import WORKFLOW_IDS
-from models.transactional.dashboard_cache import dashboard_counts_cache
+from models.transactional.dashboard_cache import dashboard_counts_cache, invalidate_dashboard_counts_cache
 from models.transactional.supply_chain.access_control import (
     has_workflow_access,
     scope_by_profile_or_workflow,
@@ -765,6 +765,7 @@ class SubmitTransitPermitAPIView(views.APIView):
                         user=request.user,
                     )
                 
+                invalidate_dashboard_counts_cache()
                 return Response({
                     "status": "success",
                     "message": submit_message,
