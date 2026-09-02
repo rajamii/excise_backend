@@ -90,7 +90,7 @@ class NewLicenseApplication(models.Model):
     block_name = models.CharField(max_length=100, blank=True, null=True)
     ward_name = models.CharField(max_length=100)
     business_address = models.TextField()
-    road_name = models.CharField(max_length=100)
+    road_name = models.CharField(max_length=100, blank=True, null=True, default='')
     pin_code = models.CharField(max_length=6)
     construction_type = models.CharField(max_length=50)
     length = models.DecimalField(max_digits=6, decimal_places=2, blank=True, null=True)
