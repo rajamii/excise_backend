@@ -156,6 +156,13 @@ class BrandWarehouse(models.Model):
         default=0,
         db_column='additional_excise_duty_12_5_percent_rs_per_case'
     )
+    bottling_fee = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=0,
+        db_column='bottling_fee',
+        help_text='Bottling fee (Rs/Case)'
+    )
     mrp_rs_per_bottle = models.DecimalField(
         max_digits=15,
         decimal_places=2,

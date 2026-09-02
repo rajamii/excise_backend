@@ -242,6 +242,7 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
             'education_cess_rs_per_case',
             'additional_excise_duty_rs_per_case',
             'additional_excise_duty_12_5_percent_rs_per_case',
+            'bottling_fee',
             'mrp_rs_per_bottle',
             'reorder_level',
             'max_capacity',
@@ -298,6 +299,7 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
             'education_cess_rs_per_case': obj.education_cess_rs_per_case,
             'additional_excise_duty_rs_per_case': obj.additional_excise_duty_rs_per_case,
             'additional_excise_duty_12_5_percent_rs_per_case': obj.additional_excise_duty_12_5_percent_rs_per_case,
+            'bottling_fee': obj.bottling_fee,
             'mrp_rs_per_bottle': obj.mrp_rs_per_bottle,
         }
 
@@ -404,6 +406,7 @@ class BrandWarehouseSummarySerializer(serializers.ModelSerializer):
             'education_cess_rs_per_case',
             'additional_excise_duty_rs_per_case',
             'additional_excise_duty_12_5_percent_rs_per_case',
+            'bottling_fee',
             'mrp_rs_per_bottle',
             'total_utilized',
             'utilization_percentage',
