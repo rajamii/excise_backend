@@ -406,6 +406,7 @@ def secretary_licenses_overview(request):
     from models.transactional.new_license_application.models import NewLicenseApplication
     from models.transactional.license_renewal_application.models import LicenseApplication as LicenseRenewalApplication
     from models.masters.license.models import License
+    from auth.workflow.models import Rejection, Objection
 
     nla_qs = NewLicenseApplication.objects.select_related('license_category', 'license_sub_category', 'site_district').all().order_by('-created_at')
     new_license_apps_list = []
