@@ -62,12 +62,6 @@ ROLE_STAGE_MAP = {
         'approved': [STAGE_AWAITING_PAYMENT, STAGE_APPROVED],
         'rejected': [STAGE_REJECTED],
     },
-    'licensee': {
-        'pending':  [STAGE_APPLICANT_APPLIED, STAGE_AWAITING_PAYMENT,
-                     STAGE_PERMIT_SECTION_OBJECTION, STAGE_COMMISSIONER_OBJECTION],
-        'approved': [STAGE_APPROVED],
-        'rejected': [STAGE_REJECTED],
-    },
 }
 
 # Valid workflow transitions:
@@ -651,6 +645,18 @@ def application_group(request):
     def _serialize(qs):
         return CompanyCollaborationSerializer(qs, many=True).data
 
+    # ── Applicant / licensee ─────────────────────────────────────────────
+    if role == 'licensee':
+        mine = base_qs.filter(applicant=request.user)
+        return Response({
+            'applied':   _serialize(mine.filter(current_stage__name__in=[STAGE_APPLICANT_APPLIED] + OFFICER_PENDING_STAGES)),
+            'pending':   _serialize(mine.filter(current_stage__name__in=[STAGE_APPLICANT_APPLIED] + OFFICER_PENDING_STAGES)),
+            'objection': _serialize(mine.filter(current_stage__name__in=OBJECTION_STAGES)),
+            'approved':  _serialize(mine.filter(current_stage__name=STAGE_APPROVED, is_approved=True)),
+            'rejected':  _serialize(mine.filter(current_stage__name=STAGE_REJECTED)),
+            'awaiting_payment': _serialize(mine.filter(current_stage__name=STAGE_AWAITING_PAYMENT)),
+        })
+
     # ── Officer roles ────────────────────────────────────────────────────
     if role in ROLE_STAGE_MAP:
         stages = ROLE_STAGE_MAP[role]
@@ -680,16 +686,6 @@ def application_group(request):
                 .annotate(_acted_by_role=acted_by_role)
                 .filter(_acted_by_role=True)
             ),
-        })
-
-    # ── Applicant / licensee ─────────────────────────────────────────────
-    if role == 'licensee':
-        mine = base_qs.filter(applicant=request.user)
-        return Response({
-            'applied':   _serialize(mine.filter(current_stage__name__in=[STAGE_APPLICANT_APPLIED] + OFFICER_PENDING_STAGES)),
-            'objection': _serialize(mine.filter(current_stage__name__in=OBJECTION_STAGES)),
-            'approved':  _serialize(mine.filter(current_stage__name=STAGE_APPROVED, is_approved=True)),
-            'rejected':  _serialize(mine.filter(current_stage__name=STAGE_REJECTED)),
         })
 
     # ── Admin / single window ────────────────────────────────────────────
