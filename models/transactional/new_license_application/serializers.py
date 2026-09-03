@@ -25,11 +25,11 @@ DRAUGHT_BEER_MODULE_CODE = "NLI_ADD_DRAUGHT_BEER"
 MINI_BAR_MODULE_CODE = "NLI_ADD_MINI_BAR"
 
 
-def _get_additional_charge_total(obj: NewLicenseApplication) -> Decimal:
+def _get_additional_charge_details(obj: NewLicenseApplication):
     """
-    Additional charges are configurable in `masters_fixedfee` (MasterFixedFee.amount).
-    They are added to both license fee and security fee when selected by the applicant.
+    Returns (breakdown_list, total_decimal) for all active additional charges on this application.
     """
+    breakdown = []
     total = Decimal("0.00")
     try:
         from models.masters.core.models import MasterFixedFee
@@ -42,15 +42,46 @@ def _get_additional_charge_total(obj: NewLicenseApplication) -> Decimal:
             ).values("fee_code", "amount")
         }
         if getattr(obj, "pachwai", False):
-            total += module_fees.get(PACHWAI_MODULE_CODE, Decimal("0.00"))
+            amt = module_fees.get(PACHWAI_MODULE_CODE, Decimal("3000.00"))
+            total += amt
+            breakdown.append({
+                "code": "pachwai",
+                "label": "Pachwai (Additional)",
+                "unit_amount": float(amt),
+                "quantity": 1,
+                "amount": float(amt),
+            })
         if getattr(obj, "draught_beer", False):
-            total += module_fees.get(DRAUGHT_BEER_MODULE_CODE, Decimal("0.00"))
+            amt = module_fees.get(DRAUGHT_BEER_MODULE_CODE, Decimal("5000.00"))
+            total += amt
+            breakdown.append({
+                "code": "draught_beer",
+                "label": "Draught Beer (Additional)",
+                "unit_amount": float(amt),
+                "quantity": 1,
+                "amount": float(amt),
+            })
         if getattr(obj, "mini_bar", False):
-            quantity = getattr(obj, "mini_bar_quantity", 0) or 0
-            total += module_fees.get(MINI_BAR_MODULE_CODE, Decimal("0.00")) * Decimal(str(quantity))
+            qty = getattr(obj, "mini_bar_quantity", 0) or 0
+            if qty < 1:
+                qty = 1
+            unit_amt = module_fees.get(MINI_BAR_MODULE_CODE, Decimal("1000.00"))
+            amt = unit_amt * Decimal(str(qty))
+            total += amt
+            breakdown.append({
+                "code": "mini_bar",
+                "label": f"Mini Bar (Additional x{qty})",
+                "unit_amount": float(unit_amt),
+                "quantity": qty,
+                "amount": float(amt),
+            })
     except Exception:
-        # Non-blocking: if the master table isn't configured in a deployment, fall back to 0.
         pass
+    return breakdown, total
+
+
+def _get_additional_charge_total(obj: NewLicenseApplication) -> Decimal:
+    _, total = _get_additional_charge_details(obj)
     return total
 
 
@@ -158,6 +189,10 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     yearly_license_fee = serializers.SerializerMethodField()
     license_fee_amount = serializers.SerializerMethodField()
     security_fee_amount = serializers.SerializerMethodField()
+    base_license_fee = serializers.SerializerMethodField()
+    base_security_fee = serializers.SerializerMethodField()
+    additional_charges_total = serializers.SerializerMethodField()
+    additional_charges_breakdown = serializers.SerializerMethodField()
     valid_up_to = serializers.SerializerMethodField()
     issued_license_id = serializers.SerializerMethodField()
     renewal_application_id = serializers.SerializerMethodField()
@@ -283,6 +318,24 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         if base is None:
             return None
         return base + _get_additional_charge_total(obj)
+
+    def get_base_license_fee(self, obj):
+        fee = self._resolve_license_fee(obj)
+        base = getattr(fee, "license_fee", None) if fee else None
+        return float(base) if base is not None else None
+
+    def get_base_security_fee(self, obj):
+        fee = self._resolve_license_fee(obj)
+        base = getattr(fee, "security_amount", None) if fee else None
+        return float(base) if base is not None else None
+
+    def get_additional_charges_total(self, obj):
+        total = _get_additional_charge_total(obj)
+        return float(total) if total is not None else 0.0
+
+    def get_additional_charges_breakdown(self, obj):
+        breakdown, _ = _get_additional_charge_details(obj)
+        return breakdown
 
     def validate(self, data):
         # Resolve-objection updates are partial payloads, so only validate fields that
