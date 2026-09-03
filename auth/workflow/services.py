@@ -682,6 +682,7 @@ class WorkflowService:
         # so licensee payment screens can show correct amounts.
         if is_new_license_application:
             try:
+                from models.masters.core.models import LicenseFee
                 selected_fee_id = (
                     (context or {}).get("selected_license_fee_id")
                     or ((context or {}).get("license_fee_selection") or {}).get("id")
@@ -689,8 +690,32 @@ class WorkflowService:
                 )
                 if selected_fee_id is not None:
                     application.licensee_fee_id = int(selected_fee_id)
-            except Exception:
-                pass
+                    fee_obj = LicenseFee.objects.filter(id=int(selected_fee_id)).select_related('location_code', 'license_category', 'license_subcategory').first()
+                    if fee_obj:
+                        if getattr(fee_obj, 'license_category_id', None):
+                            application.license_category_id = fee_obj.license_category_id
+                        if getattr(fee_obj, 'license_subcategory_id', None):
+                            application.license_sub_category_id = fee_obj.license_subcategory_id
+                        if getattr(fee_obj, 'location_code', None):
+                            loc_desc = getattr(fee_obj.location_code, 'location_description', '') or str(fee_obj.location_code)
+                            if loc_desc:
+                                application.location_category = loc_desc
+                                application.location_name = loc_desc
+
+                ctx_cat_id = (context or {}).get("license_category_id")
+                ctx_subcat_id = (context or {}).get("license_subcategory_id") or (context or {}).get("license_sub_category_id")
+                ctx_loc = (context or {}).get("location_category") or (context or {}).get("location_description") or (context or {}).get("location_name")
+                if ctx_cat_id:
+                    try: application.license_category_id = int(ctx_cat_id)
+                    except Exception: pass
+                if ctx_subcat_id:
+                    try: application.license_sub_category_id = int(ctx_subcat_id)
+                    except Exception: pass
+                if ctx_loc:
+                    application.location_category = str(ctx_loc).strip()
+                    application.location_name = str(ctx_loc).strip()
+            except Exception as ex:
+                logger.warning("Failed to link selected_license_fee_id/location: %s", ex)
 
             # Business rule: when Joint Commissioner approves, mark fee/category steps done.
             try:
@@ -717,7 +742,7 @@ class WorkflowService:
             application.is_approved = target_name == 'approved'
             update_fields.append('is_approved')
         if is_new_license_application:
-            for f in ("licensee_fee_id", "is_fee_calculated", "is_license_category_updated"):
+            for f in ("licensee_fee_id", "license_category", "license_sub_category", "location_category", "location_name", "is_fee_calculated", "is_license_category_updated"):
                 if hasattr(application, f):
                     update_fields.append(f)
         application.save(update_fields=list(dict.fromkeys(update_fields)))
