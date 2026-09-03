@@ -439,6 +439,8 @@ def create_special_permit_application(request):
         user=request.user,
         remarks='Special Permit application submitted',
     )
+    from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
+    invalidate_dashboard_counts_cache()
     return Response(SpecialPermitApplicationSerializer(application).data, status=status.HTTP_201_CREATED)
 
 
@@ -493,7 +495,7 @@ def dashboard_counts(request):
             'awaiting_payment': qs.filter(current_stage__name__in=payment_stages).count(),
         }, status=status.HTTP_200_OK)
 
-    if role in ('site_admin', 'site_administrator', 'single_window', 'secretary', 'super_admin', 'commissioner', 'joint_commissioner', 'executive'):
+    if role in ('site_admin', 'site_administrator', 'single_window', 'secretary', 'super_admin'):
         return Response({
             'applied': qs.count(),
             'pending': qs.filter(current_stage__name__in=pending_stages).count(),
