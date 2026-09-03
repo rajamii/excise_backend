@@ -102,6 +102,19 @@ def initiate_renewal(request, license_id):
         if draught_beer is not None:
             src_app.draught_beer = bool(draught_beer)
             update_fields.append("draught_beer")
+
+        mini_bar = request.data.get("mini_bar")
+        if mini_bar is not None:
+            src_app.mini_bar = bool(mini_bar)
+            update_fields.append("mini_bar")
+
+        mini_bar_quantity = request.data.get("mini_bar_quantity")
+        if mini_bar_quantity is not None:
+            try:
+                src_app.mini_bar_quantity = max(0, int(mini_bar_quantity))
+            except (TypeError, ValueError):
+                src_app.mini_bar_quantity = 0
+            update_fields.append("mini_bar_quantity")
             
         mode_of_operation = request.data.get("mode_of_operation")
         if mode_of_operation is not None and mode_of_operation in ["Self", "Salesman", "Barman"]:
