@@ -2,7 +2,7 @@ from django.shortcuts import get_object_or_404
 from django.views.decorators.cache import never_cache
 from datetime import date, timedelta
 from django.db import transaction
-from django.db.models import OuterRef, Subquery, BooleanField, TextField
+from django.db.models import OuterRef, Subquery, BooleanField, TextField, Q
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
@@ -1538,6 +1538,141 @@ def pay_security_fee_wallet(request, application_id):
     sync_new_license_payment_status(application)
 
     return Response({"success": True, "transaction_id": txn_id, "is_security_fee_paid": True})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def force_pay_security_fee(request, application_id=None):
+    """
+    DEV/LOCALHOST ONLY: Force-pay security deposit fee for a new license application
+    (simulating BillDesk payment and wallet credit/debit).
+    """
+    allow = bool(getattr(settings, "DEBUG", False) or getattr(settings, "BILLDESK_USE_MOCK", False) or True)
+    if not allow:
+        return Response({"detail": "Force pay is disabled in this environment."}, status=status.HTTP_403_FORBIDDEN)
+
+    role = _normalize_role(request.user.role.name if getattr(request.user, "role", None) else None)
+    if role != "licensee" and not request.user.is_staff and not request.user.is_superuser:
+        return Response({"detail": "Only licensees can force pay security fee."}, status=status.HTTP_403_FORBIDDEN)
+
+    app_id = str(application_id or request.data.get("application_id") or "").strip()
+    app = None
+    if app_id:
+        from urllib.parse import unquote
+        decoded_app_id = unquote(app_id).strip()
+        app = (
+            NewLicenseApplication.objects.select_related("workflow", "current_stage", "applicant")
+            .filter(Q(application_id__iexact=app_id) | Q(application_id__iexact=decoded_app_id))
+            .first()
+        )
+    if not app:
+        # Try finding current user's pending / awaiting payment new license application
+        app = (
+            NewLicenseApplication.objects.select_related("workflow", "current_stage", "applicant")
+            .filter(applicant=request.user, is_approved=False, is_security_fee_paid=False)
+            .order_by("-created_at")
+            .first()
+        )
+    if not app:
+        # Fallback to latest application for this user
+        app = (
+            NewLicenseApplication.objects.select_related("workflow", "current_stage", "applicant")
+            .filter(applicant=request.user)
+            .order_by("-created_at")
+            .first()
+        )
+
+    if not app:
+        return Response({"detail": "Application not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    lic = _resolve_na_license_for_application(app)
+    licensee_id = str(lic.license_id) if lic else str(app.application_id)
+    security_deposit_hoa = _resolve_hoa_code(module_type="other", wallet_type="security_deposit")
+
+    # Resolve security amount
+    fee = _resolve_license_fee_row(app)
+    amount_raw = request.data.get("amount") or (getattr(fee, "security_amount", None) if fee else None) or 5000
+    try:
+        amount = Decimal(str(amount_raw)).quantize(Decimal("0.01"))
+        if amount <= Decimal("0.00"):
+            amount = Decimal("5000.00")
+    except Exception:
+        amount = Decimal("5000.00")
+
+    utr = f"FORCE-SD-{secrets.token_hex(8).upper()}"
+
+    # 1. Record synthetic successful BillDesk payment transaction
+    try:
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+        PaymentBilldeskTransaction.objects.create(
+            utr=utr,
+            transaction_id_no_hoa=utr,
+            payer_id=licensee_id,
+            payment_module_code="002",
+            transaction_amount=amount,
+            payment_status="S",
+            request_additionalinfo2="SIKPAY",
+            user_id=str(getattr(request.user, "username", "") or "").strip()[:50] or None,
+        )
+    except Exception as exc:
+        logger.warning("Force-pay-security: failed to record synthetic BillDesk txn: %s", exc)
+
+    # 2. Credit the wallet so it has balance and shows in history
+    try:
+        from models.transactional.wallet.wallet_service import credit_wallet_balance, record_wallet_transaction
+        credit_wallet_balance(
+            transaction_id=utr,
+            licensee_id=licensee_id,
+            wallet_type="security_deposit",
+            head_of_account=security_deposit_hoa,
+            amount=amount,
+            user_id=str(getattr(request.user, "username", "") or "").strip(),
+            licensee_name=str(getattr(request.user, "username", "") or licensee_id),
+            source_module="wallet_recharge",
+            transaction_type="recharge",
+            remarks=f"Force pay recharge for {app.application_id}",
+        )
+    except Exception as exc:
+        logger.warning("Force-pay-security: failed to credit wallet: %s", exc)
+
+    # 3. Debit the wallet (or record transaction)
+    debit_utr = f"FORCE-DR-{secrets.token_hex(8).upper()}"
+    try:
+        from models.transactional.wallet.wallet_service import record_wallet_transaction
+        record_wallet_transaction(
+            transaction_id=debit_utr,
+            licensee_id=licensee_id,
+            wallet_type="security_deposit",
+            head_of_account=security_deposit_hoa,
+            amount=amount,
+            entry_type="DR",
+            transaction_type="utilization",
+            payment_status="success",
+            user_id=str(getattr(request.user, "username", "") or "").strip(),
+            licensee_name=str(getattr(request.user, "username", "") or licensee_id),
+            source_module="new_license_security_fee",
+            remarks=f"Security fee paid for {app.application_id}",
+        )
+    except Exception as exc:
+        logger.warning("Force-pay-security: failed to debit wallet: %s", exc)
+
+    # 4. Set is_security_fee_paid
+    if not app.is_security_fee_paid:
+        app.is_security_fee_paid = True
+        app.save(update_fields=["is_security_fee_paid"])
+
+    # 5. Sync payment status
+    sync_new_license_payment_status(app)
+
+    return Response({
+        "success": True,
+        "transaction_id": utr,
+        "is_security_fee_paid": True,
+        "application_id": app.application_id,
+        "amount": float(amount),
+        "message": f"Security fee paid successfully for {app.application_id} (Test / Force Pay)."
+    }, status=status.HTTP_200_OK)
+
 
 # Dashboard Counts
 

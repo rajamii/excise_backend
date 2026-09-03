@@ -43,4 +43,6 @@ urlpatterns = [
     # Wallet fee payments (post-commissioner approval)
     path('<everything:application_id>/pay-license-fee/', views.pay_license_fee_wallet, name='pay-license-fee-wallet'),
     path('<everything:application_id>/pay-security-fee/', views.pay_security_fee_wallet, name='pay-security-fee-wallet'),
+    path('force-pay-security-fee/', views.force_pay_security_fee, name='new-license-force-pay-security-fee-default'),
+    path('force-pay-security-fee/<everything:application_id>/', views.force_pay_security_fee, name='new-license-force-pay-security-fee'),
 ]

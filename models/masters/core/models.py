@@ -596,7 +596,8 @@ class LicenseFee(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.location_name} - Rs {self.fee_amount}"
+        loc = getattr(self, 'location_code', None) or getattr(self, 'location_name', '') or ''
+        return f"{loc} - Rs {getattr(self, 'license_fee', 0)}"
 
 
 class SupplyChainTimerConfig(models.Model):
