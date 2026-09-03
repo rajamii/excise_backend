@@ -397,18 +397,31 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
     prefix = prefix_map.get(source_type, 'XX')
     base_prefix = f"{prefix}/{district_code}/{fin_year}"
 
-    # Get next sequence cleanly (max int rather than string order_by)
-    existing_ids = License.objects.filter(license_id__startswith=base_prefix + "/").values_list('license_id', flat=True)
-    seqs = []
-    for lic_id in existing_ids:
-        parts = lic_id.split('/')
-        if len(parts) > 0 and parts[-1].isdigit():
-            seqs.append(int(parts[-1]))
-    seq = (max(seqs) + 1) if seqs else 1
-    new_license_id = f"{base_prefix}/{str(seq).zfill(4)}"
-    while License.objects.filter(license_id=new_license_id).exists():
-        seq += 1
+    # If application has a structured sequence number (e.g. NLI/1101/2026-27/0018), map to matching license ID (NA/1101/2026-27/0018)
+    app_id_str = str(getattr(application, 'application_id', '') or getattr(application, 'id', '') or '').strip()
+    candidate_license_id = None
+    if '/' in app_id_str:
+        parts = app_id_str.split('/')
+        if len(parts) == 4 and parts[-1].isdigit():
+            candidate_license_id = f"{prefix}/{parts[1]}/{parts[2]}/{parts[3]}"
+        elif len(parts) == 3 and parts[-1].isdigit():
+            candidate_license_id = f"{prefix}/{district_code}/{parts[1]}/{parts[2]}"
+
+    if candidate_license_id and not License.objects.filter(license_id=candidate_license_id).exists():
+        new_license_id = candidate_license_id
+    else:
+        # Get next sequence cleanly (max int rather than string order_by)
+        existing_ids = License.objects.filter(license_id__startswith=base_prefix + "/").values_list('license_id', flat=True)
+        seqs = []
+        for lic_id in existing_ids:
+            parts = lic_id.split('/')
+            if len(parts) > 0 and parts[-1].isdigit():
+                seqs.append(int(parts[-1]))
+        seq = (max(seqs) + 1) if seqs else 1
         new_license_id = f"{base_prefix}/{str(seq).zfill(4)}"
+        while License.objects.filter(license_id=new_license_id).exists():
+            seq += 1
+            new_license_id = f"{base_prefix}/{str(seq).zfill(4)}"
 
     try:
         license_is_active = (
