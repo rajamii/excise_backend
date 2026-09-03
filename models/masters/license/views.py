@@ -541,14 +541,14 @@ class MyLicensesListView(generics.ListAPIView):
             applicant=user
         ).values_list('application_id', flat=True)
 
-        # Primary match: any issued license for this applicant (covers renewals too).
-        qs_by_applicant = License.objects.filter(applicant=user)
+        # Primary match: any issued active license for this applicant (covers renewals too).
+        qs_by_applicant = License.objects.filter(applicant=user, is_active=True)
 
         # Compatibility fallback: match by source_object_id from user's applications.
-        qs_by_source_object = License.objects.filter(source_content_type=new_app_ct, source_object_id__in=user_app_ids)
-        qs_by_cr_source = License.objects.filter(source_content_type=cr_ct, source_object_id__in=cr_app_ids)
+        qs_by_source_object = License.objects.filter(source_content_type=new_app_ct, source_object_id__in=user_app_ids, is_active=True)
+        qs_by_cr_source = License.objects.filter(source_content_type=cr_ct, source_object_id__in=cr_app_ids, is_active=True)
 
-        return (qs_by_applicant | qs_by_source_object | qs_by_cr_source).distinct().select_related(
+        return (qs_by_applicant | qs_by_source_object | qs_by_cr_source).filter(is_active=True).distinct().select_related(
             'license_category',
             'license_sub_category',
             'excise_district'
