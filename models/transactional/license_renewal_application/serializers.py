@@ -6,6 +6,8 @@ from .models import LicenseApplication
 class LicenseApplicationSerializer(serializers.ModelSerializer):
     applicant_name = serializers.SerializerMethodField()
     current_stage_name = serializers.SerializerMethodField()
+    license_category_name = serializers.SerializerMethodField()
+    license_sub_category_name = serializers.SerializerMethodField()
 
     class Meta:
         model = LicenseApplication
@@ -18,7 +20,9 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
             "applicant",
             "applicant_name",
             "license_category",
+            "license_category_name",
             "license_sub_category",
+            "license_sub_category_name",
             "workflow",
             "current_stage",
             "current_stage_name",
@@ -65,3 +69,16 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
     def get_current_stage_name(self, obj):
         stage = getattr(obj, "current_stage", None)
         return getattr(stage, "name", None) if stage else None
+
+    def get_license_category_name(self, obj):
+        cat = getattr(obj, "license_category", None)
+        if not cat:
+            return None
+        return getattr(cat, "license_category", None) or getattr(cat, "category_name", None) or getattr(cat, "name", None) or str(cat)
+
+    def get_license_sub_category_name(self, obj):
+        sub = getattr(obj, "license_sub_category", None)
+        if not sub:
+            return None
+        return getattr(sub, "description", None) or getattr(sub, "license_subcategory", None) or getattr(sub, "name", None) or str(sub)
+

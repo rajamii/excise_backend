@@ -2,7 +2,10 @@ from rest_framework import serializers
 from .models import (
     HeadOfOrganisation,
     ExciseSecretary,
-    AboutUs
+    AboutUs,
+    Department,
+    ProductsServices,
+    RefundCancellationPolicy
 )
 from utils.file_validation import validate_uploaded_file
 
@@ -56,11 +59,107 @@ class ExciseSecretarySerializer(serializers.ModelSerializer):
 
 class AboutUsSerializer(serializers.ModelSerializer):
     isActive = serializers.BooleanField(source='is_active', required=False)
+    pageKey = serializers.CharField(source='page_key', required=False)
+    headerColor = serializers.CharField(source='header_color', required=False, allow_blank=True)
+    headerTextColor = serializers.CharField(source='header_text_color', required=False, allow_blank=True)
+    cardBgColor = serializers.CharField(source='card_bg_color', required=False, allow_blank=True)
+    accentColor = serializers.CharField(source='accent_color', required=False, allow_blank=True)
 
     class Meta:
         model = AboutUs
-        fields = ['id', 'title', 'content', 'is_active', 'isActive', 'created_at', 'updated_at']
+        fields = [
+            'id', 'title', 'content', 'page_key', 'pageKey',
+            'header_color', 'headerColor',
+            'header_text_color', 'headerTextColor',
+            'card_bg_color', 'cardBgColor',
+            'accent_color', 'accentColor',
+            'is_active', 'isActive', 'created_at', 'updated_at'
+        ]
         extra_kwargs = {
             'is_active': {'required': False},
+            'page_key': {'required': False},
+            'header_color': {'required': False},
+            'header_text_color': {'required': False},
+            'card_bg_color': {'required': False},
+            'accent_color': {'required': False},
         }
+
+
+class DepartmentSerializer(serializers.ModelSerializer):
+    isActive = serializers.BooleanField(source='is_active', required=False)
+    headerColor = serializers.CharField(source='header_color', required=False, allow_blank=True)
+    headerTextColor = serializers.CharField(source='header_text_color', required=False, allow_blank=True)
+    cardBgColor = serializers.CharField(source='card_bg_color', required=False, allow_blank=True)
+    accentColor = serializers.CharField(source='accent_color', required=False, allow_blank=True)
+
+    class Meta:
+        model = Department
+        fields = [
+            'id', 'title', 'content',
+            'header_color', 'headerColor',
+            'header_text_color', 'headerTextColor',
+            'card_bg_color', 'cardBgColor',
+            'accent_color', 'accentColor',
+            'is_active', 'isActive', 'created_at', 'updated_at'
+        ]
+        extra_kwargs = {
+            'is_active': {'required': False},
+            'header_color': {'required': False},
+            'header_text_color': {'required': False},
+            'card_bg_color': {'required': False},
+            'accent_color': {'required': False},
+        }
+
+
+class ProductsServicesSerializer(serializers.ModelSerializer):
+    isActive = serializers.BooleanField(source='is_active', required=False)
+    headerColor = serializers.CharField(source='header_color', required=False, allow_blank=True)
+    headerTextColor = serializers.CharField(source='header_text_color', required=False, allow_blank=True)
+    cardBgColor = serializers.CharField(source='card_bg_color', required=False, allow_blank=True)
+    accentColor = serializers.CharField(source='accent_color', required=False, allow_blank=True)
+
+    class Meta:
+        model = ProductsServices
+        fields = [
+            'id', 'title', 'content',
+            'header_color', 'headerColor',
+            'header_text_color', 'headerTextColor',
+            'card_bg_color', 'cardBgColor',
+            'accent_color', 'accentColor',
+            'is_active', 'isActive', 'created_at', 'updated_at'
+        ]
+        extra_kwargs = {
+            'is_active': {'required': False},
+            'header_color': {'required': False},
+            'header_text_color': {'required': False},
+            'card_bg_color': {'required': False},
+            'accent_color': {'required': False},
+        }
+
+
+class RefundCancellationPolicySerializer(serializers.ModelSerializer):
+    isActive = serializers.BooleanField(source='is_active', required=False)
+    headerColor = serializers.CharField(source='header_color', required=False, allow_blank=True)
+    headerTextColor = serializers.CharField(source='header_text_color', required=False, allow_blank=True)
+    cardBgColor = serializers.CharField(source='card_bg_color', required=False, allow_blank=True)
+    accentColor = serializers.CharField(source='accent_color', required=False, allow_blank=True)
+
+    class Meta:
+        model = RefundCancellationPolicy
+        fields = [
+            'id', 'title', 'content',
+            'header_color', 'headerColor',
+            'header_text_color', 'headerTextColor',
+            'card_bg_color', 'cardBgColor',
+            'accent_color', 'accentColor',
+            'is_active', 'isActive', 'created_at', 'updated_at'
+        ]
+        extra_kwargs = {
+            'is_active': {'required': False},
+            'header_color': {'required': False},
+            'header_text_color': {'required': False},
+            'card_bg_color': {'required': False},
+            'accent_color': {'required': False},
+        }
+
 

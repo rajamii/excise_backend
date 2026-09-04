@@ -1,7 +1,21 @@
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from .models import HeadOfOrganisation, ExciseSecretary, AboutUs
-from .serializers import HeadOfOrganisationSerializer, ExciseSecretarySerializer, AboutUsSerializer
+from .models import (
+    HeadOfOrganisation,
+    ExciseSecretary,
+    AboutUs,
+    Department,
+    ProductsServices,
+    RefundCancellationPolicy
+)
+from .serializers import (
+    HeadOfOrganisationSerializer,
+    ExciseSecretarySerializer,
+    AboutUsSerializer,
+    DepartmentSerializer,
+    ProductsServicesSerializer,
+    RefundCancellationPolicySerializer
+)
 
 
 
@@ -84,9 +98,15 @@ class AboutUsCreateAPIView(generics.CreateAPIView):
 
 # AboutUs List API
 class AboutUsListAPIView(generics.ListAPIView):
-    queryset = AboutUs.objects.all()
     serializer_class = AboutUsSerializer
     permission_classes = [AllowAny]
+
+    def get_queryset(self):
+        queryset = AboutUs.objects.all()
+        page_key = self.request.query_params.get('page_key')
+        if page_key:
+            queryset = queryset.filter(page_key=page_key)
+        return queryset
 
 
 # View AboutUs API
@@ -108,5 +128,102 @@ class AboutUsDeleteAPIView(generics.DestroyAPIView):
     queryset = AboutUs.objects.all()
     serializer_class = AboutUsSerializer
     permission_classes = [IsAuthenticated]
+
+
+# ===================== DEPARTMENT APIS =====================
+
+class DepartmentCreateAPIView(generics.CreateAPIView):
+    queryset = Department.objects.all()
+    serializer_class = DepartmentSerializer
+    permission_classes = [IsAuthenticated]
+
+
+class DepartmentListAPIView(generics.ListAPIView):
+    queryset = Department.objects.all()
+    serializer_class = DepartmentSerializer
+    permission_classes = [AllowAny]
+
+
+class DepartmentDetailAPIView(generics.RetrieveAPIView):
+    queryset = Department.objects.all()
+    serializer_class = DepartmentSerializer
+    permission_classes = [AllowAny]
+
+
+class DepartmentUpdateAPIView(generics.UpdateAPIView):
+    queryset = Department.objects.all()
+    serializer_class = DepartmentSerializer
+    permission_classes = [IsAuthenticated]
+
+
+class DepartmentDeleteAPIView(generics.DestroyAPIView):
+    queryset = Department.objects.all()
+    serializer_class = DepartmentSerializer
+    permission_classes = [IsAuthenticated]
+
+
+# ===================== PRODUCTS & SERVICES APIS =====================
+
+class ProductsServicesCreateAPIView(generics.CreateAPIView):
+    queryset = ProductsServices.objects.all()
+    serializer_class = ProductsServicesSerializer
+    permission_classes = [IsAuthenticated]
+
+
+class ProductsServicesListAPIView(generics.ListAPIView):
+    queryset = ProductsServices.objects.all()
+    serializer_class = ProductsServicesSerializer
+    permission_classes = [AllowAny]
+
+
+class ProductsServicesDetailAPIView(generics.RetrieveAPIView):
+    queryset = ProductsServices.objects.all()
+    serializer_class = ProductsServicesSerializer
+    permission_classes = [AllowAny]
+
+
+class ProductsServicesUpdateAPIView(generics.UpdateAPIView):
+    queryset = ProductsServices.objects.all()
+    serializer_class = ProductsServicesSerializer
+    permission_classes = [IsAuthenticated]
+
+
+class ProductsServicesDeleteAPIView(generics.DestroyAPIView):
+    queryset = ProductsServices.objects.all()
+    serializer_class = ProductsServicesSerializer
+    permission_classes = [IsAuthenticated]
+
+
+# ===================== REFUND & CANCELLATION POLICY APIS =====================
+
+class RefundCancellationPolicyCreateAPIView(generics.CreateAPIView):
+    queryset = RefundCancellationPolicy.objects.all()
+    serializer_class = RefundCancellationPolicySerializer
+    permission_classes = [IsAuthenticated]
+
+
+class RefundCancellationPolicyListAPIView(generics.ListAPIView):
+    queryset = RefundCancellationPolicy.objects.all()
+    serializer_class = RefundCancellationPolicySerializer
+    permission_classes = [AllowAny]
+
+
+class RefundCancellationPolicyDetailAPIView(generics.RetrieveAPIView):
+    queryset = RefundCancellationPolicy.objects.all()
+    serializer_class = RefundCancellationPolicySerializer
+    permission_classes = [AllowAny]
+
+
+class RefundCancellationPolicyUpdateAPIView(generics.UpdateAPIView):
+    queryset = RefundCancellationPolicy.objects.all()
+    serializer_class = RefundCancellationPolicySerializer
+    permission_classes = [IsAuthenticated]
+
+
+class RefundCancellationPolicyDeleteAPIView(generics.DestroyAPIView):
+    queryset = RefundCancellationPolicy.objects.all()
+    serializer_class = RefundCancellationPolicySerializer
+    permission_classes = [IsAuthenticated]
+
 
 
