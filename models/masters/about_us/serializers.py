@@ -58,7 +58,7 @@ class ExciseSecretarySerializer(serializers.ModelSerializer):
 
 
 class AboutUsSerializer(serializers.ModelSerializer):
-    isActive = serializers.BooleanField(source='is_active', required=False)
+    isActive = serializers.BooleanField(source='is_active', required=False, default=True)
     pageKey = serializers.CharField(source='page_key', required=False)
     headerColor = serializers.CharField(source='header_color', required=False, allow_blank=True)
     headerTextColor = serializers.CharField(source='header_text_color', required=False, allow_blank=True)
@@ -76,7 +76,7 @@ class AboutUsSerializer(serializers.ModelSerializer):
             'is_active', 'isActive', 'created_at', 'updated_at'
         ]
         extra_kwargs = {
-            'is_active': {'required': False},
+            'is_active': {'required': False, 'default': True},
             'page_key': {'required': False},
             'header_color': {'required': False},
             'header_text_color': {'required': False},
@@ -86,7 +86,7 @@ class AboutUsSerializer(serializers.ModelSerializer):
 
 
 class DepartmentSerializer(serializers.ModelSerializer):
-    isActive = serializers.BooleanField(source='is_active', required=False)
+    isActive = serializers.BooleanField(source='is_active', required=False, default=True)
     headerColor = serializers.CharField(source='header_color', required=False, allow_blank=True)
     headerTextColor = serializers.CharField(source='header_text_color', required=False, allow_blank=True)
     cardBgColor = serializers.CharField(source='card_bg_color', required=False, allow_blank=True)
@@ -103,7 +103,7 @@ class DepartmentSerializer(serializers.ModelSerializer):
             'is_active', 'isActive', 'created_at', 'updated_at'
         ]
         extra_kwargs = {
-            'is_active': {'required': False},
+            'is_active': {'required': False, 'default': True},
             'header_color': {'required': False},
             'header_text_color': {'required': False},
             'card_bg_color': {'required': False},
@@ -112,7 +112,7 @@ class DepartmentSerializer(serializers.ModelSerializer):
 
 
 class ProductsServicesSerializer(serializers.ModelSerializer):
-    isActive = serializers.BooleanField(source='is_active', required=False)
+    isActive = serializers.BooleanField(source='is_active', required=False, default=True)
     headerColor = serializers.CharField(source='header_color', required=False, allow_blank=True)
     headerTextColor = serializers.CharField(source='header_text_color', required=False, allow_blank=True)
     cardBgColor = serializers.CharField(source='card_bg_color', required=False, allow_blank=True)
@@ -129,7 +129,7 @@ class ProductsServicesSerializer(serializers.ModelSerializer):
             'is_active', 'isActive', 'created_at', 'updated_at'
         ]
         extra_kwargs = {
-            'is_active': {'required': False},
+            'is_active': {'required': False, 'default': True},
             'header_color': {'required': False},
             'header_text_color': {'required': False},
             'card_bg_color': {'required': False},
@@ -138,7 +138,7 @@ class ProductsServicesSerializer(serializers.ModelSerializer):
 
 
 class RefundCancellationPolicySerializer(serializers.ModelSerializer):
-    isActive = serializers.BooleanField(source='is_active', required=False)
+    isActive = serializers.BooleanField(source='is_active', required=False, default=True)
     headerColor = serializers.CharField(source='header_color', required=False, allow_blank=True)
     headerTextColor = serializers.CharField(source='header_text_color', required=False, allow_blank=True)
     cardBgColor = serializers.CharField(source='card_bg_color', required=False, allow_blank=True)
@@ -155,7 +155,7 @@ class RefundCancellationPolicySerializer(serializers.ModelSerializer):
             'is_active', 'isActive', 'created_at', 'updated_at'
         ]
         extra_kwargs = {
-            'is_active': {'required': False},
+            'is_active': {'required': False, 'default': True},
             'header_color': {'required': False},
             'header_text_color': {'required': False},
             'card_bg_color': {'required': False},
