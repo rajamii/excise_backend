@@ -1694,6 +1694,8 @@ def billdesk_response(request):
         status_val = "success" if tx.payment_status == "S" else "failed"
         credit_time = (tx.response_txndate or tx.opr_date or timezone.now()).strftime("%d-%m-%Y %I:%M %p")
         credit_time_iso = (tx.response_txndate or tx.opr_date or timezone.now()).isoformat()
+        module_code_val = str(getattr(tx, "payment_module_code", "") or "").strip()
+        payer_id_val = str(getattr(tx, "payer_id", "") or "").strip()
 
         params = {
             "transaction_id": tx.utr or tx.transaction_id_no_hoa or txn_ref,
@@ -1705,6 +1707,13 @@ def billdesk_response(request):
             "head_of_account": hoa_val,
             "status": status_val,
             "payment_status": tx.payment_status,
+            "payment_module_code": module_code_val,
+            "module_code": module_code_val,
+            "moduleCode": module_code_val,
+            "payer_id": payer_id_val,
+            "payerId": payer_id_val,
+            "application_id": payer_id_val,
+            "applicationId": payer_id_val,
             "createdAt": credit_time,
             "created_at": credit_time,
             "creditedAt": credit_time,
@@ -1712,6 +1721,48 @@ def billdesk_response(request):
             "date": credit_time,
             "txnDate": credit_time_iso,
         }
+
+        # Enrich params if this is a New License Application payment
+        is_nla_payment = (
+            module_code_val == DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE
+            or payer_id_val.upper().startswith("NLA")
+            or payer_id_val.upper().startswith("APP")
+        )
+        if is_nla_payment:
+            params["payment_type"] = "new_license_fee"
+            params["paymentType"] = "new_license_fee"
+            params["module_type"] = "new_license"
+            try:
+                app_obj = (
+                    NewLicenseApplication.objects.select_related("salesman_barman_details", "license_category")
+                    .filter(application_id__iexact=payer_id_val)
+                    .first()
+                )
+                if app_obj:
+                    params["mode_of_operation"] = str(getattr(app_obj, "mode_of_operation", "") or "")
+                    params["modeOfOperation"] = str(getattr(app_obj, "mode_of_operation", "") or "")
+                    params["establishment_name"] = str(getattr(app_obj, "establishment_name", "") or "")
+                    params["establishmentName"] = str(getattr(app_obj, "establishment_name", "") or "")
+                    params["applicant_name"] = str(getattr(app_obj, "applicant_name", "") or "")
+                    params["applicantName"] = str(getattr(app_obj, "applicant_name", "") or "")
+                    if getattr(app_obj, "license_category", None):
+                        params["license_category"] = str(getattr(app_obj.license_category, "name", "") or "")
+                        params["licenseCategory"] = str(getattr(app_obj.license_category, "name", "") or "")
+
+                    sb_obj = getattr(app_obj, "salesman_barman_details", None)
+                    if not sb_obj:
+                        from models.transactional.salesman_barman.models import SalesmanBarmanModel
+                        sb_obj = SalesmanBarmanModel.objects.filter(new_license_application=app_obj).first()
+                    if sb_obj:
+                        sbm_id_val = str(getattr(sb_obj, "application_id", "") or "").strip()
+                        params["sbm_application_id"] = sbm_id_val
+                        params["sbmApplicationId"] = sbm_id_val
+                        params["sbm_role"] = str(getattr(sb_obj, "role", "") or "")
+                        params["sbmRole"] = str(getattr(sb_obj, "role", "") or "")
+                        params["sbm_submitted"] = "1" if not getattr(getattr(sb_obj, "current_stage", None), "is_initial", False) else "0"
+                        params["sbmSubmitted"] = params["sbm_submitted"]
+            except Exception as _enrich_err:
+                logger.warning("Could not enrich NLA billdesk redirect params for %s: %s", payer_id_val, _enrich_err)
 
         url_parts = urllib.parse.urlparse(base_redirect_url)
         query_dict = dict(urllib.parse.parse_qsl(url_parts.query))

@@ -510,11 +510,21 @@ def force_submit_new_license_application(request, application_id):
         sbm_submit_error = str(exc)
 
     serializer = NewLicenseApplicationSerializer(app)
+    final_amount = float(module_fee) if module_fee > 0 else 500.0
     return Response(
         {
             "application_id": app.application_id,
             "forced": True,
             "is_application_fee_paid": True,
+            "transaction_id": utr,
+            "amount": final_amount,
+            "hoa": "0039-00-800-45-02",
+            "payment_status": "S",
+            "status": "success",
+            "mode_of_operation": getattr(app, "mode_of_operation", "") or "",
+            "establishment_name": getattr(app, "establishment_name", "") or "",
+            "applicant_name": getattr(app, "applicant_name", "") or "",
+            "license_category": getattr(getattr(app, "license_category", None), "name", "") or "",
             "sbm_submitted": sbm_submitted,
             "sbm_application_id": sbm_application_id,
             "sbm_submit_error": sbm_submit_error,
