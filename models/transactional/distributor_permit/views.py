@@ -268,20 +268,51 @@ def dashboard_counts(request):
         qs = qs.filter(**{f'{date_field}__year': year})
 
     items = list(qs)
-    from .models import IMFLBrandWarehouse, IMFLArrival
+    from .models import IMFLBrandWarehouse, IMFLArrival, IMFLCasesProcessed
     arrived_permit_ids = set(IMFLBrandWarehouse.objects.values_list('distributor_permit_id', flat=True)) | set(IMFLArrival.objects.values_list('distributor_permit_id', flat=True))
     arrived_permit_nos = set(IMFLBrandWarehouse.objects.values_list('permit_number', flat=True)) | set(IMFLArrival.objects.values_list('permit_number', flat=True))
 
-    def _is_item_approved(item):
+    under_review_permit_ids = set(IMFLCasesProcessed.objects.filter(status='under_review').values_list('distributor_permit_id', flat=True))
+    under_review_permit_nos = set(IMFLCasesProcessed.objects.filter(status='under_review').values_list('permit_number', flat=True))
+
+    role_name = str(getattr(getattr(request.user, 'role', None), 'name', '') or '').lower()
+    role_id = getattr(getattr(request.user, 'role', None), 'id', 0)
+    username = str(getattr(request.user, 'username', '') or '').lower()
+    is_oic = (
+        'oic' in role_name 
+        or 'in-charge' in role_name 
+        or 'in charge' in role_name 
+        or 'offcier' in role_name 
+        or role_id in (4, 6, 7) 
+        or username.startswith(('do', 'oo'))
+    )
+
+    def _is_arrival_completed(item):
         text = _stage_text(item)
-        if any(token in text for token in ('approved', 'completed', 'arrival approved', 'stock arrival approved')):
+        if any(token in text for token in ('arrival approved', 'stock arrival approved', 'stock completed')):
             return True
-        ref_no = getattr(item, 'reference_no', '')
+        ref_no = str(getattr(item, 'reference_no', '') or '').strip()
         item_id = getattr(item, 'id', None)
-        p_no = getattr(item, 'permit_number', '') or ref_no
+        p_no = str(getattr(item, 'permit_number', '') or ref_no).strip()
         if item_id in arrived_permit_ids or ref_no in arrived_permit_ids or ref_no in arrived_permit_nos or p_no in arrived_permit_nos:
             return True
         return False
+
+    def _is_arrival_under_review(item):
+        ref_no = str(getattr(item, 'reference_no', '') or '').strip()
+        item_id = getattr(item, 'id', None)
+        p_no = str(getattr(item, 'permit_number', '') or ref_no).strip()
+        if item_id in under_review_permit_ids or ref_no in under_review_permit_ids or ref_no in under_review_permit_nos or p_no in under_review_permit_nos:
+            return True
+        return False
+
+    def _is_item_approved(item):
+        if is_oic or tab == 'brand-arrival':
+            return _is_arrival_completed(item)
+        text = _stage_text(item)
+        if any(token in text for token in ('approved', 'completed', 'arrival approved', 'stock arrival approved')):
+            return True
+        return _is_arrival_completed(item)
 
     def _is_item_final(item):
         text = _stage_text(item)
@@ -290,19 +321,18 @@ def dashboard_counts(request):
         return _is_item_approved(item)
 
     if tab == 'brand-arrival':
-        unapproved = [item for item in items if not _is_item_approved(item) and 'rejected' not in _stage_text(item)]
-        applied = len(unapproved)
-        pending = applied
-        rejected = sum(1 for item in items if 'rejected' in _stage_text(item))
-        approved = 0
+        pending_items = [item for item in items if not _is_arrival_completed(item) and 'rejected' not in _stage_text(item)]
+        approved_items = [item for item in items if _is_arrival_completed(item)]
+        rejected_items = [item for item in items if 'rejected' in _stage_text(item)]
 
         return Response({
             'tab': tab,
-            'applied': applied,
-            'pending': pending,
-            'approved': approved,
+            'applied': len(items),
+            'total': len(items),
+            'pending': len(pending_items),
+            'approved': len(approved_items),
             'objection': 0,
-            'rejected': rejected,
+            'rejected': len(rejected_items),
             'awaiting_payment': 0,
             'under_process': 0
         })
@@ -317,7 +347,12 @@ def dashboard_counts(request):
     for item in items:
         if _is_item_final(item) or _is_objection_imfl_item(item):
             continue
-        if _is_item_pending_for_user(item, request.user):
+        if is_oic:
+            if _is_arrival_under_review(item):
+                pending += 1
+            else:
+                under_process += 1
+        elif _is_item_pending_for_user(item, request.user):
             pending += 1
         else:
             under_process += 1
