@@ -817,25 +817,42 @@ class IMFLHologramProcurementSerializer(serializers.ModelSerializer):
         role_id = getattr(getattr(user, 'role', None), 'id', 0)
 
         is_admin = user.is_superuser or role_id == 1 or 'admin' in role_name
-        is_it_cell = is_admin or 'it cell' in role_name or 'it_cell' in role_name or role_id in (3, 12)
-        is_commissioner = is_admin or 'commissioner' in role_name or role_id in (1, 6, 10)
+        is_it_cell = 'it cell' in role_name or 'it_cell' in role_name or role_id in (3, 12)
+        is_commissioner = 'commissioner' in role_name or role_id in (6, 10)
         is_distributor = 'distributor' in role_name or 'licensee' in role_name or role_id in (2, 16) or obj.applicant_id == user.id
 
-        stage_name = str(getattr(obj.current_stage, 'name', '') or obj.status or '').lower()
+        if is_admin:
+            is_it_cell = True
+            is_commissioner = True
+
+        curr_stage = obj.current_stage
+        stage_name = str(getattr(curr_stage, 'name', '') or obj.status or '').lower()
+
+        # If stage is final, approved by commissioner, or rejected, no further actions allowed
+        if (
+            getattr(curr_stage, 'is_final', False) or
+            'approved by commissioner' in stage_name or
+            'reject' in stage_name or
+            ('completed' in stage_name and 'payment completed' not in stage_name)
+        ):
+            return []
+
         actions = []
 
-        if is_it_cell:
-            if 'submitted' in stage_name or 'under it cell review' in stage_name:
+        if 'submitted' in stage_name or 'under it cell review' in stage_name:
+            if is_it_cell:
                 actions = ['FORWARD', 'REJECT']
-            elif 'payment completed' in stage_name or 'post-payment' in stage_name:
+        elif 'payment completed' in stage_name or 'post-payment' in stage_name:
+            if is_it_cell:
                 actions = ['FORWARD', 'REJECT']
-        elif is_commissioner:
-            if 'forwarded to commissioner' in stage_name and 'final' not in stage_name:
+        elif 'forwarded to commissioner (final)' in stage_name or ('forwarded to commissioner' in stage_name and 'final' in stage_name):
+            if is_commissioner:
                 actions = ['APPROVE', 'REJECT']
-            elif 'final' in stage_name or ('commissioner' in stage_name and 'approved for payment' not in stage_name and 'submitted' not in stage_name and 'under it cell' not in stage_name):
+        elif 'forwarded to commissioner' in stage_name:
+            if is_commissioner:
                 actions = ['APPROVE', 'REJECT']
-        elif is_distributor:
-            if 'approved for payment' in stage_name or (str(obj.payment_status or '').upper() == 'PENDING' and 'approved' in stage_name):
+        elif 'approved for payment' in stage_name:
+            if is_distributor and str(obj.payment_status or '').upper() != 'COMPLETED':
                 actions = ['PAY']
 
         return actions

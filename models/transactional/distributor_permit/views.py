@@ -2356,6 +2356,10 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
         curr_stage = instance.current_stage
         curr_stage_name = str(getattr(curr_stage, 'name', '') or instance.status or '').lower()
 
+        # Check if already in final stage
+        if getattr(curr_stage, 'is_final', False) or 'approved by commissioner' in curr_stage_name or 'reject' in curr_stage_name:
+            return Response({'error': f'Application is already in final completed stage ({instance.status})'}, status=status.HTTP_400_BAD_REQUEST)
+
         next_stage = None
         if curr_stage:
             transitions = WorkflowTransition.objects.filter(workflow=instance.workflow, from_stage=curr_stage)
