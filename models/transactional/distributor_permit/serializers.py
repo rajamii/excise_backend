@@ -16,6 +16,7 @@ from .models import (
     IMFLCasesProcessed,
     IMFLBrandWarehouse,
     IMFLRetailerStockDetails,
+    IMFLHologramProcurement,
 )
 
 
@@ -778,6 +779,66 @@ class IMFLRetailerStockDetailsSerializer(serializers.ModelSerializer):
             return ''
         name = getattr(obj.officer_in_charge, 'get_full_name', lambda: '')() or obj.officer_in_charge.username
         return name.strip() or obj.officer_in_charge.username
+
+
+class IMFLHologramProcurementSerializer(serializers.ModelSerializer):
+    applicant_name = serializers.SerializerMethodField()
+    applicant_email = serializers.SerializerMethodField()
+    current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
+    workflow_name = serializers.CharField(source='workflow.name', read_only=True)
+    allowed_actions = serializers.SerializerMethodField()
+    allowedActions = serializers.SerializerMethodField()
+
+    class Meta:
+        model = IMFLHologramProcurement
+        fields = '__all__'
+        read_only_fields = ('ref_no', 'applicant', 'created_at', 'updated_at', 'total_amount')
+
+    def get_applicant_name(self, obj):
+        if not obj.applicant:
+            return ''
+        name = getattr(obj.applicant, 'get_full_name', lambda: '')() or obj.applicant.username
+        return name.strip() or obj.applicant.username
+
+    def get_applicant_email(self, obj):
+        return getattr(obj.applicant, 'email', '') or ''
+
+    def get_allowed_actions(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return []
+
+        user = request.user
+        role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').lower()
+        role_id = getattr(getattr(user, 'role', None), 'id', 0)
+
+        is_admin = user.is_superuser or role_id == 1 or 'admin' in role_name
+        is_it_cell = is_admin or 'it cell' in role_name or 'it_cell' in role_name or role_id in (3, 12)
+        is_commissioner = is_admin or 'commissioner' in role_name or role_id in (1, 6, 10)
+        is_distributor = 'distributor' in role_name or 'licensee' in role_name or role_id in (2, 16) or obj.applicant_id == user.id
+
+        stage_name = str(getattr(obj.current_stage, 'name', '') or obj.status or '').lower()
+        actions = []
+
+        if is_it_cell:
+            if 'submitted' in stage_name or 'under it cell review' in stage_name:
+                actions = ['FORWARD', 'REJECT']
+            elif 'payment completed' in stage_name or 'post-payment' in stage_name:
+                actions = ['FORWARD', 'REJECT']
+        elif is_commissioner:
+            if 'forwarded to commissioner' in stage_name and 'final' not in stage_name:
+                actions = ['APPROVE', 'REJECT']
+            elif 'final' in stage_name or ('commissioner' in stage_name and 'approved for payment' not in stage_name and 'submitted' not in stage_name and 'under it cell' not in stage_name):
+                actions = ['APPROVE', 'REJECT']
+        elif is_distributor:
+            if 'approved for payment' in stage_name or (str(obj.payment_status or '').upper() == 'PENDING' and 'approved' in stage_name):
+                actions = ['PAY']
+
+        return actions
+
+    def get_allowedActions(self, obj):
+        return self.get_allowed_actions(obj)
+
 
 
 

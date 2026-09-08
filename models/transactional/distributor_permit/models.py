@@ -539,3 +539,86 @@ class IMFLRetailerStockDetails(models.Model):
 
     def __str__(self):
         return f"{self.dispatch_reference_no} - {self.retailer_name}: {self.brand_name} ({self.dispatched_bottles} bottles)"
+
+
+class IMFLHologramProcurement(models.Model):
+    ref_no = models.CharField(max_length=100, unique=True, db_index=True)
+    applicant = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='imfl_hologram_procurements',
+    )
+    distributor_name = models.CharField(max_length=255, blank=True, default='')
+    license_number = models.CharField(max_length=100, blank=True, default='', db_index=True)
+    establishment_name = models.CharField(max_length=255, blank=True, default='')
+
+    # Quantities & Pricing
+    quantity = models.PositiveIntegerField(help_text='Number of holograms requested')
+    rate_per_piece = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal('0.15'))
+    total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+
+    # Payment Tracking
+    payment_status = models.CharField(max_length=50, default='PENDING')  # PENDING, COMPLETED, FAILED
+    payment_date = models.DateTimeField(null=True, blank=True)
+    payment_details = models.JSONField(default=dict, blank=True)
+
+    # Workflow
+    workflow = models.ForeignKey(
+        'workflow.Workflow',
+        on_delete=models.PROTECT,
+        related_name='imfl_hologram_procurements',
+        null=True,
+        blank=True,
+    )
+    current_stage = models.ForeignKey(
+        'workflow.WorkflowStage',
+        on_delete=models.PROTECT,
+        related_name='imfl_hologram_procurements',
+        null=True,
+        blank=True,
+    )
+    status = models.CharField(max_length=100, default='Submitted', db_index=True)
+    remarks = models.TextField(blank=True, default='')
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'imfl_hologram_procurement_details'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['applicant']),
+            models.Index(fields=['ref_no']),
+            models.Index(fields=['status']),
+            models.Index(fields=['created_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.ref_no} - {self.distributor_name} ({self.quantity} holograms)"
+
+    def save(self, *args, **kwargs):
+        if not self.rate_per_piece:
+            self.rate_per_piece = Decimal('0.15')
+        if self.quantity is not None:
+            self.total_amount = (Decimal(str(self.quantity)) * Decimal(str(self.rate_per_piece))).quantize(Decimal('0.01'))
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def generate_reference_no(cls, today=None) -> str:
+        d = today or timezone.now().date()
+        if d.month >= 4:
+            fin_year = f'{d.year}-{str(d.year + 1)[2:]}'
+        else:
+            fin_year = f'{d.year - 1}-{str(d.year)[2:]}'
+        prefix = f'IMFL-HOLO/{fin_year}/'
+        last_rec = cls.objects.filter(ref_no__startswith=prefix).order_by('-ref_no').first()
+        if last_rec:
+            try:
+                seq = int(last_rec.ref_no.split('/')[-1]) + 1
+            except Exception:
+                seq = cls.objects.filter(ref_no__startswith=prefix).count() + 1
+        else:
+            seq = 1
+        return f'{prefix}{seq:04d}'
+

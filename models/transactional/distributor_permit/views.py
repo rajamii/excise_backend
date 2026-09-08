@@ -25,6 +25,7 @@ from .models import (
     IMFLCasesProcessed,
     IMFLBrandWarehouse,
     IMFLRetailerStockDetails,
+    IMFLHologramProcurement,
 )
 from .serializers import (
     DistributorPermitApplicationSerializer,
@@ -34,6 +35,7 @@ from .serializers import (
     IMFLCasesProcessedSerializer,
     IMFLBrandWarehouseSerializer,
     IMFLRetailerStockDetailsSerializer,
+    IMFLHologramProcurementSerializer,
 )
 
 
@@ -2249,3 +2251,216 @@ def distributor_permit_wallet_balances(request):
         'excise_balance': float(excise_wb.current_balance) if excise_wb else 0.0,
         'education_cess_balance': float(cess_wb.current_balance) if cess_wb else 0.0,
     })
+
+
+class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
+    queryset = IMFLHologramProcurement.objects.select_related('applicant', 'workflow', 'current_stage').all()
+    serializer_class = IMFLHologramProcurementSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').lower()
+        role_id = getattr(getattr(user, 'role', None), 'id', 0)
+
+        is_officer_or_admin = (
+            user.is_superuser or
+            getattr(user, 'is_staff', False) or
+            role_id in (1, 3, 5, 6, 7, 9, 10, 12, 14, 16) or
+            any(k in role_name for k in ('admin', 'it cell', 'it_cell', 'commissioner', 'permit', 'oic'))
+        )
+
+        qs = IMFLHologramProcurement.objects.select_related('applicant', 'workflow', 'current_stage').all()
+        if not is_officer_or_admin:
+            qs = qs.filter(applicant=user)
+        return qs.order_by('-created_at')
+
+    def create(self, request, *args, **kwargs):
+        data = request.data.copy()
+        user = request.user
+        quantity = int(data.get('quantity') or 0)
+        if quantity <= 0:
+            return Response({'error': 'Please enter a valid quantity of holograms (greater than 0).'}, status=status.HTTP_400_BAD_REQUEST)
+
+        rate = Decimal('0.15')
+        total_amount = (Decimal(str(quantity)) * rate).quantize(Decimal('0.01'))
+
+        ref_no = IMFLHologramProcurement.generate_reference_no()
+        from auth.workflow.models import Workflow, WorkflowStage
+        wf = Workflow.objects.filter(name__icontains='IMFL Hologram Procurement').first()
+        initial_stage = None
+        if wf:
+            initial_stage = WorkflowStage.objects.filter(workflow=wf, is_initial=True).first()
+
+        procurement = IMFLHologramProcurement.objects.create(
+            ref_no=ref_no,
+            applicant=user,
+            distributor_name=str(data.get('distributor_name') or user.get_full_name() or user.username).strip(),
+            license_number=str(data.get('license_number') or '').strip(),
+            establishment_name=str(data.get('establishment_name') or '').strip(),
+            quantity=quantity,
+            rate_per_piece=rate,
+            total_amount=total_amount,
+            workflow=wf,
+            current_stage=initial_stage,
+            status='Submitted',
+            remarks=str(data.get('remarks') or '').strip()
+        )
+
+        # Record Transaction
+        try:
+            from auth.workflow.models import Transaction
+            Transaction.objects.create(
+                workflow=wf,
+                stage=initial_stage,
+                user=user,
+                action='SUBMIT',
+                remarks='IMFL Hologram Procurement Application Submitted',
+                content_object=procurement
+            )
+        except Exception:
+            pass
+
+        serializer = self.get_serializer(procurement)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='action')
+    def action_transition(self, request, pk=None):
+        instance = self.get_object()
+        action_name = str(request.data.get('action') or '').strip().upper()
+        remarks = str(request.data.get('remarks') or '').strip()
+        user = request.user
+
+        if not action_name:
+            return Response({'error': 'action is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from auth.workflow.models import WorkflowTransition, WorkflowStage, Transaction
+
+        # Determine next stage based on workflow transitions or standard lifecycle
+        curr_stage = instance.current_stage
+        curr_stage_name = str(getattr(curr_stage, 'name', '') or instance.status or '').lower()
+
+        next_stage = None
+        if curr_stage:
+            transitions = WorkflowTransition.objects.filter(workflow=instance.workflow, from_stage=curr_stage)
+            for t in transitions:
+                cond = t.condition or {}
+                t_action = str(cond.get('action') or '').upper()
+                if t_action == action_name or (action_name in ('APPROVE', 'FORWARD') and t_action in ('APPROVE', 'FORWARD')):
+                    next_stage = t.to_stage
+                    break
+                if action_name == 'REJECT' and t_action == 'REJECT':
+                    next_stage = t.to_stage
+                    break
+
+        if not next_stage:
+            # Fallback based on stage name
+            if action_name == 'REJECT':
+                next_stage = WorkflowStage.objects.filter(workflow=instance.workflow, is_final=True, name__icontains='Reject').first()
+            elif action_name in ('FORWARD', 'APPROVE'):
+                if 'submitted' in curr_stage_name or 'under it cell review' in curr_stage_name:
+                    next_stage = WorkflowStage.objects.filter(workflow=instance.workflow, name__icontains='Forwarded to Commissioner').exclude(name__icontains='Final').first()
+                elif 'forwarded to commissioner' in curr_stage_name and 'final' not in curr_stage_name:
+                    next_stage = WorkflowStage.objects.filter(workflow=instance.workflow, name__icontains='Approved for Payment').first()
+                elif 'payment completed' in curr_stage_name or 'post-payment' in curr_stage_name:
+                    next_stage = WorkflowStage.objects.filter(workflow=instance.workflow, name__icontains='Forwarded to Commissioner (Final)').first()
+                elif 'final' in curr_stage_name:
+                    next_stage = WorkflowStage.objects.filter(workflow=instance.workflow, is_final=True, name__icontains='Approved by Commissioner').first()
+
+        if next_stage:
+            instance.current_stage = next_stage
+            instance.status = next_stage.name
+            instance.save(update_fields=['current_stage', 'status', 'updated_at'])
+
+            try:
+                Transaction.objects.create(
+                    workflow=instance.workflow,
+                    stage=next_stage,
+                    user=user,
+                    action=action_name,
+                    remarks=remarks or f'Action {action_name} performed',
+                    content_object=instance
+                )
+            except Exception:
+                pass
+
+            serializer = self.get_serializer(instance)
+            return Response({'message': f'Application moved to {next_stage.name}', 'data': serializer.data})
+        else:
+            return Response({'error': f'No valid transition found for action {action_name} from stage {instance.status}'}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'], url_path='pay')
+    def wallet_payment(self, request, pk=None):
+        instance = self.get_object()
+        user = request.user
+        amount = instance.total_amount
+
+        from models.transactional.wallet.wallet_service import debit_wallet_balance
+        from models.masters.license.models import License
+        from models.transactional.wallet.wallet_initializer import initialize_wallet_balances_for_license
+
+        # Find candidate licensee ID
+        licensee_id = instance.license_number or user.username
+        user_licenses = list(License.objects.filter(applicant=user, is_active=True))
+        if user_licenses and not instance.license_number:
+            licensee_id = user_licenses[0].license_id
+
+        for lic in user_licenses:
+            try:
+                initialize_wallet_balances_for_license(lic)
+            except Exception:
+                pass
+
+        txn_id = f"TXN-IMFLHOLO-{instance.id}-{int(timezone.now().timestamp())}"
+        try:
+            debit_res = debit_wallet_balance(
+                transaction_id=txn_id,
+                licensee_id=str(licensee_id),
+                wallet_type='hologram',
+                head_of_account='non',
+                amount=amount,
+                user_id=user.username,
+                licensee_name=instance.distributor_name or user.get_full_name(),
+                source_module='imfl_hologram_procurement',
+                payment_status='success',
+                remarks=f"Payment for IMFL Hologram Procurement {instance.ref_no} ({instance.quantity} holograms)",
+                transaction_type='payment',
+                reference_no=instance.ref_no
+            )
+        except Exception as e:
+            return Response({'error': f'Wallet deduction failed: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Update payment status on instance
+        instance.payment_status = 'COMPLETED'
+        instance.payment_date = timezone.now()
+        instance.payment_details = {
+            'transaction_id': txn_id,
+            'amount': float(amount),
+            'paid_at': timezone.now().isoformat(),
+            'paid_by': user.username
+        }
+
+        # Transition stage to Payment Completed
+        from auth.workflow.models import WorkflowStage, Transaction
+        pay_stage = WorkflowStage.objects.filter(workflow=instance.workflow, name__icontains='Payment Completed').first()
+        if pay_stage:
+            instance.current_stage = pay_stage
+            instance.status = pay_stage.name
+
+        instance.save()
+
+        try:
+            Transaction.objects.create(
+                workflow=instance.workflow,
+                stage=instance.current_stage,
+                user=user,
+                action='PAY',
+                remarks=f'Paid ₹{amount} from Hologram Wallet. Txn: {txn_id}',
+                content_object=instance
+            )
+        except Exception:
+            pass
+
+        serializer = self.get_serializer(instance)
+        return Response({'message': 'Payment successful via Hologram Wallet', 'data': serializer.data})
+
