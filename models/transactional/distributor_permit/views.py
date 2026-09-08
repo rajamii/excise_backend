@@ -2292,12 +2292,22 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
         if wf:
             initial_stage = WorkflowStage.objects.filter(workflow=wf, is_initial=True).first()
 
+        distributor_name = str(data.get('distributor_name') or '').strip()
+        if not distributor_name or distributor_name.lower() in ('distributor', 'applicant'):
+            distributor_name = str(getattr(user, 'company_name', '') or getattr(user, 'establishment_name', '') or user.get_full_name() or user.username).strip()
+
+        establishment_name = str(data.get('establishment_name') or '').strip()
+        if not establishment_name or establishment_name.lower() in ('distributor', 'applicant'):
+            establishment_name = str(getattr(user, 'establishment_name', '') or getattr(user, 'company_name', '') or distributor_name).strip()
+
+        license_number = str(data.get('license_number') or getattr(user, 'license_number', '') or getattr(user, 'license_no', '') or '').strip()
+
         procurement = IMFLHologramProcurement.objects.create(
             ref_no=ref_no,
             applicant=user,
-            distributor_name=str(data.get('distributor_name') or user.get_full_name() or user.username).strip(),
-            license_number=str(data.get('license_number') or '').strip(),
-            establishment_name=str(data.get('establishment_name') or '').strip(),
+            distributor_name=distributor_name,
+            license_number=license_number,
+            establishment_name=establishment_name,
             quantity=quantity,
             rate_per_piece=rate,
             total_amount=total_amount,

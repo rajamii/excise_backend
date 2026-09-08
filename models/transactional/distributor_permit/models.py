@@ -611,7 +611,7 @@ class IMFLHologramProcurement(models.Model):
             fin_year = f'{d.year}-{str(d.year + 1)[2:]}'
         else:
             fin_year = f'{d.year - 1}-{str(d.year)[2:]}'
-        prefix = f'IMFL-HOLO/{fin_year}/'
+        prefix = f'IMFL_HOLO_PRO/{fin_year}/'
         last_rec = cls.objects.filter(ref_no__startswith=prefix).order_by('-ref_no').first()
         if last_rec:
             try:

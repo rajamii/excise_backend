@@ -782,6 +782,7 @@ class IMFLRetailerStockDetailsSerializer(serializers.ModelSerializer):
 
 
 class IMFLHologramProcurementSerializer(serializers.ModelSerializer):
+    reference_no = serializers.CharField(source='ref_no', read_only=True)
     applicant_name = serializers.SerializerMethodField()
     applicant_email = serializers.SerializerMethodField()
     current_stage_name = serializers.CharField(source='current_stage.name', read_only=True)
@@ -796,9 +797,12 @@ class IMFLHologramProcurementSerializer(serializers.ModelSerializer):
 
     def get_applicant_name(self, obj):
         if not obj.applicant:
-            return ''
-        name = getattr(obj.applicant, 'get_full_name', lambda: '')() or obj.applicant.username
-        return name.strip() or obj.applicant.username
+            return obj.distributor_name or ''
+        company = str(getattr(obj.applicant, 'company_name', '') or getattr(obj.applicant, 'establishment_name', '') or '').strip()
+        full_name = str(getattr(obj.applicant, 'get_full_name', lambda: '')() or obj.applicant.username or '').strip()
+        if company and full_name and company.lower() != full_name.lower():
+            return f"{company} ({full_name})"
+        return company or full_name or obj.distributor_name or obj.applicant.username
 
     def get_applicant_email(self, obj):
         return getattr(obj.applicant, 'email', '') or ''
