@@ -1729,9 +1729,17 @@ def billdesk_response(request):
             or payer_id_val.upper().startswith("APP")
         )
         if is_nla_payment:
+            receipt_url = getattr(settings, "PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL", "")
+            if receipt_url:
+                base_redirect_url = receipt_url
+            else:
+                base_redirect_url = urllib.parse.urljoin(base_redirect_url, "/dashboard/new-license/application-fee/receipt")
+
             params["payment_type"] = "new_license_fee"
             params["paymentType"] = "new_license_fee"
             params["module_type"] = "new_license"
+            params["auto_submitted"] = "1" if tx.payment_status == "S" else "0"
+            params["autoSubmitted"] = params["auto_submitted"]
             try:
                 app_obj = (
                     NewLicenseApplication.objects.select_related("salesman_barman_details", "license_category")
