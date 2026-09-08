@@ -17,6 +17,7 @@ from .models import (
     IMFLBrandWarehouse,
     IMFLRetailerStockDetails,
     IMFLHologramProcurement,
+    IMFLHologramDetails,
 )
 
 
@@ -859,6 +860,24 @@ class IMFLHologramProcurementSerializer(serializers.ModelSerializer):
 
     def get_allowedActions(self, obj):
         return self.get_allowed_actions(obj)
+
+
+class IMFLHologramDetailsSerializer(serializers.ModelSerializer):
+    procurement_ref_no = serializers.CharField(source='imfl_hologram_ref_no', read_only=True)
+    received_by_username = serializers.CharField(source='received_by.username', read_only=True)
+    hologram_from_range = serializers.CharField(required=False, allow_blank=True, default='')
+    hologram_to_range = serializers.CharField(required=False, allow_blank=True, default='')
+    payment_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = IMFLHologramDetails
+        fields = '__all__'
+        read_only_fields = ('created_at', 'updated_at')
+
+    def get_payment_status(self, obj):
+        if obj.procurement:
+            return obj.procurement.payment_status or 'COMPLETED'
+        return 'COMPLETED'
 
 
 

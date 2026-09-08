@@ -622,3 +622,57 @@ class IMFLHologramProcurement(models.Model):
             seq = 1
         return f'{prefix}{seq:04d}'
 
+
+class IMFLHologramDetails(models.Model):
+    procurement = models.ForeignKey(
+        'IMFLHologramProcurement',
+        on_delete=models.SET_NULL,
+        related_name='arrival_records',
+        null=True,
+        blank=True
+    )
+    imfl_hologram_ref_no = models.CharField(max_length=100, db_index=True, help_text='Procurement reference number')
+    distributor_name = models.CharField(max_length=255, blank=True, default='')
+    license_number = models.CharField(max_length=100, blank=True, default='', db_index=True)
+    establishment_name = models.CharField(max_length=255, blank=True, default='')
+
+    # Hologram Quantities & Ranges
+    total_holograms = models.PositiveIntegerField(default=0, help_text='Total holograms received')
+    hologram_from_range = models.CharField(max_length=100, blank=True, default='', help_text='Starting hologram serial/barcode range')
+    hologram_to_range = models.CharField(max_length=100, blank=True, default='', help_text='Ending hologram serial/barcode range')
+    hologram_ranges = models.JSONField(default=list, blank=True, help_text='Breakdown of usable hologram range segments')
+
+    # Damaged Tracking (ready for future expansion)
+    damaged_total = models.PositiveIntegerField(default=0, help_text='Total damaged holograms')
+    damaged_holograms_range = models.JSONField(default=list, blank=True, help_text='Damaged hologram ranges')
+
+    # Officer & Arrival Metadata
+    received_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='imfl_hologram_arrivals'
+    )
+    recorded_by_name = models.CharField(max_length=255, blank=True, default='')
+    arrival_date = models.DateTimeField(default=timezone.now)
+    status = models.CharField(max_length=50, default='PENDING_SERIALS', db_index=True)
+    remarks = models.TextField(blank=True, default='')
+
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'imfl_hologram_details'
+        ordering = ['-arrival_date', '-created_at']
+        indexes = [
+            models.Index(fields=['imfl_hologram_ref_no']),
+            models.Index(fields=['license_number']),
+            models.Index(fields=['status']),
+            models.Index(fields=['arrival_date']),
+        ]
+
+    def __str__(self):
+        return f"Arrival: {self.imfl_hologram_ref_no} ({self.total_holograms} holograms: {self.hologram_from_range} to {self.hologram_to_range})"
+

@@ -26,6 +26,7 @@ from .models import (
     IMFLBrandWarehouse,
     IMFLRetailerStockDetails,
     IMFLHologramProcurement,
+    IMFLHologramDetails,
 )
 from .serializers import (
     DistributorPermitApplicationSerializer,
@@ -36,6 +37,7 @@ from .serializers import (
     IMFLBrandWarehouseSerializer,
     IMFLRetailerStockDetailsSerializer,
     IMFLHologramProcurementSerializer,
+    IMFLHologramDetailsSerializer,
 )
 
 
@@ -2492,6 +2494,31 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
 
         instance.save()
 
+        # Auto-create entry in imfl_hologram_details for OIC to enter serial ranges
+        try:
+            IMFLHologramDetails.objects.get_or_create(
+                procurement=instance,
+                defaults={
+                    'imfl_hologram_ref_no': instance.ref_no,
+                    'distributor_name': instance.distributor_name,
+                    'license_number': instance.license_number,
+                    'establishment_name': instance.establishment_name,
+                    'total_holograms': instance.quantity,
+                    'hologram_from_range': '',
+                    'hologram_to_range': '',
+                    'hologram_ranges': [],
+                    'damaged_total': 0,
+                    'damaged_holograms_range': [],
+                    'status': 'PENDING_SERIALS',
+                    'received_by': user,
+                    'recorded_by_name': user.get_full_name() or user.username,
+                    'arrival_date': timezone.now(),
+                    'remarks': f'Auto-created upon payment completion for {instance.ref_no}'
+                }
+            )
+        except Exception:
+            pass
+
         try:
             Transaction.objects.create(
                 workflow=instance.workflow,
@@ -2506,4 +2533,190 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(instance)
         return Response({'message': 'Payment successful via Hologram Wallet', 'data': serializer.data})
+
+
+class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = IMFLHologramDetailsSerializer
+    queryset = IMFLHologramDetails.objects.all().order_by('-arrival_date', '-created_at')
+
+    def _sync_paid_procurements(self):
+        try:
+            paid_procurements = IMFLHologramProcurement.objects.filter(
+                Q(payment_status='COMPLETED') | Q(status__icontains='Payment') | Q(status__icontains='Approved')
+            )
+            for p in paid_procurements:
+                if not IMFLHologramDetails.objects.filter(Q(procurement=p) | Q(imfl_hologram_ref_no=p.ref_no)).exists():
+                    IMFLHologramDetails.objects.create(
+                        procurement=p,
+                        imfl_hologram_ref_no=p.ref_no,
+                        distributor_name=p.distributor_name,
+                        license_number=p.license_number,
+                        establishment_name=p.establishment_name,
+                        total_holograms=p.quantity,
+                        hologram_from_range='',
+                        hologram_to_range='',
+                        hologram_ranges=[],
+                        damaged_total=0,
+                        damaged_holograms_range=[],
+                        status='PENDING_SERIALS',
+                        received_by=p.applicant,
+                        recorded_by_name=p.applicant.get_full_name() if p.applicant else '',
+                        arrival_date=p.payment_date or p.updated_at or timezone.now(),
+                        remarks=f'Auto-created from paid procurement {p.ref_no}'
+                    )
+        except Exception:
+            pass
+
+    def get_queryset(self):
+        self._sync_paid_procurements()
+        qs = IMFLHologramDetails.objects.all().order_by('-arrival_date', '-created_at')
+        params = self.request.query_params
+
+        search = params.get('search')
+        if search:
+            search = search.strip()
+            qs = qs.filter(
+                Q(imfl_hologram_ref_no__icontains=search) |
+                Q(distributor_name__icontains=search) |
+                Q(license_number__icontains=search) |
+                Q(hologram_from_range__icontains=search) |
+                Q(hologram_to_range__icontains=search)
+            )
+
+        ref_no = params.get('ref_no') or params.get('imfl_hologram_ref_no')
+        if ref_no:
+            qs = qs.filter(imfl_hologram_ref_no__icontains=ref_no.strip())
+
+        status_param = params.get('status')
+        if status_param and status_param.upper() != 'ALL':
+            qs = qs.filter(status__iexact=status_param.strip())
+
+        from_date = params.get('from_date') or params.get('from')
+        if from_date:
+            qs = qs.filter(arrival_date__date__gte=from_date)
+
+        to_date = params.get('to_date') or params.get('to')
+        if to_date:
+            qs = qs.filter(arrival_date__date__lte=to_date)
+
+        return qs
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        rec_name = user.get_full_name() or user.username
+        
+        procurement_id = self.request.data.get('procurement_id') or self.request.data.get('procurement')
+        procurement_obj = None
+        if procurement_id:
+            procurement_obj = IMFLHologramProcurement.objects.filter(id=procurement_id).first()
+        elif self.request.data.get('imfl_hologram_ref_no'):
+            ref = self.request.data.get('imfl_hologram_ref_no').strip()
+            procurement_obj = IMFLHologramProcurement.objects.filter(ref_no__iexact=ref).first()
+
+        from_range = str(self.request.data.get('hologram_from_range') or '').strip()
+        to_range = str(self.request.data.get('hologram_to_range') or '').strip()
+        total_holo = int(self.request.data.get('total_holograms') or (procurement_obj.quantity if procurement_obj else 0) or 0)
+
+        # Build default ranges json array if empty
+        ranges = self.request.data.get('hologram_ranges')
+        if not ranges and from_range and to_range:
+            ranges = [{
+                'from': from_range,
+                'to': to_range,
+                'count': total_holo,
+                'status': 'AVAILABLE'
+            }]
+
+        dist_name = self.request.data.get('distributor_name') or (procurement_obj.distributor_name if procurement_obj else '')
+        lic_no = self.request.data.get('license_number') or (procurement_obj.license_number if procurement_obj else '')
+        est_name = self.request.data.get('establishment_name') or (procurement_obj.establishment_name if procurement_obj else '')
+        ref_no = self.request.data.get('imfl_hologram_ref_no') or (procurement_obj.ref_no if procurement_obj else '')
+
+        status_val = 'RECEIVED' if (from_range and to_range) else (self.request.data.get('status') or 'PENDING_SERIALS')
+
+        serializer.save(
+            received_by=user,
+            recorded_by_name=rec_name,
+            procurement=procurement_obj,
+            imfl_hologram_ref_no=ref_no,
+            distributor_name=dist_name,
+            license_number=lic_no,
+            establishment_name=est_name,
+            total_holograms=total_holo,
+            hologram_from_range=from_range,
+            hologram_to_range=to_range,
+            hologram_ranges=ranges or [],
+            damaged_total=int(self.request.data.get('damaged_total') or 0),
+            damaged_holograms_range=self.request.data.get('damaged_holograms_range') or [],
+            status=status_val
+        )
+
+    def perform_update(self, serializer):
+        user = self.request.user
+        rec_name = user.get_full_name() or user.username
+        instance = self.get_object()
+
+        from_range = str(self.request.data.get('hologram_from_range') if 'hologram_from_range' in self.request.data else instance.hologram_from_range or '').strip()
+        to_range = str(self.request.data.get('hologram_to_range') if 'hologram_to_range' in self.request.data else instance.hologram_to_range or '').strip()
+        total_holo = int(self.request.data.get('total_holograms') or instance.total_holograms or 0)
+
+        ranges = self.request.data.get('hologram_ranges')
+        if not ranges and from_range and to_range:
+            ranges = [{
+                'from': from_range,
+                'to': to_range,
+                'count': total_holo,
+                'status': 'AVAILABLE'
+            }]
+
+        status_val = self.request.data.get('status')
+        if not status_val:
+            status_val = 'RECEIVED' if (from_range and to_range) else instance.status
+
+        update_kwargs = {
+            'recorded_by_name': rec_name,
+            'hologram_from_range': from_range,
+            'hologram_to_range': to_range,
+            'status': status_val
+        }
+        if ranges:
+            update_kwargs['hologram_ranges'] = ranges
+        if 'damaged_total' in self.request.data:
+            update_kwargs['damaged_total'] = int(self.request.data.get('damaged_total') or 0)
+        if 'damaged_holograms_range' in self.request.data:
+            update_kwargs['damaged_holograms_range'] = self.request.data.get('damaged_holograms_range') or []
+        if 'arrival_date' not in self.request.data and (from_range and to_range and not instance.hologram_from_range):
+            update_kwargs['arrival_date'] = timezone.now()
+
+        serializer.save(**update_kwargs)
+
+    @action(detail=False, methods=['get'], url_path='approved-procurements')
+    def approved_procurements(self, request):
+        """
+        Returns list of approved/completed procurements for OIC to record hologram arrivals.
+        """
+        procurements = IMFLHologramProcurement.objects.filter(
+            Q(status__icontains='Approved') | Q(payment_status='COMPLETED') | Q(status__icontains='Payment')
+        ).order_by('-created_at')
+
+        data = []
+        for p in procurements:
+            # Check existing arrivals recorded for this procurement
+            arrivals = IMFLHologramDetails.objects.filter(Q(procurement=p) | Q(imfl_hologram_ref_no=p.ref_no))
+            already_received = sum(a.total_holograms for a in arrivals if a.hologram_from_range)
+            data.append({
+                'id': p.id,
+                'ref_no': p.ref_no,
+                'distributor_name': p.distributor_name,
+                'license_number': p.license_number,
+                'establishment_name': p.establishment_name,
+                'quantity': p.quantity,
+                'already_received': already_received,
+                'status': p.status,
+                'payment_status': p.payment_status,
+                'created_at': p.created_at,
+            })
+
+        return Response(data)
 

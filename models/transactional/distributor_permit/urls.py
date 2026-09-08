@@ -27,6 +27,7 @@ router.register(r'brand-warehouse', views.IMFLBrandWarehouseViewSet, basename='b
 router.register(r'retailer-stock', views.IMFLRetailerStockDetailsViewSet, basename='retailer-stock')
 router.register(r'retailer-dispatches', views.IMFLRetailerStockDetailsViewSet, basename='retailer-dispatches')
 router.register(r'hologram-procurement', views.IMFLHologramProcurementViewSet, basename='hologram-procurement')
+router.register(r'hologram-arrival', views.IMFLHologramDetailsViewSet, basename='hologram-arrival')
 
 app_name = 'distributor_permit'
 
