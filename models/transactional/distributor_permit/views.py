@@ -552,20 +552,47 @@ class DistributorPermitPerformActionView(APIView):
         target_transition = None
         for t in transitions:
             cond_act = str((t.condition or {}).get('action') or '').upper()
-            if cond_act == action or transition_matches(t, request.user, action) or (action == 'APPROVE' and cond_act in ('APPROVE', 'APPROVEPAYSLIP')):
+            if (
+                cond_act == action 
+                or transition_matches(t, request.user, action)
+                or (action in ('APPROVE', 'FORWARD', 'FORWARD_TO_COMMISSIONER') and cond_act in ('APPROVE', 'FORWARD', 'FORWARD_TO_COMMISSIONER', 'APPROVEPAYSLIP'))
+                or (action in ('VERIFY', 'APPROVEPAYSLIP') and cond_act in ('VERIFY', 'APPROVE', 'APPROVEPAYSLIP', 'FORWARD'))
+                or (action in ('PAY', 'FORCE_PAY') and cond_act in ('PAY', 'FORCE_PAY', 'APPROVE'))
+            ):
                 target_transition = t
                 break
 
-        # Fallback for PAY / FORCE_PAY when at Awaiting Payment stage (stage 154 or status Awaiting Payment)
-        if not target_transition and action in ('PAY', 'FORCE_PAY'):
-            for t in transitions:
-                cond_action = str((t.condition or {}).get('action') or '').upper()
-                if cond_action in ('PAY', 'FORCE_PAY') or t.to_stage_id in (155, 156, 151):
-                    target_transition = t
-                    break
-            if not target_transition:
-                from auth.workflow.models import WorkflowStage, WorkflowTransition
-                to_stage = WorkflowStage.objects.filter(id=156).first() or WorkflowStage.objects.filter(name__icontains='arrival', workflow=application.workflow).first() or WorkflowStage.objects.filter(name__icontains='approved', workflow=application.workflow).first()
+        # Fallback transitions for IMFL workflows
+        if not target_transition:
+            from auth.workflow.models import WorkflowStage, WorkflowTransition
+            curr_stage_id = getattr(application.current_stage, 'id', None)
+            curr_stage_name = str(getattr(application.current_stage, 'name', '') or '').strip().lower()
+
+            # 1. Permit Section FORWARD / APPROVE from initial stage (148/149 or "permit section"/"pending") -> Forwarded Commissioner (153)
+            if action in ('FORWARD', 'APPROVE', 'FORWARD_TO_COMMISSIONER') and (curr_stage_id in (148, 149) or 'permit section' in curr_stage_name or 'pending' in curr_stage_name):
+                stage_153 = WorkflowStage.objects.filter(id=153).first() or WorkflowStage.objects.filter(name__icontains='Forwarded Commissioner', workflow=application.workflow).first()
+                if stage_153:
+                    target_transition = WorkflowTransition(
+                        workflow=application.workflow,
+                        from_stage=application.current_stage,
+                        to_stage=stage_153,
+                        condition={'role': 'permit-section', 'action': action}
+                    )
+
+            # 2. Commissioner initial APPROVE -> Awaiting Payment / Approved Commissioner (154)
+            elif action == 'APPROVE' and (curr_stage_id == 153 or 'forwarded commissioner' in curr_stage_name):
+                stage_154 = WorkflowStage.objects.filter(id=154).first() or WorkflowStage.objects.filter(name__icontains='payment', workflow=application.workflow).first() or WorkflowStage.objects.filter(name__icontains='approved commissioner', workflow=application.workflow).first()
+                if stage_154:
+                    target_transition = WorkflowTransition(
+                        workflow=application.workflow,
+                        from_stage=application.current_stage,
+                        to_stage=stage_154,
+                        condition={'role': 'commissioner', 'action': 'APPROVE'}
+                    )
+
+            # 3. Licensee PAY / FORCE_PAY at Awaiting Payment stage (154) -> Forwarded PaySLip Permit Section (156)
+            elif action in ('PAY', 'FORCE_PAY') and (curr_stage_id == 154 or 'payment' in curr_stage_name or 'approved commissioner' in curr_stage_name):
+                to_stage = WorkflowStage.objects.filter(id=156).first() or WorkflowStage.objects.filter(name__icontains='payslip', workflow=application.workflow).first() or WorkflowStage.objects.filter(name__icontains='approved', workflow=application.workflow).first()
                 if to_stage:
                     target_transition = WorkflowTransition(
                         workflow=application.workflow,
@@ -574,17 +601,51 @@ class DistributorPermitPerformActionView(APIView):
                         condition={'role': 'licensee', 'action': 'PAY'}
                     )
 
-        # Fallback transition for Commissioner APPROVE on Cancellation (stage 162 -> 165)
-        if not target_transition and action == 'APPROVE' and isinstance(application, IMFLCancellation):
-            from auth.workflow.models import WorkflowStage, WorkflowTransition
-            stage_165 = WorkflowStage.objects.filter(id=165).first() or WorkflowStage.objects.filter(name='Approved By Commissioner', workflow_id=17).first()
-            if stage_165:
-                target_transition = WorkflowTransition(
-                    workflow=application.workflow,
-                    from_stage=application.current_stage,
-                    to_stage=stage_165,
-                    condition={'role': 'commissioner', 'action': 'APPROVE'}
-                )
+            # 4. Permit Section FORWARD / VERIFY on Payslip (156) -> Forwarded PaySLip Commissioner (157)
+            elif action in ('FORWARD', 'APPROVE', 'VERIFY', 'APPROVEPAYSLIP') and (curr_stage_id == 156 or 'payslip' in curr_stage_name and 'permit' in curr_stage_name):
+                stage_157 = WorkflowStage.objects.filter(id=157).first() or WorkflowStage.objects.filter(name__icontains='payslip commissioner', workflow=application.workflow).first()
+                if stage_157:
+                    target_transition = WorkflowTransition(
+                        workflow=application.workflow,
+                        from_stage=application.current_stage,
+                        to_stage=stage_157,
+                        condition={'role': 'permit-section', 'action': action}
+                    )
+
+            # 5. Commissioner Final APPROVE on Payslip (157) -> Approved (151)
+            elif action == 'APPROVE' and (curr_stage_id == 157 or 'payslip commissioner' in curr_stage_name):
+                stage_151 = WorkflowStage.objects.filter(id=151).first() or WorkflowStage.objects.filter(name__iexact='Approved', workflow=application.workflow).first()
+                if stage_151:
+                    target_transition = WorkflowTransition(
+                        workflow=application.workflow,
+                        from_stage=application.current_stage,
+                        to_stage=stage_151,
+                        condition={'role': 'commissioner', 'action': 'APPROVE'}
+                    )
+
+            # 6. REJECT handling across stages -> Rejected (152) or RejectedByCommissioner (150)
+            elif action == 'REJECT':
+                rej_stage = WorkflowStage.objects.filter(id=152).first() or WorkflowStage.objects.filter(name__icontains='reject', workflow=application.workflow).first()
+                if curr_stage_id == 157:
+                    rej_stage = WorkflowStage.objects.filter(id=150).first() or rej_stage
+                if rej_stage:
+                    target_transition = WorkflowTransition(
+                        workflow=application.workflow,
+                        from_stage=application.current_stage,
+                        to_stage=rej_stage,
+                        condition={'action': 'REJECT'}
+                    )
+
+            # 7. Fallback transition for Commissioner APPROVE on Cancellation (stage 162 -> 165)
+            elif action == 'APPROVE' and isinstance(application, IMFLCancellation):
+                stage_165 = WorkflowStage.objects.filter(id=165).first() or WorkflowStage.objects.filter(name='Approved By Commissioner', workflow_id=17).first()
+                if stage_165:
+                    target_transition = WorkflowTransition(
+                        workflow=application.workflow,
+                        from_stage=application.current_stage,
+                        to_stage=stage_165,
+                        condition={'role': 'commissioner', 'action': 'APPROVE'}
+                    )
 
         if not target_transition:
             return Response({
