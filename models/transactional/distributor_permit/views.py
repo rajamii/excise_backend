@@ -2421,6 +2421,28 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
             except Exception:
                 pass
 
+        # Ensure hologram wallet exists for licensee/user
+        from models.masters.wallet_type.models import WalletType
+        from models.transactional.wallet.models import WalletBalance
+        holo_wt = WalletType.objects.filter(code__iexact='hologram').first()
+        if holo_wt:
+            wb = WalletBalance.objects.filter(
+                models.Q(licensee_id__iexact=str(licensee_id)) | models.Q(user_id__iexact=user.username),
+                wallet_type=holo_wt
+            ).first()
+            if not wb:
+                WalletBalance.objects.create(
+                    licensee_id=str(licensee_id),
+                    user_id=user.username,
+                    licensee_name=instance.distributor_name or user.get_full_name(),
+                    module_type='distributor_permit',
+                    wallet_type=holo_wt,
+                    head_of_account='non',
+                    current_balance=Decimal('0.00'),
+                    total_credit=Decimal('0.00'),
+                    total_debit=Decimal('0.00')
+                )
+
         txn_id = f"TXN-IMFLHOLO-{instance.id}-{int(timezone.now().timestamp())}"
         try:
             debit_res = debit_wallet_balance(
@@ -2431,9 +2453,9 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
                 amount=amount,
                 user_id=user.username,
                 licensee_name=instance.distributor_name or user.get_full_name(),
-                source_module='imfl_hologram_procurement',
+                source_module='imfl_hologram_payment',
                 payment_status='success',
-                remarks=f"Payment for IMFL Hologram Procurement {instance.ref_no} ({instance.quantity} holograms)",
+                remarks=f"IMFL Hologram Payment for Ref #{instance.ref_no} ({instance.quantity} holograms)",
                 transaction_type='payment',
                 reference_no=instance.ref_no
             )
@@ -2447,7 +2469,10 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
             'transaction_id': txn_id,
             'amount': float(amount),
             'paid_at': timezone.now().isoformat(),
-            'paid_by': user.username
+            'paid_by': user.username,
+            'source_module': 'imfl_hologram_payment',
+            'payment_source': 'imfl_hologram_payment',
+            'wallet_type': 'hologram'
         }
 
         # Transition stage to Payment Completed
