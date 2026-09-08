@@ -2247,9 +2247,15 @@ def distributor_permit_wallet_balances(request):
         wallet_type__code__iexact='education_cess'
     ).order_by('-current_balance', 'wallet_balance_id').first()
 
+    holo_wb = WalletBalance.objects.filter(
+        wallet_filter,
+        wallet_type__code__iexact='hologram'
+    ).order_by('-current_balance', 'wallet_balance_id').first()
+
     return Response({
         'excise_balance': float(excise_wb.current_balance) if excise_wb else 0.0,
         'education_cess_balance': float(cess_wb.current_balance) if cess_wb else 0.0,
+        'hologram_balance': float(holo_wb.current_balance) if holo_wb else 0.0,
     })
 
 
@@ -2402,18 +2408,16 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='pay')
     def wallet_payment(self, request, pk=None):
         instance = self.get_object()
-        user = request.user
-        amount = instance.total_amount
+        user = instance.applicant or request.user
+        amount = Decimal(str(instance.total_amount or (instance.quantity * Decimal('0.15')))).quantize(Decimal('0.01'))
 
         from models.transactional.wallet.wallet_service import debit_wallet_balance
         from models.masters.license.models import License
         from models.transactional.wallet.wallet_initializer import initialize_wallet_balances_for_license
 
         # Find candidate licensee ID
-        licensee_id = instance.license_number or user.username
         user_licenses = list(License.objects.filter(applicant=user, is_active=True))
-        if user_licenses and not instance.license_number:
-            licensee_id = user_licenses[0].license_id
+        licensee_id = (user_licenses[0].license_id if user_licenses else instance.license_number) or user.username
 
         for lic in user_licenses:
             try:
@@ -2422,12 +2426,12 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
                 pass
 
         # Ensure hologram wallet exists for licensee/user
-        from models.masters.wallet_type.models import WalletType
-        from models.transactional.wallet.models import WalletBalance
-        holo_wt = WalletType.objects.filter(code__iexact='hologram').first()
+        from django.db.models import Q
+        from models.transactional.wallet.models import MasterWalletType, WalletBalance
+        holo_wt = MasterWalletType.objects.filter(code__iexact='hologram').first()
         if holo_wt:
             wb = WalletBalance.objects.filter(
-                models.Q(licensee_id__iexact=str(licensee_id)) | models.Q(user_id__iexact=user.username),
+                Q(licensee_id__iexact=str(licensee_id)) | Q(user_id__iexact=user.username),
                 wallet_type=holo_wt
             ).first()
             if not wb:
