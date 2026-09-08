@@ -864,20 +864,72 @@ class IMFLHologramProcurementSerializer(serializers.ModelSerializer):
 
 class IMFLHologramDetailsSerializer(serializers.ModelSerializer):
     procurement_ref_no = serializers.CharField(source='imfl_hologram_ref_no', read_only=True)
+    procurementRefNo = serializers.CharField(source='imfl_hologram_ref_no', read_only=True)
     received_by_username = serializers.CharField(source='received_by.username', read_only=True)
+    receivedByUsername = serializers.CharField(source='received_by.username', read_only=True)
     hologram_from_range = serializers.CharField(required=False, allow_blank=True, default='')
     hologram_to_range = serializers.CharField(required=False, allow_blank=True, default='')
     payment_status = serializers.SerializerMethodField()
+    paymentStatus = serializers.SerializerMethodField()
+    procured_quantity = serializers.SerializerMethodField()
+    procuredQuantity = serializers.SerializerMethodField()
+    distributor_name = serializers.SerializerMethodField()
+    distributorName = serializers.SerializerMethodField()
+    license_number = serializers.SerializerMethodField()
+    licenseNumber = serializers.SerializerMethodField()
+    imfl_hologram_ref_no = serializers.SerializerMethodField()
+    imflHologramRefNo = serializers.SerializerMethodField()
+    total_holograms = serializers.SerializerMethodField()
+    totalHolograms = serializers.SerializerMethodField()
 
     class Meta:
         model = IMFLHologramDetails
         fields = '__all__'
         read_only_fields = ('created_at', 'updated_at')
 
+    def get_imfl_hologram_ref_no(self, obj):
+        return obj.imfl_hologram_ref_no or (obj.procurement.ref_no if obj.procurement else '')
+
+    def get_imflHologramRefNo(self, obj):
+        return self.get_imfl_hologram_ref_no(obj)
+
+    def get_distributor_name(self, obj):
+        return obj.distributor_name or (obj.procurement.distributor_name if obj.procurement else '')
+
+    def get_distributorName(self, obj):
+        return self.get_distributor_name(obj)
+
+    def get_license_number(self, obj):
+        return obj.license_number or (obj.procurement.license_number if obj.procurement else '')
+
+    def get_licenseNumber(self, obj):
+        return self.get_license_number(obj)
+
+    def get_total_holograms(self, obj):
+        if obj.total_holograms:
+            return obj.total_holograms
+        if obj.procurement and obj.procurement.quantity:
+            return obj.procurement.quantity
+        return 0
+
+    def get_totalHolograms(self, obj):
+        return self.get_total_holograms(obj)
+
+    def get_procured_quantity(self, obj):
+        if obj.procurement and obj.procurement.quantity:
+            return obj.procurement.quantity
+        return obj.total_holograms or 0
+
+    def get_procuredQuantity(self, obj):
+        return self.get_procured_quantity(obj)
+
     def get_payment_status(self, obj):
         if obj.procurement:
             return obj.procurement.payment_status or 'COMPLETED'
         return 'COMPLETED'
+
+    def get_paymentStatus(self, obj):
+        return self.get_payment_status(obj)
 
 
 

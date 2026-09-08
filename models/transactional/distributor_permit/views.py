@@ -2261,6 +2261,15 @@ def distributor_permit_wallet_balances(request):
     })
 
 
+def _get_user_display_name(user):
+    if not user:
+        return ''
+    first = getattr(user, 'first_name', '') or ''
+    last = getattr(user, 'last_name', '') or ''
+    full = f"{first} {last}".strip()
+    return full or getattr(user, 'username', '')
+
+
 class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
     queryset = IMFLHologramProcurement.objects.select_related('applicant', 'workflow', 'current_stage').all()
     serializer_class = IMFLHologramProcurementSerializer
@@ -2302,7 +2311,7 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
 
         distributor_name = str(data.get('distributor_name') or '').strip()
         if not distributor_name or distributor_name.lower() in ('distributor', 'applicant'):
-            distributor_name = str(getattr(user, 'company_name', '') or getattr(user, 'establishment_name', '') or user.get_full_name() or user.username).strip()
+            distributor_name = str(getattr(user, 'company_name', '') or getattr(user, 'establishment_name', '') or _get_user_display_name(user)).strip()
 
         establishment_name = str(data.get('establishment_name') or '').strip()
         if not establishment_name or establishment_name.lower() in ('distributor', 'applicant'):
@@ -2444,7 +2453,7 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
                 WalletBalance.objects.create(
                     licensee_id=str(licensee_id),
                     user_id=user.username,
-                    licensee_name=instance.distributor_name or user.get_full_name(),
+                    licensee_name=instance.distributor_name or _get_user_display_name(user),
                     module_type='distributor_permit',
                     wallet_type=holo_wt,
                     head_of_account='non',
@@ -2462,7 +2471,7 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
                 head_of_account='non',
                 amount=amount,
                 user_id=user.username,
-                licensee_name=instance.distributor_name or user.get_full_name(),
+                licensee_name=instance.distributor_name or _get_user_display_name(user),
                 source_module='imfl_hologram_payment',
                 payment_status='success',
                 remarks=f"IMFL Hologram Payment for Ref #{instance.ref_no} ({instance.quantity} holograms)",
@@ -2511,7 +2520,7 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
                     'damaged_holograms_range': [],
                     'status': 'PENDING_SERIALS',
                     'received_by': user,
-                    'recorded_by_name': user.get_full_name() or user.username,
+                    'recorded_by_name': _get_user_display_name(user),
                     'arrival_date': timezone.now(),
                     'remarks': f'Auto-created upon payment completion for {instance.ref_no}'
                 }
@@ -2542,10 +2551,8 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
 
     def _sync_paid_procurements(self):
         try:
-            paid_procurements = IMFLHologramProcurement.objects.filter(
-                Q(payment_status='COMPLETED') | Q(status__icontains='Payment') | Q(status__icontains='Approved')
-            )
-            for p in paid_procurements:
+            all_procurements = IMFLHologramProcurement.objects.all()
+            for p in all_procurements:
                 if not IMFLHologramDetails.objects.filter(Q(procurement=p) | Q(imfl_hologram_ref_no=p.ref_no)).exists():
                     IMFLHologramDetails.objects.create(
                         procurement=p,
@@ -2561,9 +2568,9 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                         damaged_holograms_range=[],
                         status='PENDING_SERIALS',
                         received_by=p.applicant,
-                        recorded_by_name=p.applicant.get_full_name() if p.applicant else '',
+                        recorded_by_name=_get_user_display_name(p.applicant),
                         arrival_date=p.payment_date or p.updated_at or timezone.now(),
-                        remarks=f'Auto-created from paid procurement {p.ref_no}'
+                        remarks=f'IMFL Hologram Procurement {p.ref_no}'
                     )
         except Exception:
             pass
@@ -2604,7 +2611,7 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
-        rec_name = user.get_full_name() or user.username
+        rec_name = _get_user_display_name(user)
         
         procurement_id = self.request.data.get('procurement_id') or self.request.data.get('procurement')
         procurement_obj = None
@@ -2654,7 +2661,7 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         user = self.request.user
-        rec_name = user.get_full_name() or user.username
+        rec_name = _get_user_display_name(user)
         instance = self.get_object()
 
         from_range = str(self.request.data.get('hologram_from_range') if 'hologram_from_range' in self.request.data else instance.hologram_from_range or '').strip()
