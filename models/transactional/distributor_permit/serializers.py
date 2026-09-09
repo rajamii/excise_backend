@@ -261,7 +261,54 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
                 **validated_data,
             )
             self._process_and_save_line_items(application, line_items)
+            self._record_hologram_usage(application, stock_info.get('allocated_ranges', []))
         return application
+
+    def _record_hologram_usage(self, application, allocated_ranges):
+        if not allocated_ranges:
+            return
+        from .models import IMFLHologramDetails
+        from django.utils import timezone
+        for rng in allocated_ranges:
+            if not isinstance(rng, dict):
+                continue
+            ref_no = str(rng.get('ref_no') or '').strip()
+            f_val = str(rng.get('from') or '')
+            t_val = str(rng.get('to') or '')
+            c_val = int(rng.get('count') or 0)
+            if not ref_no or c_val <= 0:
+                continue
+
+            holo = IMFLHologramDetails.objects.filter(imfl_hologram_ref_no=ref_no).first()
+            if not holo:
+                holo = IMFLHologramDetails.objects.filter(procurement__ref_no=ref_no).first()
+            if not holo:
+                holo = IMFLHologramDetails.objects.order_by('-arrival_date', '-id').first()
+
+            if holo:
+                used_list = list(holo.used_hologram_ranges or [])
+                # Avoid duplicate entry for the exact same requisition & range
+                already_recorded = any(
+                    str(u.get('requisition_ref_no', '')).lower() == application.reference_no.lower() and
+                    str(u.get('from', '')) == f_val and str(u.get('to', '')) == t_val
+                    for u in used_list if isinstance(u, dict)
+                )
+                if not already_recorded:
+                    used_list.append({
+                        'requisition_ref_no': application.reference_no,
+                        'permit_application_ref': application.reference_no,
+                        'permit_number': getattr(application, 'permit_number', '') or application.reference_no,
+                        'ref_no': ref_no,
+                        'from': f_val,
+                        'to': t_val,
+                        'count': c_val,
+                        'assigned_at': timezone.now().isoformat(),
+                        'applicant_name': str(getattr(application, 'applicant_name', '') or getattr(application.applicant, 'username', '')),
+                        'status': 'ALLOCATED_TO_PERMIT',
+                        'purpose': 'IMFL Import Requisition'
+                    })
+                    holo.used_hologram_ranges = used_list
+                    holo.save(update_fields=['used_hologram_ranges', 'updated_at'])
 
     def _process_and_save_line_items(self, application, line_items):
         from .models import IMFLBrand

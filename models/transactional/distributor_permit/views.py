@@ -2882,12 +2882,18 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
         total_received = sum(a.total_holograms for a in arr_qs if (a.hologram_from_range and a.hologram_to_range) or a.status in ('RECEIVED', 'UPDATED'))
         total_damaged = sum(a.damaged_total for a in arr_qs)
         
+        # Calculate allocated to permit requisitions
+        total_allocated_to_permits = sum(
+            sum(int(u.get('count') or 0) for u in (item.used_hologram_ranges or []) if isinstance(u, dict))
+            for item in arr_qs
+        )
+
         # Calculate utilized from warehouse & dispatches
         total_utilized_in_warehouse = sum(w.hologram_count or w.total_cases_arrived * w.pieces_per_case for w in wh_qs if w.hologram_count)
         total_dispatched_to_retailers = sum(d.dispatched_bottles or d.hologram_count for d in disp_qs)
         
         # Available balance
-        total_available = max(0, total_received - total_damaged - (total_utilized_in_warehouse if total_utilized_in_warehouse > 0 else 0))
+        total_available = max(0, total_received - total_damaged - total_allocated_to_permits - (total_utilized_in_warehouse if total_utilized_in_warehouse > 0 else 0))
 
         # Build batches list with ranges breakdown
         batches_data = []
@@ -2903,17 +2909,65 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                     'status': 'AVAILABLE'
                 }]
 
-            # Collect segments
+            used_ranges = item.used_hologram_ranges or []
+            used_offset = sum(int(u.get('count') or 0) for u in used_ranges if isinstance(u, dict))
+
+            # Collect segments with accurate available / allocated status
             for r in ranges:
-                all_range_segments.append({
-                    'ref_no': item.imfl_hologram_ref_no,
-                    'from': r.get('from', ''),
-                    'to': r.get('to', ''),
-                    'count': r.get('count', 0),
-                    'status': r.get('status', 'AVAILABLE'),
-                    'arrival_date': item.arrival_date,
-                    'recorded_by_name': item.recorded_by_name or 'OIC Officer',
-                })
+                try:
+                    r_from = int(r.get('from') or 1)
+                    r_to = int(r.get('to') or r_from)
+                    r_count = int(r.get('count') or (r_to - r_from + 1))
+                except Exception:
+                    r_from, r_to, r_count = 1, 1, 1
+
+                if used_offset >= r_count:
+                    # Entire chunk is used/allocated
+                    all_range_segments.append({
+                        'ref_no': item.imfl_hologram_ref_no,
+                        'from': str(r_from),
+                        'to': str(r_to),
+                        'count': r_count,
+                        'status': 'ALLOCATED',
+                        'arrival_date': item.arrival_date,
+                        'recorded_by_name': item.recorded_by_name or 'OIC Officer',
+                    })
+                    used_offset -= r_count
+                elif used_offset > 0:
+                    # Partially allocated chunk
+                    allocated_end = r_from + used_offset - 1
+                    all_range_segments.append({
+                        'ref_no': item.imfl_hologram_ref_no,
+                        'from': str(r_from),
+                        'to': str(allocated_end),
+                        'count': used_offset,
+                        'status': 'ALLOCATED',
+                        'arrival_date': item.arrival_date,
+                        'recorded_by_name': item.recorded_by_name or 'OIC Officer',
+                    })
+                    available_start = allocated_end + 1
+                    available_count = r_to - available_start + 1
+                    all_range_segments.append({
+                        'ref_no': item.imfl_hologram_ref_no,
+                        'from': str(available_start),
+                        'to': str(r_to),
+                        'count': available_count,
+                        'status': 'AVAILABLE',
+                        'arrival_date': item.arrival_date,
+                        'recorded_by_name': item.recorded_by_name or 'OIC Officer',
+                    })
+                    used_offset = 0
+                else:
+                    # Entire chunk is available
+                    all_range_segments.append({
+                        'ref_no': item.imfl_hologram_ref_no,
+                        'from': str(r_from),
+                        'to': str(r_to),
+                        'count': r_count,
+                        'status': r.get('status', 'AVAILABLE'),
+                        'arrival_date': item.arrival_date,
+                        'recorded_by_name': item.recorded_by_name or 'OIC Officer',
+                    })
 
             batches_data.append({
                 'id': item.id,
@@ -2925,6 +2979,8 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                 'hologram_from_range': item.hologram_from_range,
                 'hologram_to_range': item.hologram_to_range,
                 'hologram_ranges': ranges,
+                'used_hologram_ranges': used_ranges,
+                'usedHologramRanges': used_ranges,
                 'damaged_total': item.damaged_total,
                 'damaged_holograms_range': item.damaged_holograms_range or [],
                 'recorded_by_name': item.recorded_by_name or 'OIC Officer',
@@ -2950,6 +3006,7 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                 'total_procured': total_procured or (1000 if total_received > 0 else 0),
                 'total_received': total_received,
                 'total_available': total_available if total_received > 0 else (total_procured or 0),
+                'total_allocated_to_permits': total_allocated_to_permits,
                 'total_utilized_in_warehouse': total_utilized_in_warehouse,
                 'total_dispatched_to_retailers': total_dispatched_to_retailers,
                 'total_damaged': total_damaged,

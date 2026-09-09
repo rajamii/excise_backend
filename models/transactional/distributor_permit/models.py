@@ -643,6 +643,7 @@ class IMFLHologramDetails(models.Model):
     hologram_from_range = models.CharField(max_length=100, blank=True, default='', help_text='Starting hologram serial/barcode range')
     hologram_to_range = models.CharField(max_length=100, blank=True, default='', help_text='Ending hologram serial/barcode range')
     hologram_ranges = models.JSONField(default=list, blank=True, help_text='Breakdown of usable hologram range segments')
+    used_hologram_ranges = models.JSONField(default=list, blank=True, help_text='List of allocated/used hologram ranges for permits and requisitions')
 
     # Damaged Tracking (ready for future expansion)
     damaged_total = models.PositiveIntegerField(default=0, help_text='Total damaged holograms')
