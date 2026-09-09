@@ -359,10 +359,15 @@ def dashboard_counts(request):
         })
 
     if tab == 'hologram-procurement':
+        is_it_cell = 'it cell' in role_name or role_id == 6
+        is_comm = 'commissioner' in role_name or role_id in (9, 10, 11, 12)
+        is_dist = role_id in (2, 16) or 'distributor' in role_name or 'licensee' in role_name
+
         approved_items = [
             it for it in items
-            if any(k in _stage_text(it) for k in ('approved by commissioner', 'final approval', 'production completed', 'completed'))
+            if any(k in _stage_text(it) for k in ('approved by commissioner', 'approved for payment', 'final approval', 'production completed', 'completed', 'approved'))
         ]
+
         rejected_items = [
             it for it in items
             if 'reject' in _stage_text(it)
@@ -378,17 +383,19 @@ def dashboard_counts(request):
             if it in approved_items or it in rejected_items:
                 continue
             st_text = _stage_text(it)
-            if 'it cell' in role_name or role_id == 6:
-                if any(k in st_text for k in ('submitted', 'under it cell review', 'payment completed', 'post-payment')) and 'forwarded to commissioner' not in st_text:
+            if is_it_cell:
+                if any(k in st_text for k in ('submitted', 'under it cell review', 'it cell review', 'pending')) and 'forwarded to commissioner' not in st_text:
                     pending_items.append(it)
                 else:
                     under_process_items.append(it)
-            elif 'commissioner' in role_name or role_id in (9, 10, 11, 12):
-                if 'forwarded to commissioner' in st_text:
+            elif is_comm:
+                if 'forwarded to commissioner' in st_text or 'commissioner review' in st_text:
                     pending_items.append(it)
                 else:
                     under_process_items.append(it)
-            elif role_id in (2, 16) or 'distributor' in role_name or 'licensee' in role_name:
+            elif is_dist:
+                if it in awaiting_payment_items:
+                    continue
                 pending_items.append(it)
             else:
                 pending_items.append(it)
@@ -2479,6 +2486,11 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
         except Exception:
             pass
 
+        try:
+            invalidate_dashboard_counts_cache()
+        except Exception:
+            pass
+
         serializer = self.get_serializer(procurement)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -2544,6 +2556,11 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
                     remarks=remarks or f'Action {action_name} performed',
                     content_object=instance
                 )
+            except Exception:
+                pass
+
+            try:
+                invalidate_dashboard_counts_cache()
             except Exception:
                 pass
 
