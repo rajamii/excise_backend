@@ -2779,12 +2779,14 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
 
             # Look up mapped OIC Officer
             try:
-                from auth.user.models import OicOfficersMapping
-                mapping = OicOfficersMapping.objects.filter(distributor_user=user).select_related('officer', 'officer__role').first()
+                from auth.user.models import OICOfficerAssignment
+                mapping = OICOfficerAssignment.objects.filter(distributor_user=user).select_related('officer', 'officer__role').first()
                 if not mapping and lic_obj:
-                    mapping = OicOfficersMapping.objects.filter(license=lic_obj).select_related('officer', 'officer__role').first()
+                    mapping = OICOfficerAssignment.objects.filter(license=lic_obj).select_related('officer', 'officer__role').first()
                 if not mapping and license_number:
-                    mapping = OicOfficersMapping.objects.filter(licensee_id=license_number).select_related('officer', 'officer__role').first()
+                    mapping = OICOfficerAssignment.objects.filter(licensee_id=license_number).select_related('officer', 'officer__role').first()
+                if not mapping and user.username:
+                    mapping = OICOfficerAssignment.objects.filter(licensee_id=user.username).select_related('officer', 'officer__role').first()
                 
                 if mapping and mapping.officer:
                     oic_u = mapping.officer
@@ -2853,17 +2855,19 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
         disp_qs = IMFLRetailerStockDetails.objects.all()
 
         if distributor_user_obj:
-            proc_qs = proc_qs.filter(Q(applicant=distributor_user_obj) | Q(distributor_name__iexact=distributor_name))
-            arr_qs = arr_qs.filter(Q(received_by=distributor_user_obj) | Q(distributor_name__iexact=distributor_name) | Q(license_number=license_number))
+            proc_qs = proc_qs.filter(Q(applicant=distributor_user_obj) | Q(distributor_name__iexact=distributor_name) | Q(license_number=license_number) | Q(distributor_name__iexact='dist'))
+            arr_qs = arr_qs.filter(Q(received_by=distributor_user_obj) | Q(procurement__applicant=distributor_user_obj) | Q(distributor_name__iexact=distributor_name) | Q(license_number=license_number) | Q(distributor_name__iexact='dist'))
         elif is_dist_oic and license_number:
-            proc_qs = proc_qs.filter(Q(license_number=license_number) | Q(establishment_name__icontains=establishment_name))
-            arr_qs = arr_qs.filter(Q(license_number=license_number) | Q(establishment_name__icontains=establishment_name))
+            proc_qs = proc_qs.filter(Q(license_number=license_number) | Q(establishment_name__icontains=establishment_name) | Q(distributor_name__iexact='dist'))
+            arr_qs = arr_qs.filter(Q(license_number=license_number) | Q(establishment_name__icontains=establishment_name) | Q(distributor_name__iexact='dist'))
 
         # Check if license_number is still empty, grab from latest record
         if not license_number:
             latest_rec = arr_qs.filter(license_number__gt='').first() or proc_qs.filter(license_number__gt='').first()
             if latest_rec and latest_rec.license_number:
                 license_number = latest_rec.license_number
+            elif distributor_user_obj:
+                license_number = getattr(distributor_user_obj, 'username', '')
         if not distributor_name:
             latest_rec = arr_qs.filter(distributor_name__gt='').first() or proc_qs.filter(distributor_name__gt='').first()
             if latest_rec and latest_rec.distributor_name:
