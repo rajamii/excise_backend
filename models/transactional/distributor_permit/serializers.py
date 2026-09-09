@@ -1,4 +1,5 @@
 from decimal import Decimal
+from django.utils import timezone
 
 from rest_framework import serializers
 
@@ -151,6 +152,8 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
             'total_additional_ed',
             'total_bulk_litres',
             'permit_wise_details',
+            'total_holograms_assigned',
+            'assigned_hologram_ranges',
             'allowed_actions',
             'allowedActions',
             'current_stage_id',
@@ -164,6 +167,8 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
             'status',
             'officer_remarks',
             'submitted_at',
+            'total_holograms_assigned',
+            'assigned_hologram_ranges',
             'created_at',
             'updated_at',
         ]
@@ -214,8 +219,26 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         app_type = validated_data.pop('application_type', None) or raw_data.get('applicationType') or raw_data.get('application_type') or 'requisition'
         validated_data['applicant'] = user
         validated_data['status'] = DistributorPermitApplication.STATUS_SUBMITTED
-        validated_data['submitted_at'] = timezone_now()
+        validated_data['submitted_at'] = timezone.now()
         validated_data['origin'] = validated_data.get('origin') or validated_data.get('source_address') or ''
+
+        # Calculate required holograms: cases * pieces_per_case
+        total_bottles_required = 0
+        for it in line_items:
+            s_ml = int(it.get('size_ml') or 750)
+            p_case = int(it.get('pieces_per_case') or self._resolve_pieces_per_case(s_ml))
+            c_count = int(it.get('cases') or 1)
+            total_bottles_required += (c_count * p_case)
+
+        from .views import get_hologram_stock_and_allocation
+        stock_info = get_hologram_stock_and_allocation(applicant=user, required_count=total_bottles_required)
+        if total_bottles_required > 0 and not stock_info.get('is_sufficient', False):
+            raise serializers.ValidationError({
+                'hologram_stock': f"Insufficient hologram stock in warehouse. Required: {total_bottles_required}, Available: {stock_info.get('total_available_stock', 0)}"
+            })
+
+        validated_data['total_holograms_assigned'] = total_bottles_required
+        validated_data['assigned_hologram_ranges'] = stock_info.get('allocated_ranges', [])
         
         try:
             from auth.workflow.models import WorkflowStage

@@ -33,6 +33,8 @@ class DistributorPermitApplication(models.Model):
     approval_date = models.DateTimeField(null=True, blank=True)
     valid_up_to = models.DateTimeField(null=True, blank=True)
     permit_wise_details = models.JSONField(default=list, blank=True)
+    total_holograms_assigned = models.PositiveIntegerField(default=0, help_text='Total holograms allocated for this permit application')
+    assigned_hologram_ranges = models.JSONField(default=list, blank=True, help_text='Allocated hologram ranges with batch ref, from, to, count')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
