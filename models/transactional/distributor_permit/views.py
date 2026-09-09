@@ -190,6 +190,8 @@ def _normalize_imfl_dashboard_tab(raw_tab):
         return 'cancellation'
     if tab in ('brand-arrival', 'arrival', 'imfl-brand-arrival', 'distributor-permit-brand-arrival', 'update-brands-arrival'):
         return 'brand-arrival'
+    if tab in ('hologram-procurement', 'imfl-hologram-procurement', 'distributor-permit-hologram-procurement', 'imfl-hologram', 'distributor-permit-hologram', 'hologram'):
+        return 'hologram-procurement'
     return 'requisition'
 
 
@@ -206,6 +208,21 @@ def _imfl_dashboard_queryset(request, tab):
             Q(status__icontains='arrival') |
             Q(status__icontains='approved')
         )
+    elif tab == 'hologram-procurement':
+        from .models import IMFLHologramProcurement
+        qs = IMFLHologramProcurement.objects.select_related('applicant', 'current_stage', 'workflow').all()
+        user = request.user
+        role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').lower()
+        role_id = getattr(getattr(user, 'role', None), 'id', 0)
+        is_officer_or_admin = (
+            user.is_superuser or
+            getattr(user, 'is_staff', False) or
+            role_id in (1, 3, 5, 6, 7, 9, 10, 11, 12, 14, 16) or
+            any(k in role_name for k in ('admin', 'it cell', 'it_cell', 'commissioner', 'permit', 'oic'))
+        )
+        if not is_officer_or_admin:
+            qs = qs.filter(applicant=user)
+        return qs
     else:
         qs = DistributorPermitApplication.objects.select_related('applicant', 'current_stage').all()
     return scope_permit_queryset(qs, request.user)
@@ -339,6 +356,55 @@ def dashboard_counts(request):
             'rejected': len(rejected_items),
             'awaiting_payment': 0,
             'under_process': 0
+        })
+
+    if tab == 'hologram-procurement':
+        approved_items = [
+            it for it in items
+            if any(k in _stage_text(it) for k in ('approved by commissioner', 'final approval', 'production completed', 'completed'))
+        ]
+        rejected_items = [
+            it for it in items
+            if 'reject' in _stage_text(it)
+        ]
+        awaiting_payment_items = [
+            it for it in items
+            if 'approved for payment' in _stage_text(it) and str(getattr(it, 'payment_status', '')).upper() != 'COMPLETED'
+        ]
+
+        pending_items = []
+        under_process_items = []
+        for it in items:
+            if it in approved_items or it in rejected_items:
+                continue
+            st_text = _stage_text(it)
+            if 'it cell' in role_name or role_id == 6:
+                if any(k in st_text for k in ('submitted', 'under it cell review', 'payment completed', 'post-payment')) and 'forwarded to commissioner' not in st_text:
+                    pending_items.append(it)
+                else:
+                    under_process_items.append(it)
+            elif 'commissioner' in role_name or role_id in (9, 10, 11, 12):
+                if 'forwarded to commissioner' in st_text:
+                    pending_items.append(it)
+                else:
+                    under_process_items.append(it)
+            elif role_id in (2, 16) or 'distributor' in role_name or 'licensee' in role_name:
+                pending_items.append(it)
+            else:
+                pending_items.append(it)
+
+        return Response({
+            'tab': tab,
+            'applied': len(items),
+            'total': len(items),
+            'pending': len(pending_items),
+            'under_process': len(under_process_items),
+            'underProcess': len(under_process_items),
+            'approved': len(approved_items),
+            'objection': 0,
+            'rejected': len(rejected_items),
+            'awaiting_payment': len(awaiting_payment_items),
+            'awaitingPayment': len(awaiting_payment_items)
         })
 
     approved = sum(1 for item in items if _is_item_approved(item))
