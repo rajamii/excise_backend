@@ -508,7 +508,7 @@ class DistributorPermitBrandMasterView(DistributorRoleRequiredMixin, APIView):
                     'brandId': brand.id,
                     'brandName': brand.brand_name,
                     'sizeMl': size_ml,
-                    'piecesPerCase': int(getattr(pieces, 'pieces_in_case', 0) or 0),
+                    'piecesPerCase': int(getattr(pieces, 'pieces_in_case', 0) or getattr(brand, 'bottles_per_case', 0) or 12),
                     'edpPerCase': _decimal(row.ex_factory_price_rs_per_case),
                     'importPassFeePerCase': _decimal(row.excise_duty_rs_per_case),
                     'mrpPerBottle': _decimal(row.mrp_rs_per_bottle),
@@ -1810,6 +1810,71 @@ class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
                     status='Arrival Approved'
                 )
 
+                # Update IMFLHologramDetails to track which hologram serials are attached to this brand & damage/wastage
+                try:
+                    from .models import IMFLHologramDetails
+                    req_ref = str(getattr(permit_app, 'reference_no', '') or distributor_permit or '').strip()
+                    holo_ref = str(item.get('hologram_ref_no') or '').strip()
+                    holo_qs = IMFLHologramDetails.objects.all()
+                    holo_item = None
+                    if holo_ref:
+                        holo_item = holo_qs.filter(imfl_hologram_ref_no=holo_ref).first() or holo_qs.filter(procurement__ref_no=holo_ref).first()
+                    if not holo_item:
+                        holo_item = holo_qs.order_by('-arrival_date', '-id').first()
+
+                    if holo_item and hg_from and hg_to:
+                        used_list = list(holo_item.used_hologram_ranges or [])
+                        dam_list = list(holo_item.damaged_holograms_range or [])
+                        dam_ranges = [r for r in [dam_cases_hg, dam_hg] if r and r != 'None']
+
+                        updated = False
+                        for u in used_list:
+                            if isinstance(u, dict) and (
+                                (str(u.get('requisition_ref_no', '')).lower() == req_ref.lower() or
+                                 str(u.get('permit_application_ref', '')).lower() == req_ref.lower()) and
+                                (str(u.get('from', '')) == hg_from or not u.get('brand_name'))
+                            ):
+                                u['brand_name'] = f"{b_name} ({p_size}ml)"
+                                u['good_count'] = good_bottles
+                                u['damaged_count'] = dam_bottles
+                                u['damaged_ranges'] = dam_ranges
+                                u['status'] = 'ARRIVED_ATTACHED'
+                                u['arrival_verified_at'] = common_arrival_date.isoformat()
+                                updated = True
+                                break
+
+                        if not updated:
+                            used_list.append({
+                                'requisition_ref_no': req_ref,
+                                'permit_application_ref': req_ref,
+                                'ref_no': holo_item.imfl_hologram_ref_no,
+                                'brand_name': f"{b_name} ({p_size}ml)",
+                                'from': hg_from,
+                                'to': hg_to,
+                                'count': arr_bottles,
+                                'good_count': good_bottles,
+                                'damaged_count': dam_bottles,
+                                'damaged_ranges': dam_ranges,
+                                'status': 'ARRIVED_ATTACHED',
+                                'arrival_verified_at': common_arrival_date.isoformat()
+                            })
+                        holo_item.used_hologram_ranges = used_list
+
+                        if dam_bottles > 0:
+                            holo_item.damaged_total = (holo_item.damaged_total or 0) + dam_bottles
+                            dam_list.append({
+                                'brand_name': f"{b_name} ({p_size}ml)",
+                                'requisition_ref_no': req_ref,
+                                'count': dam_bottles,
+                                'ranges': dam_ranges,
+                                'recorded_at': common_arrival_date.isoformat()
+                            })
+                            holo_item.damaged_holograms_range = dam_list
+
+                        holo_item.save(update_fields=['used_hologram_ranges', 'damaged_total', 'damaged_holograms_range'])
+                except Exception as ex:
+                    print(f"Error updating IMFLHologramDetails for brand arrival: {ex}")
+
         serializer = IMFLBrandWarehouseSerializer(created_records, many=True)
         return Response({
             'message': f'Successfully updated brand arrival for {len(created_records)} item(s) in IMFL Brand Warehouse.',
@@ -3003,9 +3068,9 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                 }
             },
             'summary_stats': {
-                'total_procured': total_procured or (1000 if total_received > 0 else 0),
+                'total_procured': total_procured,
                 'total_received': total_received,
-                'total_available': total_available if total_received > 0 else (total_procured or 0),
+                'total_available': total_available,
                 'total_allocated_to_permits': total_allocated_to_permits,
                 'total_utilized_in_warehouse': total_utilized_in_warehouse,
                 'total_dispatched_to_retailers': total_dispatched_to_retailers,
@@ -3092,6 +3157,9 @@ def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0) -
                 ranges = [{'from': str(f_val), 'to': str(t_val), 'count': cnt, 'status': 'AVAILABLE'}]
             except Exception:
                 pass
+
+        if not ranges:
+            continue
 
         already_used = assigned_by_batch.get(ref_no, 0)
         batch_total = int(holo.total_holograms or 0)

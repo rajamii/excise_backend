@@ -47,7 +47,6 @@ class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'id',
             'brand_name',
-            'pieces_per_case',
             'edp_per_case',
             'import_pass_fee_per_case',
             'mrp_per_bottle',
@@ -60,6 +59,8 @@ class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
         mappings = {
             'brandId': 'brand_id',
             'sizeMl': 'size_ml',
+            'piecesPerCase': 'pieces_per_case',
+            'pieces_in_case': 'pieces_per_case',
         }
         for camel, snake in mappings.items():
             if camel in data and snake not in data:
@@ -223,10 +224,25 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         validated_data['origin'] = validated_data.get('origin') or validated_data.get('source_address') or ''
 
         # Calculate required holograms: cases * pieces_per_case
+        from .models import IMFLBrand
+        from models.masters.supply_chain.liquor_data.models import MasterBrandList
+
         total_bottles_required = 0
         for it in line_items:
             s_ml = int(it.get('size_ml') or 750)
-            p_case = int(it.get('pieces_per_case') or self._resolve_pieces_per_case(s_ml))
+            b_id = it.get('brand_id') or it.get('brand_master_id')
+            p_case = it.get('pieces_per_case')
+            if not p_case and b_id:
+                imfl_b = IMFLBrand.objects.filter(id=b_id).first()
+                if imfl_b and imfl_b.pieces_per_case:
+                    p_case = int(imfl_b.pieces_per_case)
+                else:
+                    m_b = MasterBrandList.objects.filter(id=b_id).first()
+                    if m_b and (getattr(m_b, 'bottles_per_case', None) or getattr(m_b, 'pieces_per_case', None)):
+                        p_case = int(getattr(m_b, 'bottles_per_case', None) or getattr(m_b, 'pieces_per_case', None) or 0)
+            if not p_case:
+                p_case = self._resolve_pieces_per_case(s_ml, brand_id=b_id)
+            p_case = int(p_case or 12)
             c_count = int(it.get('cases') or 1)
             total_bottles_required += (c_count * p_case)
 
@@ -494,13 +510,26 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
             'education_cess_per_case': edu_cess,
         }
 
-    def _resolve_pieces_per_case(self, size_ml: int) -> int:
+    def _resolve_pieces_per_case(self, size_ml: int, brand_id=None) -> int:
+        if brand_id:
+            from .models import IMFLBrand
+            from models.masters.supply_chain.liquor_data.models import MasterBrandList
+            ib = IMFLBrand.objects.filter(id=brand_id).first()
+            if ib and ib.pieces_per_case:
+                return int(ib.pieces_per_case)
+            mb = MasterBrandList.objects.filter(id=brand_id).first()
+            if mb and (getattr(mb, 'bottles_per_case', None) or getattr(mb, 'pieces_per_case', None)):
+                return int(getattr(mb, 'bottles_per_case', None) or getattr(mb, 'pieces_per_case', None) or 12)
+
         row = BrandMlInCases.objects.filter(ml=size_ml).order_by('id').first()
         pieces = int(getattr(row, 'pieces_in_case', 0) or 0)
         if pieces <= 0:
             if size_ml == 750: return 12
             elif size_ml == 375: return 24
             elif size_ml == 180: return 48
+            elif size_ml == 500: return 12
+            elif size_ml == 330: return 24
+            elif size_ml == 650: return 12
             return 12
         return pieces
 
