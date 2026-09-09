@@ -917,8 +917,8 @@ class IMFLHologramProcurementSerializer(serializers.ModelSerializer):
         role_id = getattr(getattr(user, 'role', None), 'id', 0)
 
         is_admin = user.is_superuser or role_id == 1 or 'admin' in role_name
-        is_it_cell = 'it cell' in role_name or 'it_cell' in role_name or role_id in (3, 12)
-        is_commissioner = 'commissioner' in role_name or role_id in (6, 10)
+        is_it_cell = 'it cell' in role_name or 'it_cell' in role_name or role_id == 6
+        is_commissioner = 'commissioner' in role_name or role_id in (9, 10, 11, 12)
         is_distributor = 'distributor' in role_name or 'licensee' in role_name or role_id in (2, 16) or obj.applicant_id == user.id
 
         if is_admin:

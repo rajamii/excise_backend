@@ -2442,10 +2442,11 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
             for t in transitions:
                 cond = t.condition or {}
                 t_action = str(cond.get('action') or '').upper()
-                if t_action == action_name or (action_name in ('APPROVE', 'FORWARD') and t_action in ('APPROVE', 'FORWARD')):
-                    next_stage = t.to_stage
-                    break
-                if action_name == 'REJECT' and t_action == 'REJECT':
+                if action_name in ('FORWARD', 'APPROVE'):
+                    if t_action in ('FORWARD', 'APPROVE'):
+                        next_stage = t.to_stage
+                        break
+                elif action_name == 'REJECT' and t_action == 'REJECT':
                     next_stage = t.to_stage
                     break
 
