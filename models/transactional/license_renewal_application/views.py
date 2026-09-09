@@ -1228,13 +1228,17 @@ def dashboard_counts(request):
     if role_stage_names:
         visible_qs = _renewal_queryset_visible_to_role(all_qs, request.user, role_stage_names)
         pending_for_role = set(role_stage_names)
+        pending_count = visible_qs.filter(current_stage__name__in=pending_for_role).count()
+        objection_count = visible_qs.filter(current_stage__name__in=objection_stages).count()
+        approved_count = visible_qs.filter(current_stage__name__in=approved_stages).count()
+        rejected_count = visible_qs.filter(current_stage__name__in=rejected_stages).count()
         return Response(
             {
-                "applied": all_qs.count(),
-                "pending": visible_qs.filter(current_stage__name__in=pending_for_role).count(),
-                "objection": visible_qs.filter(current_stage__name__in=objection_stages).count(),
-                "approved": visible_qs.filter(current_stage__name__in=approved_stages).count(),
-                "rejected": visible_qs.filter(current_stage__name__in=rejected_stages).count(),
+                "applied": pending_count + approved_count + objection_count + rejected_count,
+                "pending": pending_count,
+                "objection": objection_count,
+                "approved": approved_count,
+                "rejected": rejected_count,
             }
         )
 
