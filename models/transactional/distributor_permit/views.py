@@ -2766,8 +2766,40 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
 
     def _sync_paid_procurements(self):
         try:
-            all_procurements = IMFLHologramProcurement.objects.all()
-            for p in all_procurements:
+            paid_procurements = IMFLHologramProcurement.objects.filter(
+                payment_status='COMPLETED'
+            ).exclude(
+                Q(status__icontains='reject') |
+                Q(status__icontains='cancel') |
+                Q(current_stage__name__icontains='reject') |
+                Q(current_stage__name__icontains='cancel')
+            )
+
+            # Clean up any IMFLHologramDetails associated with rejected or non-paid procurements without saved serials
+            rejected_or_unpaid_proc_ids = IMFLHologramProcurement.objects.filter(
+                Q(status__icontains='reject') |
+                Q(status__icontains='cancel') |
+                Q(current_stage__name__icontains='reject') |
+                Q(current_stage__name__icontains='cancel') |
+                ~Q(payment_status='COMPLETED')
+            ).values_list('id', flat=True)
+
+            rejected_or_unpaid_proc_refs = IMFLHologramProcurement.objects.filter(
+                Q(status__icontains='reject') |
+                Q(status__icontains='cancel') |
+                Q(current_stage__name__icontains='reject') |
+                Q(current_stage__name__icontains='cancel') |
+                ~Q(payment_status='COMPLETED')
+            ).values_list('ref_no', flat=True)
+
+            IMFLHologramDetails.objects.filter(
+                Q(procurement_id__in=rejected_or_unpaid_proc_ids) |
+                Q(imfl_hologram_ref_no__in=rejected_or_unpaid_proc_refs)
+            ).filter(
+                Q(hologram_from_range='') | Q(hologram_from_range__isnull=True)
+            ).delete()
+
+            for p in paid_procurements:
                 if not IMFLHologramDetails.objects.filter(Q(procurement=p) | Q(imfl_hologram_ref_no=p.ref_no)).exists():
                     IMFLHologramDetails.objects.create(
                         procurement=p,
@@ -2792,7 +2824,12 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         self._sync_paid_procurements()
-        qs = IMFLHologramDetails.objects.all().order_by('-arrival_date', '-created_at')
+        qs = IMFLHologramDetails.objects.exclude(
+            Q(procurement__status__icontains='reject') |
+            Q(procurement__status__icontains='cancel') |
+            Q(procurement__current_stage__name__icontains='reject') |
+            Q(procurement__current_stage__name__icontains='cancel')
+        ).order_by('-arrival_date', '-created_at')
         params = self.request.query_params
 
         search = params.get('search')
@@ -2919,7 +2956,12 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
         Returns list of approved/completed procurements for OIC to record hologram arrivals.
         """
         procurements = IMFLHologramProcurement.objects.filter(
-            Q(status__icontains='Approved') | Q(payment_status='COMPLETED') | Q(status__icontains='Payment')
+            payment_status='COMPLETED'
+        ).exclude(
+            Q(status__icontains='reject') |
+            Q(status__icontains='cancel') |
+            Q(current_stage__name__icontains='reject') |
+            Q(current_stage__name__icontains='cancel')
         ).order_by('-created_at')
 
         data = []
@@ -3064,8 +3106,14 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
             establishment_name = 'Excise Department Sikkim'
 
         # Filter procurements and arrivals for this distributor scope
-        proc_qs = IMFLHologramProcurement.objects.all()
-        arr_qs = IMFLHologramDetails.objects.all().order_by('-arrival_date', '-created_at')
+        proc_qs = IMFLHologramProcurement.objects.filter(payment_status='COMPLETED').exclude(
+            Q(status__icontains='reject') | Q(status__icontains='cancel') |
+            Q(current_stage__name__icontains='reject') | Q(current_stage__name__icontains='cancel')
+        )
+        arr_qs = IMFLHologramDetails.objects.exclude(
+            Q(procurement__status__icontains='reject') | Q(procurement__status__icontains='cancel') |
+            Q(procurement__current_stage__name__icontains='reject') | Q(procurement__current_stage__name__icontains='cancel')
+        ).order_by('-arrival_date', '-created_at')
         wh_qs = IMFLBrandWarehouse.objects.all()
         disp_qs = IMFLRetailerStockDetails.objects.all()
 
