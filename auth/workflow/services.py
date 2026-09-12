@@ -6,6 +6,10 @@ from django.core.serializers.json import DjangoJSONEncoder
 
 from django.apps import apps
 import json
+import logging
+
+logger = logging.getLogger(__name__)
+
 from .models import (
     WorkflowTransition, StagePermission,
     Transaction, Objection, Rejection, Revert
@@ -323,6 +327,8 @@ class WorkflowService:
 
     @staticmethod
     def _condition_role_matches(condition, user):
+        if getattr(user, 'is_superuser', False):
+            return True
         condition = condition or {}
         role = getattr(user, 'role', None)
         user_role_id = getattr(role, 'id', None)
@@ -814,6 +820,16 @@ class WorkflowService:
                 )
             except Exception as e:
                 logger.warning("Failed to record Rejection in advance_stage: %s", e)
+
+            try:
+                from models.transactional.distributor_permit.views import revert_holograms_for_requisition
+                revert_holograms_for_requisition(
+                    application,
+                    user=user if (user and getattr(user, 'is_authenticated', False)) else None,
+                    reason=remarks or context.get("remarks", "") or f"Application Rejected at stage {target_stage_name}"
+                )
+            except Exception as e:
+                logger.warning("Failed to revert holograms in advance_stage: %s", e)
 
     @staticmethod
     def get_application_by_id(application_id):

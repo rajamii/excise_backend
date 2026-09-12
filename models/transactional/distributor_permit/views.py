@@ -101,7 +101,95 @@ def _resolve_destination(user) -> str:
             value = getattr(source, field, None)
             if value:
                 return str(value)
-    return str(getattr(user, 'address', '') or '').strip()
+def _get_user_display_name(user) -> str:
+    if not user:
+        return 'Excise Authority'
+    first = getattr(user, 'first_name', '') or ''
+    last = getattr(user, 'last_name', '') or ''
+    full = f"{first} {last}".strip()
+    if full:
+        return full
+    return getattr(user, 'username', '') or 'Excise Authority'
+
+
+def revert_holograms_for_requisition(application, user=None, reason=None):
+    """
+    Reverts holograms allocated to an IMFL Requisition / Permit Application.
+    Updates the used_hologram_ranges JSON field in IMFLHologramDetails to mark the range as REVERTED,
+    thereby restoring the holograms back into available stock.
+    Also updates the requisition's assigned_hologram_ranges.
+    """
+    if not application:
+        return
+
+    from .models import DistributorPermitApplication, IMFLCancellation, IMFLHologramDetails
+
+    if isinstance(application, (str, int)):
+        ref_str = str(application).strip()
+        app_obj = (
+            DistributorPermitApplication.objects.filter(Q(reference_no=ref_str) | Q(permit_number=ref_str)).first() or
+            IMFLCancellation.objects.filter(reference_no=ref_str).first()
+        )
+        if not app_obj and ref_str.isdigit():
+            app_obj = DistributorPermitApplication.objects.filter(reference_no=ref_str).first()
+        application = app_obj
+
+    if not application:
+        return
+
+    req_ref = str(getattr(application, 'reference_no', '') or '').strip()
+    permit_num = str(getattr(application, 'permit_number', '') or '').strip()
+    if not req_ref and not permit_num:
+        return
+
+    now_iso = timezone.now().isoformat()
+    actor_name = _get_user_display_name(user)
+    rev_reason = str(reason or 'Requisition Cancelled / Rejected').strip()
+
+    # 1. Update IMFLHologramDetails.used_hologram_ranges
+    for holo in IMFLHologramDetails.objects.all():
+        used_list = list(holo.used_hologram_ranges or [])
+        changed = False
+        for entry in used_list:
+            if isinstance(entry, dict):
+                entry_ref = str(entry.get('requisition_ref_no') or entry.get('permit_application_ref') or '').strip()
+                entry_permit = str(entry.get('permit_number') or '').strip()
+                matches = False
+                if req_ref and entry_ref.lower() == req_ref.lower():
+                    matches = True
+                if permit_num and entry_permit.lower() == permit_num.lower():
+                    matches = True
+                if req_ref and entry_permit.lower() == req_ref.lower():
+                    matches = True
+
+                if matches and str(entry.get('status', '')).upper() != 'REVERTED':
+                    entry['status'] = 'REVERTED'
+                    entry['reverted_at'] = now_iso
+                    entry['reverted_by'] = actor_name
+                    entry['reversion_reason'] = rev_reason
+                    entry['activity_type'] = 'REVERTED'
+                    entry['activity_label'] = 'Reverted to Stock (Cancelled/Rejected)'
+                    entry['notes'] = f"Allocated holograms ({entry.get('from')} → {entry.get('to')}) restored to stock: {rev_reason}"
+                    changed = True
+
+        if changed:
+            holo.used_hologram_ranges = used_list
+            holo.save(update_fields=['used_hologram_ranges', 'updated_at'])
+
+    # 2. Update application.assigned_hologram_ranges
+    if isinstance(application, DistributorPermitApplication):
+        assigned = list(application.assigned_hologram_ranges or [])
+        assigned_changed = False
+        for a in assigned:
+            if isinstance(a, dict) and str(a.get('status', '')).upper() != 'REVERTED':
+                a['status'] = 'REVERTED'
+                a['reverted_at'] = now_iso
+                a['reverted_by'] = actor_name
+                a['reversion_reason'] = rev_reason
+                assigned_changed = True
+        if assigned_changed:
+            application.assigned_hologram_ranges = assigned
+            application.save(update_fields=['assigned_hologram_ranges'])
 
 
 class DistributorRoleRequiredMixin:
@@ -485,9 +573,16 @@ def dashboard_counts(request):
 
 class DistributorPermitDetailView(DistributorRoleRequiredMixin, APIView):
     def get_object(self, request, reference_no):
+        from urllib.parse import unquote
+        ref = unquote(str(reference_no)).strip()
         qs = DistributorPermitApplication.objects.prefetch_related('line_items', 'documents')
         qs = scope_permit_queryset(qs, request.user)
-        return qs.filter(reference_no=reference_no).first()
+        obj = qs.filter(reference_no=ref).first()
+        if not obj and ref != reference_no:
+            obj = qs.filter(reference_no=reference_no).first()
+        if not obj and str(ref).isdigit():
+            obj = qs.filter(reference_no=str(ref)).first()
+        return obj
 
     def get(self, request, reference_no):
         application = self.get_object(request, reference_no)
@@ -504,7 +599,12 @@ class DistributorPermitDocumentUploadView(DistributorRoleRequiredMixin, APIView)
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, reference_no):
-        application = DistributorPermitApplication.objects.filter(reference_no=reference_no).first()
+        from urllib.parse import unquote
+        ref = unquote(str(reference_no)).strip()
+        application = (
+            DistributorPermitApplication.objects.filter(reference_no=ref).first()
+            or DistributorPermitApplication.objects.filter(reference_no=reference_no).first()
+        )
         if not application:
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         if not _is_admin_user(request.user) and application.applicant_id != request.user.id:
@@ -667,18 +767,24 @@ class DistributorPermitPerformActionView(APIView):
                 'message': f'Remarks/reason is required while performing {action}.'
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        from urllib.parse import unquote
+        ref = unquote(str(reference_no)).strip()
+
         # Get application (check Cancellation, Revalidation, or Permit Application)
         application = (
-            IMFLCancellation.objects.filter(reference_no=reference_no).first()
+            IMFLCancellation.objects.filter(reference_no=ref).first()
+            or IMFLRevalidation.objects.filter(reference_no=ref).first()
+            or DistributorPermitApplication.objects.filter(reference_no=ref).first()
+            or IMFLCancellation.objects.filter(reference_no=reference_no).first()
             or IMFLRevalidation.objects.filter(reference_no=reference_no).first()
             or DistributorPermitApplication.objects.filter(reference_no=reference_no).first()
         )
-        if not application and str(reference_no).isdigit():
-            pk = int(reference_no)
+        if not application and (str(ref).isdigit() or str(reference_no).isdigit()):
+            pk_val = str(ref if str(ref).isdigit() else reference_no)
             application = (
-                IMFLCancellation.objects.filter(id=pk).first()
-                or IMFLRevalidation.objects.filter(id=pk).first()
-                or DistributorPermitApplication.objects.filter(id=pk).first()
+                IMFLCancellation.objects.filter(id=int(pk_val)).first()
+                or IMFLRevalidation.objects.filter(id=int(pk_val)).first()
+                or DistributorPermitApplication.objects.filter(reference_no=pk_val).first()
             )
         if not application:
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
@@ -977,6 +1083,26 @@ class DistributorPermitPerformActionView(APIView):
             application.save()
             invalidate_dashboard_counts_cache()
 
+            # Revert holograms back to stock if requisition is rejected or cancelled
+            target_stage_name = str(getattr(target_transition.to_stage, 'name', '') or '').lower()
+            is_rejection_or_cancellation = (
+                action == 'REJECT' or
+                'reject' in target_stage_name or
+                'cancel' in target_stage_name
+            )
+            if is_rejection_or_cancellation:
+                if isinstance(application, DistributorPermitApplication):
+                    revert_holograms_for_requisition(application, user=request.user, reason=remarks or f"Requisition Rejected/Cancelled ({action})")
+                elif isinstance(application, IMFLCancellation):
+                    dp = getattr(application, 'distributor_permit', None)
+                    if not dp and application.cancelled_permit_number:
+                        dp = DistributorPermitApplication.objects.filter(
+                            Q(permit_number=application.cancelled_permit_number) |
+                            Q(reference_no=application.cancelled_permit_number)
+                        ).first()
+                    if dp:
+                        revert_holograms_for_requisition(dp, user=request.user, reason=f"Permit Cancelled via Cancellation Application #{application.reference_no}")
+
             is_approved_stage = (
                 target_transition.to_stage.id in (151, 165) or
                 getattr(target_transition.to_stage, 'is_final', False) or
@@ -986,6 +1112,17 @@ class DistributorPermitPerformActionView(APIView):
             if is_approved_stage:
                 if isinstance(application, DistributorPermitApplication):
                     _schedule_imfl_revalidation_activation(application, timezone.now())
+                elif isinstance(application, IMFLCancellation):
+                    dp = getattr(application, 'distributor_permit', None)
+                    if not dp and application.cancelled_permit_number:
+                        dp = DistributorPermitApplication.objects.filter(
+                            Q(permit_number=application.cancelled_permit_number) |
+                            Q(reference_no=application.cancelled_permit_number)
+                        ).first()
+                    if dp:
+                        dp.status = 'Cancelled'
+                        dp.save(update_fields=['status', 'updated_at'])
+                        revert_holograms_for_requisition(dp, user=request.user, reason=f"Permit Cancelled via Approved Cancellation #{application.reference_no}")
                 elif isinstance(application, IMFLRevalidation):
                     from datetime import timedelta
                     delay_seconds = _resolve_imfl_revalidation_activation_delay_seconds()
@@ -3145,9 +3282,9 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
         total_received = sum(a.total_holograms for a in arr_qs if (a.hologram_from_range and a.hologram_to_range) or a.status in ('RECEIVED', 'UPDATED'))
         total_damaged = sum(a.damaged_total for a in arr_qs)
         
-        # Calculate allocated to permit requisitions
+        # Calculate allocated to permit requisitions (excluding reverted / cancelled)
         total_allocated_to_permits = sum(
-            sum(int(u.get('count') or 0) for u in (item.used_hologram_ranges or []) if isinstance(u, dict))
+            sum(int(u.get('count') or 0) for u in (item.used_hologram_ranges or []) if isinstance(u, dict) and str(u.get('status', '')).upper() not in ('REVERTED', 'CANCELLED', 'RESTORED'))
             for item in arr_qs
         )
 
@@ -3173,7 +3310,8 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                 }]
 
             used_ranges = item.used_hologram_ranges or []
-            used_offset = sum(int(u.get('count') or 0) for u in used_ranges if isinstance(u, dict))
+            # Only count active (non-reverted) allocations towards offset:
+            used_offset = sum(int(u.get('count') or 0) for u in used_ranges if isinstance(u, dict) and str(u.get('status', '')).upper() not in ('REVERTED', 'CANCELLED', 'RESTORED'))
 
             # Collect segments with accurate available / allocated status
             for r in ranges:
@@ -3318,6 +3456,10 @@ def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0) -
     # Find already assigned holograms from existing DistributorPermitApplications
     permit_qs = DistributorPermitApplication.objects.exclude(
         status__in=['REJECTED', 'rejected', 'CANCELLED', 'cancelled', 'Rejected', 'Cancelled']
+    ).exclude(
+        current_stage__name__icontains='reject'
+    ).exclude(
+        current_stage__name__icontains='cancel'
     )
     if applicant and not (getattr(applicant, 'is_staff', False) or getattr(applicant, 'is_superuser', False)):
         permit_qs = permit_qs.filter(applicant=applicant)
@@ -3326,7 +3468,7 @@ def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0) -
     assigned_by_batch = {}
     for p in permit_qs:
         for r in (p.assigned_hologram_ranges or []):
-            if isinstance(r, dict):
+            if isinstance(r, dict) and str(r.get('status', '')).upper() not in ('REVERTED', 'CANCELLED', 'RESTORED'):
                 ref = str(r.get('ref_no') or r.get('batch_ref') or '').strip()
                 try:
                     f = int(r.get('from') or 0)

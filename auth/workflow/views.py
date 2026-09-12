@@ -652,6 +652,9 @@ def _get_application_by_id(application_id, user=None):
     Returns the instance or None (filtered by user district if district-scoped role)
     """
     from django.db.models import Q
+    from urllib.parse import unquote
+
+    app_id_clean = unquote(str(application_id)).strip()
 
     model_configs = [
         ("company_registration", "CompanyRegistration", "application_id"),
@@ -671,7 +674,11 @@ def _get_application_by_id(application_id, user=None):
         try:
             Model = apps.get_model(app_label=app_label, model_name=model_name)
             q = Q(**{id_field: application_id})
-            if str(application_id).isdigit():
+            if app_id_clean != str(application_id):
+                q |= Q(**{id_field: app_id_clean})
+            if str(app_id_clean).isdigit():
+                q |= Q(pk=app_id_clean)
+            elif str(application_id).isdigit():
                 q |= Q(pk=application_id)
             qs = Model.objects.select_related('current_stage', 'workflow').filter(q)
             if user and _is_district_scoped_role(user):
