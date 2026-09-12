@@ -251,24 +251,33 @@ def _is_item_pending_for_user(item, user):
     role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').lower()
     role_id = getattr(getattr(user, 'role', None), 'id', 0)
     is_commissioner = 'commissioner' in role_name or role_id == 10
-    is_permit_section = 'permit' in role_name or 'oic' in role_name or role_id in (5, 6)
+    is_permit_section = 'permit' in role_name or role_id in (1, 3, 5) or getattr(user, 'is_staff', False) or user.is_superuser
+    is_distributor = 'distributor' in role_name or role_id == 14 or not (is_commissioner or is_permit_section)
 
     text = _stage_text(item)
     stage_id = getattr(item, 'current_stage_id', None) or getattr(getattr(item, 'current_stage', None), 'id', None)
+    is_final = getattr(getattr(item, 'current_stage', None), 'is_final', False)
+    if is_final or stage_id in (151, 152, 165):
+        return False
 
-    is_commissioner_stage = stage_id in (153, 157, 160, 162, 163) or 'commissioner' in text
-    is_permit_section_stage = stage_id in (148, 147, 149, 155, 156) or 'permit' in text or 'oic' in text
+    is_commissioner_stage = stage_id in (153, 157, 160, 162, 163) or ('commissioner' in text and 'payslip' not in text) or ('payslip' in text and 'commissioner' in text)
+    is_permit_section_stage = stage_id in (148, 147, 149, 155, 156) or ('permit' in text and 'commissioner' not in text) or ('payslip' in text and 'permit' in text) or 'submitted' in text or text == 'pending'
+    is_payment_stage = stage_id == 154 or ('awaiting' in text and 'payment' in text) or ('approved' in text and 'payment' in text and 'payslip' not in text)
 
     if is_permit_section:
-        if is_commissioner_stage:
+        if is_commissioner_stage or is_payment_stage:
             return False  # Under Process for Permit Section
         if is_permit_section_stage:
-            return True   # Pending for Permit Section
+            return True   # Pending for Permit Section (includes Stage 148 submitted & Stage 156 Forwarded PaySlip Permit Section)
     elif is_commissioner:
-        if is_permit_section_stage or stage_id == 154 or 'payment' in text or 'awaiting' in text:
+        if is_permit_section_stage or is_payment_stage:
             return False  # Under Process for Commissioner
         if is_commissioner_stage:
-            return True   # Pending for Commissioner
+            return True   # Pending for Commissioner (includes Stage 153 Forwarded to Commissioner & Stage 157 Forwarded PaySlip Commissioner)
+    elif is_distributor:
+        if is_payment_stage:
+            return True   # Awaiting Payment / Action for Distributor
+        return True
 
     return True
 
@@ -333,8 +342,19 @@ def dashboard_counts(request):
     def _is_item_approved(item):
         if is_oic or tab == 'brand-arrival':
             return _is_arrival_completed(item)
+        stage_id = getattr(item, 'current_stage_id', None) or getattr(getattr(item, 'current_stage', None), 'id', None)
+        is_final = getattr(getattr(item, 'current_stage', None), 'is_final', False)
+        if is_final or stage_id in (151, 165):
+            return True
         text = _stage_text(item)
-        if any(token in text for token in ('approved', 'completed', 'arrival approved', 'stock arrival approved')):
+        # Stages 148, 149, 153, 154, 156, 157 are non-final active stages
+        if stage_id in (147, 148, 149, 153, 154, 156, 157):
+            return False
+        if any(k in text for k in ('payslip', 'awaiting payment', 'awaiting_payment', 'forwarded commissioner', 'forwarded to commissioner')):
+            return False
+        if any(token in text for token in ('permit issued', 'pass issued', 'completed', 'arrival approved', 'stock arrival approved')):
+            return True
+        if 'approved by commissioner' in text or text.strip() == 'approved':
             return True
         return _is_arrival_completed(item)
 

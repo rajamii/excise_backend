@@ -625,6 +625,24 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
                 if cond_action not in actions:
                     actions.append(cond_action)
 
+        if not actions:
+            role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').lower()
+            role_id = getattr(getattr(user, 'role', None), 'id', 0)
+            is_ps = 'permit' in role_name or role_id in (1, 3, 5) or getattr(user, 'is_staff', False) or user.is_superuser
+            is_comm = 'commissioner' in role_name or role_id == 10
+            st_name = str(getattr(obj.current_stage, 'name', '') or obj.status or '').lower()
+
+            if is_ps:
+                if stage_id in (148, 147, 149) or ('permit' in st_name and 'payslip' not in st_name) or 'submitted' in st_name or st_name == 'pending':
+                    actions = ['FORWARD', 'APPROVE', 'REJECT', 'RAISE_OBJECTION']
+                elif stage_id == 156 or 'payslip' in st_name or 'forwarded payslip permit section' in st_name:
+                    actions = ['FORWARD', 'APPROVE', 'VERIFY', 'REJECT']
+            elif is_comm:
+                if stage_id == 153 or ('commissioner' in st_name and 'payslip' not in st_name):
+                    actions = ['APPROVE', 'REJECT', 'RAISE_OBJECTION']
+                elif stage_id == 157 or ('payslip' in st_name and 'commissioner' in st_name):
+                    actions = ['APPROVE', 'REJECT']
+
         return actions
 
     def get_allowedActions(self, obj):
