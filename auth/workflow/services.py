@@ -797,6 +797,24 @@ class WorkflowService:
                 stage=target_stage
             )
 
+        target_stage_name = str(getattr(target_stage, "name", "") or "").strip().lower()
+        is_rejection = (
+            action == "REJECT" or
+            (getattr(target_stage, "is_final", False) and "reject" in target_stage_name) or
+            ("reject" in target_stage_name and "unpaid" not in target_stage_name)
+        )
+        if is_rejection:
+            try:
+                Rejection.objects.create(
+                    content_type=ContentType.objects.get_for_model(application),
+                    object_id=str(application.pk),
+                    remarks=remarks or context.get("remarks", "") or "Application Rejected",
+                    rejected_by=user if (user and getattr(user, 'is_authenticated', False)) else None,
+                    stage=target_stage
+                )
+            except Exception as e:
+                logger.warning("Failed to record Rejection in advance_stage: %s", e)
+
     @staticmethod
     def get_application_by_id(application_id):
         from django.db import models

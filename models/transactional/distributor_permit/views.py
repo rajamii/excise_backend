@@ -219,7 +219,7 @@ def _imfl_dashboard_queryset(request, tab):
             getattr(user, 'is_staff', False) or
             role_id in (1, 3, 5, 6, 7, 9, 10, 11, 12) or
             any(k in role_name for k in ('admin', 'it cell', 'it_cell', 'commissioner', 'permit', 'oic'))
-        ) and not ('distributor' in role_name or role_id == 16)
+        ) and not ('distributor' in role_name or role_id in (14, 16))
         if not is_officer_or_admin:
             qs = qs.filter(applicant=user)
         return qs
@@ -2462,14 +2462,21 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
         is_officer_or_admin = (
             user.is_superuser or
             getattr(user, 'is_staff', False) or
-            role_id in (1, 3, 5, 6, 7, 9, 10, 12, 14, 16) or
+            role_id in (1, 3, 5, 6, 7, 9, 10, 11, 12) or
             any(k in role_name for k in ('admin', 'it cell', 'it_cell', 'commissioner', 'permit', 'oic'))
-        )
+        ) and not ('distributor' in role_name or role_id in (14, 16))
 
         qs = IMFLHologramProcurement.objects.select_related('applicant', 'workflow', 'current_stage').all()
         if not is_officer_or_admin:
             qs = qs.filter(applicant=user)
         return qs.order_by('-created_at')
+
+    def perform_destroy(self, instance):
+        super().perform_destroy(instance)
+        try:
+            invalidate_dashboard_counts_cache()
+        except Exception:
+            pass
 
     def create(self, request, *args, **kwargs):
         data = request.data.copy()
@@ -2602,6 +2609,21 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
                 )
             except Exception:
                 pass
+
+            target_stage_name = str(getattr(next_stage, "name", "") or "").strip().lower()
+            if action_name == 'REJECT' or 'reject' in target_stage_name:
+                try:
+                    from auth.workflow.models import Rejection
+                    from django.contrib.contenttypes.models import ContentType
+                    Rejection.objects.create(
+                        content_type=ContentType.objects.get_for_model(instance),
+                        object_id=str(instance.pk),
+                        remarks=remarks or 'Application Rejected',
+                        rejected_by=user if (user and getattr(user, 'is_authenticated', False)) else None,
+                        stage=next_stage
+                    )
+                except Exception as e:
+                    logger.warning("Failed to record Rejection for IMFLHologramProcurement: %s", e)
 
             try:
                 invalidate_dashboard_counts_cache()
