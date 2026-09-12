@@ -353,10 +353,10 @@ class WorkflowService:
             return True
 
         app_type_str = str(type(application).__name__).lower()
-        if 'cancellation' in app_type_str or 'revalidation' in app_type_str:
+        if 'cancellation' in app_type_str or 'revalidation' in app_type_str or 'distributorpermit' in app_type_str or 'imfl' in app_type_str:
             role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').lower()
             role_id = getattr(getattr(user, 'role', None), 'id', 0)
-            if 'commissioner' in role_name or 'admin' in role_name or 'officer' in role_name or 'permit' in role_name or role_id in (5, 6, 7, 9, 10, 12, 14):
+            if 'commissioner' in role_name or 'admin' in role_name or 'officer' in role_name or 'permit' in role_name or role_id in (1, 3, 5, 6, 7, 9, 10, 11, 12, 14):
                 return True
 
         role = getattr(user, 'role', None)

@@ -217,9 +217,9 @@ def _imfl_dashboard_queryset(request, tab):
         is_officer_or_admin = (
             user.is_superuser or
             getattr(user, 'is_staff', False) or
-            role_id in (1, 3, 5, 6, 7, 9, 10, 11, 12, 14, 16) or
+            role_id in (1, 3, 5, 6, 7, 9, 10, 11, 12) or
             any(k in role_name for k in ('admin', 'it cell', 'it_cell', 'commissioner', 'permit', 'oic'))
-        )
+        ) and not ('distributor' in role_name or role_id == 16)
         if not is_officer_or_admin:
             qs = qs.filter(applicant=user)
         return qs
@@ -733,7 +733,7 @@ class DistributorPermitPerformActionView(APIView):
                     )
 
             # 2. Commissioner initial APPROVE -> Awaiting Payment / Approved Commissioner (154)
-            elif action == 'APPROVE' and (curr_stage_id == 153 or 'forwarded commissioner' in curr_stage_name):
+            elif action in ('APPROVE', 'FORWARD', 'FORWARD_TO_COMMISSIONER') and (curr_stage_id == 153 or 'forwarded commissioner' in curr_stage_name):
                 stage_154 = WorkflowStage.objects.filter(id=154).first() or WorkflowStage.objects.filter(name__icontains='payment', workflow=application.workflow).first() or WorkflowStage.objects.filter(name__icontains='approved commissioner', workflow=application.workflow).first()
                 if stage_154:
                     target_transition = WorkflowTransition(
@@ -766,7 +766,7 @@ class DistributorPermitPerformActionView(APIView):
                     )
 
             # 5. Commissioner Final APPROVE on Payslip (157) -> Approved (151)
-            elif action == 'APPROVE' and (curr_stage_id == 157 or 'payslip commissioner' in curr_stage_name):
+            elif action in ('APPROVE', 'FORWARD', 'APPROVEPAYSLIP') and (curr_stage_id == 157 or 'payslip commissioner' in curr_stage_name):
                 stage_151 = WorkflowStage.objects.filter(id=151).first() or WorkflowStage.objects.filter(name__iexact='Approved', workflow=application.workflow).first()
                 if stage_151:
                     target_transition = WorkflowTransition(
