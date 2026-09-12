@@ -360,13 +360,21 @@ def dashboard_counts(request):
 
     if tab == 'hologram-procurement':
         is_it_cell = 'it cell' in role_name or role_id == 6
-        is_comm = 'commissioner' in role_name or role_id in (9, 10, 11, 12)
-        is_dist = role_id in (2, 16) or 'distributor' in role_name or 'licensee' in role_name
-
-        approved_items = [
-            it for it in items
-            if any(k in _stage_text(it) for k in ('approved by commissioner', 'final approval', 'production completed'))
-        ]
+        if is_it_cell:
+            approved_items = [
+                it for it in items
+                if any(k in _stage_text(it) for k in ('approved by commissioner', 'forwarded to commissioner (final)', 'forwarded to commissioner', 'approved for payment', 'final approval', 'production completed', 'approved'))
+            ]
+        elif is_comm:
+            approved_items = [
+                it for it in items
+                if any(k in _stage_text(it) for k in ('approved by commissioner', 'approved for payment', 'final approval', 'production completed', 'approved'))
+            ]
+        else:
+            approved_items = [
+                it for it in items
+                if any(k in _stage_text(it) for k in ('approved by commissioner', 'final approval', 'production completed'))
+            ]
 
         rejected_items = [
             it for it in items
@@ -384,7 +392,7 @@ def dashboard_counts(request):
                 continue
             st_text = _stage_text(it)
             if is_it_cell:
-                if any(k in st_text for k in ('submitted', 'under it cell review', 'it cell review', 'pending')) and 'forwarded to commissioner' not in st_text:
+                if any(k in st_text for k in ('submitted', 'under it cell review', 'it cell review', 'payment completed', 'post-payment', 'pending')) and 'forwarded to commissioner' not in st_text:
                     pending_items.append(it)
                 else:
                     under_process_items.append(it)
@@ -2503,6 +2511,9 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
 
         if not action_name:
             return Response({'error': 'action is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if action_name == 'REJECT' and str(getattr(instance, 'payment_status', '')).upper() in ('COMPLETED', 'SUCCESS'):
+            return Response({'error': 'Rejection is not allowed after payment has been completed.'}, status=status.HTTP_400_BAD_REQUEST)
 
         from auth.workflow.models import WorkflowTransition, WorkflowStage, Transaction
 

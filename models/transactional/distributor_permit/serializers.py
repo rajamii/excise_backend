@@ -944,16 +944,20 @@ class IMFLHologramProcurementSerializer(serializers.ModelSerializer):
                 actions = ['FORWARD', 'REJECT']
         elif 'payment completed' in stage_name or 'post-payment' in stage_name:
             if is_it_cell:
-                actions = ['FORWARD', 'REJECT']
+                actions = ['FORWARD']
         elif 'forwarded to commissioner (final)' in stage_name or ('forwarded to commissioner' in stage_name and 'final' in stage_name):
             if is_commissioner:
-                actions = ['APPROVE', 'REJECT']
+                actions = ['APPROVE']
         elif 'forwarded to commissioner' in stage_name:
             if is_commissioner:
                 actions = ['APPROVE', 'REJECT']
         elif 'approved for payment' in stage_name:
             if is_distributor and str(obj.payment_status or '').upper() != 'COMPLETED':
                 actions = ['PAY']
+
+        # Disallow rejection once payment has been completed
+        if str(getattr(obj, 'payment_status', '')).upper() in ('COMPLETED', 'SUCCESS'):
+            actions = [a for a in actions if 'REJECT' not in a.upper()]
 
         return actions
 
