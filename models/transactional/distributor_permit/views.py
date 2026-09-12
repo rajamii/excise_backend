@@ -365,12 +365,12 @@ def dashboard_counts(request):
 
         approved_items = [
             it for it in items
-            if any(k in _stage_text(it) for k in ('approved by commissioner', 'approved for payment', 'final approval', 'production completed', 'completed', 'approved'))
+            if any(k in _stage_text(it) for k in ('approved by commissioner', 'final approval', 'production completed'))
         ]
 
         rejected_items = [
             it for it in items
-            if 'reject' in _stage_text(it)
+            if any(k in _stage_text(it) for k in ('reject', 'cancel'))
         ]
         awaiting_payment_items = [
             it for it in items
