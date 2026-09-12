@@ -250,8 +250,11 @@ def _is_awaiting_payment_imfl_item(item):
 def _is_item_pending_for_user(item, user):
     role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').lower()
     role_id = getattr(getattr(user, 'role', None), 'id', 0)
-    is_commissioner = 'commissioner' in role_name or role_id == 10
-    is_permit_section = 'permit' in role_name or role_id in (1, 3, 5) or getattr(user, 'is_staff', False) or user.is_superuser
+    is_commissioner = 'commissioner' in role_name or role_id in (10, 11, 12)
+    is_permit_section = ('permit' in role_name or role_id == 5) and not is_commissioner
+    if not is_commissioner and not is_permit_section:
+        if getattr(user, 'is_staff', False) or user.is_superuser or role_id in (1, 3):
+            is_commissioner = True
     is_distributor = 'distributor' in role_name or role_id == 14 or not (is_commissioner or is_permit_section)
 
     text = _stage_text(item)
@@ -670,6 +673,13 @@ class DistributorPermitPerformActionView(APIView):
             or IMFLRevalidation.objects.filter(reference_no=reference_no).first()
             or DistributorPermitApplication.objects.filter(reference_no=reference_no).first()
         )
+        if not application and str(reference_no).isdigit():
+            pk = int(reference_no)
+            application = (
+                IMFLCancellation.objects.filter(id=pk).first()
+                or IMFLRevalidation.objects.filter(id=pk).first()
+                or DistributorPermitApplication.objects.filter(id=pk).first()
+            )
         if not application:
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
 
