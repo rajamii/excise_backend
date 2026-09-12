@@ -280,6 +280,8 @@ def _normalize_imfl_dashboard_tab(raw_tab):
         return 'brand-arrival'
     if tab in ('hologram-procurement', 'imfl-hologram-procurement', 'distributor-permit-hologram-procurement', 'imfl-hologram', 'distributor-permit-hologram', 'hologram'):
         return 'hologram-procurement'
+    if tab in ('hologram-arrival', 'imfl-hologram-arrival', 'distributor-permit-hologram-arrival', 'holograms-arrival', 'imfl-holograms-arrival'):
+        return 'hologram-arrival'
     return 'requisition'
 
 
@@ -296,6 +298,22 @@ def _imfl_dashboard_queryset(request, tab):
             Q(status__icontains='arrival') |
             Q(status__icontains='approved')
         )
+    elif tab == 'hologram-arrival':
+        try:
+            viewset = IMFLHologramDetailsViewSet()
+            viewset.request = request
+            viewset._sync_paid_procurements()
+        except Exception:
+            pass
+        qs = IMFLHologramDetails.objects.exclude(
+            Q(procurement__status__icontains='reject') |
+            Q(procurement__status__icontains='cancel') |
+            Q(procurement__current_stage__name__icontains='reject') |
+            Q(procurement__current_stage__name__icontains='cancel') |
+            Q(status__icontains='reject') |
+            Q(status__icontains='cancel')
+        ).select_related('procurement', 'received_by').all()
+        return qs
     elif tab == 'hologram-procurement':
         from .models import IMFLHologramProcurement
         qs = IMFLHologramProcurement.objects.select_related('applicant', 'current_stage', 'workflow').all()
@@ -534,6 +552,28 @@ def dashboard_counts(request):
             'rejected': len(rejected_items),
             'awaiting_payment': len(awaiting_payment_items),
             'awaitingPayment': len(awaiting_payment_items)
+        })
+
+    if tab == 'hologram-arrival':
+        def _is_holo_arrival_updated(item):
+            from_r = str(getattr(item, 'hologram_from_range', '') or '').strip()
+            to_r = str(getattr(item, 'hologram_to_range', '') or '').strip()
+            st = str(getattr(item, 'status', '') or '').strip().upper()
+            return bool((from_r and to_r) or st in ('RECEIVED', 'UPDATED'))
+
+        pending_items = [it for it in items if not _is_holo_arrival_updated(it)]
+        approved_items = [it for it in items if _is_holo_arrival_updated(it)]
+
+        return Response({
+            'tab': tab,
+            'applied': len(items),
+            'total': len(items),
+            'pending': len(pending_items),
+            'approved': len(approved_items),
+            'objection': 0,
+            'rejected': 0,
+            'awaiting_payment': 0,
+            'under_process': 0
         })
 
     approved = sum(1 for item in items if _is_item_approved(item))
@@ -3047,6 +3087,7 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
             damaged_holograms_range=self.request.data.get('damaged_holograms_range') or [],
             status=status_val
         )
+        invalidate_dashboard_counts_cache()
 
     def perform_update(self, serializer):
         user = self.request.user
@@ -3086,6 +3127,11 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
             update_kwargs['arrival_date'] = timezone.now()
 
         serializer.save(**update_kwargs)
+        invalidate_dashboard_counts_cache()
+
+    def perform_destroy(self, instance):
+        instance.delete()
+        invalidate_dashboard_counts_cache()
 
     @action(detail=False, methods=['get'], url_path='approved-procurements')
     def approved_procurements(self, request):
