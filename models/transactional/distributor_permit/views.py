@@ -299,6 +299,9 @@ def dashboard_counts(request):
     role_name = str(getattr(getattr(request.user, 'role', None), 'name', '') or '').lower()
     role_id = getattr(getattr(request.user, 'role', None), 'id', 0)
     username = str(getattr(request.user, 'username', '') or '').lower()
+    is_comm = 'commissioner' in role_name or role_id == 10
+    is_it_cell = 'it cell' in role_name or 'it_cell' in role_name or role_id == 6
+    is_dist = 'distributor' in role_name or role_id == 14 or not (request.user.is_superuser or getattr(request.user, 'is_staff', False) or role_id in (1, 3, 5, 6, 7, 8, 9, 10, 11, 12))
     is_oic = (
         'oic' in role_name 
         or 'in-charge' in role_name 
@@ -359,7 +362,6 @@ def dashboard_counts(request):
         })
 
     if tab == 'hologram-procurement':
-        is_it_cell = 'it cell' in role_name or role_id == 6
         if is_it_cell:
             approved_items = [
                 it for it in items
@@ -368,7 +370,8 @@ def dashboard_counts(request):
         elif is_comm:
             approved_items = [
                 it for it in items
-                if any(k in _stage_text(it) for k in ('approved by commissioner', 'approved for payment', 'final approval', 'production completed', 'approved'))
+                if any(k in _stage_text(it) for k in ('approved by commissioner', 'final approval', 'production completed'))
+                or (_stage_text(it).strip() == 'approved')
             ]
         else:
             approved_items = [
