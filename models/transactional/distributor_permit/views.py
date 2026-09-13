@@ -1933,100 +1933,6 @@ class IMFLArrivalViewSet(viewsets.ModelViewSet):
             qs = qs.filter(permit_number__iexact=str(permit_no).strip())
         if dist_permit:
             qs = qs.filter(
-                models.Q(distributor_permit__reference_no__iexact=str(dist_permit).strip()) |
-                models.Q(distributor_permit_id=str(dist_permit).strip())
-            )
-
-        if not _is_officer_user(user):
-            qs = qs.filter(
-                models.Q(arrived_by=user) |
-                models.Q(distributor_permit__applicant=user)
-            )
-        return qs
-
-    def perform_create(self, serializer):
-        from django.utils import timezone
-        dp_id = self.request.data.get('distributor_permit') or self.request.data.get('distributorPermit') or self.request.data.get('distributor_permit_id')
-        dp = None
-        if dp_id:
-            if isinstance(dp_id, dict):
-                dp_ref = dp_id.get('reference_no') or dp_id.get('referenceNo') or dp_id.get('id')
-                dp = DistributorPermitApplication.objects.filter(reference_no=str(dp_ref)).first()
-            elif isinstance(dp_id, int):
-                dp = DistributorPermitApplication.objects.filter(id=dp_id).first()
-            else:
-                dp = DistributorPermitApplication.objects.filter(reference_no=str(dp_id)).first()
-
-        serializer.save(
-            distributor_permit=dp or serializer.validated_data.get('distributor_permit'),
-            arrived_by=self.request.user,
-            arrived_at=timezone.now()
-        )
-
-    def perform_create(self, serializer):
-        from django.utils import timezone
-        from auth.workflow.models import Workflow, WorkflowStage
-        from auth.workflow.constants import WORKFLOW_IDS
-
-        ref_no = DistributorPermitApplication.generate_reference_no(app_type='revalidation')
-        workflow_id = WORKFLOW_IDS.get('IMFL_REVALIDATION', 16)
-        workflow = Workflow.objects.filter(id=workflow_id).first()
-        initial_stage = WorkflowStage.objects.filter(id=160).first() or (workflow.stages.filter(is_initial=True).first() if workflow else None)
-        status_name = initial_stage.name if initial_stage else 'Forwarded To Commissioner'
-
-        target_permit_no = self.request.data.get('revalidated_permit_number') or self.request.data.get('original_permit_no') or self.request.data.get('revalidatedPermitNumber') or ''
-        p_details = self.request.data.get('permit_wise_details') or self.request.data.get('permitWiseDetails') or []
-
-        distributor_permit = serializer.validated_data.get('distributor_permit')
-        if not distributor_permit:
-            dp_ref = self.request.data.get('distributor_permit') or self.request.data.get('distributorPermit')
-            if dp_ref:
-                distributor_permit = DistributorPermitApplication.objects.filter(reference_no=str(dp_ref)).first()
-
-        if distributor_permit and not p_details:
-            app_pdetails = getattr(distributor_permit, 'permit_wise_details', []) or []
-            if target_permit_no:
-                matched = [p for p in app_pdetails if str(p.get('permit_number', '')).lower() == str(target_permit_no).lower()]
-                p_details = matched if matched else app_pdetails
-            else:
-                p_details = app_pdetails
-
-        serializer.save(
-            reference_no=ref_no,
-            applicant=self.request.user,
-            distributor_permit=distributor_permit,
-            submitted_at=timezone.now(),
-            workflow=workflow,
-            current_stage=initial_stage,
-            status=status_name,
-            revalidated_permit_number=target_permit_no or (distributor_permit.reference_no if distributor_permit else ''),
-            permit_wise_details=p_details
-        )
-        invalidate_dashboard_counts_cache()
-
-    @action(detail=True, methods=['post'], url_path='perform_action')
-    def perform_action(self, request, reference_no=None):
-        return DistributorPermitPerformActionView().post(request, reference_no=reference_no)
-
-    @action(detail=True, methods=['post'], url_path='perform-action')
-    def perform_action_hyphen(self, request, reference_no=None):
-        return DistributorPermitPerformActionView().post(request, reference_no=reference_no)
-
-class IMFLArrivalViewSet(viewsets.ModelViewSet):
-    permission_classes = [IsAuthenticated]
-    serializer_class = IMFLArrivalSerializer
-
-    def get_queryset(self):
-        user = self.request.user
-        qs = IMFLArrival.objects.select_related('distributor_permit', 'arrived_by').all()
-
-        permit_no = self.request.query_params.get('permit_number') or self.request.query_params.get('permitNumber')
-        dist_permit = self.request.query_params.get('distributor_permit') or self.request.query_params.get('distributorPermit')
-
-        if permit_no:
-            qs = qs.filter(permit_number__iexact=str(permit_no).strip())
-        if dist_permit:
-            qs = qs.filter(
                 Q(distributor_permit__reference_no__iexact=str(dist_permit).strip()) |
                 Q(distributor_permit_id=str(dist_permit).strip())
             )
@@ -2040,6 +1946,13 @@ class IMFLArrivalViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         from django.utils import timezone
+        from rest_framework.exceptions import ValidationError
+
+        arrived_cases = serializer.validated_data.get('arrived_cases') or 0
+        expected_cases = serializer.validated_data.get('expected_cases') or 0
+        if expected_cases > 0 and arrived_cases > expected_cases:
+            raise ValidationError({'arrived_cases': f'Arrived cases ({arrived_cases}) cannot exceed expected cases ({expected_cases}).'})
+
         dp_id = self.request.data.get('distributor_permit') or self.request.data.get('distributorPermit') or self.request.data.get('distributor_permit_id')
         dp = None
         if dp_id:
@@ -2088,6 +2001,13 @@ class IMFLCasesProcessedViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         from django.utils import timezone
+        from rest_framework.exceptions import ValidationError
+
+        arrived_cases = serializer.validated_data.get('arrived_cases') or 0
+        expected_cases = serializer.validated_data.get('expected_cases') or 0
+        if expected_cases > 0 and arrived_cases > expected_cases:
+            raise ValidationError({'arrived_cases': f'Arrived cases ({arrived_cases}) cannot exceed expected cases ({expected_cases}).'})
+
         user = self.request.user
         dp_id = self.request.data.get('distributor_permit') or self.request.data.get('distributorPermit')
         dp = None
