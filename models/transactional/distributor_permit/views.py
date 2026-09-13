@@ -449,27 +449,34 @@ def dashboard_counts(request):
         return False
 
     def _is_item_approved(item):
+        text = _stage_text(item)
+        if any(token in text for token in ('reject', 'cancel')):
+            return False
+        stage_id = getattr(item, 'current_stage_id', None) or getattr(getattr(item, 'current_stage', None), 'id', None)
+        if stage_id in (152, 166):
+            return False
         if is_oic or tab == 'brand-arrival':
             return _is_arrival_completed(item)
-        stage_id = getattr(item, 'current_stage_id', None) or getattr(getattr(item, 'current_stage', None), 'id', None)
-        is_final = getattr(getattr(item, 'current_stage', None), 'is_final', False)
-        if is_final or stage_id in (151, 165):
+        if stage_id in (151, 165):
             return True
-        text = _stage_text(item)
         # Stages 148, 149, 153, 154, 156, 157 are non-final active stages
         if stage_id in (147, 148, 149, 153, 154, 156, 157):
             return False
-        if any(k in text for k in ('payslip', 'awaiting payment', 'awaiting_payment', 'forwarded commissioner', 'forwarded to commissioner')):
+        if any(k in text for k in ('payslip', 'awaiting payment', 'awaiting_payment', 'forwarded commissioner', 'forwarded to commissioner', 'submitted', 'pending')):
             return False
         if any(token in text for token in ('permit issued', 'pass issued', 'completed', 'arrival approved', 'stock arrival approved')):
             return True
         if 'approved by commissioner' in text or text.strip() == 'approved':
             return True
+        is_final = getattr(getattr(item, 'current_stage', None), 'is_final', False)
+        if is_final:
+            return True
         return _is_arrival_completed(item)
 
     def _is_item_final(item):
         text = _stage_text(item)
-        if any(token in text for token in ('rejected', 'cancelled', 'canceled')):
+        stage_id = getattr(item, 'current_stage_id', None) or getattr(getattr(item, 'current_stage', None), 'id', None)
+        if stage_id in (152, 166) or any(token in text for token in ('rejected', 'cancelled', 'canceled', 'reject', 'cancel')):
             return True
         return _is_item_approved(item)
 
@@ -577,7 +584,7 @@ def dashboard_counts(request):
         })
 
     approved = sum(1 for item in items if _is_item_approved(item))
-    rejected = sum(1 for item in items if 'rejected' in _stage_text(item))
+    rejected = sum(1 for item in items if any(k in _stage_text(item) for k in ('reject', 'cancel')) or getattr(item, 'current_stage_id', None) in (152, 166))
     objection = sum(1 for item in items if _is_objection_imfl_item(item))
     awaiting_payment = sum(1 for item in items if _is_awaiting_payment_imfl_item(item))
 
