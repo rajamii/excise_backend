@@ -479,6 +479,9 @@ def dashboard_counts(request):
             or ref_no in brand_warehouse_permit_ids
             or ref_no in brand_warehouse_permit_nos
             or p_no in brand_warehouse_permit_nos
+            or any(str(p).startswith(ref_no) for p in brand_warehouse_permit_nos if p)
+            or any(ref_no and ref_no.startswith(str(p)) for p in brand_warehouse_permit_nos if p)
+            or any(str(p).startswith(p_no) for p in brand_warehouse_permit_nos if p)
         ):
             return True
         return False
