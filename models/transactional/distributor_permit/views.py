@@ -3371,10 +3371,20 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
         elif is_dist_oic and distributor_user_obj:
             perm_filter = Q(applicant=distributor_user_obj)
 
-        all_permits = DistributorPermitApplication.objects.filter(perm_filter).order_by('created_at')
+        all_permits = list(DistributorPermitApplication.objects.filter(perm_filter).order_by('created_at'))
+        existing_permit_refs = {p.reference_no.lower() for p in all_permits}
+
         for item in arr_qs:
-            item_used = list(item.used_hologram_ranges or [])
-            item_changed = False
+            # Clean orphaned/deleted permit references
+            raw_used = list(item.used_hologram_ranges or [])
+            item_used = []
+            for u in raw_used:
+                if isinstance(u, dict):
+                    req_ref = str(u.get('requisition_ref_no') or u.get('permit_application_ref') or '').strip().lower()
+                    if not req_ref or req_ref in existing_permit_refs:
+                        item_used.append(u)
+
+            item_changed = (len(item_used) != len(raw_used))
             for p_app in all_permits:
                 for a_rng in (p_app.assigned_hologram_ranges or []):
                     if not isinstance(a_rng, dict):
@@ -3462,11 +3472,32 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                     'status': 'AVAILABLE'
                 }]
 
-            used_ranges = item.used_hologram_ranges or []
-            # Only count active (non-reverted) allocations towards offset:
-            used_offset = sum(int(u.get('count') or 0) for u in used_ranges if isinstance(u, dict) and str(u.get('status', '')).upper() not in ('REVERTED', 'CANCELLED', 'RESTORED'))
+            used_ranges = list(item.used_hologram_ranges or [])
+            
+            # Separate active allocations vs reverted allocations
+            active_allocations = [
+                u for u in used_ranges
+                if isinstance(u, dict) and str(u.get('status', '')).upper() not in ('REVERTED', 'CANCELLED', 'RESTORED')
+            ]
+            reverted_allocations = [
+                u for u in used_ranges
+                if isinstance(u, dict) and str(u.get('status', '')).upper() in ('REVERTED', 'CANCELLED', 'RESTORED')
+            ]
 
-            # Collect segments with accurate available / allocated status
+            active_offset = sum(int(u.get('count') or 0) for u in active_allocations)
+            
+            # Map specific reverted ranges that are NOT currently covered by active allocations
+            reverted_spans = []
+            for rev in reverted_allocations:
+                try:
+                    rf = int(rev.get('from') or 0)
+                    rt = int(rev.get('to') or 0)
+                    rc = int(rev.get('count') or (rt - rf + 1 if rt >= rf else 0))
+                    if rf > 0 and rt >= rf:
+                        reverted_spans.append((rf, rt, rc, str(rev.get('requisition_ref_no') or rev.get('permit_application_ref') or '')))
+                except Exception:
+                    pass
+
             for r in ranges:
                 try:
                     r_from = int(r.get('from') or 1)
@@ -3475,53 +3506,55 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                 except Exception:
                     r_from, r_to, r_count = 1, 1, 1
 
-                if used_offset >= r_count:
-                    # Entire chunk is used/allocated
+                current_pos = r_from
+                # 1. Active allocations consume from r_from
+                if active_offset > 0:
+                    take_active = min(active_offset, r_to - current_pos + 1)
+                    active_end = current_pos + take_active - 1
                     all_range_segments.append({
                         'ref_no': item.imfl_hologram_ref_no,
-                        'from': str(r_from),
-                        'to': str(r_to),
-                        'count': r_count,
+                        'from': str(current_pos),
+                        'to': str(active_end),
+                        'count': take_active,
                         'status': 'ALLOCATED',
                         'arrival_date': item.arrival_date,
                         'recorded_by_name': item.recorded_by_name or 'OIC Officer',
                     })
-                    used_offset -= r_count
-                elif used_offset > 0:
-                    # Partially allocated chunk
-                    allocated_end = r_from + used_offset - 1
-                    all_range_segments.append({
-                        'ref_no': item.imfl_hologram_ref_no,
-                        'from': str(r_from),
-                        'to': str(allocated_end),
-                        'count': used_offset,
-                        'status': 'ALLOCATED',
-                        'arrival_date': item.arrival_date,
-                        'recorded_by_name': item.recorded_by_name or 'OIC Officer',
-                    })
-                    available_start = allocated_end + 1
-                    available_count = r_to - available_start + 1
-                    all_range_segments.append({
-                        'ref_no': item.imfl_hologram_ref_no,
-                        'from': str(available_start),
-                        'to': str(r_to),
-                        'count': available_count,
-                        'status': 'AVAILABLE',
-                        'arrival_date': item.arrival_date,
-                        'recorded_by_name': item.recorded_by_name or 'OIC Officer',
-                    })
-                    used_offset = 0
-                else:
-                    # Entire chunk is available
-                    all_range_segments.append({
-                        'ref_no': item.imfl_hologram_ref_no,
-                        'from': str(r_from),
-                        'to': str(r_to),
-                        'count': r_count,
-                        'status': r.get('status', 'AVAILABLE'),
-                        'arrival_date': item.arrival_date,
-                        'recorded_by_name': item.recorded_by_name or 'OIC Officer',
-                    })
+                    current_pos = active_end + 1
+                    active_offset -= take_active
+
+                # 2. Check remaining range for reverted spans vs fresh available
+                while current_pos <= r_to:
+                    matching_rev = next((sp for sp in reverted_spans if sp[0] <= current_pos <= sp[1]), None)
+                    if matching_rev:
+                        rev_end = min(matching_rev[1], r_to)
+                        rev_count = rev_end - current_pos + 1
+                        all_range_segments.append({
+                            'ref_no': item.imfl_hologram_ref_no,
+                            'from': str(current_pos),
+                            'to': str(rev_end),
+                            'count': rev_count,
+                            'status': 'AVAILABLE (REVERTED)',
+                            'notes': f"Restored from {matching_rev[3]}" if matching_rev[3] else 'Restored to available stock',
+                            'arrival_date': item.arrival_date,
+                            'recorded_by_name': item.recorded_by_name or 'OIC Officer',
+                        })
+                        current_pos = rev_end + 1
+                    else:
+                        future_revs = [sp[0] for sp in reverted_spans if sp[0] > current_pos]
+                        next_rev = min(future_revs) if future_revs else (r_to + 1)
+                        free_end = min(next_rev - 1, r_to)
+                        free_count = free_end - current_pos + 1
+                        all_range_segments.append({
+                            'ref_no': item.imfl_hologram_ref_no,
+                            'from': str(current_pos),
+                            'to': str(free_end),
+                            'count': free_count,
+                            'status': 'AVAILABLE',
+                            'arrival_date': item.arrival_date,
+                            'recorded_by_name': item.recorded_by_name or 'OIC Officer',
+                        })
+                        current_pos = free_end + 1
 
             batches_data.append({
                 'id': item.id,
