@@ -447,8 +447,10 @@ def dashboard_counts(request):
 
     items = list(qs)
     from .models import IMFLBrandWarehouse, IMFLArrival, IMFLCasesProcessed
-    arrived_permit_ids = set(IMFLBrandWarehouse.objects.values_list('distributor_permit_id', flat=True)) | set(IMFLArrival.objects.values_list('distributor_permit_id', flat=True))
-    arrived_permit_nos = set(IMFLBrandWarehouse.objects.values_list('permit_number', flat=True)) | set(IMFLArrival.objects.values_list('permit_number', flat=True))
+    brand_warehouse_permit_ids = set(IMFLBrandWarehouse.objects.values_list('distributor_permit_id', flat=True))
+    brand_warehouse_permit_nos = set(IMFLBrandWarehouse.objects.values_list('permit_number', flat=True))
+    arrived_permit_ids = brand_warehouse_permit_ids | set(IMFLArrival.objects.values_list('distributor_permit_id', flat=True))
+    arrived_permit_nos = brand_warehouse_permit_nos | set(IMFLArrival.objects.values_list('permit_number', flat=True))
 
     under_review_permit_ids = set(IMFLCasesProcessed.objects.filter(status='under_review').values_list('distributor_permit_id', flat=True))
     under_review_permit_nos = set(IMFLCasesProcessed.objects.filter(status='under_review').values_list('permit_number', flat=True))
@@ -467,6 +469,19 @@ def dashboard_counts(request):
         or role_id in (4, 6, 7) 
         or username.startswith(('do', 'oo'))
     )
+
+    def _is_brand_warehouse_updated(item):
+        ref_no = str(getattr(item, 'reference_no', '') or '').strip()
+        item_id = getattr(item, 'id', None)
+        p_no = str(getattr(item, 'permit_number', '') or ref_no).strip()
+        if (
+            item_id in brand_warehouse_permit_ids
+            or ref_no in brand_warehouse_permit_ids
+            or ref_no in brand_warehouse_permit_nos
+            or p_no in brand_warehouse_permit_nos
+        ):
+            return True
+        return False
 
     def _is_arrival_completed(item):
         text = _stage_text(item)
@@ -494,7 +509,7 @@ def dashboard_counts(request):
         stage_id = getattr(item, 'current_stage_id', None) or getattr(getattr(item, 'current_stage', None), 'id', None)
         if stage_id in (152, 166):
             return False
-        if is_oic or tab == 'brand-arrival':
+        if is_oic:
             return _is_arrival_completed(item)
         if stage_id in (151, 165):
             return True
@@ -520,8 +535,8 @@ def dashboard_counts(request):
         return _is_item_approved(item)
 
     if tab == 'brand-arrival':
-        pending_items = [item for item in items if not _is_arrival_completed(item) and 'rejected' not in _stage_text(item)]
-        approved_items = [item for item in items if _is_arrival_completed(item)]
+        pending_items = [item for item in items if not _is_brand_warehouse_updated(item) and 'rejected' not in _stage_text(item)]
+        approved_items = [item for item in items if _is_brand_warehouse_updated(item)]
         rejected_items = [item for item in items if 'rejected' in _stage_text(item)]
 
         return Response({
