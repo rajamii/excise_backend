@@ -320,7 +320,13 @@ def _normalize_imfl_dashboard_tab(raw_tab):
 
 def _imfl_dashboard_queryset(request, tab):
     if tab == 'revalidation':
-        qs = IMFLRevalidation.objects.select_related('applicant', 'current_stage', 'distributor_permit')
+        qs = IMFLRevalidation.objects.select_related('applicant', 'current_stage', 'distributor_permit').exclude(
+            Q(distributor_permit__status__icontains='reject') |
+            Q(distributor_permit__status__icontains='cancel') |
+            Q(distributor_permit__current_stage__name__icontains='reject') |
+            Q(distributor_permit__current_stage__name__icontains='cancel') |
+            Q(status__icontains='reject')
+        )
     elif tab == 'cancellation':
         qs = IMFLCancellation.objects.select_related('applicant', 'current_stage', 'distributor_permit')
     elif tab == 'brand-arrival':
@@ -877,12 +883,23 @@ class DistributorPermitPerformActionView(APIView):
         if not application.current_stage or not application.workflow:
             from auth.workflow.models import Workflow, WorkflowStage
             from auth.workflow.constants import WORKFLOW_IDS
-            wf_key = 'IMFL_CANCELLATION' if isinstance(application, IMFLCancellation) else ('IMFL_REVALIDATION' if isinstance(application, IMFLRevalidation) else 'IMFL_REQUISITION')
-            wf = Workflow.objects.filter(id=WORKFLOW_IDS.get(wf_key, 17)).first()
+            if isinstance(application, IMFLCancellation):
+                wf_key = 'IMFL_CANCELLATION'
+                default_wf = 16
+                default_stage = 162
+            elif isinstance(application, IMFLRevalidation):
+                wf_key = 'IMFL_REVALIDATION'
+                default_wf = 15
+                default_stage = 160
+            else:
+                wf_key = 'IMFL_REQUISITION'
+                default_wf = 14
+                default_stage = 148
+            wf = Workflow.objects.filter(id=WORKFLOW_IDS.get(wf_key, default_wf)).first()
             if wf and not application.workflow:
                 application.workflow = wf
             if not application.current_stage:
-                initial_stage = WorkflowStage.objects.filter(id=162 if isinstance(application, IMFLCancellation) else 148).first()
+                initial_stage = WorkflowStage.objects.filter(id=default_stage).first() or (wf.stages.filter(is_initial=True).first() if wf else None)
                 if initial_stage:
                     application.current_stage = initial_stage
             application.save(update_fields=['current_stage', 'workflow'])
@@ -908,7 +925,7 @@ class DistributorPermitPerformActionView(APIView):
             curr_stage_name = str(getattr(application.current_stage, 'name', '') or '').strip().lower()
 
             # 1. Permit Section FORWARD / APPROVE from initial stage (148/149 or "permit section"/"pending") -> Forwarded Commissioner (153)
-            if action in ('FORWARD', 'APPROVE', 'FORWARD_TO_COMMISSIONER') and (curr_stage_id in (148, 149) or 'permit section' in curr_stage_name or 'pending' in curr_stage_name):
+            if action in ('FORWARD', 'APPROVE', 'FORWARD_TO_COMMISSIONER') and (curr_stage_id in (148, 149) or 'permit section' in curr_stage_name or 'pending' in curr_stage_name) and isinstance(application, DistributorPermitApplication):
                 stage_153 = WorkflowStage.objects.filter(id=153).first() or WorkflowStage.objects.filter(name__icontains='Forwarded Commissioner', workflow=application.workflow).first()
                 if stage_153:
                     target_transition = WorkflowTransition(
@@ -919,7 +936,7 @@ class DistributorPermitPerformActionView(APIView):
                     )
 
             # 2. Commissioner initial APPROVE -> Awaiting Payment / Approved Commissioner (154)
-            elif action in ('APPROVE', 'FORWARD', 'FORWARD_TO_COMMISSIONER') and (curr_stage_id == 153 or 'forwarded commissioner' in curr_stage_name):
+            elif action in ('APPROVE', 'FORWARD', 'FORWARD_TO_COMMISSIONER') and (curr_stage_id == 153 or 'forwarded commissioner' in curr_stage_name) and isinstance(application, DistributorPermitApplication):
                 stage_154 = WorkflowStage.objects.filter(id=154).first() or WorkflowStage.objects.filter(name__icontains='payment', workflow=application.workflow).first() or WorkflowStage.objects.filter(name__icontains='approved commissioner', workflow=application.workflow).first()
                 if stage_154:
                     target_transition = WorkflowTransition(
@@ -952,7 +969,7 @@ class DistributorPermitPerformActionView(APIView):
                     )
 
             # 5. Commissioner Final APPROVE on Payslip (157) -> Approved (151)
-            elif action in ('APPROVE', 'FORWARD', 'APPROVEPAYSLIP') and (curr_stage_id == 157 or 'payslip commissioner' in curr_stage_name):
+            elif action in ('APPROVE', 'FORWARD', 'APPROVEPAYSLIP') and (curr_stage_id == 157 or 'payslip commissioner' in curr_stage_name) and isinstance(application, DistributorPermitApplication):
                 stage_151 = WorkflowStage.objects.filter(id=151).first() or WorkflowStage.objects.filter(name__iexact='Approved', workflow=application.workflow).first()
                 if stage_151:
                     target_transition = WorkflowTransition(
@@ -962,8 +979,8 @@ class DistributorPermitPerformActionView(APIView):
                         condition={'role': 'commissioner', 'action': 'APPROVE'}
                     )
 
-            # 6. REJECT handling across stages -> Rejected (152) or RejectedByCommissioner (150)
-            elif action == 'REJECT':
+            # 6. REJECT handling across requisition stages -> Rejected (152) or RejectedByCommissioner (150)
+            elif action == 'REJECT' and isinstance(application, DistributorPermitApplication):
                 rej_stage = WorkflowStage.objects.filter(id=152).first() or WorkflowStage.objects.filter(name__icontains='reject', workflow=application.workflow).first()
                 if curr_stage_id == 157:
                     rej_stage = WorkflowStage.objects.filter(id=150).first() or rej_stage
@@ -975,16 +992,47 @@ class DistributorPermitPerformActionView(APIView):
                         condition={'action': 'REJECT'}
                     )
 
-            # 7. Fallback transition for Commissioner APPROVE on Cancellation (stage 162 -> 165)
-            elif action == 'APPROVE' and isinstance(application, IMFLCancellation):
-                stage_165 = WorkflowStage.objects.filter(id=165).first() or WorkflowStage.objects.filter(name='Approved By Commissioner', workflow_id=17).first()
-                if stage_165:
-                    target_transition = WorkflowTransition(
-                        workflow=application.workflow,
-                        from_stage=application.current_stage,
-                        to_stage=stage_165,
-                        condition={'role': 'commissioner', 'action': 'APPROVE'}
-                    )
+            # 7. Fallback transitions for Revalidation (WF 15: 160 -> 158 or 159)
+            elif isinstance(application, IMFLRevalidation):
+                if action in ('APPROVE', 'FORWARD', 'FORWARD_TO_COMMISSIONER'):
+                    stage_158 = WorkflowStage.objects.filter(id=158).first() or WorkflowStage.objects.filter(name='Approved By Commissioner', workflow_id=15).first()
+                    if stage_158:
+                        target_transition = WorkflowTransition(
+                            workflow=application.workflow,
+                            from_stage=application.current_stage,
+                            to_stage=stage_158,
+                            condition={'role': 'commissioner', 'action': 'APPROVE'}
+                        )
+                elif action == 'REJECT':
+                    stage_159 = WorkflowStage.objects.filter(id=159).first() or WorkflowStage.objects.filter(name='Rejected By Commissioner', workflow_id=15).first()
+                    if stage_159:
+                        target_transition = WorkflowTransition(
+                            workflow=application.workflow,
+                            from_stage=application.current_stage,
+                            to_stage=stage_159,
+                            condition={'role': 'commissioner', 'action': 'REJECT'}
+                        )
+
+            # 8. Fallback transitions for Cancellation (WF 16: 162 -> 165)
+            elif isinstance(application, IMFLCancellation):
+                if action in ('APPROVE', 'FORWARD', 'FORWARD_TO_COMMISSIONER'):
+                    stage_165 = WorkflowStage.objects.filter(id=165).first() or WorkflowStage.objects.filter(name='Approved By Commissioner', workflow_id=16).first()
+                    if stage_165:
+                        target_transition = WorkflowTransition(
+                            workflow=application.workflow,
+                            from_stage=application.current_stage,
+                            to_stage=stage_165,
+                            condition={'role': 'commissioner', 'action': 'APPROVE'}
+                        )
+                elif action in ('APPROVEPAYSLIP', 'APPROVE_PAYSLIP', 'VERIFY'):
+                    stage_164 = WorkflowStage.objects.filter(id=164).first() or WorkflowStage.objects.filter(name='Approved PaySLip By Commissioner', workflow_id=16).first()
+                    if stage_164:
+                        target_transition = WorkflowTransition(
+                            workflow=application.workflow,
+                            from_stage=application.current_stage,
+                            to_stage=stage_164,
+                            condition={'role': 'commissioner', 'action': 'ApprovePayslip'}
+                        )
 
         if not target_transition:
             return Response({
@@ -1173,6 +1221,9 @@ class DistributorPermitPerformActionView(APIView):
             if is_rejection_or_cancellation:
                 if isinstance(application, DistributorPermitApplication):
                     revert_holograms_for_requisition(application, user=request.user, reason=remarks or f"Requisition Rejected/Cancelled ({action})")
+                    # Rejected or cancelled applications must NEVER have revalidation schedules or revalidation entries
+                    IMFLRevalidationActivationSchedule.objects.filter(distributor_permit=application).delete()
+                    IMFLRevalidation.objects.filter(distributor_permit=application).delete()
                 elif isinstance(application, IMFLCancellation):
                     dp = getattr(application, 'distributor_permit', None)
                     if not dp and application.cancelled_permit_number:
@@ -1182,60 +1233,74 @@ class DistributorPermitPerformActionView(APIView):
                         ).first()
                     if dp:
                         revert_holograms_for_requisition(dp, user=request.user, reason=f"Permit Cancelled via Cancellation Application #{application.reference_no}")
+                        IMFLRevalidationActivationSchedule.objects.filter(distributor_permit=dp).delete()
+                        IMFLRevalidation.objects.filter(distributor_permit=dp).delete()
 
-            is_approved_stage = (
-                target_transition.to_stage.id in (151, 165) or
-                getattr(target_transition.to_stage, 'is_final', False) or
-                str(getattr(target_transition.to_stage, 'name', '')).lower() in ('approved', 'approved by commissioner')
+            # For IMFL Requisition, revalidation schedule is ONLY generated upon FINAL Commissioner approval (Stage 151 / Approved)
+            is_requisition_final_approved = (
+                isinstance(application, DistributorPermitApplication) and (
+                    target_transition.to_stage.id == 151 or
+                    str(getattr(target_transition.to_stage, 'name', '')).strip().lower() == 'approved' or
+                    (getattr(target_transition.to_stage, 'is_final', False) and 'approved' in str(getattr(target_transition.to_stage, 'name', '')).lower())
+                )
             )
 
-            if is_approved_stage:
-                if isinstance(application, DistributorPermitApplication):
-                    _schedule_imfl_revalidation_activation(application, timezone.now())
-                elif isinstance(application, IMFLCancellation):
-                    dp = getattr(application, 'distributor_permit', None)
-                    if not dp and application.cancelled_permit_number:
-                        dp = DistributorPermitApplication.objects.filter(
-                            Q(permit_number=application.cancelled_permit_number) |
-                            Q(reference_no=application.cancelled_permit_number)
-                        ).first()
-                    if dp:
-                        dp.status = 'Cancelled'
-                        dp.save(update_fields=['status', 'updated_at'])
-                        revert_holograms_for_requisition(dp, user=request.user, reason=f"Permit Cancelled via Approved Cancellation #{application.reference_no}")
-                elif isinstance(application, IMFLRevalidation):
-                    from datetime import timedelta
-                    delay_seconds = _resolve_imfl_revalidation_activation_delay_seconds()
-                    new_valid_until = timezone.now() + timedelta(seconds=delay_seconds)
+            if is_requisition_final_approved:
+                _schedule_imfl_revalidation_activation(application, timezone.now())
+            elif isinstance(application, IMFLCancellation) and (
+                target_transition.to_stage.id in (165, 164) or
+                getattr(target_transition.to_stage, 'is_final', False) or
+                'approved' in str(getattr(target_transition.to_stage, 'name', '')).lower()
+            ):
+                dp = getattr(application, 'distributor_permit', None)
+                if not dp and application.cancelled_permit_number:
+                    dp = DistributorPermitApplication.objects.filter(
+                        Q(permit_number=application.cancelled_permit_number) |
+                        Q(reference_no=application.cancelled_permit_number)
+                    ).first()
+                if dp:
+                    dp.status = 'Cancelled'
+                    dp.save(update_fields=['status', 'updated_at'])
+                    revert_holograms_for_requisition(dp, user=request.user, reason=f"Permit Cancelled via Approved Cancellation #{application.reference_no}")
+                    IMFLRevalidationActivationSchedule.objects.filter(distributor_permit=dp).delete()
+                    IMFLRevalidation.objects.filter(distributor_permit=dp).delete()
+            elif isinstance(application, IMFLRevalidation) and (
+                target_transition.to_stage.id in (158, 161) or
+                getattr(target_transition.to_stage, 'is_final', False) or
+                'approved' in str(getattr(target_transition.to_stage, 'name', '')).lower()
+            ):
+                from datetime import timedelta
+                delay_seconds = _resolve_imfl_revalidation_activation_delay_seconds()
+                new_valid_until = timezone.now() + timedelta(seconds=delay_seconds)
 
-                    application.valid_up_to = new_valid_until
-                    application.save(update_fields=['valid_up_to'])
+                application.valid_up_to = new_valid_until
+                application.save(update_fields=['valid_up_to'])
 
-                    if application.distributor_permit:
-                        application.distributor_permit.valid_up_to = new_valid_until
-                        application.distributor_permit.save(update_fields=['valid_up_to', 'updated_at'])
+                if application.distributor_permit:
+                    application.distributor_permit.valid_up_to = new_valid_until
+                    application.distributor_permit.save(update_fields=['valid_up_to', 'updated_at'])
 
-                        existing_pending = IMFLRevalidationActivationSchedule.objects.filter(
+                    existing_pending = IMFLRevalidationActivationSchedule.objects.filter(
+                        distributor_permit=application.distributor_permit,
+                        status=IMFLRevalidationActivationSchedule.STATUS_PENDING
+                    ).order_by('-id').first()
+
+                    if existing_pending:
+                        existing_pending.approval_date = timezone.now()
+                        existing_pending.activation_due_at = new_valid_until
+                        existing_pending.activated_at = None
+                        existing_pending.notes = f"Revalidation cycle schedule for {application.reference_no}"
+                        existing_pending.save()
+                    else:
+                        IMFLRevalidationActivationSchedule.objects.create(
                             distributor_permit=application.distributor_permit,
-                            status=IMFLRevalidationActivationSchedule.STATUS_PENDING
-                        ).order_by('-id').first()
-
-                        if existing_pending:
-                            existing_pending.approval_date = timezone.now()
-                            existing_pending.activation_due_at = new_valid_until
-                            existing_pending.activated_at = None
-                            existing_pending.notes = f"Revalidation cycle schedule for {application.reference_no}"
-                            existing_pending.save()
-                        else:
-                            IMFLRevalidationActivationSchedule.objects.create(
-                                distributor_permit=application.distributor_permit,
-                                distributor_permit_ref_no=str(application.distributor_permit.reference_no),
-                                approval_date=timezone.now(),
-                                activation_due_at=new_valid_until,
-                                activated_at=None,
-                                status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
-                                notes=f"Revalidation cycle schedule for {application.reference_no}"
-                            )
+                            distributor_permit_ref_no=str(application.distributor_permit.reference_no),
+                            approval_date=timezone.now(),
+                            activation_due_at=new_valid_until,
+                            activated_at=None,
+                            status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
+                            notes=f"Revalidation cycle schedule for {application.reference_no}"
+                        )
 
         return Response({
             'status': 'success',
@@ -1329,25 +1394,49 @@ def _schedule_imfl_revalidation_activation(application, approved_at=None):
 
 def _process_due_imfl_activation_schedules():
     from django.utils import timezone
-    from .models import IMFLRevalidationActivationSchedule, IMFLCancellation
+    from .models import IMFLRevalidationActivationSchedule, IMFLCancellation, IMFLArrival, IMFLBrandWarehouse
 
     now = timezone.now()
     schedules = IMFLRevalidationActivationSchedule.objects.filter(
         status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
         activation_due_at__lte=now
-    ).select_related('distributor_permit', 'distributor_permit__applicant')
+    ).select_related('distributor_permit', 'distributor_permit__applicant', 'distributor_permit__current_stage')
 
     for schedule in schedules:
         dp = schedule.distributor_permit
         if not dp:
             continue
 
-        # Skip if permit is cancelled
+        dp_status = str(getattr(dp, 'status', '') or '').strip().lower()
+        dp_stage_name = str(getattr(getattr(dp, 'current_stage', None), 'name', '') or '').strip().lower()
+
+        # If permit is rejected, cancelled, or NOT final approved by commissioner, cancel/delete schedule
+        if 'reject' in dp_status or 'cancel' in dp_status or 'reject' in dp_stage_name or 'cancel' in dp_stage_name:
+            schedule.status = 'cancelled'
+            schedule.save(update_fields=['status', 'updated_at'])
+            continue
+
+        is_dp_approved = (
+            dp_status == 'approved' or
+            getattr(dp.current_stage, 'id', None) == 151 or
+            ('approved' in dp_stage_name and getattr(dp.current_stage, 'is_final', False))
+        )
+        if not is_dp_approved:
+            continue
+
+        # Skip if permit has approved cancellation
         has_cancellation = IMFLCancellation.objects.filter(
             distributor_permit=dp
         ).filter(status__icontains='approved').exists()
 
         if has_cancellation:
+            schedule.status = 'cancelled'
+            schedule.save(update_fields=['status', 'updated_at'])
+            continue
+
+        # Check if action has already been taken on the permit (e.g. brand arrival received / completed)
+        has_arrival = IMFLArrival.objects.filter(distributor_permit=dp).exists() or IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists()
+        if has_arrival:
             continue
 
         schedule.status = IMFLRevalidationActivationSchedule.STATUS_PROCESSED
@@ -1357,7 +1446,7 @@ def _process_due_imfl_activation_schedules():
 
 from rest_framework import viewsets
 from rest_framework.decorators import action
-from .models import IMFLRevalidation, IMFLCancellation, IMFLRevalidationActivationSchedule, IMFLArrival
+from .models import IMFLRevalidation, IMFLCancellation, IMFLRevalidationActivationSchedule, IMFLArrival, IMFLBrandWarehouse
 from .serializers import (
     IMFLRevalidationSerializer,
     IMFLCancellationSerializer,
@@ -1373,7 +1462,16 @@ class IMFLRevalidationActivationScheduleViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         _process_due_imfl_activation_schedules()
         user = self.request.user
-        qs = IMFLRevalidationActivationSchedule.objects.select_related('distributor_permit').all()
+        qs = IMFLRevalidationActivationSchedule.objects.select_related('distributor_permit', 'distributor_permit__current_stage').exclude(
+            Q(distributor_permit__status__icontains='reject') |
+            Q(distributor_permit__status__icontains='cancel') |
+            Q(distributor_permit__current_stage__name__icontains='reject') |
+            Q(distributor_permit__current_stage__name__icontains='cancel')
+        ).filter(
+            Q(distributor_permit__status__iexact='approved') |
+            Q(distributor_permit__current_stage_id=151) |
+            Q(distributor_permit__current_stage__name__icontains='approved', distributor_permit__current_stage__is_final=True)
+        )
         if _is_distributor_user(user):
             qs = qs.filter(distributor_permit__applicant=user)
         return qs.filter(status=IMFLRevalidationActivationSchedule.STATUS_PROCESSED)
@@ -1387,7 +1485,12 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         _process_due_imfl_activation_schedules()
-        qs = IMFLRevalidation.objects.select_related('distributor_permit', 'applicant', 'current_stage').all()
+        qs = IMFLRevalidation.objects.select_related('distributor_permit', 'applicant', 'current_stage').exclude(
+            Q(distributor_permit__status__icontains='reject') |
+            Q(distributor_permit__status__icontains='cancel') |
+            Q(distributor_permit__current_stage__name__icontains='reject') |
+            Q(distributor_permit__current_stage__name__icontains='cancel')
+        )
         return scope_permit_queryset(qs, self.request.user)
 
     def list(self, request, *args, **kwargs):
@@ -1404,11 +1507,19 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
         # Only append unsubmitted activation schedules for non-officer (licensee/distributor) applicants so they can submit revalidation.
         # Officers (Commissioner, Permit Section, OIC, etc.) must only see actual submitted revalidations awaiting review/approval.
         if not _is_officer_user(request.user):
-            all_schedules = IMFLRevalidationActivationSchedule.objects.filter(
-                distributor_permit__applicant=request.user
-            ).select_related('distributor_permit', 'distributor_permit__applicant').order_by('-id')
-            if not all_schedules.exists():
-                all_schedules = IMFLRevalidationActivationSchedule.objects.all().select_related('distributor_permit', 'distributor_permit__applicant').order_by('-id')
+            all_schedules = IMFLRevalidationActivationSchedule.objects.exclude(
+                Q(distributor_permit__status__icontains='reject') |
+                Q(distributor_permit__status__icontains='cancel') |
+                Q(distributor_permit__current_stage__name__icontains='reject') |
+                Q(distributor_permit__current_stage__name__icontains='cancel')
+            ).filter(
+                Q(distributor_permit__status__iexact='approved') |
+                Q(distributor_permit__current_stage_id=151) |
+                Q(distributor_permit__current_stage__name__icontains='approved', distributor_permit__current_stage__is_final=True)
+            ).select_related('distributor_permit', 'distributor_permit__applicant', 'distributor_permit__current_stage').order_by('-id')
+
+            if _is_distributor_user(request.user):
+                all_schedules = all_schedules.filter(distributor_permit__applicant=request.user)
 
             latest_schedules_by_ref = {}
             for sched in all_schedules:
@@ -1446,13 +1557,36 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                 if sched.status != IMFLRevalidationActivationSchedule.STATUS_PROCESSED or not sched.activated_at:
                     continue
 
+                dp = sched.distributor_permit
+                if not dp:
+                    continue
+
+                dp_status = str(getattr(dp, 'status', '') or '').strip().lower()
+                dp_stage_name = str(getattr(getattr(dp, 'current_stage', None), 'name', '') or '').strip().lower()
+
+                # Strictly skip if permit is not final approved or is rejected / cancelled
+                if 'reject' in dp_status or 'cancel' in dp_status or 'reject' in dp_stage_name or 'cancel' in dp_stage_name:
+                    continue
+
+                is_dp_approved = (
+                    dp_status == 'approved' or
+                    getattr(dp.current_stage, 'id', None) == 151 or
+                    ('approved' in dp_stage_name and getattr(dp.current_stage, 'is_final', False))
+                )
+                if not is_dp_approved:
+                    continue
+
                 dp_pk = str(sched.distributor_permit_id) if sched.distributor_permit_id else None
 
                 # Skip if there is an active unapproved revalidation application currently in progress
                 if ref_no in pending_permit_refs or (dp_pk and dp_pk in pending_permit_refs):
                     continue
 
-                dp = sched.distributor_permit
+                # Skip if action has already been taken on this permit (e.g. cases already arrived or brand arrival recorded)
+                has_arrival = IMFLArrival.objects.filter(distributor_permit=dp).exists() or IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists()
+                if has_arrival:
+                    continue
+
                 supplier_name = getattr(dp, 'supplier_company_name', 'N/A') if dp else 'N/A'
                 applicant_name = getattr(getattr(dp, 'applicant', None), 'full_name', str(getattr(dp, 'applicant', ''))) if dp else str(request.user)
                 dp_pdetails = getattr(dp, 'permit_wise_details', []) if dp else []
@@ -1489,7 +1623,7 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
         from auth.workflow.constants import WORKFLOW_IDS
 
         ref_no = DistributorPermitApplication.generate_reference_no(app_type='revalidation')
-        workflow_id = WORKFLOW_IDS.get('IMFL_REVALIDATION', 16)
+        workflow_id = WORKFLOW_IDS.get('IMFL_REVALIDATION', 15)
         workflow = Workflow.objects.filter(id=workflow_id).first()
         initial_stage = WorkflowStage.objects.filter(id=160).first() or (workflow.stages.filter(is_initial=True).first() if workflow else None)
         status_name = initial_stage.name if initial_stage else 'Forwarded To Commissioner'
@@ -1600,7 +1734,7 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
         from auth.workflow.constants import WORKFLOW_IDS
 
         ref_no = DistributorPermitApplication.generate_reference_no(app_type='cancellation')
-        workflow_id = WORKFLOW_IDS.get('IMFL_CANCELLATION', 17)
+        workflow_id = WORKFLOW_IDS.get('IMFL_CANCELLATION', 16)
         workflow = Workflow.objects.filter(id=workflow_id).first()
         initial_stage = WorkflowStage.objects.filter(id=162).first() or (workflow.stages.filter(is_initial=True).first() if workflow else None)
         status_name = initial_stage.name if initial_stage else 'Forwarded To Commissioner'
