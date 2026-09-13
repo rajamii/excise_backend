@@ -3363,6 +3363,73 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
             if latest_rec and latest_rec.establishment_name:
                 establishment_name = latest_rec.establishment_name
 
+        # Sync used_hologram_ranges with all DistributorPermitApplication assigned_hologram_ranges
+        from .models import DistributorPermitApplication
+        perm_filter = Q()
+        if distributor_user_obj:
+            perm_filter = Q(applicant=distributor_user_obj)
+        elif is_dist_oic and distributor_user_obj:
+            perm_filter = Q(applicant=distributor_user_obj)
+
+        all_permits = DistributorPermitApplication.objects.filter(perm_filter).order_by('created_at')
+        for item in arr_qs:
+            item_used = list(item.used_hologram_ranges or [])
+            item_changed = False
+            for p_app in all_permits:
+                for a_rng in (p_app.assigned_hologram_ranges or []):
+                    if not isinstance(a_rng, dict):
+                        continue
+                    a_ref = str(a_rng.get('ref_no') or a_rng.get('batch_ref') or '').strip()
+                    if a_ref and a_ref != item.imfl_hologram_ref_no and getattr(item.procurement, 'ref_no', '') != a_ref:
+                        continue
+                    f_str = str(a_rng.get('from') or '')
+                    t_str = str(a_rng.get('to') or '')
+                    c_num = int(a_rng.get('count') or 0)
+                    if not f_str or not t_str or c_num <= 0:
+                        continue
+
+                    # Check if already present in item_used
+                    existing_entry = next((
+                        u for u in item_used
+                        if isinstance(u, dict) and
+                        str(u.get('requisition_ref_no', '')).lower() == p_app.reference_no.lower() and
+                        str(u.get('from', '')) == f_str and str(u.get('to', '')) == t_str
+                    ), None)
+
+                    is_p_reverted = p_app.status in ['REJECTED', 'CANCELLED', 'Rejected', 'Cancelled'] or str(a_rng.get('status', '')).upper() == 'REVERTED'
+
+                    if not existing_entry:
+                        new_u = {
+                            'requisition_ref_no': p_app.reference_no,
+                            'permit_application_ref': p_app.reference_no,
+                            'permit_number': getattr(p_app, 'permit_number', '') or p_app.reference_no,
+                            'ref_no': item.imfl_hologram_ref_no,
+                            'from': f_str,
+                            'to': t_str,
+                            'count': c_num,
+                            'assigned_at': (p_app.submitted_at or p_app.created_at or timezone.now()).isoformat() if hasattr(p_app, 'submitted_at') else timezone.now().isoformat(),
+                            'applicant_name': _get_user_display_name(p_app.applicant),
+                            'status': 'REVERTED' if is_p_reverted else 'ALLOCATED_TO_PERMIT',
+                            'purpose': 'IMFL Import Requisition',
+                            'reversion_reason': str(a_rng.get('reversion_reason') or getattr(p_app, 'officer_remarks', '') or 'Requisition Cancelled / Rejected'),
+                            'reverted_at': a_rng.get('reverted_at') or (p_app.updated_at.isoformat() if is_p_reverted and p_app.updated_at else None),
+                            'reverted_by': a_rng.get('reverted_by') or 'Excise Authority',
+                        }
+                        item_used.append(new_u)
+                        item_changed = True
+                    else:
+                        # Sync reverted status if changed
+                        if is_p_reverted and str(existing_entry.get('status', '')).upper() != 'REVERTED':
+                            existing_entry['status'] = 'REVERTED'
+                            existing_entry['reverted_at'] = a_rng.get('reverted_at') or timezone.now().isoformat()
+                            existing_entry['reverted_by'] = a_rng.get('reverted_by') or 'Excise Authority'
+                            existing_entry['reversion_reason'] = str(a_rng.get('reversion_reason') or getattr(p_app, 'officer_remarks', '') or 'Requisition Cancelled / Rejected')
+                            item_changed = True
+
+            if item_changed:
+                item.used_hologram_ranges = item_used
+                item.save(update_fields=['used_hologram_ranges'])
+
         # Calculate Statistics
         total_procured = sum(p.quantity for p in proc_qs)
         total_received = sum(a.total_holograms for a in arr_qs if (a.hologram_from_range and a.hologram_to_range) or a.status in ('RECEIVED', 'UPDATED'))
