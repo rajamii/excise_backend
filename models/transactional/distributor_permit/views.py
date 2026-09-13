@@ -214,17 +214,49 @@ def scope_permit_queryset(qs, user):
         return qs
 
     # Officers (Commissioner, Permit Section, OIC)
-    is_commissioner = 'commissioner' in role_name or role_id in (10, 12)
+    is_commissioner = 'commissioner' in role_name or role_id in (9, 10, 11, 12)
     is_permit_section = 'permit' in role_name or role_id in (5, 6)
     is_oic = 'oic' in role_name or 'officer' in role_name or getattr(user, 'is_oic_managed', False)
 
     if is_commissioner:
+        # Requisitions should ONLY be visible to commissioner once forwarded to commissioner (Stage 153, 154, 155, 156, 157, 151)
+        # Initial submission (Stages 147, 148, 149) or items not yet forwarded to commissioner must NOT be visible to commissioner.
+        # Applications rejected at the initial/permit section stage before reaching commissioner must NOT be visible to commissioner.
+        from django.contrib.contenttypes.models import ContentType
+        from auth.workflow.models import Transaction
+        from .models import DistributorPermitApplication
+
+        try:
+            ct = ContentType.objects.get_for_model(DistributorPermitApplication)
+            rej_apps = qs.filter(Q(current_stage_id__in=[150, 152]) | Q(status__icontains='reject'))
+            comm_rej_refs = set()
+            for r_app in rej_apps:
+                last_tx = Transaction.objects.filter(content_type=ct, object_id=r_app.reference_no).order_by('-id').first()
+                if last_tx and (
+                    last_tx.stage_id == 150 or 
+                    (last_tx.performed_by and (
+                        getattr(getattr(last_tx.performed_by, 'role', None), 'id', 0) in (9, 10, 11, 12) or
+                        'commissioner' in (getattr(getattr(last_tx.performed_by, 'role', None), 'name', '') or '').lower()
+                    ))
+                ):
+                    comm_rej_refs.add(r_app.reference_no)
+        except Exception:
+            comm_rej_refs = set()
+
         return qs.filter(
-            Q(current_stage_id__in=[151, 152, 153, 154, 156, 157, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170]) |
-            Q(status__icontains='approved') |
-            Q(status__icontains='commissioner') |
-            Q(current_stage__name__icontains='commissioner') |
-            Q(current_stage__name__icontains='approved')
+            Q(current_stage_id__in=[151, 153, 154, 155, 156, 157, 160, 161, 162, 163, 164, 165, 167, 168, 169, 170]) |
+            Q(reference_no__in=comm_rej_refs) |
+            Q(current_stage__name__icontains='commissioner')
+        ).exclude(
+            Q(current_stage_id__in=[147, 148, 149]) |
+            (Q(current_stage_id__in=[150, 152]) & ~Q(reference_no__in=comm_rej_refs)) |
+            (Q(status__icontains='reject') & ~Q(reference_no__in=comm_rej_refs)) |
+            (Q(status__iexact='submitted') & ~Q(current_stage_id__in=[153, 154, 155, 156, 157, 151])) |
+            (Q(status__iexact='pending') & ~Q(current_stage_id__in=[153, 154, 155, 156, 157, 151])) |
+            Q(current_stage__name__iexact='Forwarded Permit Section ') |
+            Q(current_stage__name__iexact='Forwarded Permit Section') |
+            Q(current_stage__name__iexact='Forwarded To OIC') |
+            Q(current_stage__is_initial=True)
         )
 
     if is_permit_section or is_oic:
@@ -263,6 +295,7 @@ class DistributorPermitListCreateView(DistributorRoleRequiredMixin, APIView):
         )
         serializer.is_valid(raise_exception=True)
         application = serializer.save()
+        invalidate_dashboard_counts_cache()
         response_serializer = DistributorPermitApplicationSerializer(
             application,
             context={'request': request},
@@ -417,7 +450,7 @@ def dashboard_counts(request):
     role_name = str(getattr(getattr(request.user, 'role', None), 'name', '') or '').lower()
     role_id = getattr(getattr(request.user, 'role', None), 'id', 0)
     username = str(getattr(request.user, 'username', '') or '').lower()
-    is_comm = 'commissioner' in role_name or role_id == 10
+    is_comm = 'commissioner' in role_name or role_id in (9, 10, 11, 12)
     is_it_cell = 'it cell' in role_name or 'it_cell' in role_name or role_id == 6
     is_dist = 'distributor' in role_name or role_id == 14 or not (request.user.is_superuser or getattr(request.user, 'is_staff', False) or role_id in (1, 3, 5, 6, 7, 8, 9, 10, 11, 12))
     is_oic = (
