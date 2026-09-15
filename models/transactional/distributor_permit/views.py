@@ -27,6 +27,8 @@ from .models import (
     IMFLRetailerStockDetails,
     IMFLHologramProcurement,
     IMFLHologramDetails,
+    IMFLSupplier,
+    IMFLBrand,
 )
 from .serializers import (
     DistributorPermitApplicationSerializer,
@@ -38,6 +40,8 @@ from .serializers import (
     IMFLRetailerStockDetailsSerializer,
     IMFLHologramProcurementSerializer,
     IMFLHologramDetailsSerializer,
+    IMFLSupplierSerializer,
+    IMFLBrandSerializer,
 )
 
 
@@ -3847,6 +3851,55 @@ class HologramStockAvailabilityView(APIView):
         user = request.user if getattr(request.user, 'is_authenticated', False) else None
         data = get_hologram_stock_and_allocation(user, required_count)
         return Response(data)
+
+
+class IMFLSupplierAdminViewSet(viewsets.ModelViewSet):
+    queryset = IMFLSupplier.objects.prefetch_related('brands').order_by('-id')
+    serializer_class = IMFLSupplierSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        q = self.request.query_params.get('q') or self.request.query_params.get('search')
+        if q:
+            q = q.strip()
+            qs = qs.filter(
+                Q(supplier_name__icontains=q) |
+                Q(supplier_master_name__icontains=q) |
+                Q(address__icontains=q) |
+                Q(route_details__icontains=q)
+            )
+        return qs
+
+    @action(detail=False, methods=['get'], url_path='summary-stats')
+    def summary_stats(self, request):
+        total_suppliers = IMFLSupplier.objects.count()
+        total_brands = IMFLBrand.objects.count()
+        return Response({
+            'totalSuppliers': total_suppliers,
+            'totalBrands': total_brands,
+        })
+
+
+class IMFLBrandAdminViewSet(viewsets.ModelViewSet):
+    queryset = IMFLBrand.objects.select_related('supplier').order_by('-id')
+    serializer_class = IMFLBrandSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        supplier_id = self.request.query_params.get('supplier_id') or self.request.query_params.get('supplier')
+        if supplier_id:
+            qs = qs.filter(supplier_id=supplier_id)
+        q = self.request.query_params.get('q') or self.request.query_params.get('search')
+        if q:
+            q = q.strip()
+            qs = qs.filter(
+                Q(brand_name__icontains=q) |
+                Q(supplier__supplier_name__icontains=q) |
+                Q(supplier__supplier_master_name__icontains=q)
+            )
+        return qs
 
 
 

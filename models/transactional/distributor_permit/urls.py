@@ -28,6 +28,8 @@ router.register(r'retailer-stock', views.IMFLRetailerStockDetailsViewSet, basena
 router.register(r'retailer-dispatches', views.IMFLRetailerStockDetailsViewSet, basename='retailer-dispatches')
 router.register(r'hologram-procurement', views.IMFLHologramProcurementViewSet, basename='hologram-procurement')
 router.register(r'hologram-arrival', views.IMFLHologramDetailsViewSet, basename='hologram-arrival')
+router.register(r'admin-suppliers', views.IMFLSupplierAdminViewSet, basename='admin-suppliers')
+router.register(r'admin-brands', views.IMFLBrandAdminViewSet, basename='admin-brands')
 
 app_name = 'distributor_permit'
 

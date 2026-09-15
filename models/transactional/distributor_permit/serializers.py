@@ -19,6 +19,8 @@ from .models import (
     IMFLRetailerStockDetails,
     IMFLHologramProcurement,
     IMFLHologramDetails,
+    IMFLSupplier,
+    IMFLBrand,
 )
 
 
@@ -1061,6 +1063,132 @@ class IMFLHologramDetailsSerializer(serializers.ModelSerializer):
 
     def get_paymentStatus(self, obj):
         return self.get_payment_status(obj)
+
+
+class IMFLBrandSerializer(serializers.ModelSerializer):
+    supplier_id = serializers.IntegerField(source='supplier.id', read_only=True)
+    supplier_name = serializers.CharField(source='supplier.supplier_name', read_only=True)
+    supplier_master_name = serializers.CharField(source='supplier.supplier_master_name', read_only=True)
+
+    class Meta:
+        model = IMFLBrand
+        fields = [
+            'id',
+            'supplier',
+            'supplier_id',
+            'supplier_name',
+            'supplier_master_name',
+            'brand_name',
+            'size_ml',
+            'pieces_per_case',
+            'edp_per_case',
+            'import_pass_fee_per_case',
+            'mrp_per_bottle',
+            'additional_ed_per_case',
+            'education_cess_per_case',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+        extra_kwargs = {
+            'supplier': {'required': False, 'allow_null': True}
+        }
+
+    def to_internal_value(self, data):
+        data = data.copy() if hasattr(data, 'copy') else dict(data)
+        mappings = {
+            'supplierId': 'supplier',
+            'supplier_id': 'supplier',
+            'brandName': 'brand_name',
+            'sizeMl': 'size_ml',
+            'piecesPerCase': 'pieces_per_case',
+            'pieces_in_case': 'pieces_per_case',
+            'edpPerCase': 'edp_per_case',
+            'importPassFeePerCase': 'import_pass_fee_per_case',
+            'mrpPerBottle': 'mrp_per_bottle',
+            'additionalEdPerCase': 'additional_ed_per_case',
+            'educationCessPerCase': 'education_cess_per_case',
+        }
+        for camel, snake in mappings.items():
+            if camel in data and snake not in data:
+                data[snake] = data[camel]
+        return super().to_internal_value(data)
+
+
+class IMFLSupplierSerializer(serializers.ModelSerializer):
+    brands = IMFLBrandSerializer(many=True, required=False)
+    brands_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = IMFLSupplier
+        fields = [
+            'id',
+            'supplier_master_name',
+            'supplier_name',
+            'address',
+            'route_details',
+            'brands',
+            'brands_count',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'brands_count']
+
+    def to_internal_value(self, data):
+        data = data.copy() if hasattr(data, 'copy') else dict(data)
+        mappings = {
+            'supplierMasterName': 'supplier_master_name',
+            'supplierName': 'supplier_name',
+            'routeDetails': 'route_details',
+        }
+        for camel, snake in mappings.items():
+            if camel in data and snake not in data:
+                data[snake] = data[camel]
+        return super().to_internal_value(data)
+
+    def get_brands_count(self, obj):
+        return obj.brands.count()
+
+    def create(self, validated_data):
+        from django.db import transaction
+        brands_data = validated_data.pop('brands', [])
+        with transaction.atomic():
+            supplier = IMFLSupplier.objects.create(**validated_data)
+            for b_data in brands_data:
+                IMFLBrand.objects.create(supplier=supplier, **b_data)
+            return supplier
+
+    def update(self, instance, validated_data):
+        from django.db import transaction
+        brands_data = validated_data.pop('brands', None)
+        with transaction.atomic():
+            instance.supplier_master_name = validated_data.get('supplier_master_name', instance.supplier_master_name)
+            instance.supplier_name = validated_data.get('supplier_name', instance.supplier_name)
+            instance.address = validated_data.get('address', instance.address)
+            instance.route_details = validated_data.get('route_details', instance.route_details)
+            instance.save()
+
+            if brands_data is not None:
+                existing_brand_ids = set(instance.brands.values_list('id', flat=True))
+                incoming_brand_ids = set()
+
+                for b_data in brands_data:
+                    b_id = b_data.get('id')
+                    if b_id and b_id in existing_brand_ids:
+                        incoming_brand_ids.add(b_id)
+                        brand_obj = IMFLBrand.objects.get(id=b_id)
+                        for attr, val in b_data.items():
+                            if attr not in ('id', 'supplier'):
+                                setattr(brand_obj, attr, val)
+                        brand_obj.save()
+                    else:
+                        new_b = IMFLBrand.objects.create(supplier=instance, **b_data)
+                        incoming_brand_ids.add(new_b.id)
+
+                brands_to_delete = existing_brand_ids - incoming_brand_ids
+                if brands_to_delete:
+                    IMFLBrand.objects.filter(id__in=brands_to_delete, supplier=instance).delete()
+
+            return instance
+
 
 
 
