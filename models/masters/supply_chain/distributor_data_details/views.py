@@ -41,16 +41,22 @@ class TransitPermitDistributorDataViewSet(viewsets.ModelViewSet):
         """
         queryset = super().get_queryset()
 
-        # If not staff/superuser, only show rows assigned to the user's license(s).
+        # If not staff/superuser/admin/officer, only show rows assigned to the user's license(s).
         user = getattr(self.request, 'user', None)
         role_name = (getattr(getattr(user, 'role', None), 'name', '') or '').strip().lower()
-        is_site_admin = role_name == 'site_admin'
-        if (
-            user
-            and user.is_authenticated
-            and not is_site_admin
-            and not (getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False))
-        ):
+        role_token = role_name.replace(' ', '_').replace('-', '_')
+        is_admin_or_officer = (
+            getattr(user, 'is_staff', False)
+            or getattr(user, 'is_superuser', False)
+            or role_token in {
+                'site_admin', 'admin', 'administrator', 'super_admin', 'superadmin',
+                'commissioner', 'joint_commissioner', 'deputy_commissioner',
+                'assistant_commissioner', 'permit_section', 'officer_in_charge',
+                'oic', 'distributor_oic', 'it_cell', 'single_window',
+                'inspector', 'sub_inspector', 'district_user', 'excise_officer'
+            }
+        )
+        if user and user.is_authenticated and not is_admin_or_officer:
             license_ids = list(
                 getattr(user, 'licenses', None)
                 .filter(is_active=True)
