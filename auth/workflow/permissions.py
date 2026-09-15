@@ -21,14 +21,18 @@ class HasStagePermission(permissions.BasePermission):
             }
             return aliases.get(token, token)
 
+        role_token = normalized_role_token()
+        if user.is_superuser or user.is_staff or role_token in {'siteadmin', 'superadmin', 'admin', 'administrator'}:
+            return True
+
         # Allow licensee to resolve objections even if no StagePermission exists on the Objection stage.
         # The WorkflowService enforces that only the licensee can resolve objections.
         if request.method in ['POST', 'PUT', 'PATCH'] and '/resolve-objections/' in request.path:
-            return normalized_role_token() == 'licensee'
+            return role_token == 'licensee'
 
         # 1. Allow licensee/distributor to submit new applications
         if request.method == 'POST' and any(path in request.path for path in ['/apply/', '/create/']):
-            return normalized_role_token() in ['licensee', 'distributor']
+            return role_token in ['licensee', 'distributor']
 
         # 2. For advance, raise-objection, resolve-objection, etc.
         if request.method in ['POST', 'PUT', 'PATCH']:
@@ -58,3 +62,4 @@ class HasStagePermission(permissions.BasePermission):
                 ).exists()
 
         return True
+

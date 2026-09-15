@@ -266,6 +266,9 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
 
     # Map model name → source_type
     model_name = ct.model
+    if model_name in {'specialpermitapplication', 'imflrevalidation', 'imflcancellation', 'distributorpermitapplication', 'imflhologramprocurement'}:
+        return
+
     source_type_map = {
         'newlicenseapplication': 'new_license_application',
         'licenseapplication': 'license_application',

@@ -327,7 +327,12 @@ class WorkflowService:
 
     @staticmethod
     def _condition_role_matches(condition, user):
-        if getattr(user, 'is_superuser', False):
+        role_token = WorkflowService._normalize_token(getattr(getattr(user, 'role', None), 'name', ''))
+        if (
+            getattr(user, 'is_superuser', False)
+            or getattr(user, 'is_staff', False)
+            or role_token in {'siteadmin', 'superadmin', 'admin', 'administrator'}
+        ):
             return True
         condition = condition or {}
         role = getattr(user, 'role', None)
@@ -351,7 +356,12 @@ class WorkflowService:
 
     @staticmethod
     def _has_stage_process_permission(application, user, target_stage=None, context=None):
-        if getattr(user, 'is_superuser', False) or getattr(user, 'is_staff', False):
+        role_token = WorkflowService._normalize_token(getattr(getattr(user, 'role', None), 'name', ''))
+        if (
+            getattr(user, 'is_superuser', False)
+            or getattr(user, 'is_staff', False)
+            or role_token in {'siteadmin', 'superadmin', 'admin', 'administrator'}
+        ):
             return True
 
         action = str((context or {}).get('action') or '').strip().upper()
@@ -832,21 +842,50 @@ class WorkflowService:
                 logger.warning("Failed to revert holograms in advance_stage: %s", e)
 
     @staticmethod
-    def get_application_by_id(application_id):
-        from django.db import models
-        from auth.workflow.models import WorkflowStage
+    def get_application_by_id(application_id, user=None):
+        from urllib.parse import unquote
+        from django.db.models import Q
 
-        # Find all models that have a ForeignKey to WorkflowStage named 'current_stage'
-        for model in apps.get_models():
-            if hasattr(model, 'current_stage') and isinstance(getattr(model, 'current_stage'), models.ForeignKey):
-                field = model.current_stage.field
-                if field.related_model == WorkflowStage:
+        app_id_clean = unquote(str(application_id)).strip()
+
+        model_configs = [
+            ("company_registration", "CompanyRegistration", "application_id"),
+            ("company_collaboration", "CompanyCollaboration", "application_id"),
+            ("license_renewal_application", "LicenseApplication", "application_id"),
+            ("new_license_application", "NewLicenseApplication", "application_id"),
+            ("salesman_barman", "SalesmanBarmanModel", "application_id"),
+            ("special_permit", "SpecialPermitApplication", "application_id"),
+            ("distributor_permit", "DistributorPermitApplication", "reference_no"),
+            ("distributor_permit", "IMFLRevalidation", "reference_no"),
+            ("distributor_permit", "IMFLCancellation", "reference_no"),
+            ("distributor_permit", "IMFLHologramProcurement", "ref_no"),
+            ("ena_requisition_details", "EnaRequisitionDetail", "application_no"),
+        ]
+
+        for app_label, model_name, id_field in model_configs:
+            try:
+                Model = apps.get_model(app_label=app_label, model_name=model_name)
+                q = Q(**{id_field: application_id})
+                if app_id_clean != str(application_id):
+                    q |= Q(**{id_field: app_id_clean})
+                if str(app_id_clean).isdigit():
+                    q |= Q(pk=app_id_clean)
+                elif str(application_id).isdigit():
+                    q |= Q(pk=application_id)
+                qs = Model.objects.select_related('current_stage', 'workflow').filter(q)
+                if user:
+                    from models.transactional.helpers import _filter_by_user_district, _is_district_scoped_role
+                    if _is_district_scoped_role(user):
+                        qs = _filter_by_user_district(qs, user)
+                obj = qs.first()
+                if obj:
                     try:
-                        return model.objects.select_related('current_stage', 'workflow').get(
-                            application_id=application_id
-                        )
-                    except model.DoesNotExist:
-                        continue
+                        WorkflowService.auto_reject_application_if_expired(obj)
+                    except Exception:
+                        pass
+                    return obj
+            except Exception:
+                continue
         return None
 
     @staticmethod

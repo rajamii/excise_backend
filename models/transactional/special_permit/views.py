@@ -626,7 +626,9 @@ def _sync_special_permit_payment_status(application, user=None):
 @permission_classes([IsAuthenticated])
 def pay_special_permit_fee_wallet(request, application_id):
     application = get_object_or_404(SpecialPermitApplication, application_id=str(application_id))
-    if application.applicant_id != request.user.id:
+    role_token = getattr(getattr(request.user, 'role', None), 'name', '').lower().replace(' ', '').replace('_', '')
+    is_admin = request.user.is_superuser or request.user.is_staff or role_token in {'siteadmin', 'superadmin', 'admin', 'administrator'}
+    if application.applicant_id != request.user.id and not is_admin:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
     stage_name = str(getattr(getattr(application, "current_stage", None), "name", "") or "").strip().lower()

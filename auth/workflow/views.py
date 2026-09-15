@@ -264,9 +264,16 @@ def get_next_stages(request, application_id):
     if not application:
         return Response({"detail": "Application not found"}, status=status.HTTP_404_NOT_FOUND)
         
+    role_token = _normalized_role_token(request.user)
+    is_admin = (
+        request.user.is_superuser
+        or request.user.is_staff
+        or role_token in {'siteadmin', 'superadmin', 'admin', 'administrator'}
+    )
+
     # Enforce stage-level processing permission for action discovery.
     # Without this, non-processing users can still fetch next actions on GET.
-    if not request.user.is_superuser:
+    if not is_admin:
         if not getattr(request.user, 'role', None):
             return Response([])
         if not StagePermission.objects.filter(
@@ -297,7 +304,7 @@ def get_next_stages(request, application_id):
         pass
 
     # Hide actions that don't match the current user's transition role condition.
-    if not request.user.is_superuser:
+    if not is_admin:
         transitions = [
             transition for transition in transitions
             if WorkflowService._condition_role_matches(transition.condition or {}, request.user)
@@ -646,54 +653,11 @@ def application_group(request):
 
 def _get_application_by_id(application_id, user=None):
     """
-    Find an application by application_id (string PK / reference_no / ref_no) in:
-      - company_registration, company_collaboration, license_application,
-        new_license_application, salesman_barman, special_permit, distributor_permit
-    Returns the instance or None (filtered by user district if district-scoped role)
+    Find an application by application_id (string PK / reference_no / ref_no).
+    Returns the instance or None (filtered by user district if district-scoped role).
     """
-    from django.db.models import Q
-    from urllib.parse import unquote
+    return WorkflowService.get_application_by_id(application_id, user=user)
 
-    app_id_clean = unquote(str(application_id)).strip()
-
-    model_configs = [
-        ("company_registration", "CompanyRegistration", "application_id"),
-        ("company_collaboration", "CompanyCollaboration", "application_id"),
-        ("license_renewal_application", "LicenseApplication", "application_id"),
-        ("new_license_application", "NewLicenseApplication", "application_id"),
-        ("salesman_barman", "SalesmanBarmanModel", "application_id"),
-        ("special_permit", "SpecialPermitApplication", "application_id"),
-        ("distributor_permit", "DistributorPermitApplication", "reference_no"),
-        ("distributor_permit", "IMFLRevalidation", "reference_no"),
-        ("distributor_permit", "IMFLCancellation", "reference_no"),
-        ("distributor_permit", "IMFLHologramProcurement", "ref_no"),
-        ("ena_requisition_details", "EnaRequisitionDetail", "application_no"),
-    ]
-
-    for app_label, model_name, id_field in model_configs:
-        try:
-            Model = apps.get_model(app_label=app_label, model_name=model_name)
-            q = Q(**{id_field: application_id})
-            if app_id_clean != str(application_id):
-                q |= Q(**{id_field: app_id_clean})
-            if str(app_id_clean).isdigit():
-                q |= Q(pk=app_id_clean)
-            elif str(application_id).isdigit():
-                q |= Q(pk=application_id)
-            qs = Model.objects.select_related('current_stage', 'workflow').filter(q)
-            if user and _is_district_scoped_role(user):
-                qs = _filter_by_user_district(qs, user)
-            obj = qs.first()
-            if obj:
-                try:
-                    WorkflowService.auto_reject_application_if_expired(obj)
-                except Exception:
-                    pass
-                return obj
-        except (LookupError, Model.DoesNotExist, Exception):
-            continue
-
-    return None
 
 
 def _get_model(app_label, model_name):
