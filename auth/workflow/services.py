@@ -323,6 +323,21 @@ class WorkflowService:
         if user_role_token in permit_aliases and cond_role_token in permit_aliases:
             return True
 
+        licensee_aliases = {
+            'licensee',
+            'licenseuser',
+            'licenseeuser',
+            'distributor',
+            'distributorlicensee',
+            'distributoruser',
+            'factoryadmin',
+            'factoryuser',
+            'baruser',
+            'applicant',
+        }
+        if user_role_token in licensee_aliases and cond_role_token in licensee_aliases:
+            return True
+
         return False
 
     @staticmethod
@@ -365,7 +380,11 @@ class WorkflowService:
             return True
 
         action = str((context or {}).get('action') or '').strip().upper()
-        if action == 'FORCE_PAY' or (action == 'PAY' and getattr(application, 'current_stage_id', None) == 154):
+        if action in ('FORCE_PAY', 'PAY') and (
+            getattr(application, 'current_stage_id', None) == 154
+            or 'payment' in str(getattr(getattr(application, 'current_stage', None), 'name', '')).lower()
+            or getattr(application, 'applicant_id', None) == getattr(user, 'id', None)
+        ):
             return True
 
         app_type_str = str(type(application).__name__).lower()
@@ -376,12 +395,13 @@ class WorkflowService:
                 return True
 
         role = getattr(user, 'role', None)
-        if role and StagePermission.objects.filter(
-            stage=application.current_stage,
-            role=role,
-            can_process=True
-        ).exists():
-            return True
+        if role:
+            if StagePermission.objects.filter(stage=application.current_stage, role=role, can_process=True).exists():
+                return True
+            for sp in StagePermission.objects.filter(stage=application.current_stage, can_process=True).select_related('role'):
+                sp_token = WorkflowService._normalize_token(getattr(sp.role, 'name', ''))
+                if WorkflowService._role_token_matches_cond(role_token, sp_token):
+                    return True
 
         # Fallback for deployments where StagePermission rows are incomplete:
         # allow processing when there is a valid workflow transition from current stage

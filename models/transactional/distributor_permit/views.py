@@ -1071,39 +1071,62 @@ class DistributorPermitPerformActionView(APIView):
                 from models.transactional.wallet.models import WalletBalance
                 from models.transactional.wallet.wallet_service import debit_wallet_balance
 
-                total_import_fee = Decimal('0.00')
-                total_add_ed = Decimal('0.00')
-                total_edu_cess = Decimal('0.00')
+                # Build permit-wise fee breakdown
+                permits_to_process = []
+                if hasattr(application, 'permit_wise_details') and isinstance(application.permit_wise_details, list) and application.permit_wise_details:
+                    for p in application.permit_wise_details:
+                        if isinstance(p, dict):
+                            p_num = str(p.get('permit_number') or p.get('permitNumber') or '').strip()
+                            p_import = Decimal(str(p.get('total_import_fee') or p.get('totalImportFee') or 0))
+                            p_add_ed = Decimal(str(p.get('total_additional_ed') or p.get('totalAdditionalEd') or 0))
+                            p_cess = Decimal(str(p.get('total_education_cess') or p.get('totalEducationCess') or 0))
 
-                line_items = list(getattr(application, 'line_items', []).all() if hasattr(application, 'line_items') else [])
-                if line_items:
-                    for item in line_items:
-                        cases = Decimal(str(getattr(item, 'cases', 0) or getattr(item, 'no_of_cases', 0) or getattr(item, 'quantity', 0) or 0))
-                        import_fee_rate = Decimal(str(getattr(item, 'import_pass_fee_per_case', 0) or getattr(item, 'import_pass_fee', 0) or 0))
-                        add_ed_rate = Decimal(str(getattr(item, 'additional_ed_per_case', 0) or getattr(item, 'additional_ed', 0) or 0))
-                        cess_rate = Decimal(str(getattr(item, 'education_cess_per_case', 0) or getattr(item, 'education_cess', 0) or 0))
-
-                        total_import_fee += (import_fee_rate * cases)
-                        total_add_ed += (add_ed_rate * cases)
-                        total_edu_cess += (cess_rate * cases)
-
-                if total_import_fee == 0 and total_add_ed == 0 and total_edu_cess == 0:
-                    details = getattr(application, 'permit_wise_details', []) or []
-                    if isinstance(details, list):
-                        for p in details:
-                            if isinstance(p, dict):
-                                items = p.get('line_items') or p.get('items') or []
-                                for item in items:
+                            # If fees not directly on permit root, calculate from line items
+                            if p_import == 0 and p_add_ed == 0 and p_cess == 0:
+                                for item in (p.get('line_items') or p.get('items') or []):
                                     if isinstance(item, dict):
-                                        cases = Decimal(str(item.get('cases', 0) or 0))
-                                        import_fee = Decimal(str(item.get('total_import') or item.get('totalImport') or (item.get('import_pass_fee_per_case', 0) * cases)))
-                                        add_ed = Decimal(str(item.get('total_additional_ed') or item.get('totalAddEd') or (item.get('additional_ed_per_case', 0) * cases)))
-                                        cess = Decimal(str(item.get('total_education_cess') or item.get('cess') or 0))
+                                        c = Decimal(str(item.get('cases', 0) or 0))
+                                        p_import += Decimal(str(item.get('total_import') or item.get('totalImport') or (Decimal(str(item.get('import_pass_fee_per_case', 0) or 0)) * c)))
+                                        p_add_ed += Decimal(str(item.get('total_additional_ed') or item.get('totalAddEd') or (Decimal(str(item.get('additional_ed_per_case', 0) or 0)) * c)))
+                                        p_cess += Decimal(str(item.get('total_education_cess') or item.get('totalEducationCess') or item.get('cess', 0) or (Decimal(str(item.get('education_cess_per_case', 0) or 0)) * c)))
 
-                                        total_import_fee += import_fee
-                                        total_add_ed += add_ed
-                                        total_edu_cess += cess
+                            if p_num:
+                                permits_to_process.append({
+                                    'permit_number': p_num,
+                                    'import_fee': p_import.quantize(Decimal('0.01')),
+                                    'additional_ed': p_add_ed.quantize(Decimal('0.01')),
+                                    'education_cess': p_cess.quantize(Decimal('0.01')),
+                                })
 
+                if not permits_to_process:
+                    line_items = list(getattr(application, 'line_items', []).all() if hasattr(application, 'line_items') else [])
+                    if line_items:
+                        grouped = {}
+                        for item in line_items:
+                            p_num = str(getattr(item, 'permit_number', '') or '').strip() or str(application.reference_no)
+                            if p_num not in grouped:
+                                grouped[p_num] = {'permit_number': p_num, 'import_fee': Decimal('0.00'), 'additional_ed': Decimal('0.00'), 'education_cess': Decimal('0.00')}
+                            cases = Decimal(str(getattr(item, 'cases', 0) or getattr(item, 'no_of_cases', 0) or getattr(item, 'quantity', 0) or 0))
+                            import_fee_rate = Decimal(str(getattr(item, 'import_pass_fee_per_case', 0) or getattr(item, 'import_pass_fee', 0) or 0))
+                            add_ed_rate = Decimal(str(getattr(item, 'additional_ed_per_case', 0) or getattr(item, 'additional_ed', 0) or 0))
+                            cess_rate = Decimal(str(getattr(item, 'education_cess_per_case', 0) or getattr(item, 'education_cess', 0) or 0))
+
+                            grouped[p_num]['import_fee'] += (import_fee_rate * cases)
+                            grouped[p_num]['additional_ed'] += (add_ed_rate * cases)
+                            grouped[p_num]['education_cess'] += (cess_rate * cases)
+                        permits_to_process = list(grouped.values())
+
+                if not permits_to_process:
+                    permits_to_process.append({
+                        'permit_number': str(application.reference_no),
+                        'import_fee': total_import_fee.quantize(Decimal('0.01')),
+                        'additional_ed': total_add_ed.quantize(Decimal('0.01')),
+                        'education_cess': total_edu_cess.quantize(Decimal('0.01')),
+                    })
+
+                total_import_fee = sum(p['import_fee'] for p in permits_to_process)
+                total_add_ed = sum(p['additional_ed'] for p in permits_to_process)
+                total_edu_cess = sum(p['education_cess'] for p in permits_to_process)
                 excise_amount = (total_import_fee + total_add_ed).quantize(Decimal('0.01'))
                 cess_amount = total_edu_cess.quantize(Decimal('0.01'))
 
@@ -1151,65 +1174,61 @@ class DistributorPermitPerformActionView(APIView):
                         }, status=status.HTTP_400_BAD_REQUEST)
 
                 import uuid
-                ref_no_str = application.reference_no
 
                 if excise_wallet and excise_amount > 0:
-                    if total_import_fee > 0 and total_add_ed > 0:
-                        ed_txn_id = f"PAY-EXCISE-ED-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
-                        debit_wallet_balance(
-                            transaction_id=ed_txn_id,
-                            licensee_id=excise_wallet.licensee_id,
-                            wallet_type="excise",
-                            head_of_account=excise_wallet.head_of_account,
-                            amount=total_import_fee,
-                            user_id=username,
-                            remarks=f"IMFL Requisition Excise Duty (Import Pass Fee ₹{total_import_fee}) for Ref #{ref_no_str}",
-                            reference_no=ref_no_str,
-                            source_module="imfl_permit_requisition_excise",
-                            transaction_type="payment"
-                        )
-                        add_txn_id = f"PAY-EXCISE-ADD-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
-                        debit_wallet_balance(
-                            transaction_id=add_txn_id,
-                            licensee_id=excise_wallet.licensee_id,
-                            wallet_type="additional_excise",
-                            head_of_account=excise_wallet.head_of_account,
-                            amount=total_add_ed,
-                            user_id=username,
-                            remarks=f"IMFL Requisition Additional Excise Duty (Add. ED ₹{total_add_ed}) for Ref #{ref_no_str}",
-                            reference_no=ref_no_str,
-                            source_module="imfl_permit_requisition_additional_ed",
-                            transaction_type="payment"
-                        )
-                    else:
-                        excise_txn_id = f"PAY-EXCISE-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
-                        debit_wallet_balance(
-                            transaction_id=excise_txn_id,
-                            licensee_id=excise_wallet.licensee_id,
-                            wallet_type="excise",
-                            head_of_account=excise_wallet.head_of_account,
-                            amount=excise_amount,
-                            user_id=username,
-                            remarks=f"IMFL Requisition Excise Duty Fee Payment for Ref #{ref_no_str}",
-                            reference_no=ref_no_str,
-                            source_module="imfl_permit_requisition_excise",
-                            transaction_type="payment"
-                        )
+                    for p in permits_to_process:
+                        p_num = p['permit_number']
+                        p_import = p['import_fee']
+                        p_add = p['additional_ed']
+
+                        if p_import > 0:
+                            ed_txn_id = f"PAY-EXCISE-ED-{p_num.replace('/', '_')}-{uuid.uuid4().hex[:6].upper()}"
+                            debit_wallet_balance(
+                                transaction_id=ed_txn_id,
+                                licensee_id=excise_wallet.licensee_id,
+                                wallet_type="excise",
+                                head_of_account=excise_wallet.head_of_account,
+                                amount=p_import,
+                                user_id=username,
+                                remarks=f"IMFL Requisition Import Pass Fee (₹{p_import}) for Permit #{p_num}",
+                                reference_no=p_num,
+                                source_module="imfl_permit_requisition_excise",
+                                transaction_type="payment"
+                            )
+                        if p_add > 0:
+                            add_txn_id = f"PAY-EXCISE-ADD-{p_num.replace('/', '_')}-{uuid.uuid4().hex[:6].upper()}"
+                            debit_wallet_balance(
+                                transaction_id=add_txn_id,
+                                licensee_id=excise_wallet.licensee_id,
+                                wallet_type="additional_excise",
+                                head_of_account=excise_wallet.head_of_account,
+                                amount=p_add,
+                                user_id=username,
+                                remarks=f"IMFL Requisition Additional Excise Duty (₹{p_add}) for Permit #{p_num}",
+                                reference_no=p_num,
+                                source_module="imfl_permit_requisition_additional_ed",
+                                transaction_type="payment"
+                            )
 
                 if cess_wallet and cess_amount > 0:
-                    cess_txn_id = f"PAY-CESS-{ref_no_str}-{uuid.uuid4().hex[:6].upper()}"
-                    debit_wallet_balance(
-                        transaction_id=cess_txn_id,
-                        licensee_id=cess_wallet.licensee_id,
-                        wallet_type="education_cess",
-                        head_of_account=cess_wallet.head_of_account,
-                        amount=cess_amount,
-                        user_id=username,
-                        remarks=f"IMFL Requisition Education Duty Payment (Education Cess ₹{cess_amount}) for Ref #{ref_no_str}",
-                        reference_no=ref_no_str,
-                        source_module="imfl_permit_requisition_education_cess",
-                        transaction_type="payment"
-                    )
+                    for p in permits_to_process:
+                        p_num = p['permit_number']
+                        p_cess = p['education_cess']
+
+                        if p_cess > 0:
+                            cess_txn_id = f"PAY-CESS-{p_num.replace('/', '_')}-{uuid.uuid4().hex[:6].upper()}"
+                            debit_wallet_balance(
+                                transaction_id=cess_txn_id,
+                                licensee_id=cess_wallet.licensee_id,
+                                wallet_type="education_cess",
+                                head_of_account=cess_wallet.head_of_account,
+                                amount=p_cess,
+                                user_id=username,
+                                remarks=f"IMFL Requisition Education Duty (Cess ₹{p_cess}) for Permit #{p_num}",
+                                reference_no=p_num,
+                                source_module="imfl_permit_requisition_education_cess",
+                                transaction_type="payment"
+                            )
             elif action == 'FORCE_PAY':
                 # Developer test bypass: skip wallet balance checks and deduction
                 pass

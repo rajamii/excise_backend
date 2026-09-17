@@ -28,6 +28,8 @@ class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
     brand_id = serializers.IntegerField(write_only=True)
     brand_master_id = serializers.IntegerField(source='brand_id', read_only=True)
     cases = serializers.IntegerField(write_only=True, required=False, default=1)
+    current_stock = serializers.SerializerMethodField()
+    stock_after = serializers.SerializerMethodField()
 
     class Meta:
         model = DistributorPermitLineItem
@@ -45,6 +47,8 @@ class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
             'additional_ed_per_case',
             'education_cess_per_case',
             'permit_number',
+            'current_stock',
+            'stock_after',
         ]
         read_only_fields = [
             'id',
@@ -54,7 +58,45 @@ class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
             'mrp_per_bottle',
             'additional_ed_per_case',
             'education_cess_per_case',
+            'current_stock',
+            'stock_after',
         ]
+
+    def get_current_stock(self, obj):
+        try:
+            from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
+            from .models import IMFLBrandWarehouse
+
+            clean_name = (obj.brand_name or '').strip().rstrip('`').strip()
+            ibw = IMFLBrandWarehouse.objects.filter(
+                brand_name__icontains=clean_name,
+                pack_size=obj.size_ml
+            ).first()
+            if ibw and ibw.current_stock is not None:
+                return ibw.current_stock
+
+            bw = None
+            if obj.brand_id:
+                bw = BrandWarehouse.objects.filter(
+                    brand_id=obj.brand_id,
+                    capacity_size__size_ml=obj.size_ml
+                ).first()
+            if not bw and clean_name:
+                bw = BrandWarehouse.objects.filter(
+                    brand__brand_name__icontains=clean_name,
+                    capacity_size__size_ml=obj.size_ml
+                ).first()
+            if bw and bw.current_stock is not None:
+                return bw.current_stock
+        except Exception:
+            pass
+        return 0
+
+    def get_stock_after(self, obj):
+        curr = self.get_current_stock(obj)
+        bpc = obj.pieces_per_case or (6 if obj.size_ml == 180 else 12)
+        deduction = 1 * bpc
+        return max(0, curr - deduction)
 
     def to_internal_value(self, data):
         data = data.copy() if hasattr(data, 'copy') else dict(data)
@@ -190,6 +232,52 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
 
     def get_current_stage_is_final(self, obj):
         return bool(getattr(obj.current_stage, 'is_final', False))
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        try:
+            from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouse
+            from .models import IMFLBrandWarehouse
+
+            pwd = ret.get('permit_wise_details') or []
+            if isinstance(pwd, list):
+                for p in pwd:
+                    items = p.get('line_items') or []
+                    for item in items:
+                        b_id = item.get('brand_id') or item.get('brand_master_id')
+                        b_name = (item.get('brand_name') or item.get('brand') or '').strip().rstrip('`').strip()
+                        s_ml = int(item.get('size_ml') or 750)
+                        cases = int(item.get('cases') or 1)
+                        bpc = int(item.get('pieces_per_case') or (6 if s_ml == 180 else 12))
+                        deduction = cases * bpc
+
+                        curr_stock = 0
+                        ibw = IMFLBrandWarehouse.objects.filter(
+                            brand_name__icontains=b_name,
+                            pack_size=s_ml
+                        ).first()
+                        if ibw and ibw.current_stock is not None:
+                            curr_stock = ibw.current_stock
+                        else:
+                            bw = None
+                            if b_id:
+                                bw = BrandWarehouse.objects.filter(
+                                    brand_id=b_id,
+                                    capacity_size__size_ml=s_ml
+                                ).first()
+                            if not bw and b_name:
+                                bw = BrandWarehouse.objects.filter(
+                                    brand__brand_name__icontains=b_name,
+                                    capacity_size__size_ml=s_ml
+                                ).first()
+                            if bw and bw.current_stock is not None:
+                                curr_stock = bw.current_stock
+
+                        item['current_stock'] = curr_stock
+                        item['stock_after'] = max(0, curr_stock - deduction)
+        except Exception:
+            pass
+        return ret
 
     def to_internal_value(self, data):
         data = data.copy() if hasattr(data, 'copy') else dict(data)
