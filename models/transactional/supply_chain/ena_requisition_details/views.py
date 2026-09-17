@@ -39,13 +39,13 @@ def _is_commissioner_user(user):
     }
 
 
-def _is_permit_under_revalidation(permit_no: str) -> bool:
+def _is_permit_under_revalidation(permit_no: str, requisition_ref_no: str = '') -> bool:
     from models.transactional.supply_chain.ena_revalidation_details.models import EnaRevalidationDetail
     p_no = str(permit_no or '').strip()
     if not p_no:
         return False
     
-    # Active (unapproved/pending) revalidations only
+    # Active (unapproved/pending) revalidations (exclude finished states)
     revals = EnaRevalidationDetail.objects.exclude(
         models.Q(status__icontains='reject') |
         models.Q(status__icontains='invalid') |
@@ -53,6 +53,13 @@ def _is_permit_under_revalidation(permit_no: str) -> bool:
         models.Q(status__icontains='approv') |
         models.Q(status_code__iexact='RV_09')
     )
+    if requisition_ref_no:
+        clean_ref = str(requisition_ref_no).strip()
+        rev_ref = clean_ref.replace('REQ/', 'REV/')
+        revals = revals.filter(
+            models.Q(our_ref_no__iexact=clean_ref) |
+            models.Q(our_ref_no__iexact=rev_ref)
+        )
     for r in revals:
         r_permits = [p.strip() for p in str(r.details_permits_number or '').split(',') if p.strip()]
         if p_no in r_permits:
@@ -512,9 +519,10 @@ class RequisitionArrivalBulkLiterDetailAPIView(APIView):
                             'message': f"Permit(s) cancellation already requested: {', '.join(cancel_requested_overlap)}."
                         }, status=status.HTTP_400_BAD_REQUEST)
 
+                    req_ref = getattr(requisition, 'our_ref_no', '') or ''
                     reval_blocked = []
                     for p in incoming_permits:
-                        if _is_permit_under_revalidation(p):
+                        if _is_permit_under_revalidation(p, req_ref):
                             reval_blocked.append(p)
                     if reval_blocked:
                         return Response({
