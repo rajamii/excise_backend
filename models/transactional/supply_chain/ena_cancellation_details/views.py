@@ -9,7 +9,12 @@ import re
 from .models import EnaCancellationDetail
 from .serializers import EnaCancellationDetailSerializer, CancellationCreateSerializer
 from auth.workflow.constants import WORKFLOW_IDS
-from models.transactional.dashboard_cache import get_cached_api_response, set_cached_api_response, _mark_cache_response
+from models.transactional.dashboard_cache import (
+    get_cached_api_response,
+    set_cached_api_response,
+    _mark_cache_response,
+    invalidate_dashboard_counts_cache,
+)
 from models.transactional.supply_chain.access_control import (
     has_workflow_access,
     scope_by_profile_or_workflow,
@@ -857,6 +862,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                     refund_amount=permit_refund_amount,
                     fee_amount=cancellation_fee_amount,
                 )
+            invalidate_dashboard_counts_cache()
             logger.info("ENA cancellation submitted successfully (id=%s)", cancellation.id)
             
             response_payload = {
@@ -1030,6 +1036,8 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
                     cancellation.status = target_transition.to_stage.name
                     # cancellation.status_code = ... # Removed dependency
                     cancellation.save()
+
+                invalidate_dashboard_counts_cache()
 
                 response = {
                     'message': f'Action {action_type} performed successfully',
