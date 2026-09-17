@@ -761,7 +761,29 @@ class WorkflowService:
             for f in ("licensee_fee_id", "license_category", "license_sub_category", "location_category", "location_name", "is_fee_calculated", "is_license_category_updated"):
                 if hasattr(application, f):
                     update_fields.append(f)
+
+        if is_distributor_permit_application := (application.__class__.__name__.lower() == "distributorpermitapplication"):
+            assigned_ranges = (context or {}).get("assigned_hologram_ranges")
+            total_holo = (context or {}).get("total_holograms_assigned")
+            permits_details = (context or {}).get("permit_wise_details")
+            if assigned_ranges is not None:
+                application.assigned_hologram_ranges = assigned_ranges
+                update_fields.append('assigned_hologram_ranges')
+            if total_holo is not None:
+                application.total_holograms_assigned = int(total_holo)
+                update_fields.append('total_holograms_assigned')
+            if permits_details is not None:
+                application.permit_wise_details = permits_details
+                update_fields.append('permit_wise_details')
+
         application.save(update_fields=list(dict.fromkeys(update_fields)))
+
+        if is_distributor_permit_application and (context or {}).get("assigned_hologram_ranges"):
+            try:
+                from models.transactional.distributor_permit.serializers import DistributorPermitApplicationSerializer
+                DistributorPermitApplicationSerializer()._record_hologram_usage(application, context.get("assigned_hologram_ranges"))
+            except Exception:
+                pass
 
         if is_new_license_application and sync_new_license_payment_status:
             sync_new_license_payment_status(application)

@@ -255,8 +255,8 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
                 'hologram_stock': f"Insufficient hologram stock in warehouse. Required: {total_bottles_required}, Available: {stock_info.get('total_available_stock', 0)}"
             })
 
-        validated_data['total_holograms_assigned'] = total_bottles_required
-        validated_data['assigned_hologram_ranges'] = stock_info.get('allocated_ranges', [])
+        validated_data['total_holograms_assigned'] = 0
+        validated_data['assigned_hologram_ranges'] = []
         
         try:
             from auth.workflow.models import WorkflowStage
@@ -279,7 +279,6 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
                 **validated_data,
             )
             self._process_and_save_line_items(application, line_items)
-            self._record_hologram_usage(application, stock_info.get('allocated_ranges', []))
         return application
 
     def _record_hologram_usage(self, application, allocated_ranges):
@@ -353,6 +352,7 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
                 pieces_per_case = int(item.get('pieces_per_case') or self._resolve_pieces_per_case(size_ml))
 
             cases = int(item.get('cases') or 1)
+            permit_index = int(item.get('permit_index') or item.get('permitIndex') or 1)
             rates = self._resolve_rates(brand_name, size_ml)
 
             edp = self._decimal(item.get('edp_per_case') or item.get('edp') or (imfl_brand.edp_per_case if imfl_brand else 0))
@@ -381,6 +381,7 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
                 'size_ml': size_ml,
                 'cases': cases,
                 'pieces_per_case': pieces_per_case,
+                'permit_index': permit_index,
                 'edp': edp,
                 'import_fee': import_fee,
                 'mrp': mrp,
@@ -388,39 +389,50 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
                 'education_cess': education_cess,
             })
 
+        # Group by user-specified permit_index first
+        groups = {}
+        for item in expanded_items:
+            p_idx = int(item.get('permit_index') or 1)
+            groups.setdefault(p_idx, []).append(item)
+
         permits = []
         current_permit_index = 1
-        current_permit_cases = 0
-        current_permit_items = []
 
-        for item in expanded_items:
-            rem_cases = item['cases']
-            while rem_cases > 0:
-                available_space = 700 - current_permit_cases
-                if available_space <= 0:
-                    permits.append((current_permit_index, current_permit_items))
-                    current_permit_index += 1
-                    current_permit_cases = 0
-                    current_permit_items = []
-                    available_space = 700
+        for p_idx in sorted(groups.keys()):
+            group_items = groups[p_idx]
+            current_permit_cases = 0
+            current_permit_items = []
 
-                allocated_cases = min(rem_cases, available_space)
+            for item in group_items:
+                rem_cases = item['cases']
+                while rem_cases > 0:
+                    available_space = 700 - current_permit_cases
+                    if available_space <= 0:
+                        permits.append((current_permit_index, current_permit_items))
+                        current_permit_index += 1
+                        current_permit_cases = 0
+                        current_permit_items = []
+                        available_space = 700
 
-                sub_item = dict(item)
-                sub_item['allocated_cases'] = allocated_cases
-                sub_item['permit_number'] = f"{application.reference_no}-P{current_permit_index}"
-                current_permit_items.append(sub_item)
+                    allocated_cases = min(rem_cases, available_space)
 
-                current_permit_cases += allocated_cases
-                rem_cases -= allocated_cases
+                    sub_item = dict(item)
+                    sub_item['allocated_cases'] = allocated_cases
+                    sub_item['permit_number'] = f"{application.reference_no}-P{current_permit_index}"
+                    current_permit_items.append(sub_item)
 
-        if current_permit_items:
-            permits.append((current_permit_index, current_permit_items))
+                    current_permit_cases += allocated_cases
+                    rem_cases -= allocated_cases
+
+            if current_permit_items:
+                permits.append((current_permit_index, current_permit_items))
+                current_permit_index += 1
 
         permit_wise_details = []
         for seq_num, items in permits:
             p_num = f"{application.reference_no}-P{seq_num}"
             p_cases = sum(i['allocated_cases'] for i in items)
+            p_holograms = sum(i['allocated_cases'] * i['pieces_per_case'] for i in items)
             p_import_fee = sum(i['import_fee'] * i['allocated_cases'] for i in items)
             p_additional_ed = sum(i['additional_ed'] * i['allocated_cases'] for i in items)
             p_edu_cess = sum(i['education_cess'] * i['allocated_cases'] for i in items)
@@ -429,7 +441,9 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
             permit_wise_details.append({
                 'permit_number': p_num,
                 'permit_sequence': seq_num,
+                'permit_index': seq_num,
                 'total_cases': p_cases,
+                'total_holograms': p_holograms,
                 'total_import_fee': float(p_import_fee),
                 'total_additional_ed': float(p_additional_ed),
                 'total_education_cess': float(p_edu_cess),
