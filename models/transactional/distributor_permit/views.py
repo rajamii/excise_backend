@@ -3506,7 +3506,29 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
 
             item_changed = (len(item_used) != len(raw_used))
             for p_app in all_permits:
-                for a_rng in (p_app.assigned_hologram_ranges or []):
+                app_ranges = []
+                # Check top-level assigned_hologram_ranges
+                for a_r in (p_app.assigned_hologram_ranges or []):
+                    if isinstance(a_r, dict):
+                        r_copy = dict(a_r)
+                        if not r_copy.get('permit_number') and getattr(p_app, 'permit_number', None):
+                            r_copy['permit_number'] = p_app.permit_number
+                        app_ranges.append(r_copy)
+
+                # Check permit_wise_details
+                if isinstance(getattr(p_app, 'permit_wise_details', None), list):
+                    for idx, pwd in enumerate(p_app.permit_wise_details):
+                        if isinstance(pwd, dict):
+                            pwd_permit_no = str(pwd.get('permit_number') or pwd.get('permitNumber') or f"{p_app.reference_no}-P{idx+1}").strip()
+                            for pr in (pwd.get('assigned_hologram_ranges') or pwd.get('hologram_ranges') or []):
+                                if isinstance(pr, dict):
+                                    pr_copy = dict(pr)
+                                    pr_copy['permit_number'] = pwd_permit_no
+                                    pr_copy['permit_index'] = idx + 1
+                                    if not any(ar.get('from') == pr_copy.get('from') and ar.get('to') == pr_copy.get('to') and ar.get('ref_no') == pr_copy.get('ref_no') for ar in app_ranges):
+                                        app_ranges.append(pr_copy)
+
+                for a_rng in app_ranges:
                     if not isinstance(a_rng, dict):
                         continue
                     a_ref = str(a_rng.get('ref_no') or a_rng.get('batch_ref') or '').strip()
@@ -3527,12 +3549,14 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                     ), None)
 
                     is_p_reverted = p_app.status in ['REJECTED', 'CANCELLED', 'Rejected', 'Cancelled'] or str(a_rng.get('status', '')).upper() == 'REVERTED'
+                    resolved_p_no = str(a_rng.get('permit_number') or a_rng.get('permitNumber') or getattr(p_app, 'permit_number', '') or p_app.reference_no).strip()
 
                     if not existing_entry:
                         new_u = {
                             'requisition_ref_no': p_app.reference_no,
                             'permit_application_ref': p_app.reference_no,
-                            'permit_number': getattr(p_app, 'permit_number', '') or p_app.reference_no,
+                            'permit_number': resolved_p_no,
+                            'permit_index': a_rng.get('permit_index'),
                             'ref_no': item.imfl_hologram_ref_no,
                             'from': f_str,
                             'to': t_str,
@@ -3548,6 +3572,11 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                         item_used.append(new_u)
                         item_changed = True
                     else:
+                        # Update resolved permit number if available
+                        if resolved_p_no and resolved_p_no != p_app.reference_no:
+                            existing_entry['permit_number'] = resolved_p_no
+                        if a_rng.get('permit_index'):
+                            existing_entry['permit_index'] = a_rng.get('permit_index')
                         # Sync reverted status if changed
                         if is_p_reverted and str(existing_entry.get('status', '')).upper() != 'REVERTED':
                             existing_entry['status'] = 'REVERTED'
@@ -3712,6 +3741,7 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
             'summary_stats': {
                 'total_procured': total_procured,
                 'total_received': total_received,
+                'total_reserved': total_allocated_to_permits,
                 'total_available': total_available,
                 'total_allocated_to_permits': total_allocated_to_permits,
                 'total_utilized_in_warehouse': total_utilized_in_warehouse,
@@ -3773,7 +3803,15 @@ def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0) -
     # Collect assigned count per batch
     assigned_by_batch = {}
     for p in permit_qs:
-        for r in (p.assigned_hologram_ranges or []):
+        all_p_ranges = list(p.assigned_hologram_ranges or [])
+        if isinstance(getattr(p, 'permit_wise_details', None), list):
+            for pwd in p.permit_wise_details:
+                if isinstance(pwd, dict):
+                    for pr in (pwd.get('assigned_hologram_ranges') or pwd.get('hologram_ranges') or []):
+                        if pr and isinstance(pr, dict) and pr not in all_p_ranges:
+                            all_p_ranges.append(pr)
+
+        for r in all_p_ranges:
             if isinstance(r, dict) and str(r.get('status', '')).upper() not in ('REVERTED', 'CANCELLED', 'RESTORED'):
                 ref = str(r.get('ref_no') or r.get('batch_ref') or '').strip()
                 try:
