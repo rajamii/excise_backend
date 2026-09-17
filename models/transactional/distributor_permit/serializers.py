@@ -483,6 +483,11 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
             p_idx = int(item.get('permit_index') or 1)
             groups.setdefault(p_idx, []).append(item)
 
+        if len(groups) <= 1 and len(expanded_items) > 1:
+            has_explicit = any(item.get('permit_index') and int(item.get('permit_index')) > 1 for item in expanded_items)
+            if not has_explicit:
+                groups = {idx + 1: [item] for idx, item in enumerate(expanded_items)}
+
         permits = []
         current_permit_index = 1
 
