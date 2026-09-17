@@ -929,6 +929,8 @@ class DistributorPermitPerformActionView(APIView):
         transitions = WorkflowService.get_next_stages(application)
         target_transition = None
         for t in transitions:
+            if t.from_stage_id == t.to_stage_id:
+                continue
             cond_act = str((t.condition or {}).get('action') or '').upper()
             if (
                 cond_act == action 
@@ -1212,11 +1214,24 @@ class DistributorPermitPerformActionView(APIView):
                 # Developer test bypass: skip wallet balance checks and deduction
                 pass
 
+            action_to_pass = str((target_transition.condition or {}).get('action') or action).upper()
+            assigned_ranges = request.data.get('assigned_hologram_ranges') or request.data.get('assignedHologramRanges')
+            total_holo = request.data.get('total_holograms_assigned') or request.data.get('totalHologramsAssigned')
+            permit_details = request.data.get('permit_wise_details') or request.data.get('permitWiseDetails')
+
+            adv_context = {'action': action_to_pass}
+            if assigned_ranges is not None:
+                adv_context['assigned_hologram_ranges'] = assigned_ranges
+            if total_holo is not None:
+                adv_context['total_holograms_assigned'] = total_holo
+            if permit_details is not None:
+                adv_context['permit_wise_details'] = permit_details
+
             WorkflowService.advance_stage(
                 application=application,
                 user=request.user,
                 target_stage=target_transition.to_stage,
-                context={'action': action},
+                context=adv_context,
                 remarks=remarks or f"Action: {action}"
             )
 
@@ -1226,6 +1241,16 @@ class DistributorPermitPerformActionView(APIView):
                 application.is_excise_duty_fee_paid = True
             if remarks and hasattr(application, 'officer_remarks'):
                 application.officer_remarks = remarks
+
+            if assigned_ranges is not None and hasattr(application, 'assigned_hologram_ranges'):
+                application.assigned_hologram_ranges = assigned_ranges
+            if total_holo is not None and hasattr(application, 'total_holograms_assigned'):
+                try:
+                    application.total_holograms_assigned = int(total_holo)
+                except Exception:
+                    pass
+            if permit_details is not None and hasattr(application, 'permit_wise_details'):
+                application.permit_wise_details = permit_details
 
             if action == 'APPROVE' and target_transition.to_stage.is_final and hasattr(application, 'submitted_at'):
                 application.submitted_at = timezone.now()

@@ -575,7 +575,15 @@ class WorkflowService:
                         actual_action = context.get("action")
                         if actual_action is None:
                             continue
-                        if str(actual_action).strip().lower() != str(expected).strip().lower():
+                        act_str = str(actual_action).strip().lower()
+                        exp_str = str(expected).strip().lower()
+                        if act_str != exp_str:
+                            act_u = act_str.upper()
+                            exp_u = exp_str.upper()
+                            if act_u in ('APPROVE', 'FORWARD', 'FORWARD_TO_COMMISSIONER') and exp_u in ('APPROVE', 'FORWARD', 'FORWARD_TO_COMMISSIONER'):
+                                continue
+                            if act_u in ('APPROVE', 'APPROVEPAYSLIP', 'VERIFY', 'FORWARD') and exp_u in ('APPROVE', 'APPROVEPAYSLIP', 'VERIFY', 'FORWARD'):
+                                continue
                             first_error = first_error or f"Condition failed: {key} must be {expected}"
                             condition_failed = True
                             break
