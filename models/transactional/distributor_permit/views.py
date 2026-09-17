@@ -3757,12 +3757,22 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
         return Response(response_payload)
 
 
-def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0) -> dict:
+def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0, license_number: str = None, application_id: str = None) -> dict:
     """
     Calculates available hologram stock from IMFLHologramDetails and allocates serial ranges for the given required count.
+    Supports resolving stock specifically for the distributor referenced by application_id or license_number.
     """
     from .models import IMFLHologramDetails, DistributorPermitApplication
     from django.db.models import Q
+
+    target_app = None
+    if application_id:
+        target_app = DistributorPermitApplication.objects.filter(
+            Q(reference_no__iexact=str(application_id).strip()) |
+            Q(reference_no__icontains=str(application_id).strip())
+        ).first()
+        if target_app and target_app.applicant:
+            applicant = target_app.applicant
 
     # Query received/updated hologram arrivals
     holo_qs = IMFLHologramDetails.objects.filter(
@@ -3771,8 +3781,10 @@ def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0) -
         Q(hologram_from_range__gt='')
     ).exclude(status__in=['CANCELLED', 'REJECTED', 'PENDING_SERIALS']).order_by('arrival_date', 'id')
 
+    user_lic = str(license_number or '').strip()
     if applicant and getattr(applicant, 'is_authenticated', False) and not (getattr(applicant, 'is_staff', False) or getattr(applicant, 'is_superuser', False)):
-        user_lic = str(getattr(getattr(applicant, 'profile', None), 'license_number', '') or getattr(applicant, 'licensee_id', '') or getattr(applicant, 'username', '') or '').strip()
+        if not user_lic:
+            user_lic = str(getattr(getattr(applicant, 'profile', None), 'license_number', '') or getattr(applicant, 'licensee_id', '') or getattr(applicant, 'username', '') or '').strip()
         user_name = _get_user_display_name(applicant)
         user_company = str(getattr(applicant, 'company_name', '') or '').strip()
         user_est = str(getattr(applicant, 'establishment_name', '') or '').strip()
@@ -3788,6 +3800,14 @@ def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0) -
         )
         if user_holo_qs.exists():
             holo_qs = user_holo_qs
+    elif user_lic:
+        user_holo_qs = holo_qs.filter(
+            (Q(license_number__iexact=user_lic) & ~Q(license_number='')) |
+            Q(distributor_name__icontains=user_lic) |
+            Q(distributor_name__icontains='dist')
+        )
+        if user_holo_qs.exists():
+            holo_qs = user_holo_qs
 
     # Find already assigned holograms from existing DistributorPermitApplications
     permit_qs = DistributorPermitApplication.objects.exclude(
@@ -3797,8 +3817,17 @@ def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0) -
     ).exclude(
         current_stage__name__icontains='cancel'
     )
+    if target_app:
+        # Exclude current application itself so we calculate stock prior to current approval
+        permit_qs = permit_qs.exclude(reference_no=target_app.reference_no)
+
     if applicant and not (getattr(applicant, 'is_staff', False) or getattr(applicant, 'is_superuser', False)):
         permit_qs = permit_qs.filter(applicant=applicant)
+    elif user_lic:
+        permit_qs = permit_qs.filter(
+            Q(applicant__username__iexact=user_lic) |
+            Q(applicant__profile__license_number__iexact=user_lic)
+        )
 
     # Collect assigned count per batch
     assigned_by_batch = {}
@@ -3853,6 +3882,31 @@ def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0) -
         available_in_batch = max(0, batch_total - already_used)
         total_usable_stock += available_in_batch
 
+        # Compute next available start serial and available sub-ranges
+        batch_avail_ranges = []
+        u_off = already_used
+        for chunk in ranges:
+            try:
+                cf = int(chunk.get('from') or 1)
+                ct = int(chunk.get('to') or cf)
+                cc = int(chunk.get('count') or (ct - cf + 1))
+            except Exception:
+                continue
+            if u_off >= cc:
+                u_off -= cc
+                continue
+            c_start = cf + u_off
+            u_off = 0
+            batch_avail_ranges.append({
+                'from': str(c_start),
+                'to': str(ct),
+                'count': ct - c_start + 1,
+                'status': 'AVAILABLE'
+            })
+
+        next_avail_from = batch_avail_ranges[0]['from'] if batch_avail_ranges else str(batch_total + 1)
+        next_avail_to = batch_avail_ranges[-1]['to'] if batch_avail_ranges else str(batch_total)
+
         batch_records.append({
             'id': holo.id,
             'ref_no': ref_no,
@@ -3860,6 +3914,10 @@ def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0) -
             'used_count': already_used,
             'available_count': available_in_batch,
             'ranges': ranges,
+            'available_ranges': batch_avail_ranges,
+            'next_available_from': next_avail_from,
+            'next_available_to': next_avail_to,
+            'next_available_range': f"{next_avail_from} → {next_avail_to}" if batch_avail_ranges else "None",
             'status': holo.status,
             'arrival_date': str(holo.arrival_date or holo.created_at)
         })
@@ -3912,13 +3970,25 @@ def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0) -
                 take_from_batch -= take_from_chunk
                 remaining_needed -= take_from_chunk
 
+    first_batch = batch_records[0] if batch_records else None
+    next_from = first_batch['next_available_from'] if first_batch else '1'
+    next_to = first_batch['next_available_to'] if first_batch else '1000'
+
     return {
         'total_available_stock': total_usable_stock,
         'available_stock': total_usable_stock,
+        'availableStock': total_usable_stock,
+        'totalAvailableStock': total_usable_stock,
         'required_count': int(required_count or 0),
         'remaining_stock': max(0, total_usable_stock - int(required_count or 0)),
         'remaining_stock_after_allocation': max(0, total_usable_stock - int(required_count or 0)),
         'is_sufficient': is_sufficient,
+        'next_available_from': next_from,
+        'nextAvailableFrom': next_from,
+        'next_available_to': next_to,
+        'nextAvailableTo': next_to,
+        'next_available_range': f"{next_from} → {next_to}" if total_usable_stock > 0 else "None",
+        'nextAvailableRange': f"{next_from} → {next_to}" if total_usable_stock > 0 else "None",
         'allocated_ranges': allocated_ranges,
         'assigned_ranges': allocated_ranges,
         'batches': batch_records
@@ -3930,8 +4000,10 @@ class HologramStockAvailabilityView(APIView):
 
     def get(self, request):
         required_count = int(request.query_params.get('required_count') or request.query_params.get('count') or 0)
+        license_number = request.query_params.get('license_number') or request.query_params.get('licenseNumber')
+        application_id = request.query_params.get('application_id') or request.query_params.get('reference_no') or request.query_params.get('ref')
         user = request.user if getattr(request.user, 'is_authenticated', False) else None
-        data = get_hologram_stock_and_allocation(user, required_count)
+        data = get_hologram_stock_and_allocation(user, required_count, license_number=license_number, application_id=application_id)
         return Response(data)
 
 
