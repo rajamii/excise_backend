@@ -1238,6 +1238,33 @@ class DistributorPermitPerformActionView(APIView):
             total_holo = request.data.get('total_holograms_assigned') or request.data.get('totalHologramsAssigned')
             permit_details = request.data.get('permit_wise_details') or request.data.get('permitWiseDetails')
 
+            # Final Commissioner approval is permit-wise.  Keep the requisition at
+            # Forwarded PaySLip Commissioner until every permit has been approved.
+            is_partial_permit_approval = (
+                isinstance(application, DistributorPermitApplication) and
+                action == 'APPROVE' and
+                isinstance(permit_details, list) and permit_details and
+                (getattr(application.current_stage, 'id', None) == 157 or 'payslip commissioner' in str(getattr(application.current_stage, 'name', '')).lower()) and
+                any(str(p.get('status', '') if isinstance(p, dict) else '').upper() != 'APPROVED' for p in permit_details)
+            )
+
+            if is_partial_permit_approval:
+                application.permit_wise_details = permit_details
+                application.assigned_hologram_ranges = assigned_ranges or []
+                try:
+                    application.total_holograms_assigned = int(total_holo or 0)
+                except (TypeError, ValueError):
+                    pass
+                application.status = 'Forwarded PaySLip Commissioner'
+                application.save(update_fields=['permit_wise_details', 'assigned_hologram_ranges', 'total_holograms_assigned', 'status', 'updated_at'])
+                invalidate_dashboard_counts_cache()
+                return Response({
+                    'status': 'success',
+                    'message': 'Selected permits approved and holograms allocated. Remaining permits await Commissioner approval.',
+                    'current_stage': 'Forwarded PaySLip Commissioner',
+                    'remaining_permits': sum(1 for p in permit_details if isinstance(p, dict) and str(p.get('status', '')).upper() != 'APPROVED')
+                })
+
             adv_context = {'action': action_to_pass}
             if assigned_ranges is not None:
                 adv_context['assigned_hologram_ranges'] = assigned_ranges
@@ -3507,12 +3534,24 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
             item_changed = (len(item_used) != len(raw_used))
             for p_app in all_permits:
                 app_ranges = []
+                permit_approval_by_number = {}
+                permit_details = getattr(p_app, 'permit_wise_details', None)
+                if isinstance(permit_details, list):
+                    for idx, permit_detail in enumerate(permit_details):
+                        if isinstance(permit_detail, dict):
+                            permit_no = str(permit_detail.get('permit_number') or permit_detail.get('permitNumber') or f"{p_app.reference_no}-P{idx + 1}").strip()
+                            permit_approval_by_number[permit_no] = str(permit_detail.get('status') or '').upper() == 'APPROVED'
+                application_is_finally_approved = (
+                    getattr(getattr(p_app, 'current_stage', None), 'id', None) == 151 or
+                    str(getattr(p_app, 'status', '') or '').strip().lower() in ('approved', 'approved by commissioner')
+                )
                 # Check top-level assigned_hologram_ranges
                 for a_r in (p_app.assigned_hologram_ranges or []):
                     if isinstance(a_r, dict):
                         r_copy = dict(a_r)
                         if not r_copy.get('permit_number') and getattr(p_app, 'permit_number', None):
                             r_copy['permit_number'] = p_app.permit_number
+                        r_copy['permit_approved'] = permit_approval_by_number.get(str(r_copy.get('permit_number') or '').strip(), application_is_finally_approved)
                         app_ranges.append(r_copy)
 
                 # Check permit_wise_details
@@ -3525,6 +3564,7 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                                     pr_copy = dict(pr)
                                     pr_copy['permit_number'] = pwd_permit_no
                                     pr_copy['permit_index'] = idx + 1
+                                    pr_copy['permit_approved'] = str(pwd.get('status') or '').upper() == 'APPROVED'
                                     if not any(ar.get('from') == pr_copy.get('from') and ar.get('to') == pr_copy.get('to') and ar.get('ref_no') == pr_copy.get('ref_no') for ar in app_ranges):
                                         app_ranges.append(pr_copy)
 
@@ -3549,6 +3589,7 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                     ), None)
 
                     is_p_reverted = p_app.status in ['REJECTED', 'CANCELLED', 'Rejected', 'Cancelled'] or str(a_rng.get('status', '')).upper() == 'REVERTED'
+                    allocation_status = 'USED' if a_rng.get('permit_approved') else 'RESERVED'
                     resolved_p_no = str(a_rng.get('permit_number') or a_rng.get('permitNumber') or getattr(p_app, 'permit_number', '') or p_app.reference_no).strip()
 
                     if not existing_entry:
@@ -3563,7 +3604,7 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                             'count': c_num,
                             'assigned_at': (p_app.submitted_at or p_app.created_at or timezone.now()).isoformat() if hasattr(p_app, 'submitted_at') else timezone.now().isoformat(),
                             'applicant_name': _get_user_display_name(p_app.applicant),
-                            'status': 'REVERTED' if is_p_reverted else 'ALLOCATED_TO_PERMIT',
+                            'status': 'REVERTED' if is_p_reverted else allocation_status,
                             'purpose': 'IMFL Import Requisition',
                             'reversion_reason': str(a_rng.get('reversion_reason') or getattr(p_app, 'officer_remarks', '') or 'Requisition Cancelled / Rejected'),
                             'reverted_at': a_rng.get('reverted_at') or (p_app.updated_at.isoformat() if is_p_reverted and p_app.updated_at else None),
@@ -3577,6 +3618,9 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                             existing_entry['permit_number'] = resolved_p_no
                         if a_rng.get('permit_index'):
                             existing_entry['permit_index'] = a_rng.get('permit_index')
+                        if not is_p_reverted and str(existing_entry.get('status', '')).upper() != allocation_status:
+                            existing_entry['status'] = allocation_status
+                            item_changed = True
                         # Sync reverted status if changed
                         if is_p_reverted and str(existing_entry.get('status', '')).upper() != 'REVERTED':
                             existing_entry['status'] = 'REVERTED'
@@ -3594,11 +3638,17 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
         total_received = sum(a.total_holograms for a in arr_qs if (a.hologram_from_range and a.hologram_to_range) or a.status in ('RECEIVED', 'UPDATED'))
         total_damaged = sum(a.damaged_total for a in arr_qs)
         
-        # Calculate allocated to permit requisitions (excluding reverted / cancelled)
-        total_allocated_to_permits = sum(
-            sum(int(u.get('count') or 0) for u in (item.used_hologram_ranges or []) if isinstance(u, dict) and str(u.get('status', '')).upper() not in ('REVERTED', 'CANCELLED', 'RESTORED'))
+        # A serial range becomes a used hologram when the Commissioner approves
+        # the permit.  It is no longer merely reserved stock at that point.
+        total_used_holograms = sum(
+            sum(int(u.get('count') or 0) for u in (item.used_hologram_ranges or []) if isinstance(u, dict) and str(u.get('status', '')).upper() == 'USED')
             for item in arr_qs
         )
+        total_reserved_pending_approval = sum(
+            sum(int(u.get('count') or 0) for u in (item.used_hologram_ranges or []) if isinstance(u, dict) and str(u.get('status', '')).upper() in ('RESERVED', 'ALLOCATED_TO_PERMIT'))
+            for item in arr_qs
+        )
+        total_allocated_to_permits = total_used_holograms + total_reserved_pending_approval
 
         # Calculate utilized from warehouse & dispatches
         total_utilized_in_warehouse = sum(w.hologram_count or w.total_cases_arrived * w.pieces_per_case for w in wh_qs if w.hologram_count)
@@ -3741,7 +3791,10 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
             'summary_stats': {
                 'total_procured': total_procured,
                 'total_received': total_received,
-                'total_reserved': total_allocated_to_permits,
+                'total_reserved': total_reserved_pending_approval,
+                'total_reserved_pending_approval': total_reserved_pending_approval,
+                'total_used_holograms': total_used_holograms,
+                'total_used_for_approved_permits': total_used_holograms,
                 'total_available': total_available,
                 'total_allocated_to_permits': total_allocated_to_permits,
                 'total_utilized_in_warehouse': total_utilized_in_warehouse,
