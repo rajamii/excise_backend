@@ -3576,10 +3576,17 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                     for idx, permit_detail in enumerate(permit_details):
                         if isinstance(permit_detail, dict):
                             permit_no = str(permit_detail.get('permit_number') or permit_detail.get('permitNumber') or f"{p_app.reference_no}-P{idx + 1}").strip()
-                            permit_approval_by_number[permit_no] = str(permit_detail.get('status') or '').upper() == 'APPROVED'
+                            permit_is_approved = (
+                                str(permit_detail.get('status') or '').upper() == 'APPROVED' or
+                                permit_detail.get('isApproved') is True or
+                                bool(permit_detail.get('assigned_hologram_ranges') or permit_detail.get('assignedRanges') or permit_detail.get('hologram_ranges')) or
+                                bool(permit_detail.get('hologram_from') and permit_detail.get('hologram_to'))
+                            )
+                            permit_approval_by_number[permit_no] = permit_is_approved
                 application_is_finally_approved = (
-                    getattr(getattr(p_app, 'current_stage', None), 'id', None) == 151 or
-                    str(getattr(p_app, 'status', '') or '').strip().lower() in ('approved', 'approved by commissioner')
+                    getattr(getattr(p_app, 'current_stage', None), 'id', None) in (151, 154, 156, 157, 158, 164, 165) or
+                    any(tok in str(getattr(p_app, 'status', '') or '').strip().lower() for tok in ('approved', 'payment', 'payslip', 'forwarded')) or
+                    bool(getattr(p_app, 'assigned_hologram_ranges', None))
                 )
                 # Check top-level assigned_hologram_ranges
                 for a_r in (p_app.assigned_hologram_ranges or []):
@@ -3587,7 +3594,8 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                         r_copy = dict(a_r)
                         if not r_copy.get('permit_number') and getattr(p_app, 'permit_number', None):
                             r_copy['permit_number'] = p_app.permit_number
-                        r_copy['permit_approved'] = permit_approval_by_number.get(str(r_copy.get('permit_number') or '').strip(), application_is_finally_approved)
+                        r_p_no = str(r_copy.get('permit_number') or '').strip()
+                        r_copy['permit_approved'] = permit_approval_by_number.get(r_p_no, application_is_finally_approved or bool(r_copy.get('from') and r_copy.get('to')))
                         app_ranges.append(r_copy)
 
                 # Check permit_wise_details
@@ -3595,12 +3603,17 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                     for idx, pwd in enumerate(p_app.permit_wise_details):
                         if isinstance(pwd, dict):
                             pwd_permit_no = str(pwd.get('permit_number') or pwd.get('permitNumber') or f"{p_app.reference_no}-P{idx+1}").strip()
+                            pwd_approved = (
+                                str(pwd.get('status') or '').upper() == 'APPROVED' or
+                                pwd.get('isApproved') is True or
+                                application_is_finally_approved
+                            )
                             for pr in (pwd.get('assigned_hologram_ranges') or pwd.get('hologram_ranges') or []):
                                 if isinstance(pr, dict):
                                     pr_copy = dict(pr)
                                     pr_copy['permit_number'] = pwd_permit_no
                                     pr_copy['permit_index'] = idx + 1
-                                    pr_copy['permit_approved'] = str(pwd.get('status') or '').upper() == 'APPROVED'
+                                    pr_copy['permit_approved'] = pwd_approved or bool(pr_copy.get('from') and pr_copy.get('to'))
                                     if not any(ar.get('from') == pr_copy.get('from') and ar.get('to') == pr_copy.get('to') and ar.get('ref_no') == pr_copy.get('ref_no') for ar in app_ranges):
                                         app_ranges.append(pr_copy)
 
@@ -3625,7 +3638,9 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
                     ), None)
 
                     is_p_reverted = p_app.status in ['REJECTED', 'CANCELLED', 'Rejected', 'Cancelled'] or str(a_rng.get('status', '')).upper() == 'REVERTED'
-                    allocation_status = 'USED' if a_rng.get('permit_approved') else 'RESERVED'
+                    has_range_assigned = bool(f_str and t_str and f_str.lower() != 'pending')
+                    is_allocated = bool(a_rng.get('permit_approved') or application_is_finally_approved or has_range_assigned)
+                    allocation_status = 'USED' if is_allocated else 'RESERVED'
                     resolved_p_no = str(a_rng.get('permit_number') or a_rng.get('permitNumber') or getattr(p_app, 'permit_number', '') or p_app.reference_no).strip()
 
                     if not existing_entry:
