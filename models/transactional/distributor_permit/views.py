@@ -2353,6 +2353,42 @@ class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
                 except Exception as ex:
                     print(f"Error updating IMFLHologramDetails for brand arrival: {ex}")
 
+            # Update permit_wise_details on permit_app directly permit-wise
+            if permit_app and hasattr(permit_app, 'permit_wise_details') and isinstance(permit_app.permit_wise_details, list):
+                p_details = list(permit_app.permit_wise_details or [])
+                for item in items:
+                    p_num = str(item.get('permit_number') or permit_ref or '').strip().lower()
+                    hg_from = str(item.get('hologram_from') or '').strip()
+                    hg_to = str(item.get('hologram_to') or '').strip()
+                    arr_ranges = item.get('arrived_hg_ranges') or ([{'from': hg_from, 'to': hg_to}] if hg_from and hg_to else [])
+                    arr_cases = int(item.get('arrived_cases') or 0)
+                    arr_bottles = int(item.get('arrived_bottles') or 0)
+                    dam_bottles = int(item.get('damaged_bottles') or 0)
+                    dam_cases = int(item.get('damaged_cases') or 0)
+                    good_bottles = int(item.get('good_bottles') or max(0, arr_bottles - dam_bottles))
+                    good_cases = int(item.get('good_cases') or 0)
+
+                    for p in p_details:
+                        if isinstance(p, dict):
+                            cur_pnum = str(p.get('permit_number') or '').strip().lower()
+                            if cur_pnum == p_num or (p_num and p_num.endswith(cur_pnum)) or (cur_pnum and cur_pnum.endswith(p_num)):
+                                p['arrived_cases'] = arr_cases
+                                p['arrived_bottles'] = arr_bottles
+                                p['arrived_hg_ranges'] = arr_ranges
+                                p['hologram_from'] = hg_from
+                                p['hologram_to'] = hg_to
+                                p['damaged_cases'] = dam_cases
+                                p['damaged_bottles'] = dam_bottles
+                                p['good_bottles'] = good_bottles
+                                p['good_cases'] = good_cases
+                                p['arrival_status'] = 'ARRIVED'
+                                p['arrival_date'] = common_arrival_date.isoformat() if hasattr(common_arrival_date, 'isoformat') else str(common_arrival_date)
+                permit_app.permit_wise_details = p_details
+                try:
+                    permit_app.save(update_fields=['permit_wise_details', 'updated_at'])
+                except Exception:
+                    permit_app.save()
+
         serializer = IMFLBrandWarehouseSerializer(created_records, many=True)
         return Response({
             'message': f'Successfully updated brand arrival for {len(created_records)} item(s) in IMFL Brand Warehouse.',
