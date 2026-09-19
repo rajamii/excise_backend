@@ -3935,16 +3935,10 @@ def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0, l
 
     # Collect assigned count per batch
     assigned_by_batch = {}
-    for p in permit_qs:
-        all_p_ranges = list(p.assigned_hologram_ranges or [])
-        if isinstance(getattr(p, 'permit_wise_details', None), list):
-            for pwd in p.permit_wise_details:
-                if isinstance(pwd, dict):
-                    for pr in (pwd.get('assigned_hologram_ranges') or pwd.get('hologram_ranges') or []):
-                        if pr and isinstance(pr, dict) and pr not in all_p_ranges:
-                            all_p_ranges.append(pr)
+    max_serial_by_batch = {}
 
-        for r in all_p_ranges:
+    def _process_ranges(ranges_list):
+        for r in ranges_list:
             if isinstance(r, dict) and str(r.get('status', '')).upper() not in ('REVERTED', 'CANCELLED', 'RESTORED'):
                 ref = str(r.get('ref_no') or r.get('batch_ref') or '').strip()
                 try:
@@ -3954,8 +3948,33 @@ def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0, l
                     if ref and c > 0:
                         assigned_by_batch.setdefault(ref, 0)
                         assigned_by_batch[ref] += c
+                        max_serial_by_batch[ref] = max(max_serial_by_batch.get(ref, 0), t)
                 except Exception:
                     pass
+
+    for p in permit_qs:
+        all_p_ranges = list(p.assigned_hologram_ranges or [])
+        if isinstance(getattr(p, 'permit_wise_details', None), list):
+            for pwd in p.permit_wise_details:
+                if isinstance(pwd, dict):
+                    for pr in (pwd.get('assigned_hologram_ranges') or pwd.get('hologram_ranges') or pwd.get('assignedRanges') or []):
+                        if pr and isinstance(pr, dict) and pr not in all_p_ranges:
+                            all_p_ranges.append(pr)
+        _process_ranges(all_p_ranges)
+
+    # For target_app itself: also count any permits that have already been APPROVED and given holograms
+    if target_app:
+        target_approved_ranges = []
+        if isinstance(getattr(target_app, 'permit_wise_details', None), list):
+            for pwd in target_app.permit_wise_details:
+                if isinstance(pwd, dict) and str(pwd.get('status', '')).upper() == 'APPROVED':
+                    for pr in (pwd.get('assigned_hologram_ranges') or pwd.get('hologram_ranges') or pwd.get('assignedRanges') or []):
+                        if pr and isinstance(pr, dict) and pr not in target_approved_ranges:
+                            target_approved_ranges.append(pr)
+        elif getattr(target_app, 'assigned_hologram_ranges', None):
+            target_approved_ranges = list(target_app.assigned_hologram_ranges or [])
+
+        _process_ranges(target_approved_ranges)
 
     # Build available inventory pools
     batch_records = []
@@ -4000,6 +4019,10 @@ def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0, l
                 u_off -= cc
                 continue
             c_start = cf + u_off
+            if max_serial_by_batch.get(ref_no, 0) >= c_start:
+                c_start = max_serial_by_batch[ref_no] + 1
+            if c_start > ct:
+                continue
             u_off = 0
             batch_avail_ranges.append({
                 'from': str(c_start),
@@ -4008,7 +4031,7 @@ def get_hologram_stock_and_allocation(applicant=None, required_count: int = 0, l
                 'status': 'AVAILABLE'
             })
 
-        next_avail_from = batch_avail_ranges[0]['from'] if batch_avail_ranges else str(batch_total + 1)
+        next_avail_from = batch_avail_ranges[0]['from'] if batch_avail_ranges else str(max_serial_by_batch.get(ref_no, batch_total) + 1)
         next_avail_to = batch_avail_ranges[-1]['to'] if batch_avail_ranges else str(batch_total)
 
         batch_records.append({
