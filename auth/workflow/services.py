@@ -931,6 +931,7 @@ class WorkflowService:
                 if obj:
                     try:
                         WorkflowService.auto_reject_application_if_expired(obj)
+                        WorkflowService.auto_reject_new_license_if_payment_expired(obj)
                     except Exception:
                         pass
                     return obj
@@ -1452,7 +1453,11 @@ class WorkflowService:
 
         # Move application to rejected stage
         application.current_stage = rejected_stage
-        application.save(update_fields=["current_stage"])
+        save_fields = ["current_stage"]
+        if hasattr(application, "is_approved"):
+            application.is_approved = False
+            save_fields.append("is_approved")
+        application.save(update_fields=save_fields)
 
         # Record a Transaction
         Transaction.objects.create(
@@ -1543,6 +1548,256 @@ class WorkflowService:
                     "auto_reject_expired_objections: error processing "
                     "ct=%s obj_id=%s: %s", ct_id, obj_id, exc,
                     exc_info=True,
+                )
+                errors += 1
+
+        return {"checked": checked, "rejected": rejected, "errors": errors}
+
+    @staticmethod
+    def _compute_new_license_payment_deadline(from_time=None):
+        """
+        Read the NEW_LICENSE_PAYMENT_TIMER timer config and return the absolute deadline
+        datetime (from_time + configured duration). Falls back to 7 days if missing or inactive.
+        """
+        from datetime import timedelta
+        from django.db.models import Q
+        from models.masters.core.models import SupplyChainTimerConfig
+
+        FALLBACK_DAYS = 7
+        base_time = from_time or timezone.now()
+
+        try:
+            cfg = SupplyChainTimerConfig.objects.filter(
+                Q(code__iexact="NEW_LICENSE_PAYMENT_TIMER") | Q(code="new_license_payment_timer"),
+                is_active=True,
+            ).first()
+            if not cfg:
+                return base_time + timedelta(days=FALLBACK_DAYS)
+
+            value = cfg.delay_value or FALLBACK_DAYS
+            unit = str(cfg.delay_unit or "day").lower().rstrip("s")
+
+            unit_to_seconds = {
+                "second": 1,
+                "sec": 1,
+                "minute": 60,
+                "min": 60,
+                "hour": 3_600,
+                "hr": 3_600,
+                "day": 86_400,
+                "week": 604_800,
+                "month": 2_592_000,   # 30 days
+                "year": 31_536_000,  # 365 days
+            }
+            seconds = value * unit_to_seconds.get(unit, 86_400)
+            return base_time + timedelta(seconds=seconds)
+
+        except Exception:
+            return base_time + timedelta(days=FALLBACK_DAYS)
+
+    @staticmethod
+    @transaction.atomic
+    def auto_reject_new_license_if_payment_expired(application):
+        """
+        For NewLicenseApplication, checks if it is in Stage 23 (Awaiting Payment),
+        unpaid, and its payment timer has expired.
+        If expired, automatically moves the application to:
+        "Rejected – No Action Taken by User at Payment Stage".
+        """
+        if not application:
+            return False
+
+        if application.__class__.__name__.lower() != "newlicenseapplication":
+            return False
+
+        current_stage = getattr(application, "current_stage", None)
+        if not current_stage or getattr(current_stage, "is_final", False):
+            return False
+
+        current_name = str(getattr(current_stage, "name", "") or "").strip().lower()
+        if "reject" in current_name:
+            return False
+
+        is_awaiting_payment = (
+            current_name in {"awaiting_payment", "awaiting payment", "awaiting license fee payment"}
+            or getattr(current_stage, "id", None) == 23
+            or ("awaiting" in current_name and "payment" in current_name)
+        )
+        if not is_awaiting_payment:
+            return False
+
+        # If both license fee and security deposit are paid, it's not expired/unpaid
+        is_lic_paid = bool(getattr(application, "is_license_fee_paid", False))
+        is_sec_paid = bool(getattr(application, "is_security_fee_paid", False))
+        if is_lic_paid and is_sec_paid:
+            return False
+
+        now = timezone.now()
+        entered_at = getattr(application, "awaiting_payment_entered_at", None)
+
+        if not entered_at:
+            # Fallback: check latest transaction entering awaiting_payment
+            from django.contrib.contenttypes.models import ContentType as CT
+            from .models import Transaction as TxnModel
+            ct = CT.objects.get_for_model(application)
+            last_txn = (
+                TxnModel.objects.filter(
+                    content_type=ct,
+                    object_id=str(application.pk),
+                    stage__name__icontains="payment",
+                )
+                .order_by("-timestamp", "-id")
+                .first()
+            )
+            if last_txn and last_txn.timestamp:
+                entered_at = last_txn.timestamp
+            else:
+                entered_at = getattr(application, "updated_at", None) or getattr(application, "created_at", now)
+
+            if hasattr(application, "awaiting_payment_entered_at"):
+                application.awaiting_payment_entered_at = entered_at
+
+        deadline = WorkflowService._compute_new_license_payment_deadline(from_time=entered_at)
+        if hasattr(application, "payment_deadline_at"):
+            application.payment_deadline_at = deadline
+
+        if now <= deadline:
+            # Not yet expired - persist entered_at / deadline if updated
+            save_fields = []
+            if hasattr(application, "awaiting_payment_entered_at") and application.awaiting_payment_entered_at:
+                save_fields.append("awaiting_payment_entered_at")
+            if hasattr(application, "payment_deadline_at") and application.payment_deadline_at:
+                save_fields.append("payment_deadline_at")
+            if save_fields:
+                application.save(update_fields=save_fields)
+            return False
+
+        # ── Timer has expired: Auto-reject the application ──
+        workflow = getattr(application, "workflow", None)
+        if not workflow and current_stage:
+            workflow = getattr(current_stage, "workflow", None)
+
+        if not workflow:
+            return False
+
+        from .models import WorkflowStage as WS
+        REJECTED_STAGE_NAME = "Rejected – No Action Taken by User at Payment Stage"
+        rejected_stage = WS.objects.filter(
+            workflow=workflow,
+            name=REJECTED_STAGE_NAME,
+            is_final=True,
+        ).first()
+
+        if not rejected_stage:
+            # Fallback to ascii hyphen or any payment rejection stage
+            rejected_stage = WS.objects.filter(
+                workflow=workflow,
+                name__icontains="No Action Taken by User at Payment Stage",
+                is_final=True,
+            ).first()
+
+        if not rejected_stage:
+            # Fallback to generic rejected stage
+            rejected_stage = WS.objects.filter(
+                workflow=workflow,
+                name__icontains="reject",
+                is_final=True,
+            ).first()
+
+        if not rejected_stage:
+            return False
+
+        # Move application to rejected stage
+        application.current_stage = rejected_stage
+        if hasattr(application, "is_approved"):
+            application.is_approved = False
+
+        update_fields = ["current_stage"]
+        if hasattr(application, "is_approved"):
+            update_fields.append("is_approved")
+        if hasattr(application, "awaiting_payment_entered_at"):
+            update_fields.append("awaiting_payment_entered_at")
+        if hasattr(application, "payment_deadline_at"):
+            update_fields.append("payment_deadline_at")
+
+        application.save(update_fields=list(dict.fromkeys(update_fields)))
+
+        from django.contrib.contenttypes.models import ContentType as CT
+        ct = CT.objects.get_for_model(application)
+
+        # Record a Transaction
+        Transaction.objects.create(
+            content_type=ct,
+            object_id=str(application.pk),
+            performed_by=None,   # System action — no human actor
+            forwarded_by=None,
+            forwarded_to=None,
+            stage=rejected_stage,
+            remarks=(
+                "Application automatically rejected: License Fee and Security Amount "
+                "were not paid within the allowed payment window."
+            ),
+        )
+
+        # Record a Rejection
+        from .models import Rejection as RejectionModel
+        RejectionModel.objects.create(
+            content_type=ct,
+            object_id=str(application.pk),
+            remarks=(
+                "Auto-rejected by system: payment deadline expired without user "
+                "completing required License Fee and Security Amount payments."
+            ),
+            rejected_by=None,
+            stage=rejected_stage,
+        )
+
+        try:
+            from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
+            invalidate_dashboard_counts_cache()
+        except Exception:
+            pass
+
+        return True
+
+    @staticmethod
+    @transaction.atomic
+    def auto_reject_expired_payment_timers():
+        """
+        Scans all NewLicenseApplication records in Stage 23 (Awaiting Payment)
+        and auto-rejects any whose payment timer has expired.
+        """
+        from models.transactional.new_license_application.models import NewLicenseApplication
+        from auth.workflow.models import WorkflowStage as WS
+        from django.db.models import Q
+
+        payment_stages = WS.objects.filter(
+            name__in=["awaiting_payment", "Awaiting Payment", "Awaiting License Fee Payment"],
+            is_final=False,
+        ).values_list("id", flat=True)
+
+        qs = NewLicenseApplication.objects.select_related("current_stage", "workflow").filter(
+            Q(current_stage_id__in=payment_stages) | Q(current_stage__name__icontains="payment"),
+            current_stage__is_final=False,
+        ).exclude(
+            current_stage__name__icontains="reject"
+        ).filter(
+            Q(is_license_fee_paid=False) | Q(is_security_fee_paid=False)
+        )
+
+        checked = qs.count()
+        rejected = 0
+        errors = 0
+
+        for app in qs:
+            try:
+                if WorkflowService.auto_reject_new_license_if_payment_expired(app):
+                    rejected += 1
+            except Exception as exc:
+                import logging
+                logging.getLogger("workflow.auto_reject").error(
+                    "auto_reject_expired_payment_timers: error on app %s: %s",
+                    app.pk, exc, exc_info=True,
                 )
                 errors += 1
 

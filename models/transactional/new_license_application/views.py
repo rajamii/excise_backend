@@ -8,7 +8,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from auth.roles.permissions import HasAppPermission
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
@@ -1373,6 +1373,21 @@ def pay_license_fee_wallet(request, application_id):
     if application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    # Check if payment timer has expired and auto-reject if so
+    from auth.workflow.services import WorkflowService
+    if WorkflowService.auto_reject_new_license_if_payment_expired(application):
+        return Response(
+            {"detail": "The payment deadline has expired. This application has been automatically rejected."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    current_stage_name = str(getattr(application.current_stage, "name", "") or "").lower()
+    if getattr(application.current_stage, "is_final", False) or "reject" in current_stage_name:
+        return Response(
+            {"detail": "This application has been rejected and payments cannot be accepted."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     lic = _resolve_na_license_for_application(application)
     if not lic:
         return Response({"detail": "License not issued yet."}, status=status.HTTP_400_BAD_REQUEST)
@@ -1466,6 +1481,21 @@ def pay_security_fee_wallet(request, application_id):
     _require_licensee_user(request)
     if application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Check if payment timer has expired and auto-reject if so
+    from auth.workflow.services import WorkflowService
+    if WorkflowService.auto_reject_new_license_if_payment_expired(application):
+        return Response(
+            {"detail": "The payment deadline has expired. This application has been automatically rejected."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    current_stage_name = str(getattr(application.current_stage, "name", "") or "").lower()
+    if getattr(application.current_stage, "is_final", False) or "reject" in current_stage_name:
+        return Response(
+            {"detail": "This application has been rejected and payments cannot be accepted."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     lic = _resolve_na_license_for_application(application)
     if not lic:
@@ -1696,6 +1726,13 @@ def dashboard_counts(request):
     except Exception:
         pass
 
+    try:
+        from auth.workflow.services import WorkflowService
+        WorkflowService.auto_reject_expired_payment_timers()
+        WorkflowService.auto_reject_expired_objections()
+    except Exception:
+        pass
+
     from django.contrib.contenttypes.models import ContentType
     from django.db.models import Exists, OuterRef, Q
     from auth.workflow.models import Transaction as WorkflowTransaction
@@ -1833,6 +1870,13 @@ def dashboard_counts(request):
 @parser_classes([JSONParser])
 @dashboard_counts_cache("new_license_application:list")
 def application_group(request):
+    try:
+        from auth.workflow.services import WorkflowService
+        WorkflowService.auto_reject_expired_payment_timers()
+        WorkflowService.auto_reject_expired_objections()
+    except Exception:
+        pass
+
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['LICENSE_APPROVAL']
     stage_sets = _get_stage_sets(workflow_id)
@@ -1926,11 +1970,13 @@ def application_group(request):
             .annotate(_acted_by_role=acted_by_role)
             .filter(_acted_by_role=True)
         )
+
         rejected_qs = (
             all_qs.filter(current_stage__name__in=role_rejected_stages)
             .annotate(_acted_by_role=acted_by_role)
             .filter(_acted_by_role=True)
         )
+
         objection_qs = (
             all_qs.filter(current_stage__name__in=role_objection_stages)
             .annotate(_acted_by_role=acted_by_role)
@@ -1959,4 +2005,30 @@ def application_group(request):
          "objection": [],
          "approved": [],
          "rejected": []
+    })
+
+
+@api_view(['POST', 'GET'])
+@permission_classes([AllowAny])
+def trigger_timer_expiration(request, application_id):
+    """
+    Called when frontend countdown timer reaches 00:00:00.
+    Evaluates both objection deadlines and payment deadlines for this application,
+    triggers auto-rejection if expired, and returns the updated status.
+    """
+    app = get_object_or_404(NewLicenseApplication, application_id=application_id)
+    from auth.workflow.services import WorkflowService
+    obj_rejected = WorkflowService.auto_reject_application_if_expired(app)
+    pay_rejected = WorkflowService.auto_reject_new_license_if_payment_expired(app)
+    app.refresh_from_db()
+    
+    stage_name = getattr(getattr(app, "current_stage", None), "name", "Rejected")
+    is_rejected = obj_rejected or pay_rejected or ("reject" in stage_name.lower())
+    
+    return Response({
+        "application_id": app.application_id,
+        "is_rejected": is_rejected,
+        "current_stage": stage_name,
+        "is_approved": app.is_approved,
+        "rejection_reason": "No action taken within configured timer limit." if is_rejected else None
     })

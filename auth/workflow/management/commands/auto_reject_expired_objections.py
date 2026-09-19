@@ -1,4 +1,4 @@
-﻿"""
+"""
 Management command: auto_reject_expired_objections
 
 Scans all unresolved objections whose deadline_at has passed and automatically
@@ -75,6 +75,10 @@ class Command(BaseCommand):
 
         try:
             result = WorkflowService.auto_reject_expired_objections()
+            pay_result = WorkflowService.auto_reject_expired_payment_timers()
+            result["checked"] += pay_result.get("checked", 0)
+            result["rejected"] += pay_result.get("rejected", 0)
+            result["errors"] += pay_result.get("errors", 0)
         except Exception as exc:
             self.stderr.write(self.style.ERROR(f"Fatal error: {exc}"))
             raise

@@ -196,6 +196,13 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     valid_up_to = serializers.SerializerMethodField()
     issued_license_id = serializers.SerializerMethodField()
     renewal_application_id = serializers.SerializerMethodField()
+    # Countdown Timer Fields
+    payment_deadline_at = serializers.SerializerMethodField()
+    is_payment_timer_active = serializers.SerializerMethodField()
+    payment_time_remaining_seconds = serializers.SerializerMethodField()
+    objection_deadline_at = serializers.SerializerMethodField()
+    is_objection_timer_active = serializers.SerializerMethodField()
+    objection_time_remaining_seconds = serializers.SerializerMethodField()
 
     class Meta:
         model = NewLicenseApplication
@@ -478,7 +485,115 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
                 }
         except Exception:
             pass
+    def get_is_payment_timer_active(self, obj) -> bool:
+        if getattr(obj, "is_approved", False):
+            return False
+        stage_name = str(getattr(getattr(obj, "current_stage", None), "name", "") or "").lower()
+        if "reject" in stage_name:
+            return False
+        stage_id = getattr(getattr(obj, "current_stage", None), "id", None)
+        is_stage_23 = stage_id == 23 or "awaiting_payment" in stage_name or ("awaiting" in stage_name and "payment" in stage_name)
+        if not is_stage_23:
+            return False
+        lic_paid = bool(getattr(obj, "is_license_fee_paid", False))
+        sec_paid = bool(getattr(obj, "is_security_fee_paid", False))
+        return not (lic_paid and sec_paid)
+
+    def get_payment_deadline_at(self, obj):
+        deadline = getattr(obj, "payment_deadline_at", None)
+        if deadline:
+            return deadline.isoformat() if hasattr(deadline, "isoformat") else str(deadline)
+        if self.get_is_payment_timer_active(obj):
+            try:
+                from auth.workflow.services import WorkflowService
+                entered_at = getattr(obj, "awaiting_payment_entered_at", None) or getattr(obj, "updated_at", None)
+                d = WorkflowService._compute_new_license_payment_deadline(from_time=entered_at)
+                return d.isoformat() if d else None
+            except Exception:
+                pass
         return None
+
+    def get_payment_time_remaining_seconds(self, obj):
+        if not self.get_is_payment_timer_active(obj):
+            return None
+        deadline_str = self.get_payment_deadline_at(obj)
+        if not deadline_str:
+            return None
+        try:
+            from django.utils import timezone
+            from django.utils.dateparse import parse_datetime
+            if isinstance(deadline_str, str):
+                d = parse_datetime(deadline_str)
+            else:
+                d = deadline_str
+            if not d:
+                return None
+            if timezone.is_naive(d):
+                d = timezone.make_aware(d)
+            now = timezone.now()
+            diff = (d - now).total_seconds()
+            return max(0, int(diff))
+        except Exception:
+            return None
+
+    def _get_unresolved_objections(self, obj):
+        try:
+            from auth.workflow.models import Objection
+            from django.contrib.contenttypes.models import ContentType
+            ct = ContentType.objects.get_for_model(obj)
+            return Objection.objects.filter(content_type=ct, object_id=str(obj.pk), is_resolved=False)
+        except Exception:
+            return []
+
+    def get_is_objection_timer_active(self, obj) -> bool:
+        if getattr(obj, "is_approved", False):
+            return False
+        stage_name = str(getattr(getattr(obj, "current_stage", None), "name", "") or "").lower()
+        if "reject" in stage_name:
+            return False
+        if "objection" in stage_name:
+            return True
+        unresolved = self._get_unresolved_objections(obj)
+        return any(bool(getattr(o, "deadline_at", None)) for o in unresolved)
+
+    def get_objection_deadline_at(self, obj):
+        if not self.get_is_objection_timer_active(obj):
+            return None
+        unresolved = self._get_unresolved_objections(obj)
+        deadlines = [o.deadline_at for o in unresolved if getattr(o, "deadline_at", None)]
+        if deadlines:
+            earliest = min(deadlines)
+            return earliest.isoformat() if hasattr(earliest, "isoformat") else str(earliest)
+        # Fallback if in objection stage
+        try:
+            from auth.workflow.services import WorkflowService
+            d = WorkflowService._compute_objection_deadline(from_time=getattr(obj, "updated_at", None))
+            return d.isoformat() if d else None
+        except Exception:
+            return None
+
+    def get_objection_time_remaining_seconds(self, obj):
+        if not self.get_is_objection_timer_active(obj):
+            return None
+        deadline_str = self.get_objection_deadline_at(obj)
+        if not deadline_str:
+            return None
+        try:
+            from django.utils import timezone
+            from django.utils.dateparse import parse_datetime
+            if isinstance(deadline_str, str):
+                d = parse_datetime(deadline_str)
+            else:
+                d = deadline_str
+            if not d:
+                return None
+            if timezone.is_naive(d):
+                d = timezone.make_aware(d)
+            now = timezone.now()
+            diff = (d - now).total_seconds()
+            return max(0, int(diff))
+        except Exception:
+            return None
 
     def to_representation(self, instance):
         rep = super().to_representation(instance)

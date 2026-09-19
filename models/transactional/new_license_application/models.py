@@ -15,7 +15,7 @@ from models.masters.core.models import (
 )
 from auth.user.models import CustomUser
 
-from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection
+from auth.workflow.models import Workflow, WorkflowStage, Transaction, Objection, Rejection, Revert
 
 def upload_document_path(instance, filename):
     return f'new_license_application/{instance.application_id}/{filename}'
@@ -45,6 +45,18 @@ class NewLicenseApplication(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # Payment timer tracking (Stage 23 - Awaiting Payment)
+    awaiting_payment_entered_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="Timestamp when the application transitioned into Stage 23 (Awaiting Payment)."
+    )
+    payment_deadline_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="Deadline by which License Fee and Security Amount must be paid."
+    )
 
     # === Application Type ===
     license_type = models.ForeignKey(LicenseType, on_delete=models.PROTECT)
@@ -147,6 +159,18 @@ class NewLicenseApplication(models.Model):
     )
     objections = GenericRelation(
         Objection,
+        content_type_field='content_type',
+        object_id_field='object_id',
+        related_query_name='new_license_application'
+    )
+    rejections = GenericRelation(
+        Rejection,
+        content_type_field='content_type',
+        object_id_field='object_id',
+        related_query_name='new_license_application'
+    )
+    reverts = GenericRelation(
+        Revert,
         content_type_field='content_type',
         object_id_field='object_id',
         related_query_name='new_license_application'

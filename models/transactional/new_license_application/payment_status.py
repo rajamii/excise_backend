@@ -209,32 +209,46 @@ def sync_new_license_payment_status(application):
             application.is_approved = True
             update_fields.append("is_approved")
     else:
-        # IMPORTANT:
-        # Do not force every unpaid new-license application into the payment-gate
-        # stage. It must progress officer-wise (District -> Site Enquiry -> JC -> Commissioner).
-        #
-        # Only enforce/normalize the payment-gate stage when the application is already
-        # in the payment-gate itself (awaiting/payment stage). Moving to payment-gate
-        # is handled by explicit workflow transitions (e.g. Commissioner approve).
         current_stage = getattr(application, "current_stage", None)
         current_name = _stage_name(current_stage)
+
+        # Do not alter rejected or terminal stages
+        if getattr(current_stage, "is_final", False) or "reject" in current_name:
+            if getattr(application, "is_approved", False):
+                application.is_approved = False
+                application.save(update_fields=["is_approved"])
+            if license_obj and license_obj.is_active:
+                license_obj.is_active = False
+                license_obj.save(update_fields=["is_active"])
+            return license_obj
+
         awaiting_stage = get_awaiting_payment_stage(application)
         is_current_payment_gate = bool(
             (awaiting_stage and application.current_stage_id == awaiting_stage.id)
-            or ("payment" in current_name)
-            or ("awaiting" in current_name and "payment" in current_name)
+            or ("payment" in current_name and "reject" not in current_name)
+            or ("awaiting" in current_name and "payment" in current_name and "reject" not in current_name)
         )
 
         if awaiting_stage and is_current_payment_gate:
             if application.current_stage_id != awaiting_stage.id:
                 application.current_stage = awaiting_stage
                 update_fields.append("current_stage")
+            
+            # Initialize payment timer tracking if entering awaiting payment
+            if hasattr(application, "awaiting_payment_entered_at") and not getattr(application, "awaiting_payment_entered_at", None):
+                from django.utils import timezone
+                from auth.workflow.services import WorkflowService
+                now = timezone.now()
+                application.awaiting_payment_entered_at = now
+                application.payment_deadline_at = WorkflowService._compute_new_license_payment_deadline(from_time=now)
+                update_fields.extend(["awaiting_payment_entered_at", "payment_deadline_at"])
+
         if getattr(application, "is_approved", False):
             application.is_approved = False
             update_fields.append("is_approved")
 
     if update_fields:
-        application.save(update_fields=update_fields)
+        application.save(update_fields=list(dict.fromkeys(update_fields)))
 
     if license_obj and license_obj.is_active != paid:
         license_obj.is_active = paid

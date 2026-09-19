@@ -45,4 +45,5 @@ urlpatterns = [
     path('<everything:application_id>/pay-security-fee/', views.pay_security_fee_wallet, name='pay-security-fee-wallet'),
     path('force-pay-security-fee/', views.force_pay_security_fee, name='new-license-force-pay-security-fee-default'),
     path('force-pay-security-fee/<everything:application_id>/', views.force_pay_security_fee, name='new-license-force-pay-security-fee'),
+    path('<everything:application_id>/trigger-timer-expiration/', views.trigger_timer_expiration, name='new-license-trigger-timer-expiration'),
 ]

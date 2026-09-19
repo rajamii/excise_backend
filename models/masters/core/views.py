@@ -1,4 +1,5 @@
 from django.shortcuts import get_object_or_404
+from django.db.models import Q
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.response import Response
@@ -66,14 +67,15 @@ def timer_config(request):
         'ENA_REVALIDATION_ACTIVATION': 10,
         'INACTIVITY_LOGOUT': 4 * 60,
         'INACTIVITY_WARNING': 30,
-        # Minutes-from-midnight (recommended): set delay_unit=minute, delay_value=1020 for 5:00 PM.
-        # Returned here as seconds only for fallback response.
         'HOLOGRAM_DAILY_ENTRY_DEADLINE_TIME': 17 * 60 * 60,
+        'NEW_LICENSE_PAYMENT_TIMER': 7 * 24 * 60 * 60,
+        'new_license_payment_timer': 7 * 24 * 60 * 60,
+        'OBJECTION_DEADLINE': 7 * 24 * 60 * 60,
     }
     default_seconds = int(default_seconds_by_code.get(code, 4 * 60))
 
     cfg = (
-        masters_model.SupplyChainTimerConfig.objects.filter(code=code, is_active=True)
+        masters_model.SupplyChainTimerConfig.objects.filter(Q(code__iexact=code) | Q(code=code), is_active=True)
         .order_by('-updated_at', '-id')
         .first()
     )
