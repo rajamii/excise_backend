@@ -24,6 +24,7 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
     can_initiate_cancellation = serializers.SerializerMethodField()
     has_active_revalidation = serializers.SerializerMethodField()
     establishment_name = serializers.SerializerMethodField()
+    establishment_type = serializers.SerializerMethodField()
     rejected_by_display = serializers.SerializerMethodField()
     cancellation_reason_display = serializers.SerializerMethodField()
     
@@ -327,6 +328,32 @@ class EnaRequisitionDetailSerializer(serializers.ModelSerializer):
                 return company_name
 
         return ''
+
+    def get_establishment_type(self, obj):
+        for license_id in self._expand_license_aliases(getattr(obj, 'licensee_id', '')):
+            license_obj = (
+                License.objects.filter(license_id__iexact=license_id)
+                .select_related('license_sub_category', 'license_category', 'source_content_type')
+                .first()
+            )
+            if not license_obj:
+                continue
+
+            if license_obj.license_sub_category and license_obj.license_sub_category.description:
+                return str(license_obj.license_sub_category.description).strip()
+
+            source = getattr(license_obj, 'source_application', None)
+            if source:
+                sub_cat = getattr(source, 'sub_category', None) or getattr(source, 'license_subcategory', None)
+                if sub_cat:
+                    desc = getattr(sub_cat, 'description', None) or str(sub_cat)
+                    if desc:
+                        return str(desc).strip()
+
+            if license_obj.license_category and license_obj.license_category.name:
+                return str(license_obj.license_category.name).strip()
+
+        return 'Distillery'
 
     def get_rejected_by_display(self, obj):
         """Return role label of the latest rejecting officer (e.g., Permit Section/Commissioner)."""

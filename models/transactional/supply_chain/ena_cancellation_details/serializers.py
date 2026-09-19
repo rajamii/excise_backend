@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 class EnaCancellationDetailSerializer(serializers.ModelSerializer):
     allowed_actions = serializers.SerializerMethodField()
     establishment_name = serializers.SerializerMethodField()
+    establishment_type = serializers.SerializerMethodField()
     payment_completed = serializers.SerializerMethodField()
 
     class Meta:
@@ -48,6 +49,40 @@ class EnaCancellationDetailSerializer(serializers.ModelSerializer):
             )
         
         return obj.distillery_name or ''
+
+    def get_establishment_type(self, obj):
+        """Return establishment_type / license subcategory from License"""
+        if not obj.licensee_id:
+            return 'Distillery'
+
+        from models.masters.license.models import License
+
+        try:
+            license_obj = License.objects.filter(
+                license_id=obj.licensee_id,
+                is_active=True
+            ).select_related('license_sub_category', 'license_category', 'source_content_type').first()
+
+            if license_obj:
+                if license_obj.license_sub_category and license_obj.license_sub_category.description:
+                    return str(license_obj.license_sub_category.description).strip()
+                source = getattr(license_obj, 'source_application', None)
+                if source:
+                    sub_cat = getattr(source, 'sub_category', None) or getattr(source, 'license_subcategory', None)
+                    if sub_cat:
+                        desc = getattr(sub_cat, 'description', None) or str(sub_cat)
+                        if desc:
+                            return str(desc).strip()
+                if license_obj.license_category and license_obj.license_category.name:
+                    return str(license_obj.license_category.name).strip()
+        except Exception as e:
+            logger.warning(
+                "Unable to resolve cancellation establishment_type for licensee_id=%s: %s",
+                obj.licensee_id,
+                e,
+            )
+
+        return 'Distillery'
 
     def get_payment_completed(self, obj):
         try:
