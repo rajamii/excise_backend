@@ -28,6 +28,8 @@ class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
     brand_id = serializers.IntegerField(write_only=True)
     brand_master_id = serializers.IntegerField(source='brand_id', read_only=True)
     cases = serializers.IntegerField(write_only=True, required=False, default=1)
+    permit_index = serializers.IntegerField(write_only=True, required=False, default=1)
+    permitIndex = serializers.IntegerField(write_only=True, required=False, default=1)
     current_stock = serializers.SerializerMethodField()
     stock_after = serializers.SerializerMethodField()
 
@@ -41,6 +43,8 @@ class DistributorPermitLineItemSerializer(serializers.ModelSerializer):
             'size_ml',
             'pieces_per_case',
             'cases',
+            'permit_index',
+            'permitIndex',
             'edp_per_case',
             'import_pass_fee_per_case',
             'mrp_per_bottle',
@@ -419,8 +423,12 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         from .models import IMFLBrand
         from models.masters.supply_chain.liquor_data.models import MasterBrandList
 
+        request = self.context.get('request') if hasattr(self, 'context') else None
+        raw_data = getattr(request, 'data', {}) if request else {}
+        raw_line_items = raw_data.get('line_items') or raw_data.get('lineItems') or []
+
         expanded_items = []
-        for item in line_items:
+        for idx, item in enumerate(line_items):
             raw_brand_id = item.get('brand_id')
             imfl_brand = IMFLBrand.objects.filter(id=raw_brand_id).first() if raw_brand_id else None
             master_brand = MasterBrandList.objects.filter(id=raw_brand_id).first() if raw_brand_id else None
@@ -440,7 +448,11 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
                 pieces_per_case = int(item.get('pieces_per_case') or self._resolve_pieces_per_case(size_ml))
 
             cases = int(item.get('cases') or 1)
-            permit_index = int(item.get('permit_index') or item.get('permitIndex') or 1)
+            raw_match = raw_line_items[idx] if idx < len(raw_line_items) and isinstance(raw_line_items[idx], dict) else {}
+            permit_index = int(
+                item.get('permit_index') or item.get('permitIndex') or
+                raw_match.get('permit_index') or raw_match.get('permitIndex') or 1
+            )
             rates = self._resolve_rates(brand_name, size_ml)
 
             edp = self._decimal(item.get('edp_per_case') or item.get('edp') or (imfl_brand.edp_per_case if imfl_brand else 0))
@@ -482,11 +494,6 @@ class DistributorPermitApplicationSerializer(serializers.ModelSerializer):
         for item in expanded_items:
             p_idx = int(item.get('permit_index') or 1)
             groups.setdefault(p_idx, []).append(item)
-
-        if len(groups) <= 1 and len(expanded_items) > 1:
-            has_explicit = any(item.get('permit_index') and int(item.get('permit_index')) > 1 for item in expanded_items)
-            if not has_explicit:
-                groups = {idx + 1: [item] for idx, item in enumerate(expanded_items)}
 
         permits = []
         current_permit_index = 1
