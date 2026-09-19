@@ -758,6 +758,7 @@ class RequisitionArrivalBulkLiterDetailsListAPIView(APIView):
                     'edited_at': row.edited_at.isoformat() if getattr(row, 'edited_at', None) else None,
                     'edited_by': getattr(row, 'edited_by', '') or '',
                     'arrival_date': row.submitted_at.date().isoformat() if row.submitted_at else (row.updated_at.date().isoformat() if row.updated_at else ''),
+                    'bulk_spirit_type': (getattr(req, 'bulk_spirit_type', '') or 'Extra Neutral Alcohol (ENA)') if req else 'Extra Neutral Alcohol (ENA)',
                     'requisition_total_quantity': str(getattr(req, 'totalbl', 0) or 0) if req else '0',
                     'requisition_number_of_permits': int(getattr(req, 'requisiton_number_of_permits', 0) or 0) if req else 0,
                     'details_permits_number': str(getattr(req, 'details_permits_number', '') or '') if req else '',
