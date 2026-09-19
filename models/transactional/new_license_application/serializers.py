@@ -203,6 +203,9 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     objection_deadline_at = serializers.SerializerMethodField()
     is_objection_timer_active = serializers.SerializerMethodField()
     objection_time_remaining_seconds = serializers.SerializerMethodField()
+    # Rejection Reason & Note Fields
+    rejection_reason = serializers.SerializerMethodField()
+    is_auto_rejected = serializers.SerializerMethodField()
 
     class Meta:
         model = NewLicenseApplication
@@ -594,6 +597,59 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
             return max(0, int(diff))
         except Exception:
             return None
+
+    def get_rejection_reason(self, obj):
+        stage = getattr(obj, 'current_stage', None)
+        stage_name = str(getattr(stage, 'name', '') or '').strip()
+        stage_id = getattr(stage, 'id', None)
+        stage_lower = stage_name.lower()
+
+        # Check explicit timer-based auto-rejection stages
+        if stage_id == 180 or ('payment' in stage_lower and 'reject' in stage_lower):
+            return "Application automatically rejected: Required License Fee and Security Deposit payments were not completed within the configured payment deadline."
+        
+        if stage_id == 166 or ('objection' in stage_lower and 'reject' in stage_lower):
+            return "Application automatically rejected: No action or clarification was submitted on the raised objection within the allowed time limit."
+
+        # Check explicit Rejection entry in database
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from auth.workflow.models import Rejection as RejectionModel
+            ct = ContentType.objects.get_for_model(obj)
+            rej = RejectionModel.objects.filter(content_type=ct, object_id=str(obj.pk)).order_by('-rejected_on').first()
+            if rej and rej.remarks:
+                return rej.remarks
+        except Exception:
+            pass
+
+        # Check Workflow Transaction remarks
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from auth.workflow.models import Transaction as WorkflowTransaction
+            ct = ContentType.objects.get_for_model(obj)
+            tx = WorkflowTransaction.objects.filter(
+                content_type=ct,
+                object_id=str(obj.pk),
+                stage__name__icontains="reject"
+            ).order_by('-timestamp').first()
+            if tx and tx.remarks:
+                return tx.remarks
+        except Exception:
+            pass
+
+        if 'reject' in stage_lower:
+            return f"Application was rejected at stage: {stage_name}"
+
+        return None
+
+    def get_is_auto_rejected(self, obj):
+        stage = getattr(obj, 'current_stage', None)
+        stage_name = str(getattr(stage, 'name', '') or '').strip()
+        stage_id = getattr(stage, 'id', None)
+        stage_lower = stage_name.lower()
+        if stage_id in (166, 180) or ('reject' in stage_lower and ('no action' in stage_lower or 'payment' in stage_lower or 'objection' in stage_lower)):
+            return True
+        return False
 
     def to_representation(self, instance):
         rep = super().to_representation(instance)
