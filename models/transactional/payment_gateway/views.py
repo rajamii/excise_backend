@@ -216,6 +216,19 @@ def get_payment_module(request, module_code: str):
     except Exception:
         fee = None
 
+    if fee is None:
+        try:
+            from models.masters.core.models import MasterFixedFee
+            fee_mapping = {"009": "COMP_REG", "010": "COMP_COLLAB_FEE", "012": "012"}
+            lookup_code = fee_mapping.get(code, code)
+            fixed_fee = MasterFixedFee.objects.filter(fee_code=lookup_code, is_active=True).first()
+            if not fixed_fee:
+                fixed_fee = MasterFixedFee.objects.filter(fee_code=lookup_code).first()
+            if fixed_fee and getattr(fixed_fee, "amount", None) not in (None, ""):
+                fee = _normalize_amount(fixed_fee.amount)
+        except Exception:
+            pass
+
     return Response(
         {
             "module_code": str(getattr(module, "module_code", "") or "").strip(),

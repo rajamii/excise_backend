@@ -746,21 +746,32 @@ def pay_collaboration_fee(request, application_id):
     if application.is_license_fee_paid:
         return Response({'detail': 'License fee has already been paid for this application.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Fetch fee amount from masters_fixedfee
-    try:
-        from django.apps import apps
-        FixedFee = apps.get_model('core', 'MasterFixedFee')
-        fee_obj = FixedFee.objects.filter(fee_code='COMP_COLLAB_FEE', is_active=True).first()
-        base_amount = fee_obj.amount if fee_obj else Decimal('25000.00')
-    except Exception:
-        base_amount = Decimal('25000.00')
+    # Fetch fee amount from application fee_structure or masters_fixedfee
+    amount = None
+    fee_struct = getattr(application, 'fee_structure', None) or {}
+    if isinstance(fee_struct, dict):
+        raw_val = (
+            fee_struct.get('collaborationFee') or
+            fee_struct.get('collaboration_fee') or
+            fee_struct.get('collaborationFees') or
+            fee_struct.get('collaboration_fees')
+        )
+        if raw_val is not None:
+            try:
+                amount = Decimal(str(raw_val))
+            except Exception:
+                pass
 
-    if getattr(application, 'is_renewal', False):
-        amount = base_amount
-        remarks = f'Company Collaboration fee paid for {application.application_id}'
-    else:
-        amount = base_amount + Decimal('25000.00')
-        remarks = f'Company Collaboration fee (25000) & Company Registration fee (25000) paid for {application.application_id}'
+    if amount is None or amount <= Decimal('0.00'):
+        try:
+            from django.apps import apps
+            FixedFee = apps.get_model('core', 'MasterFixedFee')
+            fee_obj = FixedFee.objects.filter(fee_code='COMP_COLLAB_FEE', is_active=True).first()
+            amount = fee_obj.amount if fee_obj else Decimal('25000.00')
+        except Exception:
+            amount = Decimal('25000.00')
+
+    remarks = f'Company Collaboration fee ({amount}) paid for {application.application_id}'
 
     # Debit from license_fee wallet
     wallet_licensee_id = str(getattr(request.user, 'username', '') or '').strip()
