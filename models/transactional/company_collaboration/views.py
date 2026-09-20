@@ -94,7 +94,6 @@ WORKFLOW_TRANSITIONS = {
     },
     STAGE_FINAL_COMMISSIONER_REVIEW: {
         'APPROVE': STAGE_APPROVED,
-        'REJECT':  STAGE_REJECTED,
     },
 }
 
@@ -105,7 +104,7 @@ ROLE_ACTION_PERMISSIONS = {
     },
     'commissioner': {
         STAGE_COMMISSIONER:              ['APPROVE', 'REJECT', 'RAISE_OBJECTION'],
-        STAGE_FINAL_COMMISSIONER_REVIEW: ['APPROVE', 'REJECT'],
+        STAGE_FINAL_COMMISSIONER_REVIEW: ['APPROVE'],
     },
     'licensee': {
         STAGE_APPLICANT_APPLIED:         ['FORWARD'],

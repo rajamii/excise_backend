@@ -51,13 +51,16 @@ class CompanyCollaborationSerializer(serializers.ModelSerializer):
                 if action:
                     actions.append(str(action).strip().upper())
 
+        stage_name = str(getattr(current_stage, 'name', '') or '').lower()
         if not actions:
-            stage_name = str(getattr(current_stage, 'name', '') or '').lower()
             if not any(k in stage_name for k in ['approv', 'reject', 'issue', 'cancel']):
                 if role_token in {'commissioner', 'jointcommissioner', 'level1', 'level2', 'level3', 'level4', 'level5', 'siteadmin'} or 'commissioner' in role_token:
                     actions = ['APPROVE', 'FORWARD', 'REJECT', 'RAISE_OBJECTION']
                 else:
                     actions = ['FORWARD', 'REJECT', 'RAISE_OBJECTION']
+
+        if 'final_commissioner_review' in stage_name or getattr(current_stage, 'id', None) == 144 or (getattr(obj, 'is_license_fee_paid', False) and 'commissioner' in stage_name):
+            actions = [a for a in actions if a != 'REJECT']
 
         return list(set(actions))
 
