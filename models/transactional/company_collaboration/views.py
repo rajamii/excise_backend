@@ -1029,11 +1029,46 @@ def final_license_detail(request, application_id):
         _logging.getLogger(__name__).error(f"Error building brands_table: {brand_err}")
         brands_table = []
 
+    # Resolve Company Registration ID for Collaborating Company (Brand Owner)
+    brand_owner_reg_id = application.brand_owner_code or ''
+    if not brand_owner_reg_id or not brand_owner_reg_id.startswith('COMP/'):
+        from models.transactional.company_registration.models import CompanyRegistration
+        owner_name = application.brand_owner_name or application.brand_owner or ''
+        comp_reg = None
+        if owner_name:
+            comp_reg = CompanyRegistration.objects.filter(company_name__iexact=owner_name, is_approved=True).first()
+            if not comp_reg:
+                comp_reg = CompanyRegistration.objects.filter(company_name__iexact=owner_name).first()
+        if not comp_reg and application.brand_owner:
+            comp_reg = CompanyRegistration.objects.filter(application_id=application.brand_owner).first()
+        if comp_reg:
+            brand_owner_reg_id = comp_reg.application_id
+
+    # Resolve Company Registration ID for Licensee / Bottler
+    licensee_reg_id = application.license_number or ''
+    if not licensee_reg_id or not licensee_reg_id.startswith('COMP/'):
+        from models.transactional.company_registration.models import CompanyRegistration
+        lic_name = application.licensee_name or ''
+        comp_reg = None
+        if lic_name:
+            comp_reg = CompanyRegistration.objects.filter(company_name__iexact=lic_name, is_approved=True).first()
+            if not comp_reg:
+                comp_reg = CompanyRegistration.objects.filter(company_name__iexact=lic_name).first()
+        if not comp_reg and application.applicant:
+            comp_reg = CompanyRegistration.objects.filter(applicant=application.applicant, is_approved=True).first()
+            if not comp_reg:
+                comp_reg = CompanyRegistration.objects.filter(applicant=application.applicant).first()
+        if comp_reg:
+            licensee_reg_id = comp_reg.application_id
+
     response_payload = {
         'applicationId': application.application_id,
+        'collaborationRefId': application.application_id,
         'certificateType': 'company-collaboration',
         'licenseNumber': license_number,
-        'licenseTitle': 'FORM D-11 (See Rule 33)',
+        'brandOwnerCompanyRegId': brand_owner_reg_id,
+        'licenseeCompanyRegId': licensee_reg_id,
+        'licenseTitle': 'CERTIFICATE OF COMPANY COLLABORATION',
         'validationCode': signed_code,
         'validationPdfUrl': validation_url,
         'validatedViaCode': validated_via_code,
