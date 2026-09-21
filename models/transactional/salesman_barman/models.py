@@ -163,6 +163,7 @@ class SalesmanBarmanModel(models.Model):
         
     class Meta:
         db_table = 'salesman_barman_application'
+        ordering = ['-created_at', '-application_id']
         indexes = [
             models.Index(fields=['excise_district']),
             models.Index(fields=['license_category']),
