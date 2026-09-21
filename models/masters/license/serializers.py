@@ -174,6 +174,7 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
     district = serializers.CharField(source='source_application.applicant.district.district', read_only=True)
     
     application_type = serializers.CharField(source='get_source_type_display', read_only=True)
+    source_type = serializers.CharField(read_only=True)
     license_category = serializers.CharField(source='license_category.license_category', read_only=True)
     is_special_permit_allowed = serializers.BooleanField(source='license_category.is_special_permit_allowed', read_only=True)
     license_sub_category_id = serializers.IntegerField(read_only=True)
@@ -374,6 +375,7 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
         model = License
         fields = [
             'license_id',
+            'source_type',
             'source_object_id',
             'is_active',
             'is_approved',

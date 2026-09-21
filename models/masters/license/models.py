@@ -14,6 +14,7 @@ class License(models.Model):
         ('license_application', 'License Application'),
         ('salesman_barman', 'Salesman/Barman'),
         ('company_registration', 'Company Registration'),
+        ('company_collaboration', 'Company Collaboration'),
     ]
 
     license_id = models.CharField(max_length=50, primary_key=True, db_index=True, unique=True)
