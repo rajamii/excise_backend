@@ -242,8 +242,10 @@ class EnaRevalidationDetailSerializer(serializers.ModelSerializer):
                         desc = getattr(sub_cat, 'description', None) or str(sub_cat)
                         if desc:
                             return str(desc).strip()
-                if license_obj.license_category and license_obj.license_category.name:
-                    return str(license_obj.license_category.name).strip()
+                if license_obj.license_category:
+                    cat_name = getattr(license_obj.license_category, 'license_category', '') or getattr(license_obj.license_category, 'name', '')
+                    if cat_name:
+                        return str(cat_name).strip()
         except Exception as e:
             logger.warning(
                 "Unable to resolve revalidation establishment_type for licensee_id=%s: %s",
