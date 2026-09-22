@@ -177,7 +177,7 @@ def _is_oic_scoped_user(user):
 
 def _is_licensee_scoped_user(user):
     role_token = _normalize_token(getattr(getattr(user, 'role', None), 'name', ''))
-    return role_token in {'licensee', 'licencee'}
+    return 'licensee' in role_token or 'licencee' in role_token
 
 
 def has_workflow_access(user, workflow_id):

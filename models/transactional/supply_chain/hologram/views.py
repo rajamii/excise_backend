@@ -40,8 +40,26 @@ def _canonical_role_token(role_name):
     return token
 
 
-def _is_scoped_officer_or_licensee(role_name_token):
-    return role_name_token in {'licensee', 'officerincharge', 'offcierincharge', 'oic'}
+def _is_unscoped_admin_or_officer(user):
+    if not user or not user.is_authenticated:
+        return False
+    if getattr(user, 'is_superuser', False) or getattr(user, 'is_staff', False):
+        return True
+    role_id = _get_user_role_id(user)
+    if role_id is not None and role_id in {1, 3, 4, 6, 7, 8, 9, 10, 11, 12, 14}:
+        return True
+    role_name = _normalize_role_name(getattr(getattr(user, 'role', None), 'name', ''))
+    if any(k in role_name for k in ('commissioner', 'itcell', 'it_cell', 'permit', 'admin', 'auditor', 'accountant', 'jointcommissioner', 'deputycommissioner')):
+        return True
+    return False
+
+def _is_scoped_officer_or_licensee(user_or_role_name):
+    if hasattr(user_or_role_name, 'is_authenticated'):
+        return not _is_unscoped_admin_or_officer(user_or_role_name)
+    role_token = _normalize_role_name(str(user_or_role_name or ''))
+    if any(k in role_token for k in ('commissioner', 'itcell', 'permit', 'admin', 'auditor', 'accountant')):
+        return False
+    return True
 
 def _get_user_role_id(user):
     return getattr(user, 'role_id', None) if user and user.is_authenticated else None
@@ -1484,9 +1502,7 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
         if not user.is_authenticated:
             return queryset.none()
             
-        role_name = _normalize_role_name(getattr(getattr(user, 'role', None), 'name', ''))
-
-        if _is_scoped_officer_or_licensee(role_name):
+        if _is_scoped_officer_or_licensee(user):
             scoped_by_request_license = scope_by_profile_or_workflow(
                 user=user,
                 queryset=queryset,
@@ -1502,7 +1518,8 @@ class HologramRequestViewSet(viewsets.ModelViewSet):
             )
             return queryset.filter(
                 models.Q(id__in=scoped_by_request_license.values('id')) |
-                models.Q(id__in=scoped_by_profile_license.values('id'))
+                models.Q(id__in=scoped_by_profile_license.values('id')) |
+                models.Q(licensee__user=user)
             ).distinct()
 
         visible_stage_ids = _get_visible_stage_ids_for_user(
@@ -1872,11 +1889,9 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
         if not user.is_authenticated:
             return DailyHologramRegister.objects.none()
             
-        role_name = _normalize_role_name(getattr(getattr(user, 'role', None), 'name', ''))
-        
         # OIC / Licensee Access - Return entries for their licensee profile
         # Also support OIC roles which may use fallback profile
-        if _is_scoped_officer_or_licensee(role_name):
+        if _is_scoped_officer_or_licensee(user):
             scoped_by_daily_license = scope_by_profile_or_workflow(
                 user=user,
                 queryset=DailyHologramRegister.objects.all(),
@@ -1892,7 +1907,8 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
             )
             return DailyHologramRegister.objects.filter(
                 models.Q(id__in=scoped_by_daily_license.values('id')) |
-                models.Q(id__in=scoped_by_profile_license.values('id'))
+                models.Q(id__in=scoped_by_profile_license.values('id')) |
+                models.Q(licensee__user=user)
             ).distinct()
                 
         # IT Cell / Admin / OIC Access (View All)
@@ -2867,10 +2883,8 @@ class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
         if not user.is_authenticated:
             return HologramRollsDetails.objects.none()
             
-        role_name = _normalize_role_name(getattr(getattr(user, 'role', None), 'name', ''))
-        
         # OIC / Licensee Access
-        if _is_scoped_officer_or_licensee(role_name):
+        if _is_scoped_officer_or_licensee(user):
             scoped_by_roll_license = scope_by_profile_or_workflow(
                 user=user,
                 queryset=HologramRollsDetails.objects.all(),
@@ -2886,7 +2900,8 @@ class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
             )
             return HologramRollsDetails.objects.filter(
                 models.Q(id__in=scoped_by_roll_license.values('id')) |
-                models.Q(id__in=scoped_by_procurement.values('id'))
+                models.Q(id__in=scoped_by_procurement.values('id')) |
+                models.Q(procurement__licensee__user=user)
             ).distinct()
                 
         # IT Cell / Admin / Commissioner / OIC Access (View All)
