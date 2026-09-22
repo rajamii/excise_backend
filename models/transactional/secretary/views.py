@@ -56,6 +56,7 @@ def _get_factories_data(subcat_filter='', search_q=''):
     """
     from models.transactional.supply_chain.ena_requisition_details.models import EnaRequisitionDetail, RequisitionBulkLiterDetail
     from models.transactional.supply_chain.bulk_spirit_usage.models import EnaBulkSpiritUsage
+    from models.transactional.supply_chain.hologram.models import DailyHologramRegister
 
     factories = []
     seen_names = set()
@@ -79,6 +80,11 @@ def _get_factories_data(subcat_filter='', search_q=''):
         all_usages = list(EnaBulkSpiritUsage.objects.select_related('applicant').all().order_by('-created_at'))
     except Exception:
         all_usages = []
+
+    try:
+        all_hologram_registers = list(DailyHologramRegister.objects.filter(wastage_qty__gt=0).select_related('licensee', 'approved_by').order_by('-usage_date', '-id'))
+    except Exception:
+        all_hologram_registers = []
 
     for app_idx, app in enumerate(apps_qs):
         try:
@@ -431,6 +437,66 @@ def _get_factories_data(subcat_filter='', search_q=''):
                                 'created_at': arr.submitted_at.isoformat() if arr.submitted_at else '-'
                             })
 
+            # Compile Hologram Losses (from DailyHologramRegister where wastage_qty > 0)
+            hologram_losses = []
+            for dhr in all_hologram_registers:
+                try:
+                    w_qty = int(getattr(dhr, 'wastage_qty', 0) or 0)
+                    if w_qty <= 0:
+                        continue
+
+                    dhr_lic = str(getattr(dhr, 'license_id', '') or '').strip()
+                    dhr_unit_name = str(dhr.licensee.manufacturing_unit_name if getattr(dhr, 'licensee', None) else '').strip().lower()
+
+                    is_dhr_match = False
+                    if dhr_lic and (dhr_lic in [app_id, str(applicant_user_id), lic_no] or (app_id_clean and app_id_clean in dhr_lic)):
+                        is_dhr_match = True
+                    elif dhr_unit_name and (est_name.lower() in dhr_unit_name or (comp_name and comp_name.lower() in dhr_unit_name)):
+                        is_dhr_match = True
+
+                    if is_dhr_match:
+                        from_ser = str(getattr(dhr, 'wastage_from', '') or '').strip()
+                        to_ser = str(getattr(dhr, 'wastage_to', '') or '').strip()
+                        range_str = f"{from_ser} - {to_ser}" if from_ser and to_ser else (from_ser or to_ser or '-')
+
+                        w_ranges = getattr(dhr, 'wastage_ranges', None)
+                        if isinstance(w_ranges, list) and len(w_ranges) > 0:
+                            parsed_ranges = []
+                            for wr in w_ranges:
+                                if isinstance(wr, dict):
+                                    f_val = wr.get('from_serial') or wr.get('from') or ''
+                                    t_val = wr.get('to_serial') or wr.get('to') or ''
+                                    if f_val and t_val:
+                                        parsed_ranges.append(f"{f_val}-{t_val}")
+                                    elif f_val or t_val:
+                                        parsed_ranges.append(f"{f_val or t_val}")
+                            if parsed_ranges:
+                                range_str = ", ".join(parsed_ranges)
+
+                        u_date_str = dhr.usage_date.strftime('%Y-%m-%d') if dhr.usage_date else (dhr.submission_date.strftime('%Y-%m-%d') if dhr.submission_date else '-')
+                        appr_st = str(getattr(dhr, 'approval_status', 'PENDING') or 'PENDING').upper()
+
+                        hologram_losses.append({
+                            'id': dhr.id,
+                            'reference_no': dhr.reference_no,
+                            'usage_date': u_date_str,
+                            'carton_number': dhr.cartoon_number or '-',
+                            'hologram_type': dhr.hologram_type or 'LOCAL',
+                            'brand_name': dhr.brand_details or 'Registered Brand',
+                            'bottle_size': dhr.bottle_size or '-',
+                            'wastage_qty': w_qty,
+                            'wastage_from': from_ser or '-',
+                            'wastage_to': to_ser or '-',
+                            'serial_range': range_str,
+                            'damage_reason': dhr.damage_reason or 'Damaged during high-speed bottling/labeling line run',
+                            'approval_status': appr_st,
+                            'approved_by': getattr(dhr, 'approved_by_display_name', '') or (dhr.approved_by.username if getattr(dhr, 'approved_by', None) else ('OIC Excise Officer' if appr_st == 'APPROVED' else '-')),
+                            'approved_at': dhr.approved_at.isoformat() if getattr(dhr, 'approved_at', None) else None,
+                            'rejection_reason': getattr(dhr, 'rejection_reason', '') or ''
+                        })
+                except Exception:
+                    pass
+
             factories.append({
                 'id': app_id or est_name,
                 'establishment_name': est_name,
@@ -460,7 +526,9 @@ def _get_factories_data(subcat_filter='', search_q=''):
                 'brand_stocks': brand_stocks,
                 'bl_history': bl_history_entries,
                 'requisitions': requisitions_list,
-                'transits': transits_list
+                'transits': transits_list,
+                'hologram_losses': hologram_losses,
+                'total_hologram_losses_count': sum(hl['wastage_qty'] for hl in hologram_losses)
             })
         except Exception as err:
             logger.error("Error processing application row in _get_factories_data: %s", err)
