@@ -431,15 +431,24 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         if not user.is_authenticated:
             return queryset.none()
             
-        user_role_name = _normalize_role_name(getattr(getattr(user, 'role', None), 'name', ''))
-
-        if _is_scoped_officer_or_licensee(user_role_name):
-            return scope_by_profile_or_workflow(
+        if _is_scoped_officer_or_licensee(user):
+            scoped_by_procurement_license = scope_by_profile_or_workflow(
                 user=user,
                 queryset=queryset,
                 workflow_id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'],
                 licensee_field='licensee__licensee_id'
             )
+            scoped_by_direct_license = scope_by_profile_or_workflow(
+                user=user,
+                queryset=queryset,
+                workflow_id=WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'],
+                licensee_field='license_id'
+            )
+            return queryset.filter(
+                models.Q(id__in=scoped_by_procurement_license.values('id')) |
+                models.Q(id__in=scoped_by_direct_license.values('id')) |
+                models.Q(licensee__user=user)
+            ).distinct().order_by('-date')
 
         visible_stage_ids = _get_visible_stage_ids_for_user(
             user=user,
