@@ -215,6 +215,23 @@ class EnaBulkSpiritUsageListCreateAPIView(generics.ListCreateAPIView):
         if not spirit_type:
             raise ValidationError({'bulk_spirit_type': 'Bulk Spirit Type is required.'})
 
+        # Check for existing pending request
+        pending_qs = EnaBulkSpiritUsage.objects.filter(
+            models.Q(status__iexact='Pending') | models.Q(status__icontains='pending')
+        )
+        if candidates:
+            pending_qs = pending_qs.filter(models.Q(applicant=user) | models.Q(licensee_id__in=candidates))
+        else:
+            pending_qs = pending_qs.filter(applicant=user)
+
+        pending_usage = pending_qs.first()
+        if pending_usage:
+            raise ValidationError({
+                'non_field_errors': [
+                    f"You can submit the next Bulk Spirit Usage request only after ref no. {pending_usage.reference_no} is verified (approved or rejected) by the Officer-In-Charge (OIC)."
+                ]
+            })
+
         # Check inventory
         summary = _get_inventory_summary_for_licensee(candidates, specific_spirit_type=spirit_type)
         type_summary = summary['by_type'].get(spirit_type)
