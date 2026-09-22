@@ -184,11 +184,14 @@ def _get_factories_data(subcat_filter='', search_q=''):
                         tanker_permits = [t.get('permit_no') for t in arr.tanker_details if isinstance(t, dict) and t.get('permit_no')]
                     permit_str = ', '.join(filter(None, set(tanker_permits))) or (arr.requisition.details_permits_number if arr.requisition else '-')
 
+                    submitted_iso = arr.submitted_at.isoformat() if arr.submitted_at else '2026-08-20T14:30:00'
+                    reviewed_iso = arr.reviewed_at.isoformat() if arr.reviewed_at else None
+
                     bl_history_entries.append({
                         'id': f'ARR-{arr.id}-{arr.reference_no}',
                         'entry_type': 'ARRIVAL',
                         'direction': 'IN',
-                        'date': arr.submitted_at.strftime('%Y-%m-%d %H:%M') if arr.submitted_at else '2026-08-20 14:30',
+                        'date': submitted_iso,
                         'reference_no': arr.reference_no,
                         'permit_numbers_str': permit_str,
                         'bulk_spirit_type': getattr(arr.requisition, 'bulk_spirit_type', '') or 'Mature Malt Spirit',
@@ -201,7 +204,7 @@ def _get_factories_data(subcat_filter='', search_q=''):
                         'status': st,
                         'submitted_by': 'Factory Gate Logistics',
                         'reviewed_by': arr.reviewed_by or ('OIC Officer' if st == 'APPROVED' else ''),
-                        'reviewed_at': arr.reviewed_at.strftime('%Y-%m-%d %H:%M') if arr.reviewed_at else None,
+                        'reviewed_at': reviewed_iso,
                         'remarks': arr.review_remarks or ('Verified at gate by OIC' if st == 'APPROVED' else '')
                     })
 
@@ -222,11 +225,14 @@ def _get_factories_data(subcat_filter='', search_q=''):
                     elif 'PEND' in st:
                         real_pending_usage_bl += use_qty
 
+                    created_iso = use.created_at.isoformat() if use.created_at else '2026-08-22T10:15:00'
+                    reviewed_iso = use.reviewed_at.isoformat() if use.reviewed_at else None
+
                     bl_history_entries.append({
                         'id': f'USE-{use.id}-{use.reference_no}',
                         'entry_type': 'USAGE',
                         'direction': 'OUT',
-                        'date': use.created_at.strftime('%Y-%m-%d %H:%M') if use.created_at else '2026-08-22 10:15',
+                        'date': created_iso,
                         'reference_no': use.reference_no,
                         'permit_numbers_str': '-',
                         'bulk_spirit_type': use.bulk_spirit_type or 'Mature Malt Spirit',
@@ -239,7 +245,7 @@ def _get_factories_data(subcat_filter='', search_q=''):
                         'status': st,
                         'submitted_by': getattr(use.applicant, 'username', 'Production Supervisor'),
                         'reviewed_by': use.reviewed_by or ('OIC Excise Officer' if 'APPROV' in st else ''),
-                        'reviewed_at': use.reviewed_at.strftime('%Y-%m-%d %H:%M') if use.reviewed_at else None,
+                        'reviewed_at': reviewed_iso,
                         'remarks': use.remarks or use.rejection_reason or ''
                     })
 
@@ -249,19 +255,74 @@ def _get_factories_data(subcat_filter='', search_q=''):
             # Sort bl_history_entries descending by date
             bl_history_entries.sort(key=lambda x: str(x.get('date', '')), reverse=True)
 
-            # Match brand warehouse items safely
+            # Dynamic Storage Tanks & Spirit Inventory breakdown
+            spirit_types_map = {}
+            for entry in bl_history_entries:
+                st_name = entry.get('bulk_spirit_type') or 'Mature Malt Spirit'
+                if st_name not in spirit_types_map:
+                    spirit_types_map[st_name] = {
+                        'total_inflow': 0.0,
+                        'total_outflow': 0.0,
+                        'total_loss': 0.0
+                    }
+                if entry['entry_type'] == 'ARRIVAL' and entry['status'] == 'APPROVED':
+                    spirit_types_map[st_name]['total_inflow'] += entry['quantity']
+                    spirit_types_map[st_name]['total_loss'] += entry.get('lost_bl', 0.0)
+                elif entry['entry_type'] == 'USAGE' and ('APPROV' in entry['status'] or entry['status'] == 'COMPLETED'):
+                    spirit_types_map[st_name]['total_outflow'] += entry['quantity']
+
+            storage_tanks = []
+            if spirit_types_map:
+                tank_idx = 1
+                for st_name, st_data in spirit_types_map.items():
+                    cur_vol = round(max(0.0, st_data['total_inflow'] - st_data['total_outflow']), 2)
+                    cap = 50000.0 if cur_vol <= 50000.0 else round(cur_vol * 1.5, 2)
+                    fill_pct = round((cur_vol / cap) * 100, 1) if cap > 0 else 0
+                    storage_tanks.append({
+                        'tank_id': f'TNK-{tank_idx:02d}',
+                        'spirit_type': st_name,
+                        'capacity_bl': cap,
+                        'current_volume_bl': cur_vol,
+                        'fill_percentage': fill_pct,
+                        'status': 'Active / Operational' if cur_vol > 0 else 'Standby / Empty',
+                        'total_inflow_bl': round(st_data['total_inflow'], 2),
+                        'total_outflow_bl': round(st_data['total_outflow'], 2),
+                        'total_loss_bl': round(st_data['total_loss'], 2)
+                    })
+                    tank_idx += 1
+            else:
+                default_sp = 'Extra Neutral Alcohol (ENA)' if normalized_subcat == 'Distillery' else 'Brewing Wort / Fermentation'
+                storage_tanks.append({
+                    'tank_id': 'TNK-01',
+                    'spirit_type': default_sp,
+                    'capacity_bl': 50000.0,
+                    'current_volume_bl': 0.0,
+                    'fill_percentage': 0,
+                    'status': 'Standby / Empty',
+                    'total_inflow_bl': 0.0,
+                    'total_outflow_bl': 0.0,
+                    'total_loss_bl': 0.0
+                })
+
+            # Match brand warehouse items strictly from real DB records
             brand_stocks = []
             for bw in all_brand_warehouses:
                 try:
-                    fac_name = ''
-                    if getattr(bw, 'factory', None):
-                        fac_name = str(bw.factory.factory_name or '')
-                    if not fac_name:
-                        fac_name = str(getattr(bw, 'factory_name', '') or '')
-                    fac_str = fac_name.lower()
+                    bw_license = str(bw.license_id or '').strip()
+                    bw_fac_name = str(bw.factory.factory_name if getattr(bw, 'factory', None) else '').strip().lower()
+                    bw_brand_str = str(getattr(bw, 'brand', '') or '').strip().lower()
 
-                    if est_name.lower() in fac_str or (comp_name and comp_name.lower() in fac_str):
-                        size_ml = int(getattr(bw, 'capacity_size', 750) or 750)
+                    is_bw_match = False
+                    if bw_license and (bw_license == app_id or (app_id_clean and app_id_clean in bw_license) or bw_license == lic_no or bw_license == str(applicant_user_id)):
+                        is_bw_match = True
+                    elif bw_fac_name and (est_name.lower() in bw_fac_name or (comp_name and comp_name.lower() in bw_fac_name)):
+                        is_bw_match = True
+                    elif est_name.lower() in bw_brand_str:
+                        is_bw_match = True
+
+                    if is_bw_match:
+                        cap_obj = getattr(bw, 'capacity_size', None)
+                        size_ml = int(getattr(cap_obj, 'size_ml', 750) or 750) if cap_obj else 750
                         cases = int(getattr(bw, 'current_stock', 0) or 0)
 
                         if size_ml == 750: bpc = 12
@@ -272,15 +333,17 @@ def _get_factories_data(subcat_filter='', search_q=''):
                         elif size_ml == 330: bpc = 24
                         else: bpc = 12
 
-                        if cases == 0:
-                            cases = 3500 if normalized_subcat == 'Distillery' else 4200
-
                         tot_bottles = cases * bpc
                         tot_bl = round((tot_bottles * size_ml) / 1000.0, 2)
+                        mrp_val = float(getattr(bw, 'mrp_rs_per_bottle', 0.0) or 0.0)
+
+                        brand_name = str(getattr(bw, 'brand', None) or 'Registered Brand')
+                        l_type = str(getattr(bw, 'liquor_type', None) or ('Beer' if normalized_subcat == 'Brewery' else 'IMFL Spirit'))
 
                         brand_stocks.append({
-                            'brand_name': str(getattr(bw, 'brand', None) or getattr(bw, 'brand_name', 'Premium Spirits')),
-                            'liquor_type': str(getattr(bw, 'liquor_type', None) or getattr(bw, 'brand_type', ('Beer' if normalized_subcat == 'Brewery' else 'IMFL Whisky'))),
+                            'id': getattr(bw, 'id', None),
+                            'brand_name': brand_name,
+                            'liquor_type': l_type,
                             'pack_size_ml': size_ml,
                             'bottles_per_case': bpc,
                             'cases_stock': cases,
@@ -288,11 +351,85 @@ def _get_factories_data(subcat_filter='', search_q=''):
                             'total_bl': tot_bl,
                             'edp_code': f"EDP/{normalized_subcat[:3].upper()}/{size_ml}/{getattr(bw, 'id', 1)}",
                             'alcohol_strength': '8.0% v/v' if normalized_subcat == 'Brewery' else '42.8% v/v',
-                            'mrp_per_bottle': 180.0 if size_ml == 650 else (850.0 if size_ml == 750 else 420.0),
-                            'status': 'In Stock' if cases > 500 else 'Low Stock'
+                            'mrp_per_bottle': mrp_val,
+                            'status': 'In Stock' if cases > 0 else 'Zero Stock'
                         })
                 except Exception:
                     pass
+
+            # Compile Real Requisitions List
+            requisitions_list = []
+            for r in reqs.order_by('-created_at'):
+                r_date_str = r.requisition_date.strftime('%Y-%m-%d') if r.requisition_date else (r.created_at.strftime('%Y-%m-%d') if r.created_at else '-')
+                r_total_bl = float(r.totalbl or 0.0)
+                r_st = str(r.status or 'Pending')
+                r_disp_bl = r_total_bl if 'approv' in r_st.lower() else 0.0
+
+                requisitions_list.append({
+                    'id': r.id,
+                    'reference_no': r.our_ref_no or f'REQ/{r.id}/EXCISE',
+                    'requisition_date': r_date_str,
+                    'bulk_spirit_type': r.bulk_spirit_type or 'Mature Malt Spirit',
+                    'total_bl': r_total_bl,
+                    'dispatched_bl': r_disp_bl,
+                    'check_post_name': r.check_post_name or 'Rangpo Checkpost',
+                    'status': r_st,
+                    'purpose_name': r.purpose_name or 'Production / Blending',
+                    'lifted_from': r.lifted_from_distillery_name or r.lifted_from or '-',
+                    'permits_number': r.details_permits_number or '-',
+                    'valid_up_to': r.valid_up_to.strftime('%Y-%m-%d') if r.valid_up_to else '-'
+                })
+
+            # Compile Real Active Transits & Transit Passes
+            from models.transactional.supply_chain.ena_transit_permit_details.models import EnaTransitPermitDetail
+            transits_list = []
+            try:
+                tp_qs = EnaTransitPermitDetail.objects.filter(
+                    Q(manufacturing_unit_name__icontains=est_name) |
+                    Q(licensee_id=app_id) |
+                    Q(licensee_id=str(applicant_user_id)) |
+                    Q(licensee_id=lic_no)
+                ).order_by('-created_at')
+                for tp in tp_qs:
+                    tp_cases = int(getattr(tp, 'cases', 0) or 0)
+                    tp_date_str = tp.date.strftime('%Y-%m-%d') if tp.date else (tp.created_at.strftime('%Y-%m-%d') if tp.created_at else '-')
+                    transits_list.append({
+                        'id': f'TP-{tp.id}',
+                        'transit_pass_no': tp.bill_no or f'TRP/{tp.id:02d}/EXCISE',
+                        'vehicle_no': tp.vehicle_number or 'SK-01-AB-1234',
+                        'driver_name': tp.driver_name or 'Authorized Driver',
+                        'transporter_name': tp.transporter_name or '-',
+                        'destination': tp.to_location or tp.sole_distributor_name or 'Wholesale Warehouse Depot',
+                        'brand': str(getattr(tp, 'brand', '') or 'Finished Goods Cases'),
+                        'cases': tp_cases,
+                        'dispatched_volume_bl': round(tp_cases * 12 * 0.75, 2),
+                        'expiry_date': tp_date_str,
+                        'status': tp.status or 'In Transit',
+                        'created_at': tp.created_at.isoformat() if tp.created_at else '-'
+                    })
+            except Exception:
+                pass
+
+            # Include Tanker Dispatches from Arrivals
+            for arr in all_arrivals:
+                if (arr.requisition_id in req_ids_set) or (arr.licensee_id and (arr.licensee_id in [app_id, str(applicant_user_id), lic_no])):
+                    for t_idx, t in enumerate(arr.tanker_details or []):
+                        if isinstance(t, dict):
+                            arr_dt = arr.submitted_at.strftime('%Y-%m-%d') if arr.submitted_at else '-'
+                            transits_list.append({
+                                'id': f'TNK-{arr.id}-{t_idx}',
+                                'transit_pass_no': t.get('permit_no') or arr.reference_no,
+                                'vehicle_no': t.get('tanker_no') or 'Tanker Vehicle',
+                                'driver_name': 'Commercial Tanker Driver',
+                                'transporter_name': getattr(arr.requisition, 'lifted_from_distillery_name', '') or 'Bulk Liquid Carrier',
+                                'destination': est_name,
+                                'brand': getattr(arr.requisition, 'bulk_spirit_type', '') or 'Bulk Spirit Tanker Inflow',
+                                'cases': 0,
+                                'dispatched_volume_bl': float(t.get('bulk_liter', 0) or 0),
+                                'expiry_date': arr_dt,
+                                'status': 'Arrived & Gate-Verified' if (arr.approval_status or '').upper() == 'APPROVED' else 'Pending Gate Scrutiny',
+                                'created_at': arr.submitted_at.isoformat() if arr.submitted_at else '-'
+                            })
 
             factories.append({
                 'id': app_id or est_name,
@@ -317,10 +454,13 @@ def _get_factories_data(subcat_filter='', search_q=''):
                 'total_bl_requested': round(total_bl_req, 2),
                 'pending_requisitions_count': pending_reqs,
                 'approved_requisitions_count': approved_reqs,
-                'active_transit_permits_count': pending_reqs,
+                'active_transit_permits_count': len(transits_list),
                 'dispatched_bl': round(real_arrived_bl, 2),
+                'storage_tanks': storage_tanks,
                 'brand_stocks': brand_stocks,
-                'bl_history': bl_history_entries
+                'bl_history': bl_history_entries,
+                'requisitions': requisitions_list,
+                'transits': transits_list
             })
         except Exception as err:
             logger.error("Error processing application row in _get_factories_data: %s", err)
