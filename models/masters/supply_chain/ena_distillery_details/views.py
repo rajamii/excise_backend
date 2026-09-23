@@ -25,13 +25,17 @@ class enaDistilleryTypesListAPIView(APIView):
                 scoped = user_scoped_license_ids(request.user)
                 distilleries = enaDistilleryTypes.objects.using('default').filter(
                     licensee_id__in=list(scoped)
-                )
+                ).order_by('-updated_at', '-id')
                 data = [{
                     'id': distillery.id,
                     'distillery_name': distillery.distillery_name,
+                    'distillery_address': distillery.distillery_address,
+                    'distillery_state': distillery.distillery_state,
                     'licensee_id': distillery.licensee_id,
                     'via_route': distillery.via_route,
-                    'state': distillery.distillery_state
+                    'state': distillery.distillery_state,
+                    'created_at': distillery.created_at,
+                    'updated_at': distillery.updated_at,
                 } for distillery in distilleries]
                 return Response({
                     'success': True,
@@ -47,7 +51,7 @@ class enaDistilleryTypesListAPIView(APIView):
             )
             all_establishment_names = establishment_names + license_establishment_names
 
-            all_distilleries = enaDistilleryTypes.objects.using('default').all()
+            all_distilleries = enaDistilleryTypes.objects.using('default').all().order_by('-updated_at', '-id')
             distilleries = all_distilleries
 
             if requested_licensee_ids:
@@ -85,9 +89,13 @@ class enaDistilleryTypesListAPIView(APIView):
             data = [{
                 'id': distillery.id,
                 'distillery_name': distillery.distillery_name,
+                'distillery_address': distillery.distillery_address,
+                'distillery_state': distillery.distillery_state,
                 'licensee_id': distillery.licensee_id,
                 'via_route': distillery.via_route,
-                'state': distillery.distillery_state
+                'state': distillery.distillery_state,
+                'created_at': distillery.created_at,
+                'updated_at': distillery.updated_at,
             } for distillery in distilleries_list]
             return Response({
                 'success': True,
@@ -241,7 +249,7 @@ class enaDistilleryTypesListAPIView(APIView):
 @api_view(['GET'])
 def distillery_admin_list(request):
     serializer = enaDistilleryTypesSerializer(
-        enaDistilleryTypes.objects.using('default').all().order_by('id'),
+        enaDistilleryTypes.objects.using('default').all().order_by('-updated_at', '-id'),
         many=True
     )
     return Response(serializer.data, status=status.HTTP_200_OK)
