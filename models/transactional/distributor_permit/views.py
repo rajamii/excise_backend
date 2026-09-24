@@ -1528,8 +1528,16 @@ def _process_due_imfl_activation_schedules():
             continue
 
         # Check if action has already been taken on the permit (e.g. brand arrival received / completed)
-        has_arrival = IMFLArrival.objects.filter(distributor_permit=dp).exists() or IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists()
+        has_arrival = (
+            IMFLArrival.objects.filter(distributor_permit=dp).exists() or
+            IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists() or
+            IMFLArrival.objects.filter(permit_number__icontains=str(dp.reference_no)).exists() or
+            IMFLBrandWarehouse.objects.filter(permit_number__icontains=str(dp.reference_no)).exists()
+        )
         if has_arrival:
+            schedule.status = 'cancelled'
+            schedule.notes = f"Cancelled due to physical stock arrival already recorded by OIC on {dp.reference_no}"
+            schedule.save(update_fields=['status', 'notes', 'updated_at'])
             continue
 
         schedule.status = IMFLRevalidationActivationSchedule.STATUS_PROCESSED
@@ -1737,6 +1745,26 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                 p_details = matched if matched else app_pdetails
             else:
                 p_details = app_pdetails
+
+        # Strictly block revalidation if physical stock arrival has already been recorded by OIC
+        has_arrival = False
+        if target_permit_no and target_permit_no != 'ALL':
+            has_arrival = (
+                IMFLArrival.objects.filter(permit_number__iexact=str(target_permit_no).strip()).exists() or
+                IMFLBrandWarehouse.objects.filter(permit_number__iexact=str(target_permit_no).strip()).exists()
+            )
+        elif distributor_permit:
+            has_arrival = (
+                IMFLArrival.objects.filter(distributor_permit=distributor_permit).exists() or
+                IMFLBrandWarehouse.objects.filter(distributor_permit=distributor_permit).exists()
+            )
+
+        if has_arrival:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError(
+                f"OIC has already updated physical stock arrival for permit {target_permit_no or (distributor_permit.reference_no if distributor_permit else '')}. "
+                "Revalidation is not permitted for arrived permits. Please update arrival in the Arrival Register."
+            )
 
         serializer.save(
             reference_no=ref_no,
