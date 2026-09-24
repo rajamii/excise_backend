@@ -457,7 +457,9 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
         if visible_stage_ids:
             # IT Cell requirement: once licensee completes payment, show the item on IT Cell dashboard
             # so the supply order letter can be downloaded and sent to the supplier.
-            if user_role_name == 'itcell':
+            user_role_name = str(getattr(getattr(user, 'role', None), 'name', '') or '').lower().replace(' ', '').replace('_', '').replace('-', '')
+            role_id = getattr(getattr(user, 'role', None), 'id', 0)
+            if role_id == 6 or 'itcell' in user_role_name:
                 try:
                     payment_stage_ids = list(
                         WorkflowStage.objects.filter(
