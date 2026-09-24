@@ -9,7 +9,12 @@ class LicenseSubcategorySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = master_models.LicenseSubcategory
-        fields = ['id', 'description', 'old_license_cat_code', 'old_license_scat_code', 'category', 'dry_day_fee_type', 'is_active']
+        fields = [
+            'id', 'description', 'old_license_cat_code', 'old_license_scat_code',
+            'category', 'dry_day_fee_type', 'is_active',
+            'allow_company_registration', 'allow_company_collaboration',
+            'allow_salesman_barman', 'allow_label_registration'
+        ]
 
     def to_internal_value(self, data):
         if isinstance(data, dict):
@@ -18,6 +23,14 @@ class LicenseSubcategorySerializer(serializers.ModelSerializer):
                 data['dry_day_fee_type'] = data.pop('dryDayFeeType')
             if 'isActive' in data and 'is_active' not in data:
                 data['is_active'] = data.pop('isActive')
+            if 'allowCompanyRegistration' in data and 'allow_company_registration' not in data:
+                data['allow_company_registration'] = data.pop('allowCompanyRegistration')
+            if 'allowCompanyCollaboration' in data and 'allow_company_collaboration' not in data:
+                data['allow_company_collaboration'] = data.pop('allowCompanyCollaboration')
+            if 'allowSalesmanBarman' in data and 'allow_salesman_barman' not in data:
+                data['allow_salesman_barman'] = data.pop('allowSalesmanBarman')
+            if 'allowLabelRegistration' in data and 'allow_label_registration' not in data:
+                data['allow_label_registration'] = data.pop('allowLabelRegistration')
         return super().to_internal_value(data)
 
     def update(self, instance, validated_data):

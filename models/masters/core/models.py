@@ -247,6 +247,22 @@ class LicenseSubcategory(models.Model):
         default=True,
         help_text="Whether this license subcategory is active"
     )
+    allow_company_registration = models.BooleanField(
+        default=True,
+        help_text="Whether Company Registration is enabled for licensees of this subcategory"
+    )
+    allow_company_collaboration = models.BooleanField(
+        default=True,
+        help_text="Whether Company Collaboration is enabled for licensees of this subcategory"
+    )
+    allow_salesman_barman = models.BooleanField(
+        default=True,
+        help_text="Whether Salesman/Barman Registration is enabled for licensees of this subcategory"
+    )
+    allow_label_registration = models.BooleanField(
+        default=True,
+        help_text="Whether Label Registration is enabled for licensees of this subcategory"
+    )
 
     class Meta:
         db_table = 'masters_licensesubcategory'
