@@ -275,6 +275,29 @@ def _serialize_license(license_obj: License) -> dict:
         else:
             sub_cat_desc = f"{sub_cat_desc} (Dry Day Permit: None)"
 
+    fin_year = SpecialPermitApplication.generate_fin_year()
+    existing_annual_app = SpecialPermitApplication.objects.filter(
+        license=license_obj,
+        permission_duration=SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM,
+        financial_year=fin_year,
+    ).select_related('current_stage', 'workflow').order_by('-created_at').first()
+
+    has_existing_annual_permit = False
+    existing_annual_permit_status = None
+    existing_annual_permit_id = None
+
+    if existing_annual_app:
+        workflow_obj = existing_annual_app.workflow or _get_special_permit_workflow()
+        status_sets = _status_sets(workflow_obj)
+        stage_name = existing_annual_app.current_stage.name if existing_annual_app.current_stage else ''
+        if stage_name not in status_sets['rejected']:
+            has_existing_annual_permit = True
+            existing_annual_permit_id = existing_annual_app.application_id
+            if existing_annual_app.is_approved or stage_name in status_sets['approved'] or stage_name in status_sets['payment'] or existing_annual_app.is_fee_paid:
+                existing_annual_permit_status = 'approved'
+            else:
+                existing_annual_permit_status = 'under_review'
+
     return {
         'license_id': license_obj.license_id,
         'district': getattr(license_obj.excise_district, 'district', None),
@@ -287,6 +310,10 @@ def _serialize_license(license_obj: License) -> dict:
         'establishment_name': establishment_name,
         'valid_up_to': license_obj.valid_up_to.isoformat() if license_obj.valid_up_to else None,
         'is_active': license_obj.is_active,
+        'has_existing_annual_permit': has_existing_annual_permit,
+        'existing_annual_permit_status': existing_annual_permit_status,
+        'existing_annual_permit_id': existing_annual_permit_id,
+        'existing_annual_permit_fin_year': fin_year if has_existing_annual_permit else None,
     }
 
 
@@ -398,14 +425,45 @@ def create_special_permit_application(request):
 
     permission_duration = request.data.get('permission_duration') or request.data.get('permissionDuration') or SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM
     selected_dates = request.data.get('selected_dates') or request.data.get('selectedDates') or None
-    financial_year = request.data.get('financial_year') or request.data.get('financialYear') or SpecialPermitApplication.generate_fin_year()
+    # Reject if an annual permit is already active or under review for this license in the current financial year
+    existing_annual_app = SpecialPermitApplication.objects.filter(
+        license=license_obj,
+        permission_duration=SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM,
+        financial_year=financial_year,
+    ).select_related('current_stage', 'workflow').order_by('-created_at').first()
 
-    if permission_duration == SpecialPermitApplication.PERMISSION_DURATION_PER_DAY and selected_dates:
-        if isinstance(selected_dates, list):
-            today_str = timezone.localdate().strftime('%Y-%m-%d')
-            for date_str in selected_dates:
-                if str(date_str) < today_str:
-                    return Response({'detail': 'Back-dated permits are not allowed. Selection must be for today or future dates.'}, status=status.HTTP_400_BAD_REQUEST)
+    if existing_annual_app:
+        workflow_obj = existing_annual_app.workflow or _get_special_permit_workflow()
+        status_sets = _status_sets(workflow_obj)
+        stage_name = existing_annual_app.current_stage.name if existing_annual_app.current_stage else ''
+        if stage_name not in status_sets['rejected']:
+            if existing_annual_app.is_approved or stage_name in status_sets['approved'] or stage_name in status_sets['payment'] or existing_annual_app.is_fee_paid:
+                return Response(
+                    {'detail': f'An active Annual Dry Day Permit (ID: {existing_annual_app.application_id}) already exists for this license for financial year {financial_year}. You can apply again in the next financial year.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            else:
+                return Response(
+                    {'detail': f'An Annual Dry Day Permit application (ID: {existing_annual_app.application_id}) is currently under review for financial year {financial_year}. You cannot submit another permit application while one is in process.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+    fee_details = calculate_special_permit_fee_raw(license_obj)
+    if not fee_details.get('dry_day_fee_type') or fee_details.get('dry_day_fee_type') == 'none' or fee_details.get('dry_day_fee', Decimal('0')) <= Decimal('0'):
+        return Response(
+            {'detail': 'Dry Day Permit fee is not configured for your license subcategory. Please contact the Admin.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if permission_duration == SpecialPermitApplication.PERMISSION_DURATION_PER_DAY:
+        if not selected_dates or not isinstance(selected_dates, list) or len(selected_dates) == 0:
+            return Response({'detail': 'Please select at least one Dry Day date.'}, status=status.HTTP_400_BAD_REQUEST)
+        today_str = timezone.localdate().strftime('%Y-%m-%d')
+        for date_str in selected_dates:
+            if str(date_str) < today_str:
+                return Response({'detail': 'Back-dated permits are not allowed. Selection must be for today or future dates.'}, status=status.HTTP_400_BAD_REQUEST)
+    else:
+        selected_dates = None
 
     serializer = SpecialPermitApplicationSerializer(data={
         'license': license_obj.license_id,
