@@ -56,10 +56,10 @@ def _get_stage_sets(workflow_id: int):
     rejected_stage_names = {name for name in stage_names if 'rejected' in str(name).lower() or 'reject' in str(name).lower()}
     approved_stage_names = {
         stage.name for stage in stages
-        if stage.is_final and 'rejected' not in stage.name.lower()
+        if stage.is_final and 'rejected' not in stage.name.lower() and 'reject' not in stage.name.lower()
     }
-    approved_stage_names.update({name for name in stage_names if 'approved' in str(name).lower()})
-    payment_stage_names = {name for name in stage_names if 'payment' in str(name).lower()}
+    approved_stage_names.update({name for name in stage_names if 'approved' in str(name).lower() and 'reject' not in str(name).lower()})
+    payment_stage_names = {name for name in stage_names if 'payment' in str(name).lower() and 'reject' not in str(name).lower()}
     initial_stage_names = set(stages.filter(is_initial=True).values_list('name', flat=True))
 
     return {

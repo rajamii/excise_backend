@@ -423,6 +423,7 @@ def create_special_permit_application(request):
             status=status.HTTP_403_FORBIDDEN
         )
 
+    financial_year = str(request.data.get('financial_year') or request.data.get('financialYear') or SpecialPermitApplication.generate_fin_year())
     permission_duration = request.data.get('permission_duration') or request.data.get('permissionDuration') or SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM
     selected_dates = request.data.get('selected_dates') or request.data.get('selectedDates') or None
     # Reject if an annual permit is already active or under review for this license in the current financial year
