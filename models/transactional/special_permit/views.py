@@ -1,6 +1,7 @@
 from decimal import Decimal
 import logging
 import secrets
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
@@ -280,6 +281,8 @@ def _serialize_license(license_obj: License) -> dict:
         license=license_obj,
         permission_duration=SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM,
         financial_year=fin_year,
+    ).exclude(
+        Q(current_stage__name__icontains='reject') | Q(current_stage__name__icontains='cancel')
     ).select_related('current_stage', 'workflow').order_by('-created_at').first()
 
     has_existing_annual_permit = False
@@ -290,7 +293,8 @@ def _serialize_license(license_obj: License) -> dict:
         workflow_obj = existing_annual_app.workflow or _get_special_permit_workflow()
         status_sets = _status_sets(workflow_obj)
         stage_name = existing_annual_app.current_stage.name if existing_annual_app.current_stage else ''
-        if stage_name not in status_sets['rejected']:
+        is_stage_rejected = ('reject' in stage_name.lower()) or (stage_name in status_sets['rejected'])
+        if not is_stage_rejected:
             has_existing_annual_permit = True
             existing_annual_permit_id = existing_annual_app.application_id
             if existing_annual_app.is_approved or stage_name in status_sets['approved'] or stage_name in status_sets['payment'] or existing_annual_app.is_fee_paid:
@@ -426,18 +430,21 @@ def create_special_permit_application(request):
     financial_year = str(request.data.get('financial_year') or request.data.get('financialYear') or SpecialPermitApplication.generate_fin_year())
     permission_duration = request.data.get('permission_duration') or request.data.get('permissionDuration') or SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM
     selected_dates = request.data.get('selected_dates') or request.data.get('selectedDates') or None
-    # Reject if an annual permit is already active or under review for this license in the current financial year
+    # Check if an annual permit is already active or under review for this license in the current financial year (exclude rejected applications!)
     existing_annual_app = SpecialPermitApplication.objects.filter(
         license=license_obj,
         permission_duration=SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM,
         financial_year=financial_year,
+    ).exclude(
+        Q(current_stage__name__icontains='reject') | Q(current_stage__name__icontains='cancel')
     ).select_related('current_stage', 'workflow').order_by('-created_at').first()
 
     if existing_annual_app:
         workflow_obj = existing_annual_app.workflow or _get_special_permit_workflow()
         status_sets = _status_sets(workflow_obj)
         stage_name = existing_annual_app.current_stage.name if existing_annual_app.current_stage else ''
-        if stage_name not in status_sets['rejected']:
+        is_stage_rejected = ('reject' in stage_name.lower()) or (stage_name in status_sets['rejected'])
+        if not is_stage_rejected:
             if existing_annual_app.is_approved or stage_name in status_sets['approved'] or stage_name in status_sets['payment'] or existing_annual_app.is_fee_paid:
                 return Response(
                     {'detail': f'An active Annual Dry Day Permit (ID: {existing_annual_app.application_id}) already exists for this license for financial year {financial_year}. You can apply again in the next financial year.'},
