@@ -160,7 +160,9 @@ class AdminLogService:
         application_id=None,
         from_stage=None,
         to_stage=None,
+        to_stage_user_id=None,
         to_stage_username=None,
+        to_stage_full_name=None,
         to_stage_name=None,
         status=None,
         remarks=None,
@@ -253,8 +255,31 @@ class AdminLogService:
                     str_rev_to_stage = str_to_stage
 
             final_to_stage_username = to_stage_username
+            final_to_stage_user_id = to_stage_user_id
+            final_to_stage_full_name = to_stage_full_name
+
             if not final_to_stage_username and action_upper == 'REVERT':
                 final_to_stage_username = reverted_to_username or reverted_to_role
+                if not final_to_stage_user_id:
+                    final_to_stage_user_id = reverted_to_id
+                if not final_to_stage_full_name:
+                    final_to_stage_full_name = reverted_to_name
+
+            # Auto-resolve target user ID and full name if username is present but ID is missing
+            if final_to_stage_username and (not final_to_stage_user_id or not final_to_stage_full_name):
+                try:
+                    from django.contrib.auth import get_user_model
+                    target_u = get_user_model().objects.filter(username=final_to_stage_username).first()
+                    if target_u:
+                        if not final_to_stage_user_id:
+                            final_to_stage_user_id = str(target_u.pk)
+                        if not final_to_stage_full_name:
+                            f_n = str(getattr(target_u, 'first_name', '') or '').strip()
+                            l_n = str(getattr(target_u, 'last_name', '') or '').strip()
+                            n_p = [p for p in [f_n, l_n] if p]
+                            final_to_stage_full_name = " ".join(n_p) if n_p else (target_u.username or getattr(target_u, 'email', None))
+                except Exception:
+                    pass
 
             # 6. Create AdminLog
             log_entry = AdminLog.objects.create(
@@ -271,7 +296,9 @@ class AdminLogService:
                 from_stage=str(str_from_stage) if str_from_stage else None,
                 to_stage=str(str_to_stage) if str_to_stage else None,
                 to_stage_name=str(final_to_stage_name) if final_to_stage_name else None,
+                to_stage_user_id=str(final_to_stage_user_id) if final_to_stage_user_id else None,
                 to_stage_username=str(final_to_stage_username) if final_to_stage_username else None,
+                to_stage_full_name=str(final_to_stage_full_name) if final_to_stage_full_name else None,
                 status=status or f"Action {action_upper} Completed",
                 remarks=remarks or "",
                 reverted_by_id=reverted_by_id,

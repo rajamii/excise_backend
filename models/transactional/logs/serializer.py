@@ -42,6 +42,10 @@ from .models import AdminLog
 
 class AdminLogSerializer(serializers.ModelSerializer):
     timestamp_formatted = serializers.SerializerMethodField()
+    forwarding_id = serializers.CharField(source='to_stage_user_id', read_only=True, allow_null=True)
+    forwarded_to_id = serializers.CharField(source='to_stage_user_id', read_only=True, allow_null=True)
+    forwarded_to_name = serializers.CharField(source='to_stage_full_name', read_only=True, allow_null=True)
+    forwarded_to_username = serializers.CharField(source='to_stage_username', read_only=True, allow_null=True)
 
     class Meta:
         model = AdminLog
@@ -60,7 +64,13 @@ class AdminLogSerializer(serializers.ModelSerializer):
             'from_stage',
             'to_stage',
             'to_stage_name',
+            'to_stage_user_id',
             'to_stage_username',
+            'to_stage_full_name',
+            'forwarding_id',
+            'forwarded_to_id',
+            'forwarded_to_name',
+            'forwarded_to_username',
             'status',
             'remarks',
 

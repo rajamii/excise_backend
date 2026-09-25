@@ -151,12 +151,25 @@ class AdminLog(models.Model):
         blank=True,
         help_text="Human-readable name of the target stage."
     )
+    to_stage_user_id = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Direct snapshot of the ID of the admin/user to whom the application was forwarded in the next stage."
+    )
     to_stage_username = models.CharField(
         max_length=150,
         null=True,
         blank=True,
         db_index=True,
         help_text="Username of the admin/user to whom the application was forwarded in the next stage."
+    )
+    to_stage_full_name = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text="Full name of the admin/user to whom the application was forwarded in the next stage."
     )
     status = models.CharField(
         max_length=100,
