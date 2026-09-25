@@ -14,6 +14,8 @@ from .models import (
     WorkflowTransition, StagePermission,
     Transaction, Objection, Rejection, Revert
 )
+from models.transactional.logs.services import log_admin_action
+
 
 # UI Configuration for Workflow Actions
 ACTION_CONFIGS = {
@@ -624,7 +626,9 @@ class WorkflowService:
     @transaction.atomic
     def advance_stage(application, user, target_stage, context=None, remarks=None):
         context = context or {}
+        initial_from_stage = getattr(application, 'current_stage', None)
         # Some deployments register the model under different app_labels; rely on model name.
+
         is_new_license_application = application.__class__.__name__.lower() == "newlicenseapplication"
         is_salesman_barman_application = application.__class__.__name__.lower() == "salesmanbarmanmodel"
 
@@ -891,8 +895,175 @@ class WorkflowService:
             except Exception as e:
                 logger.warning("Failed to revert holograms in advance_stage: %s", e)
 
+        # ---------- Admin Audit Log ('admin_log') ----------
+        effective_action = action
+        if not effective_action:
+            if is_reverted:
+                effective_action = "REVERT"
+            elif is_rejection:
+                effective_action = "REJECT"
+            elif str(getattr(target_stage, 'name', '')).lower() == 'approved':
+                effective_action = "APPROVE"
+            else:
+                effective_action = "FORWARD"
+
+        to_stage_recipients = WorkflowService._resolve_to_stage_recipients(
+            application=application,
+            target_stage=target_stage,
+            action=effective_action,
+            context=context,
+            forwarded_to=forwarded_to,
+            user_for_txn=user_for_txn
+        )
+        to_stage_username = ", ".join([r['username'] for r in to_stage_recipients if r.get('username')]) if to_stage_recipients else None
+        to_stage_user_id = ", ".join([str(r['id']) for r in to_stage_recipients if r.get('id')]) if to_stage_recipients else None
+        to_stage_full_name = ", ".join([r['full_name'] for r in to_stage_recipients if r.get('full_name')]) if to_stage_recipients else None
+
+        to_stage_name_str = getattr(target_stage, 'description', None) or getattr(target_stage, 'name', str(target_stage))
+
+        log_admin_action(
+            action=effective_action,
+            user=user_for_txn,
+            application=application,
+            from_stage=initial_from_stage,
+            to_stage=target_stage,
+            to_stage_name=to_stage_name_str,
+            to_stage_user_id=to_stage_user_id,
+            to_stage_username=to_stage_username,
+            to_stage_full_name=to_stage_full_name,
+            to_stage_recipients=to_stage_recipients,
+            status=f"Stage moved to {getattr(target_stage, 'name', '')}",
+            remarks=remarks or (context or {}).get("remarks", ""),
+            reverted_by=user if (action == "REVERT" or is_reverted) else None,
+            reverted_to=forwarded_to if (action == "REVERT" or is_reverted) else None,
+            reverted_to_stage=target_stage if (action == "REVERT" or is_reverted) else None,
+            metadata=context or {}
+        )
+
+    @staticmethod
+    def _resolve_to_stage_recipients(application, target_stage, action="FORWARD", context=None, forwarded_to=None, user_for_txn=None):
+        ctx = context or {}
+        recipients = []
+        seen_ids = set()
+
+        def _add_user(u):
+            if not u:
+                return
+            uid = str(getattr(u, 'pk', None) or getattr(u, 'id', None) or '')
+            uname = getattr(u, 'username', None)
+            if not uid and not uname:
+                return
+            key = uid or uname
+            if key not in seen_ids:
+                seen_ids.add(key)
+                fn = f"{getattr(u, 'first_name', '') or ''} {getattr(u, 'last_name', '') or ''}".strip() or uname
+                recipients.append({
+                    'id': uid,
+                    'username': uname or '',
+                    'full_name': fn,
+                    'role': getattr(getattr(u, 'role', None), 'name', '') or ''
+                })
+
+        # 1. Explicit keys from context
+        for k in ("to_stage_username", "forwarded_to_username", "forward_to_user", "assigned_user", "assigned_to", "forward_to", "target_username", "forward_to_users"):
+            if ctx.get(k):
+                val = ctx[k]
+                if isinstance(val, (list, tuple)):
+                    for item in val:
+                        if hasattr(item, 'username'):
+                            _add_user(item)
+                        elif isinstance(item, str):
+                            try:
+                                from django.contrib.auth import get_user_model
+                                u = get_user_model().objects.filter(username=item.strip()).first()
+                                if u:
+                                    _add_user(u)
+                            except Exception:
+                                pass
+                elif hasattr(val, "username"):
+                    _add_user(val)
+                elif isinstance(val, str) and val.strip():
+                    try:
+                        from django.contrib.auth import get_user_model
+                        for un in val.split(','):
+                            un = un.strip()
+                            if un:
+                                u = get_user_model().objects.filter(username=un).first()
+                                if u:
+                                    _add_user(u)
+                    except Exception:
+                        pass
+
+        if recipients:
+            return recipients
+
+        app_district = getattr(application, 'district', None) or (getattr(user_for_txn, 'district', None) if user_for_txn else None)
+        target_stage_clean = ' '.join(str(getattr(target_stage, 'name', '') or '').lower().replace('_', ' ').split())
+
+        # 2. Check objection / payment / return to applicant
+        is_target_obj = "objection" in target_stage_clean and "reject" not in target_stage_clean and not getattr(target_stage, "is_final", False)
+        if is_target_obj or "awaiting_payment" in target_stage_clean:
+            applicant = getattr(application, 'user', None) or getattr(application, 'applicant_user', None) or getattr(application, 'applicant', None)
+            if applicant:
+                _add_user(applicant)
+                return recipients
+            first_txn = getattr(application, 'transactions', None)
+            if first_txn and first_txn.exists():
+                t = first_txn.order_by('id').first()
+                if t and t.performed_by:
+                    _add_user(t.performed_by)
+                    return recipients
+
+        # 3. Roles resolution from target_stage permissions / aliases
+        from models.transactional.logs.services import resolve_stage_recipients
+        stage_name_str = getattr(target_stage, 'name', str(target_stage)) if target_stage else ''
+        res = resolve_stage_recipients(
+            target_stage=stage_name_str,
+            target_stage_name=getattr(target_stage, 'description', None) or stage_name_str,
+            district=app_district
+        )
+        if res:
+            return res
+
+        # 4. Direct forwarded_to role
+        if forwarded_to:
+            try:
+                from django.contrib.auth import get_user_model
+                qs = get_user_model().objects.filter(role=forwarded_to, is_active=True)
+                if app_district and qs.filter(district=app_district).exists():
+                    qs = qs.filter(district=app_district)
+                for u in qs:
+                    _add_user(u)
+                if recipients:
+                    return recipients
+            except Exception:
+                pass
+
+        # 5. Final fallback to applicant / licensee
+        applicant = getattr(application, 'user', None) or getattr(application, 'applicant_user', None) or getattr(application, 'applicant', None) or getattr(application, 'created_by', None)
+        if applicant:
+            _add_user(applicant)
+
+        return recipients
+
+    @staticmethod
+    def _resolve_to_stage_username(application, target_stage, action="FORWARD", context=None, forwarded_to=None, user_for_txn=None):
+        recipients = WorkflowService._resolve_to_stage_recipients(
+            application=application,
+            target_stage=target_stage,
+            action=action,
+            context=context,
+            forwarded_to=forwarded_to,
+            user_for_txn=user_for_txn
+        )
+        if recipients:
+            return ", ".join([r['username'] for r in recipients if r.get('username')])
+        return None
+
+
     @staticmethod
     def get_application_by_id(application_id, user=None):
+
         from urllib.parse import unquote
         from django.db.models import Q
 
@@ -969,6 +1140,7 @@ class WorkflowService:
                 deadline_at=deadline_at,
             )
 
+        initial_from_stage = getattr(application, 'current_stage', None)
         application.current_stage = target_stage
         application.save(update_fields=['current_stage'])
 
@@ -984,6 +1156,26 @@ class WorkflowService:
             stage=target_stage,
             remarks=remarks or "Objection raised"
         )
+
+        # ---------- Admin Audit Log ('admin_log') ----------
+        obj_target_user = WorkflowService._resolve_to_stage_username(
+            application=application,
+            target_stage=target_stage,
+            action="OBJECTION",
+            user_for_txn=user
+        )
+        log_admin_action(
+            action="OBJECTION",
+            user=user,
+            application=application,
+            from_stage=initial_from_stage,
+            to_stage=target_stage,
+            to_stage_username=obj_target_user,
+            status=f"Objection raised, moved to {getattr(target_stage, 'name', '')}",
+            remarks=remarks or "Objection raised",
+            metadata={"objections": objections}
+        )
+
 
     @staticmethod
     def _compute_objection_deadline():
@@ -1278,6 +1470,26 @@ class WorkflowService:
                 stage=return_stage,
                 remarks=remarks
             )
+
+            # ---------- Admin Audit Log ('admin_log') ----------
+            res_target_user = WorkflowService._resolve_to_stage_username(
+                application=application,
+                target_stage=return_stage,
+                action="RESOLVE_OBJECTION",
+                forwarded_to=forward_to,
+                user_for_txn=user
+            )
+            log_admin_action(
+                action="RESOLVE_OBJECTION",
+                user=user,
+                application=application,
+                from_stage=entry_to_objection_txn.stage if entry_to_objection_txn else None,
+                to_stage=return_stage,
+                to_stage_username=res_target_user,
+                status=f"Objections resolved, returned to {getattr(return_stage, 'name', '')}",
+                remarks=remarks or "Objections resolved",
+                metadata={"updated_fields": list((updated_fields or {}).keys())}
+            )
             return
 
         def _is_payment_stage(stage):
@@ -1333,6 +1545,26 @@ class WorkflowService:
             remarks=remarks
         )
 
+        # ---------- Admin Audit Log ('admin_log') ----------
+        res_target_user2 = WorkflowService._resolve_to_stage_username(
+            application=application,
+            target_stage=return_txn.stage,
+            action="RESOLVE_OBJECTION",
+            forwarded_to=forward_to,
+            user_for_txn=user
+        )
+        log_admin_action(
+            action="RESOLVE_OBJECTION",
+            user=user,
+            application=application,
+            from_stage=entry_to_objection_txn.stage if entry_to_objection_txn else None,
+            to_stage=return_txn.stage,
+            to_stage_username=res_target_user2,
+            status=f"Objections resolved, returned to {getattr(return_txn.stage, 'name', '')}",
+            remarks=remarks or "Objections resolved",
+            metadata={"updated_fields": list((updated_fields or {}).keys())}
+        )
+
     @staticmethod
     @transaction.atomic
     def reject_application(application, user, target_stage, remarks=None):
@@ -1346,6 +1578,7 @@ class WorkflowService:
         if not remarks:
             raise ValidationError("A remark is required when rejecting an application.")
 
+        initial_from_stage = getattr(application, 'current_stage', None)
         WorkflowService.validate_transition(application, target_stage, {}, user=user)
 
         # Create the rejection record
@@ -1372,6 +1605,24 @@ class WorkflowService:
             remarks=remarks,
         )
 
+        # ---------- Admin Audit Log ('admin_log') ----------
+        rej_target_user = WorkflowService._resolve_to_stage_username(
+            application=application,
+            target_stage=target_stage,
+            action="REJECT",
+            user_for_txn=user
+        )
+        log_admin_action(
+            action="REJECT",
+            user=user,
+            application=application,
+            from_stage=initial_from_stage,
+            to_stage=target_stage,
+            to_stage_username=rej_target_user,
+            status=f"Application Rejected at stage {getattr(target_stage, 'name', '')}",
+            remarks=remarks
+        )
+
     @staticmethod
     def record_transaction(application, user, action, remarks=None):
         stage = application.current_stage
@@ -1390,11 +1641,31 @@ class WorkflowService:
             remarks=remarks
         )
 
+        # ---------- Admin Audit Log ('admin_log') ----------
+        rec_target_user = WorkflowService._resolve_to_stage_username(
+            application=application,
+            target_stage=stage,
+            action=str(action or 'ACTION').upper(),
+            forwarded_to=forwarded_to,
+            user_for_txn=user
+        )
+        log_admin_action(
+            action=str(action or 'ACTION').upper(),
+            user=user,
+            application=application,
+            from_stage=stage,
+            to_stage=stage,
+            to_stage_username=rec_target_user,
+            status=f"Action {action} performed",
+            remarks=remarks
+        )
+
         try:
             from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
             invalidate_dashboard_counts_cache()
         except Exception:
             pass
+
 
     # ─────────────────────────────────────────────────────────────────────────
     # Auto-rejection of expired objections
@@ -1484,6 +1755,17 @@ class WorkflowService:
             ),
             rejected_by=None,
             stage=rejected_stage,
+        )
+
+        # ---------- Admin Audit Log ('admin_log') ----------
+        log_admin_action(
+            action="SYSTEM_AUTO_REJECT",
+            user=None,
+            application=application,
+            from_stage=current_stage,
+            to_stage=rejected_stage,
+            status="Auto-rejected by system (objection deadline expired)",
+            remarks="Application automatically rejected: no action was taken on the raised objection within the allowed deadline."
         )
 
         try:
@@ -1752,6 +2034,17 @@ class WorkflowService:
             stage=rejected_stage,
         )
 
+        # ---------- Admin Audit Log ('admin_log') ----------
+        log_admin_action(
+            action="SYSTEM_AUTO_REJECT",
+            user=None,
+            application=application,
+            from_stage=current_stage,
+            to_stage=rejected_stage,
+            status="Auto-rejected by system (payment window expired)",
+            remarks="Application automatically rejected: License Fee and Security Amount were not paid within the allowed payment window."
+        )
+
         try:
             from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
             invalidate_dashboard_counts_cache()
@@ -1759,6 +2052,7 @@ class WorkflowService:
             pass
 
         return True
+
 
     @staticmethod
     @transaction.atomic

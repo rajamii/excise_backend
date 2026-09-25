@@ -36,3 +36,79 @@ class UserActivitySerializer(serializers.ModelSerializer):
             'metadata'
         ]
         read_only_fields = fields
+
+
+from .models import AdminLog
+
+class AdminLogSerializer(serializers.ModelSerializer):
+    timestamp_formatted = serializers.SerializerMethodField()
+    forwarding_id = serializers.CharField(source='to_stage_user_id', read_only=True, allow_null=True)
+    forwarded_to_id = serializers.CharField(source='to_stage_user_id', read_only=True, allow_null=True)
+    forwarded_to_name = serializers.CharField(source='to_stage_full_name', read_only=True, allow_null=True)
+    forwarded_to_username = serializers.CharField(source='to_stage_username', read_only=True, allow_null=True)
+    forwarded_recipients = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AdminLog
+        fields = [
+            'id',
+            'admin_id',
+            'username',
+            'full_name',
+            'role',
+            'user',
+            'module_name',
+            'application_id',
+            'content_type',
+            'object_id',
+            'action',
+            'from_stage',
+            'to_stage',
+            'to_stage_name',
+            'to_stage_user_id',
+            'to_stage_username',
+            'to_stage_full_name',
+            'forwarding_id',
+            'forwarded_to_id',
+            'forwarded_to_name',
+            'forwarded_to_username',
+            'forwarded_recipients',
+            'status',
+            'remarks',
+
+            'reverted_by_id',
+            'reverted_by_username',
+            'reverted_by_name',
+            'reverted_by_role',
+            'reverted_to_id',
+            'reverted_to_username',
+            'reverted_to_name',
+            'reverted_to_role',
+            'reverted_to_stage',
+            'ip_address',
+            'user_agent',
+            'metadata',
+            'timestamp',
+            'timestamp_formatted',
+        ]
+        read_only_fields = ['id', 'timestamp', 'timestamp_formatted', 'forwarded_recipients']
+
+    def get_timestamp_formatted(self, obj):
+        if obj.timestamp:
+            return obj.timestamp.strftime("%d-%m-%Y %I:%M:%S %p")
+        return None
+
+    def get_forwarded_recipients(self, obj):
+        meta = obj.metadata or {}
+        if isinstance(meta, dict) and 'forwarded_recipients' in meta and isinstance(meta['forwarded_recipients'], list) and meta['forwarded_recipients']:
+            return meta['forwarded_recipients']
+        
+        from .services import resolve_stage_recipients
+        return resolve_stage_recipients(
+            target_stage=obj.to_stage,
+            target_stage_name=obj.to_stage_name,
+            username_str=obj.to_stage_username,
+            user_id_str=obj.to_stage_user_id,
+            full_name_str=obj.to_stage_full_name
+        )
+

@@ -44,5 +44,9 @@ urlpatterns = [
     # Public validation (short alias)
     # /v/<validation-code>/  -> QR-friendly verification page (download only if valid)
     path('v/<everything:code>/', public_validation_views.validate_license_landing, name='validate-license-short'),
+
+    # Admin Audit Logs (short aliases)
+    path('admin-logs/', include('models.transactional.logs.urls')),
 ]
+
 
