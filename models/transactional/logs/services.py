@@ -1,9 +1,19 @@
 import logging
+from django.db import transaction
 from django.utils import timezone
 from django.contrib.contenttypes.models import ContentType
 from .models import AdminLog
 
 logger = logging.getLogger(__name__)
+
+
+def _truncate(val, max_len):
+    if val is None:
+        return None
+    s = str(val)
+    if len(s) > max_len:
+        return s[:max_len]
+    return s
 
 # Canonical map of model class / app names to user-facing module names
 MODULE_NAME_MAP = {
@@ -404,41 +414,42 @@ class AdminLogService:
             if final_recipients:
                 meta_payload['forwarded_recipients'] = final_recipients
 
-            # 6. Create AdminLog
-            log_entry = AdminLog.objects.create(
-                admin_id=user_snap['admin_id'],
-                username=user_snap['username'],
-                full_name=user_snap['full_name'],
-                role=user_snap['role'],
-                user=user_snap['user_obj'],
-                module_name=res_module,
-                application_id=res_app_id,
-                content_type=content_type,
-                object_id=object_id,
-                action=action_upper,
-                from_stage=str(str_from_stage) if str_from_stage else None,
-                to_stage=str(str_to_stage) if str_to_stage else None,
-                to_stage_name=str(final_to_stage_name) if final_to_stage_name else None,
-                to_stage_user_id=str(final_to_stage_user_id) if final_to_stage_user_id else None,
-                to_stage_username=str(final_to_stage_username) if final_to_stage_username else None,
-                to_stage_full_name=str(final_to_stage_full_name) if final_to_stage_full_name else None,
-                status=status or f"Action {action_upper} Completed",
-                remarks=remarks or "",
-                reverted_by_id=reverted_by_id,
-                reverted_by_username=reverted_by_username,
-                reverted_by_name=reverted_by_name,
-                reverted_by_role=reverted_by_role,
-                reverted_to_id=reverted_to_id,
-                reverted_to_username=reverted_to_username,
-                reverted_to_name=reverted_to_name,
-                reverted_to_role=reverted_to_role,
-                reverted_to_stage=str(str_rev_to_stage) if str_rev_to_stage else None,
-                ip_address=final_ip,
-                user_agent=final_ua,
-                metadata=meta_payload,
-                timestamp=timestamp or timezone.now()
-            )
-            return log_entry
+            # 6. Create AdminLog inside a savepoint so any logging failure never aborts outer transaction
+            with transaction.atomic():
+                log_entry = AdminLog.objects.create(
+                    admin_id=_truncate(user_snap.get('admin_id'), 100),
+                    username=_truncate(user_snap.get('username'), 150) or 'SYSTEM',
+                    full_name=_truncate(user_snap.get('full_name'), 255) or 'System Action',
+                    role=_truncate(user_snap.get('role'), 100) or 'SYSTEM',
+                    user=user_snap.get('user_obj'),
+                    module_name=_truncate(res_module, 150),
+                    application_id=_truncate(res_app_id, 150),
+                    content_type=content_type,
+                    object_id=_truncate(object_id, 255),
+                    action=_truncate(action_upper, 100),
+                    from_stage=_truncate(str(str_from_stage) if str_from_stage else None, 150),
+                    to_stage=_truncate(str(str_to_stage) if str_to_stage else None, 150),
+                    to_stage_name=_truncate(str(final_to_stage_name) if final_to_stage_name else None, 255),
+                    to_stage_user_id=_truncate(str(final_to_stage_user_id) if final_to_stage_user_id else None, 100),
+                    to_stage_username=_truncate(str(final_to_stage_username) if final_to_stage_username else None, 150),
+                    to_stage_full_name=_truncate(str(final_to_stage_full_name) if final_to_stage_full_name else None, 255),
+                    status=_truncate(status or f"Action {action_upper} Completed", 100),
+                    remarks=remarks or "",
+                    reverted_by_id=_truncate(reverted_by_id, 100),
+                    reverted_by_username=_truncate(reverted_by_username, 150),
+                    reverted_by_name=_truncate(reverted_by_name, 255),
+                    reverted_by_role=_truncate(reverted_by_role, 100),
+                    reverted_to_id=_truncate(reverted_to_id, 100),
+                    reverted_to_username=_truncate(reverted_to_username, 150),
+                    reverted_to_name=_truncate(reverted_to_name, 255),
+                    reverted_to_role=_truncate(reverted_to_role, 100),
+                    reverted_to_stage=_truncate(str(str_rev_to_stage) if str_rev_to_stage else None, 150),
+                    ip_address=final_ip,
+                    user_agent=final_ua,
+                    metadata=meta_payload,
+                    timestamp=timestamp or timezone.now()
+                )
+                return log_entry
 
         except Exception as e:
             logger.error("Failed to write to admin_log: %s", e, exc_info=True)

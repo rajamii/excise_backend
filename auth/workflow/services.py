@@ -1002,8 +1002,9 @@ class WorkflowService:
 
         # 2. Check objection / payment / return to applicant
         is_target_obj = "objection" in target_stage_clean and "reject" not in target_stage_clean and not getattr(target_stage, "is_final", False)
-        if is_target_obj or "awaiting_payment" in target_stage_clean:
-            applicant = getattr(application, 'user', None) or getattr(application, 'applicant_user', None) or getattr(application, 'applicant', None)
+        is_payment_gate = ("payment" in target_stage_clean or "awaiting" in target_stage_clean) and not getattr(target_stage, "is_final", False)
+        if is_target_obj or is_payment_gate:
+            applicant = getattr(application, 'applicant', None) or getattr(application, 'applicant_user', None) or getattr(application, 'user', None) or getattr(application, 'created_by', None)
             if applicant:
                 _add_user(applicant)
                 return recipients

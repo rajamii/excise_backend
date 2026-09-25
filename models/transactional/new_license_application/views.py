@@ -721,7 +721,10 @@ def initiate_renewal(request, license_id):
 @permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
 def list_license_applications(request):
-    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
 
     if role in ["site_admin"]:
         applications = NewLicenseApplication.objects.all()
@@ -744,9 +747,11 @@ def list_license_applications(request):
             )
         )
 
+        user_role = getattr(request.user, 'role', None)
+        role_filter = Q(current_stage__stagepermission__role=user_role, current_stage__stagepermission__can_process=True) if user_role else Q()
         applications = NewLicenseApplication.objects.filter(
             Q(current_stage__name__in=role_stage_names) |
-            Q(current_stage__stagepermission__role=request.user.role, current_stage__stagepermission__can_process=True) |
+            role_filter |
             acted_by_role
         ).distinct()
 
@@ -761,13 +766,16 @@ def list_license_applications(request):
 @permission_classes([HasAppPermission('new_license_application', 'view')])
 @api_view(['GET'])
 def license_application_detail(request, pk):
+    if not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
     raw_pk = str(pk or "").strip()
     if raw_pk.isdigit():
         application = get_object_or_404(NewLicenseApplication, pk=int(raw_pk))
     else:
         application = get_object_or_404(NewLicenseApplication, application_id=raw_pk)
 
-    role = _normalize_role(request.user.role.name if request.user.role else None)
+    role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     if role == "licensee" and application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -781,6 +789,9 @@ def license_application_detail(request, pk):
 @permission_classes([HasAppPermission('new_license_application', 'view')])
 @api_view(['GET'])
 def final_license_detail(request, application_id):
+    if not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
     raw_id = str(application_id or "").strip()
     token = raw_id
     low = token.lower()
@@ -803,7 +814,7 @@ def final_license_detail(request, application_id):
 
     application = get_object_or_404(NewLicenseApplication, application_id=resolved_application_id)
 
-    role = _normalize_role(request.user.role.name if request.user.role else None)
+    role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     if role == "licensee" and application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -1024,9 +1035,12 @@ def final_license_detail(request, application_id):
 @permission_classes([HasAppPermission('new_license_application', 'view')])
 @api_view(['GET'])
 def final_license_passport_photo(request, application_id):
+    if not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
     application = get_object_or_404(NewLicenseApplication, application_id=application_id)
 
-    role = _normalize_role(request.user.role.name if request.user.role else None)
+    role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     if role == "licensee" and application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -1059,9 +1073,12 @@ def final_license_passport_photo(request, application_id):
 @permission_classes([HasAppPermission('new_license_application', 'view')])
 @api_view(['GET'])
 def final_license_qr_code(request, application_id):
+    if not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
     application = get_object_or_404(NewLicenseApplication, application_id=application_id)
 
-    role = _normalize_role(request.user.role.name if request.user.role else None)
+    role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     if role == "licensee" and application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -1764,7 +1781,10 @@ def dashboard_counts(request):
     from django.db.models import Exists, OuterRef, Q
     from auth.workflow.models import Transaction as WorkflowTransaction
 
-    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     workflow_id = WORKFLOW_IDS['LICENSE_APPROVAL']
     stage_sets = _get_stage_sets(workflow_id)
     all_qs = NewLicenseApplication.objects.all()
@@ -1784,7 +1804,7 @@ def dashboard_counts(request):
         approved_stages = set(stage_sets['approved'])
         rejected_stages = set(stage_sets['rejected'])
         payment_stages = set(stage_sets['payment'])
-        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
+        pending_stages = (set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages) | payment_stages
 
         unpaid_qs = base_qs.filter(is_application_fee_paid=False).exclude(
             Q(current_stage__name__in=rejected_stages) | Q(current_stage__name__icontains='reject')
@@ -1792,7 +1812,7 @@ def dashboard_counts(request):
         paid_qs = base_qs.filter(is_application_fee_paid=True)
 
         return Response({
-            # Licensee UX: application is considered "Pending" until application-fee payment succeeds.
+            # Licensee UX: application is considered "Pending" until application-fee payment succeeds or in-flight (including awaiting license fee payment).
             "applied": paid_qs.filter(current_stage__name__in=applied_stages).count(),
             "pending": unpaid_qs.count() + paid_qs.filter(current_stage__name__in=pending_stages).exclude(
                 Q(current_stage__name__in=rejected_stages) | Q(current_stage__name__icontains='reject')
@@ -1811,7 +1831,7 @@ def dashboard_counts(request):
         approved_stages = set(stage_sets['approved'])
         rejected_stages = set(stage_sets['rejected'])
         payment_stages = set(stage_sets.get('payment', []))
-        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
+        pending_stages = (set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages) | payment_stages
 
         return Response({
             "applied": all_qs.count(),
@@ -1924,7 +1944,10 @@ def application_group(request):
     except Exception:
         pass
 
-    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
+    role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     workflow_id = WORKFLOW_IDS['LICENSE_APPROVAL']
     stage_sets = _get_stage_sets(workflow_id)
     all_qs = _filter_by_user_district(NewLicenseApplication.objects.all(), request.user, 'site_district')
@@ -1940,7 +1963,7 @@ def application_group(request):
         approved_stages = set(stage_sets['approved'])
         rejected_stages = set(stage_sets['rejected'])
         payment_stages = set(stage_sets.get('payment', []))
-        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
+        pending_stages = (set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages) | payment_stages
 
         from django.db.models import Q
         pending_qs = base_qs.filter(
@@ -1975,7 +1998,7 @@ def application_group(request):
         approved_stages = set(stage_sets['approved'])
         rejected_stages = set(stage_sets['rejected'])
         payment_stages = set(stage_sets.get('payment', []))
-        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
+        pending_stages = (set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages) | payment_stages
 
         return Response({
             "applied": NewLicenseApplicationSerializer(
