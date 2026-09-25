@@ -1812,8 +1812,8 @@ def dashboard_counts(request):
         paid_qs = base_qs.filter(is_application_fee_paid=True)
 
         return Response({
-            # Licensee UX: application is considered "Pending" until application-fee payment succeeds or in-flight (including awaiting license fee payment).
-            "applied": paid_qs.filter(current_stage__name__in=applied_stages).count(),
+            # Licensee UX: Total applications applied by this licensee
+            "applied": base_qs.count(),
             "pending": unpaid_qs.count() + paid_qs.filter(current_stage__name__in=pending_stages).exclude(
                 Q(current_stage__name__in=rejected_stages) | Q(current_stage__name__icontains='reject')
             ).count(),
