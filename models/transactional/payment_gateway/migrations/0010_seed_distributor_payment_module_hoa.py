@@ -29,8 +29,10 @@ def seed_distributor_payment_module_and_hoa(apps, schema_editor):
     }
 
     for wcode, hoacode in hoa_map.items():
-        hoa_obj = MasterHeadOfAccount.objects.get(head_of_account=hoacode)
-        w_type = MasterWalletType.objects.get(code=wcode)
+        hoa_obj = MasterHeadOfAccount.objects.filter(head_of_account=hoacode).first()
+        w_type = MasterWalletType.objects.filter(code=wcode).first()
+        if not hoa_obj or not w_type:
+            continue
         pmh = PaymentModuleHoa.objects.filter(module_code=dist_mod, wallet_type=w_type).first()
         if pmh:
             pmh.head_of_account = hoa_obj

@@ -412,6 +412,20 @@ def wallet_recharge_credit(request, licensee_id):
             if application and not application.is_security_fee_paid:
                 application.is_security_fee_paid = True
                 application.save(update_fields=["is_security_fee_paid"])
+
+                try:
+                    from models.transactional.wallet.wallet_service import create_or_update_security_deposit_record
+                    create_or_update_security_deposit_record(
+                        application=application,
+                        user=user,
+                        amount=amount,
+                        transaction_id=transaction_id,
+                        reference_no=application.application_id,
+                        remarks="Wallet recharge security deposit credit",
+                    )
+                except Exception as sd_err:
+                    logger.warning("Failed to create security deposit record from wallet recharge: %s", sd_err)
+
                 sync_new_license_payment_status(application)
         except Exception as e:
             import logging

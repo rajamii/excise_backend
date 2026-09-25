@@ -1,3 +1,5 @@
+from decimal import Decimal
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -395,4 +397,96 @@ class WalletTransaction(models.Model):
                     uf.append(name)
             kwargs["update_fields"] = uf
         super().save(*args, **kwargs)
+
+
+class SecurityDepositRecord(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="security_deposit_records"
+    )
+    applicant_user_id = models.CharField(max_length=100, null=True, blank=True)
+    username = models.CharField(max_length=150, null=True, blank=True, db_index=True)
+    applicant_name = models.CharField(max_length=200, null=True, blank=True)
+    application_id = models.CharField(max_length=100, db_index=True)
+    reference_no = models.CharField(max_length=150, null=True, blank=True)
+    license_id = models.CharField(max_length=100, null=True, blank=True, db_index=True)
+    establishment_name = models.CharField(max_length=255, null=True, blank=True)
+    amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    refunded_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    balance_amount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0.00"))
+    status = models.CharField(
+        max_length=50,
+        default="PAID",
+        choices=[
+            ("PAID", "PAID"),
+            ("REFUNDED", "REFUNDED"),
+            ("PARTIALLY_REFUNDED", "PARTIALLY_REFUNDED"),
+            ("ADJUSTED", "ADJUSTED"),
+        ],
+        db_index=True
+    )
+    transaction_id = models.CharField(max_length=150, null=True, blank=True, db_index=True)
+    payment_date = models.DateTimeField(default=timezone.now)
+    from_date = models.DateField(null=True, blank=True)
+    to_date = models.DateField(null=True, blank=True)
+    remarks = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "security_deposit_record"
+        verbose_name = "Security Deposit Record"
+        verbose_name_plural = "Security Deposit Records"
+        ordering = ["-payment_date", "-created_at"]
+        indexes = [
+            models.Index(fields=["application_id"]),
+            models.Index(fields=["username"]),
+            models.Index(fields=["license_id"]),
+            models.Index(fields=["status"]),
+            models.Index(fields=["transaction_id"]),
+            models.Index(fields=["from_date"]),
+            models.Index(fields=["to_date"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        amt = Decimal(str(self.amount or 0)).quantize(Decimal("0.01"))
+        ref = Decimal(str(self.refunded_amount or 0)).quantize(Decimal("0.01"))
+        self.amount = amt
+        self.refunded_amount = ref
+        self.balance_amount = (amt - ref).quantize(Decimal("0.01"))
+        if not self.from_date and self.payment_date:
+            try:
+                self.from_date = self.payment_date.date() if hasattr(self.payment_date, "date") else self.payment_date
+            except Exception:
+                pass
+        if ref >= amt and amt > 0:
+            self.status = "REFUNDED"
+            if not self.to_date:
+                self.to_date = timezone.now().date()
+        elif ref > 0 and ref < amt:
+            self.status = "PARTIALLY_REFUNDED"
+        elif ref == 0 and self.status in ("REFUNDED", "PARTIALLY_REFUNDED"):
+            self.status = "PAID"
+        super().save(*args, **kwargs)
+
+    @property
+    def deposit_duration_days(self) -> int | None:
+        """Returns number of days the security deposit was kept."""
+        if self.from_date and self.to_date:
+            return max(0, (self.to_date - self.from_date).days)
+        elif self.from_date:
+            return max(0, (timezone.now().date() - self.from_date).days)
+        return None
+
+    def __str__(self):
+        return f"Security Deposit: {self.application_id} - {self.username or self.applicant_user_id} (₹{self.amount})"
+
+
+# Alias for case sensitivity / alternative import naming
+Security_deposit_record = SecurityDepositRecord
+
 

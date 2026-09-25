@@ -1575,6 +1575,20 @@ def pay_security_fee_wallet(request, application_id):
     if not application.is_security_fee_paid:
         application.is_security_fee_paid = True
         application.save(update_fields=["is_security_fee_paid"])
+
+    try:
+        from models.transactional.wallet.wallet_service import create_or_update_security_deposit_record
+        create_or_update_security_deposit_record(
+            application=application,
+            user=request.user,
+            amount=amount,
+            transaction_id=txn_id,
+            reference_no=application.application_id,
+            remarks=f"Security fee paid for {application.application_id}",
+        )
+    except Exception as sd_err:
+        logger.warning("Failed to create security deposit record: %s", sd_err)
+
     sync_new_license_payment_status(application)
 
     return Response({"success": True, "transaction_id": txn_id, "is_security_fee_paid": True})
@@ -1700,6 +1714,19 @@ def force_pay_security_fee(request, application_id=None):
     if not app.is_security_fee_paid:
         app.is_security_fee_paid = True
         app.save(update_fields=["is_security_fee_paid"])
+
+    try:
+        from models.transactional.wallet.wallet_service import create_or_update_security_deposit_record
+        create_or_update_security_deposit_record(
+            application=app,
+            user=request.user,
+            amount=amount,
+            transaction_id=utr,
+            reference_no=app.application_id,
+            remarks=f"Security fee paid (Force Pay) for {app.application_id}",
+        )
+    except Exception as sd_err:
+        logger.warning("Force-pay-security: failed to create security deposit record: %s", sd_err)
 
     # 5. Sync payment status
     sync_new_license_payment_status(app)

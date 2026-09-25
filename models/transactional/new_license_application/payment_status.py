@@ -282,4 +282,14 @@ def sync_new_license_payment_status(application):
             pass
         sync_master_factory_for_license(license_obj)
 
+    if getattr(application, "is_security_fee_paid", False):
+        try:
+            from models.transactional.wallet.wallet_service import create_or_update_security_deposit_record
+            create_or_update_security_deposit_record(
+                application=application,
+                license_id=str(getattr(license_obj, "license_id", "") or "") if license_obj else None,
+            )
+        except Exception:
+            pass
+
     return license_obj

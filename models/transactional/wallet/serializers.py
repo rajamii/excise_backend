@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from .models import WalletBalance, WalletTransaction
+from .models import WalletBalance, WalletTransaction, SecurityDepositRecord
 
 
 class WalletBalanceSerializer(serializers.ModelSerializer):
@@ -17,10 +17,17 @@ class WalletTransactionSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class SecurityDepositRecordSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SecurityDepositRecord
+        fields = "__all__"
+
+
 class WalletRechargeCreditSerializer(serializers.Serializer):
     transaction_id = serializers.CharField(max_length=100)
     wallet_type = serializers.CharField(max_length=30)
     head_of_account = serializers.CharField(max_length=50)
     amount = serializers.DecimalField(max_digits=18, decimal_places=2, min_value=Decimal("0.01"))
     remarks = serializers.CharField(max_length=300, required=False, allow_blank=True)
+
 

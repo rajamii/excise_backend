@@ -1597,6 +1597,20 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                                 if application and not application.is_security_fee_paid:
                                     application.is_security_fee_paid = True
                                     application.save(update_fields=["is_security_fee_paid"])
+
+                                    try:
+                                        from models.transactional.wallet.wallet_service import create_or_update_security_deposit_record
+                                        create_or_update_security_deposit_record(
+                                            application=application,
+                                            user=user,
+                                            amount=parsed_amount or Decimal(str(tx.transaction_amount or 0)),
+                                            transaction_id=str(txn_ref or tx.utr or "").strip(),
+                                            reference_no=application.application_id,
+                                            remarks="BillDesk security deposit payment success",
+                                        )
+                                    except Exception as sd_err:
+                                        logger.warning("Failed to create security deposit record in Billdesk callback: %s", sd_err)
+
                                     sync_new_license_payment_status(application)
                             except Exception as auto_pay_error:
                                 logger.error("Auto security fee payment in Billdesk callback failed: %s", str(auto_pay_error), exc_info=True)

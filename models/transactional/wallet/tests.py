@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from decimal import Decimal
 
 from django.test import TestCase
 from rest_framework.test import APIClient
@@ -219,7 +220,9 @@ class WalletRechargeFallbackTests(TestCase):
         )
         self.police_station = PoliceStation.objects.create(
             police_station="Gangtok PS",
-            subdivision_code=self.subdivision
+            police_station_code=22501,
+            district_code=self.district,
+            is_active=True,
         )
         self.user = CustomUser.objects.create_user(
             email="u3@example.com",
@@ -263,9 +266,9 @@ class WalletRechargeFallbackTests(TestCase):
             current_balance=Decimal("0.00"),
         )
 
-        self.workflow = Workflow.objects.create(id=2, name='License Approval 2')
-        self.stage = WorkflowStage.objects.create(workflow=self.workflow, name='Awaiting Payment')
-        self.approved_stage = WorkflowStage.objects.create(workflow=self.workflow, name='Approved', is_final=True)
+        self.workflow, _ = Workflow.objects.get_or_create(id=2, defaults={'name': 'License Approval 2'})
+        self.stage, _ = WorkflowStage.objects.get_or_create(workflow=self.workflow, name='Awaiting Payment')
+        self.approved_stage, _ = WorkflowStage.objects.get_or_create(workflow=self.workflow, name='Approved', defaults={'is_final': True})
 
         # Create a pending NewLicenseApplication for this user
         self.app = NewLicenseApplication.objects.create(
@@ -444,3 +447,189 @@ class WalletInitializerSalesmanBarmanTests(TestCase):
         self.assertEqual(rows.count(), 2)
         for r in rows:
             self.assertEqual(r.licensee_id, "NA/225/2025-26/0005")
+
+
+class SecurityDepositRecordTests(TestCase):
+    def setUp(self):
+        self.state = State.objects.create(state="Sikkim", state_code=11, is_active=True)
+        self.district = District.objects.create(
+            district="Gangtok",
+            district_code=225,
+            is_active=True,
+            state_code=self.state,
+        )
+        self.subdivision = Subdivision.objects.create(
+            subdivision="Gangtok Subdivision",
+            subdivision_code=1553,
+            is_active=True,
+            district_code=self.district,
+        )
+        self.user = CustomUser.objects.create_user(
+            email="deposit_user@example.com",
+            first_name="Deposit",
+            last_name="Tester",
+            phone_number="9876543210",
+            district=self.district,
+            subdivision=self.subdivision,
+            address="Test address",
+            password="pass",
+        )
+        self.user.username = "DEP_USER_01"
+        self.user.save(update_fields=["username"])
+
+        from models.transactional.wallet.models import SecurityDepositRecord
+        self.SecurityDepositRecord = SecurityDepositRecord
+
+    def test_security_deposit_record_balance_and_status_auto_calculation(self):
+        # 1. Create a security deposit record with 10,000 deposit
+        rec = self.SecurityDepositRecord.objects.create(
+            user=self.user,
+            applicant_user_id=str(self.user.id),
+            username=self.user.username,
+            applicant_name="Deposit Tester",
+            application_id="NLI/GTK/2026-27/0001",
+            license_id="NA/225/2026-27/0001",
+            establishment_name="Test Hotel Bar",
+            amount=10000.00,
+            transaction_id="TXN-SD-12345",
+        )
+
+        self.assertEqual(rec.balance_amount, 10000.00)
+        self.assertEqual(rec.status, "PAID")
+        self.assertEqual(rec.refunded_amount, 0.00)
+        self.assertIsNotNone(rec.from_date)
+
+        # 2. Simulate partial refund (e.g. 4000 refunded back)
+        rec.refunded_amount = 4000.00
+        rec.save()
+
+        rec.refresh_from_db()
+        self.assertEqual(rec.balance_amount, 6000.00)
+        self.assertEqual(rec.status, "PARTIALLY_REFUNDED")
+
+        # 3. Simulate full refund (e.g. remaining 6000 refunded, total 10000)
+        rec.from_date = date(2026, 1, 1)
+        rec.to_date = date(2026, 7, 1)
+        rec.refunded_amount = 10000.00
+        rec.save()
+
+        rec.refresh_from_db()
+        self.assertEqual(rec.balance_amount, 0.00)
+        self.assertEqual(rec.status, "REFUNDED")
+        self.assertEqual(rec.from_date, date(2026, 1, 1))
+        self.assertEqual(rec.to_date, date(2026, 7, 1))
+        self.assertEqual(rec.deposit_duration_days, 181)
+
+    def test_create_or_update_security_deposit_record_helper(self):
+        from models.transactional.wallet.wallet_service import create_or_update_security_deposit_record
+
+        # 1. Test creation via helper
+        rec = create_or_update_security_deposit_record(
+            user=self.user,
+            username=self.user.username,
+            applicant_name="Deposit Tester",
+            application_id="NLI/GTK/2026-27/0002",
+            establishment_name="Hillside Lounge",
+            amount=5000.00,
+            transaction_id="TXN-SD-99999",
+            remarks="Security fee paid for NLI/GTK/2026-27/0002",
+        )
+
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.application_id, "NLI/GTK/2026-27/0002")
+        self.assertEqual(rec.amount, 5000.00)
+        self.assertEqual(rec.balance_amount, 5000.00)
+        self.assertEqual(rec.status, "PAID")
+        self.assertEqual(rec.establishment_name, "Hillside Lounge")
+
+        # 2. Test updating same application does not create duplicate
+        rec2 = create_or_update_security_deposit_record(
+            application_id="NLI/GTK/2026-27/0002",
+            license_id="NA/225/2026-27/0002",
+            amount=5000.00,
+        )
+
+        self.assertEqual(rec.pk, rec2.pk)
+        self.assertEqual(rec2.license_id, "NA/225/2026-27/0002")
+        self.assertEqual(self.SecurityDepositRecord.objects.filter(application_id="NLI/GTK/2026-27/0002").count(), 1)
+
+    def test_auto_creates_security_deposit_record_on_application_payment(self):
+        from models.masters.core.models import LicenseType, PoliceStation
+        from auth.workflow.models import Workflow, WorkflowStage
+        from models.transactional.new_license_application.models import NewLicenseApplication
+        from models.transactional.payment_gateway.models import MasterPaymentModule, PaymentModuleHoa, MasterHeadOfAccount
+        from models.transactional.wallet.models import MasterWalletType, WalletBalance
+
+        cat = LicenseCategory.objects.create(license_category="Bar Cat")
+        subcat = LicenseSubcategory.objects.create(description="Bar Sub", category=cat)
+        ltype = LicenseType.objects.create(license_type="Retail Bar")
+        wf = Workflow.objects.create(id=10, name='Approval Flow')
+        st_wait = WorkflowStage.objects.create(workflow=wf, name='Awaiting Payment')
+        st_app = WorkflowStage.objects.create(workflow=wf, name='Approved', is_final=True)
+        ps = PoliceStation.objects.create(police_station="Test PS", police_station_code=99881, district_code=self.district, is_active=True)
+
+        app = NewLicenseApplication.objects.create(
+            application_id="NLI/GTK/2026-27/0099",
+            workflow=wf,
+            current_stage=st_wait,
+            applicant=self.user,
+            applicant_name="Deposit Tester",
+            license_type=ltype,
+            license_category=cat,
+            license_sub_category=subcat,
+            establishment_name="Skyview Bar",
+            site_district=self.district,
+            site_subdivision=self.subdivision,
+            police_station=ps,
+            location_category="Urban",
+            is_application_fee_paid=True,
+            is_license_fee_paid=False,
+            is_security_fee_paid=False,
+        )
+
+        # Pre-seed wallet type & HOA
+        wt, _ = MasterWalletType.objects.get_or_create(code="security_deposit", defaults={"name": "Security Deposit"})
+        hoa, _ = MasterHeadOfAccount.objects.get_or_create(sl_no=101, defaults={"head_of_account": "non", "visible_status": True})
+        mpm, _ = MasterPaymentModule.objects.get_or_create(module_code="other_module", defaults={"module_desc": "other"})
+        PaymentModuleHoa.objects.get_or_create(module_code=mpm, wallet_type=wt, head_of_account=hoa, defaults={"is_active": True})
+
+        WalletBalance.objects.create(
+            licensee_id=app.application_id,
+            licensee_name="Deposit Tester",
+            user_id=self.user.username,
+            module_type="other",
+            wallet_type=wt,
+            head_of_account="non",
+            current_balance=Decimal("0.00"),
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+
+        # Trigger security deposit payment recharge
+        url = reverse("payment:wallet-recharge-credit", kwargs={"licensee_id": app.application_id})
+        payload = {
+            "transaction_id": "TXN_SD_E2E_001",
+            "wallet_type": "security_deposit",
+            "head_of_account": "non",
+            "amount": "15000.00",
+            "remarks": "Security deposit payment for application",
+        }
+        resp = client.post(url, payload, format="json")
+        self.assertEqual(resp.status_code, 200)
+
+        # Check application updated
+        app.refresh_from_db()
+        self.assertTrue(app.is_security_fee_paid)
+
+        # Check SecurityDepositRecord was automatically created
+        record = self.SecurityDepositRecord.objects.filter(application_id="NLI/GTK/2026-27/0099").first()
+        self.assertIsNotNone(record)
+        self.assertEqual(record.username, self.user.username)
+        self.assertEqual(record.establishment_name, "Skyview Bar")
+        self.assertEqual(record.amount, 15000.00)
+        self.assertEqual(record.balance_amount, 15000.00)
+        self.assertEqual(record.status, "PAID")
+        self.assertEqual(record.transaction_id, "TXN_SD_E2E_001")
+
+

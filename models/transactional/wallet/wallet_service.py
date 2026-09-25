@@ -4,7 +4,13 @@ import logging
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-from .models import WalletBalance, WalletTransaction, _resolve_module_type_from_license_id, _resolve_wallet_row_licensee_id
+from .models import (
+    WalletBalance,
+    WalletTransaction,
+    SecurityDepositRecord,
+    _resolve_module_type_from_license_id,
+    _resolve_wallet_row_licensee_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -375,4 +381,196 @@ def debit_wallet_balance(
         )
 
     return created, wallet, False
+
+
+def create_or_update_security_deposit_record(
+    *,
+    application=None,
+    application_id: str | None = None,
+    user=None,
+    user_id: str | int | None = None,
+    username: str | None = None,
+    applicant_name: str | None = None,
+    establishment_name: str | None = None,
+    license_id: str | None = None,
+    amount: Decimal | float | int | str | None = None,
+    refunded_amount: Decimal | float | int | str | None = None,
+    transaction_id: str | None = None,
+    reference_no: str | None = None,
+    payment_date=None,
+    from_date=None,
+    to_date=None,
+    status: str | None = None,
+    remarks: str | None = None,
+) -> SecurityDepositRecord | None:
+    """
+    Creates or updates a record in SecurityDepositRecord table when a user pays
+    the security deposit for their license application.
+    """
+    try:
+        app_obj = application
+        app_id = str(application_id or getattr(application, "application_id", "") or "").strip()
+
+        if not app_obj and app_id:
+            try:
+                from models.transactional.new_license_application.models import NewLicenseApplication
+                app_obj = (
+                    NewLicenseApplication.objects.select_related("applicant")
+                    .filter(application_id__iexact=app_id)
+                    .first()
+                )
+            except Exception:
+                app_obj = None
+
+        if app_obj and not app_id:
+            app_id = str(getattr(app_obj, "application_id", "") or "").strip()
+
+        # User resolution
+        user_obj = user
+        if not user_obj and app_obj and getattr(app_obj, "applicant", None):
+            user_obj = app_obj.applicant
+
+        resolved_user_id = str(user_id or (getattr(user_obj, "id", None) if user_obj else "") or "").strip()
+        resolved_username = str(username or (getattr(user_obj, "username", None) if user_obj else "") or "").strip()
+
+        # Applicant name
+        resolved_applicant_name = str(
+            applicant_name
+            or getattr(app_obj, "applicant_name", None)
+            or (getattr(user_obj, "get_full_name", lambda: "")() if user_obj else "")
+            or resolved_username
+        ).strip()
+
+        # Establishment name
+        resolved_est_name = str(
+            establishment_name
+            or getattr(app_obj, "establishment_name", None)
+            or ""
+        ).strip()
+
+        # License ID resolution
+        resolved_license_id = str(license_id or "").strip()
+        if not resolved_license_id and app_obj:
+            try:
+                from models.masters.license.models import License
+                from django.contrib.contenttypes.models import ContentType
+                new_app_ct = ContentType.objects.get_for_model(app_obj.__class__)
+                lic = (
+                    License.objects.filter(
+                        source_type="new_license_application",
+                        source_content_type=new_app_ct,
+                        source_object_id=str(app_obj.pk),
+                    )
+                    .order_by("-issue_date", "-license_id")
+                    .first()
+                )
+                if lic and lic.license_id:
+                    resolved_license_id = str(lic.license_id).strip()
+            except Exception:
+                pass
+
+        # Amount resolution
+        resolved_amount = None
+        if amount is not None:
+            try:
+                resolved_amount = Decimal(str(amount)).quantize(Decimal("0.01"))
+            except Exception:
+                resolved_amount = None
+
+        if resolved_amount is None and app_obj:
+            try:
+                from models.masters.core.models import LicenseFee
+                fee = None
+                if getattr(app_obj, "licensee_fee_id", None):
+                    fee = LicenseFee.objects.filter(id=app_obj.licensee_fee_id).first()
+                if not fee:
+                    fee = (
+                        LicenseFee.objects.filter(
+                            license_category=app_obj.license_category,
+                            license_subcategory=app_obj.license_sub_category,
+                        )
+                        .order_by("-id")
+                        .first()
+                    )
+                if fee and getattr(fee, "security_amount", None) is not None:
+                    resolved_amount = Decimal(str(fee.security_amount)).quantize(Decimal("0.01"))
+            except Exception:
+                pass
+
+        txn_id = str(transaction_id or "").strip()
+        ref_no = str(reference_no or app_id or txn_id).strip()
+        pay_date = payment_date or timezone.now()
+        rem = str(remarks or f"Security deposit paid for {app_id}").strip()
+
+        with transaction.atomic():
+            record = None
+            if app_id:
+                record = SecurityDepositRecord.objects.select_for_update().filter(application_id__iexact=app_id).first()
+            if not record and txn_id:
+                record = SecurityDepositRecord.objects.select_for_update().filter(transaction_id__iexact=txn_id).first()
+
+            if not record:
+                record = SecurityDepositRecord(
+                    application_id=app_id,
+                    transaction_id=txn_id,
+                )
+                if resolved_amount is not None and resolved_amount > Decimal("0.00"):
+                    record.amount = resolved_amount
+                elif amount is not None:
+                    record.amount = Decimal(str(amount)).quantize(Decimal("0.01"))
+                else:
+                    record.amount = Decimal("5000.00")
+            else:
+                if amount is not None and resolved_amount is not None:
+                    record.amount = resolved_amount
+                elif (not record.amount or record.amount <= Decimal("0.00")) and resolved_amount is not None:
+                    record.amount = resolved_amount
+
+            if user_obj and getattr(user_obj, "is_authenticated", True):
+                try:
+                    record.user = user_obj
+                except Exception:
+                    pass
+            if resolved_user_id:
+                record.applicant_user_id = resolved_user_id
+            if resolved_username:
+                record.username = resolved_username
+            if resolved_applicant_name:
+                record.applicant_name = resolved_applicant_name
+            if resolved_est_name:
+                record.establishment_name = resolved_est_name
+            if resolved_license_id:
+                record.license_id = resolved_license_id
+            if app_id:
+                record.application_id = app_id
+            if ref_no:
+                record.reference_no = ref_no
+            if txn_id:
+                record.transaction_id = txn_id
+            if resolved_amount is not None:
+                record.amount = resolved_amount
+            if refunded_amount is not None:
+                try:
+                    record.refunded_amount = Decimal(str(refunded_amount)).quantize(Decimal("0.01"))
+                except Exception:
+                    pass
+            if status:
+                record.status = status
+            if pay_date:
+                record.payment_date = pay_date
+            if from_date:
+                record.from_date = from_date
+            elif not record.from_date and pay_date:
+                record.from_date = pay_date.date() if hasattr(pay_date, "date") else pay_date
+            if to_date:
+                record.to_date = to_date
+            if rem:
+                record.remarks = rem
+
+            record.save()
+            return record
+    except Exception as exc:
+        logger.error("Failed to create/update SecurityDepositRecord: %s", exc, exc_info=True)
+        return None
+
 
