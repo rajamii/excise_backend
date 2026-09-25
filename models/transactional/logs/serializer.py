@@ -36,3 +36,53 @@ class UserActivitySerializer(serializers.ModelSerializer):
             'metadata'
         ]
         read_only_fields = fields
+
+
+from .models import AdminLog
+
+class AdminLogSerializer(serializers.ModelSerializer):
+    timestamp_formatted = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AdminLog
+        fields = [
+            'id',
+            'admin_id',
+            'username',
+            'full_name',
+            'role',
+            'user',
+            'module_name',
+            'application_id',
+            'content_type',
+            'object_id',
+            'action',
+            'from_stage',
+            'to_stage',
+            'to_stage_name',
+            'to_stage_username',
+            'status',
+            'remarks',
+
+            'reverted_by_id',
+            'reverted_by_username',
+            'reverted_by_name',
+            'reverted_by_role',
+            'reverted_to_id',
+            'reverted_to_username',
+            'reverted_to_name',
+            'reverted_to_role',
+            'reverted_to_stage',
+            'ip_address',
+            'user_agent',
+            'metadata',
+            'timestamp',
+            'timestamp_formatted',
+        ]
+        read_only_fields = ['id', 'timestamp', 'timestamp_formatted']
+
+    def get_timestamp_formatted(self, obj):
+        if obj.timestamp:
+            return obj.timestamp.strftime("%d-%m-%Y %I:%M:%S %p")
+        return None
+

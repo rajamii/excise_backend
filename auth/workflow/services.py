@@ -14,6 +14,8 @@ from .models import (
     WorkflowTransition, StagePermission,
     Transaction, Objection, Rejection, Revert
 )
+from models.transactional.logs.services import log_admin_action
+
 
 # UI Configuration for Workflow Actions
 ACTION_CONFIGS = {
@@ -624,7 +626,9 @@ class WorkflowService:
     @transaction.atomic
     def advance_stage(application, user, target_stage, context=None, remarks=None):
         context = context or {}
+        initial_from_stage = getattr(application, 'current_stage', None)
         # Some deployments register the model under different app_labels; rely on model name.
+
         is_new_license_application = application.__class__.__name__.lower() == "newlicenseapplication"
         is_salesman_barman_application = application.__class__.__name__.lower() == "salesmanbarmanmodel"
 
@@ -891,8 +895,64 @@ class WorkflowService:
             except Exception as e:
                 logger.warning("Failed to revert holograms in advance_stage: %s", e)
 
+        # ---------- Admin Audit Log ('admin_log') ----------
+        effective_action = action
+        if not effective_action:
+            if is_reverted:
+                effective_action = "REVERT"
+            elif is_rejection:
+                effective_action = "REJECT"
+            elif str(getattr(target_stage, 'name', '')).lower() == 'approved':
+                effective_action = "APPROVE"
+            else:
+                effective_action = "FORWARD"
+
+        to_stage_username = None
+        if (context or {}).get("to_stage_username"):
+            to_stage_username = (context or {}).get("to_stage_username")
+        elif (context or {}).get("forwarded_to_username"):
+            to_stage_username = (context or {}).get("forwarded_to_username")
+        elif is_target_obj or target_stage.name == "awaiting_payment":
+            first_txn = application.transactions.order_by('id').first()
+            if first_txn and first_txn.performed_by:
+                to_stage_username = first_txn.performed_by.username
+        elif forwarded_to:
+            try:
+                from auth.user.models import CustomUser
+                target_user_qs = CustomUser.objects.filter(role=forwarded_to, is_active=True)
+                app_district = getattr(application, 'district', None) or getattr(user_for_txn, 'district', None)
+                if app_district and target_user_qs.filter(district=app_district).exists():
+                    target_user_qs = target_user_qs.filter(district=app_district)
+                t_user = target_user_qs.first()
+                if t_user:
+                    to_stage_username = t_user.username
+                else:
+                    to_stage_username = getattr(forwarded_to, 'name', str(forwarded_to))
+            except Exception:
+                to_stage_username = getattr(forwarded_to, 'name', str(forwarded_to))
+
+        to_stage_name_str = getattr(target_stage, 'description', None) or getattr(target_stage, 'name', str(target_stage))
+
+        log_admin_action(
+            action=effective_action,
+            user=user_for_txn,
+            application=application,
+            from_stage=initial_from_stage,
+            to_stage=target_stage,
+            to_stage_name=to_stage_name_str,
+            to_stage_username=to_stage_username,
+            status=f"Stage moved to {getattr(target_stage, 'name', '')}",
+            remarks=remarks or (context or {}).get("remarks", ""),
+            reverted_by=user if (action == "REVERT" or is_reverted) else None,
+            reverted_to=forwarded_to if (action == "REVERT" or is_reverted) else None,
+            reverted_to_stage=target_stage if (action == "REVERT" or is_reverted) else None,
+            metadata=context or {}
+        )
+
+
     @staticmethod
     def get_application_by_id(application_id, user=None):
+
         from urllib.parse import unquote
         from django.db.models import Q
 
@@ -969,6 +1029,7 @@ class WorkflowService:
                 deadline_at=deadline_at,
             )
 
+        initial_from_stage = getattr(application, 'current_stage', None)
         application.current_stage = target_stage
         application.save(update_fields=['current_stage'])
 
@@ -984,6 +1045,19 @@ class WorkflowService:
             stage=target_stage,
             remarks=remarks or "Objection raised"
         )
+
+        # ---------- Admin Audit Log ('admin_log') ----------
+        log_admin_action(
+            action="OBJECTION",
+            user=user,
+            application=application,
+            from_stage=initial_from_stage,
+            to_stage=target_stage,
+            status=f"Objection raised, moved to {getattr(target_stage, 'name', '')}",
+            remarks=remarks or "Objection raised",
+            metadata={"objections": objections}
+        )
+
 
     @staticmethod
     def _compute_objection_deadline():
@@ -1278,6 +1352,18 @@ class WorkflowService:
                 stage=return_stage,
                 remarks=remarks
             )
+
+            # ---------- Admin Audit Log ('admin_log') ----------
+            log_admin_action(
+                action="RESOLVE_OBJECTION",
+                user=user,
+                application=application,
+                from_stage=entry_to_objection_txn.stage if entry_to_objection_txn else None,
+                to_stage=return_stage,
+                status=f"Objections resolved, returned to {getattr(return_stage, 'name', '')}",
+                remarks=remarks or "Objections resolved",
+                metadata={"updated_fields": list((updated_fields or {}).keys())}
+            )
             return
 
         def _is_payment_stage(stage):
@@ -1333,6 +1419,18 @@ class WorkflowService:
             remarks=remarks
         )
 
+        # ---------- Admin Audit Log ('admin_log') ----------
+        log_admin_action(
+            action="RESOLVE_OBJECTION",
+            user=user,
+            application=application,
+            from_stage=entry_to_objection_txn.stage if entry_to_objection_txn else None,
+            to_stage=return_txn.stage,
+            status=f"Objections resolved, returned to {getattr(return_txn.stage, 'name', '')}",
+            remarks=remarks or "Objections resolved",
+            metadata={"updated_fields": list((updated_fields or {}).keys())}
+        )
+
     @staticmethod
     @transaction.atomic
     def reject_application(application, user, target_stage, remarks=None):
@@ -1346,6 +1444,7 @@ class WorkflowService:
         if not remarks:
             raise ValidationError("A remark is required when rejecting an application.")
 
+        initial_from_stage = getattr(application, 'current_stage', None)
         WorkflowService.validate_transition(application, target_stage, {}, user=user)
 
         # Create the rejection record
@@ -1372,6 +1471,17 @@ class WorkflowService:
             remarks=remarks,
         )
 
+        # ---------- Admin Audit Log ('admin_log') ----------
+        log_admin_action(
+            action="REJECT",
+            user=user,
+            application=application,
+            from_stage=initial_from_stage,
+            to_stage=target_stage,
+            status=f"Application Rejected at stage {getattr(target_stage, 'name', '')}",
+            remarks=remarks
+        )
+
     @staticmethod
     def record_transaction(application, user, action, remarks=None):
         stage = application.current_stage
@@ -1390,11 +1500,23 @@ class WorkflowService:
             remarks=remarks
         )
 
+        # ---------- Admin Audit Log ('admin_log') ----------
+        log_admin_action(
+            action=str(action or 'ACTION').upper(),
+            user=user,
+            application=application,
+            from_stage=stage,
+            to_stage=stage,
+            status=f"Action {action} performed",
+            remarks=remarks
+        )
+
         try:
             from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
             invalidate_dashboard_counts_cache()
         except Exception:
             pass
+
 
     # ─────────────────────────────────────────────────────────────────────────
     # Auto-rejection of expired objections
@@ -1484,6 +1606,17 @@ class WorkflowService:
             ),
             rejected_by=None,
             stage=rejected_stage,
+        )
+
+        # ---------- Admin Audit Log ('admin_log') ----------
+        log_admin_action(
+            action="SYSTEM_AUTO_REJECT",
+            user=None,
+            application=application,
+            from_stage=current_stage,
+            to_stage=rejected_stage,
+            status="Auto-rejected by system (objection deadline expired)",
+            remarks="Application automatically rejected: no action was taken on the raised objection within the allowed deadline."
         )
 
         try:
@@ -1752,6 +1885,17 @@ class WorkflowService:
             stage=rejected_stage,
         )
 
+        # ---------- Admin Audit Log ('admin_log') ----------
+        log_admin_action(
+            action="SYSTEM_AUTO_REJECT",
+            user=None,
+            application=application,
+            from_stage=current_stage,
+            to_stage=rejected_stage,
+            status="Auto-rejected by system (payment window expired)",
+            remarks="Application automatically rejected: License Fee and Security Amount were not paid within the allowed payment window."
+        )
+
         try:
             from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
             invalidate_dashboard_counts_cache()
@@ -1759,6 +1903,7 @@ class WorkflowService:
             pass
 
         return True
+
 
     @staticmethod
     @transaction.atomic

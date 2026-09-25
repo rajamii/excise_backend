@@ -33,14 +33,17 @@ def track_login(sender, request, user, **kwargs):
 
 @receiver(user_logged_out)
 def track_logout(sender, request, user, **kwargs):
+    if not user or not getattr(user, 'is_authenticated', False):
+        return
     UserActivity.objects.create(
         user=user,
         activity_type=UserActivity.ActivityType.LOGOUT,
         ip_address=get_client_ip(request),
         metadata={
-            'session_id': request.session.session_key
+            'session_id': getattr(getattr(request, 'session', None), 'session_key', None)
         }
     )
+
 
 def get_client_ip(request):
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
