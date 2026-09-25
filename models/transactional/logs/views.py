@@ -189,7 +189,9 @@ def admin_log_list(request):
             Q(action__icontains=s) |
             Q(remarks__icontains=s) |
             Q(from_stage__icontains=s) |
-            Q(to_stage__icontains=s)
+            Q(to_stage__icontains=s) |
+            Q(to_stage_name__icontains=s) |
+            Q(to_stage_username__icontains=s)
         )
 
     # Date range logic
