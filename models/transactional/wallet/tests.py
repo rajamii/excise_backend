@@ -9,12 +9,61 @@ from django.utils import timezone
 from auth.user.models import CustomUser
 from models.masters.core.models import District, LicenseCategory, LicenseSubcategory, State, Subdivision
 from models.masters.license.models import License
-from models.transactional.wallet.models import WalletBalance
+from models.transactional.wallet.models import WalletBalance, MasterWalletType
+from models.transactional.payment_gateway.models import MasterPaymentModule, MasterHeadOfAccount, PaymentModuleHoa
 from models.transactional.wallet.wallet_initializer import initialize_wallet_balances_for_license, _resolve_module_type
+
+
+def _seed_module_hoa_for_tests():
+    modules = {
+        "001": ("distillery", "Distillery"),
+        "002": ("brewery", "Brewery"),
+        "003": ("bottling", "Bottling"),
+        "004": ("wholesale", "Wholesale"),
+        "005": ("retail", "Retail"),
+        "006": ("bar", "Bar"),
+        "007": ("hotel", "Hotel"),
+        "008": ("club", "Club"),
+        "009": ("other", "Other"),
+    }
+    wallets = [
+        ("excise", "Excise Duty"),
+        ("education_cess", "Education Cess"),
+        ("hologram", "Hologram Fee"),
+        ("security_deposit", "Security Deposit"),
+        ("license_fee", "License Fee"),
+    ]
+    hoa, _ = MasterHeadOfAccount.objects.get_or_create(
+        sl_no=1,
+        defaults={
+            "head_of_account": "0039001010100",
+            "major_head": "0039",
+            "minor_head": "101",
+            "detailed_head": "00",
+            "detailed_head_driscription": "State Excise Test HOA",
+            "visible_status": True,
+        }
+    )
+    for code, (m_type, desc) in modules.items():
+        pm, _ = MasterPaymentModule.objects.get_or_create(
+            module_code=code,
+            defaults={"module_desc": m_type, "visibility_status": True}
+        )
+        for w_code, w_name in wallets:
+            wt, _ = MasterWalletType.objects.get_or_create(
+                code=w_code,
+                defaults={"name": w_name, "is_active": True}
+            )
+            PaymentModuleHoa.objects.get_or_create(
+                module_code=pm,
+                wallet_type=wt,
+                defaults={"head_of_account": hoa, "is_active": True}
+            )
 
 
 class WalletInitializerPrimaryHolderTests(TestCase):
     def setUp(self):
+        _seed_module_hoa_for_tests()
         self.state = State.objects.create(state="Sikkim", state_code=11, is_active=True)
         self.district = District.objects.create(
             district="Gangtok",
@@ -134,6 +183,7 @@ class WalletInitializerPrimaryHolderTests(TestCase):
 
 class WalletSummaryScopeFilteringTests(TestCase):
     def setUp(self):
+        _seed_module_hoa_for_tests()
         self.state = State.objects.create(state="Sikkim", state_code=11, is_active=True)
         self.district = District.objects.create(
             district="Gangtok",
