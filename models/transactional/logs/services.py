@@ -149,6 +149,105 @@ def _resolve_application_metadata(application=None, module_name=None, applicatio
     return resolved_module, resolved_app_id, content_type, object_id
 
 
+def resolve_stage_recipients(target_stage=None, target_stage_name=None, username_str=None, user_id_str=None, full_name_str=None, district=None):
+    """
+    Resolves all eligible recipient admin users for a target workflow stage/role.
+    Returns a list of dicts: [{'id': str, 'username': str, 'full_name': str, 'role': str}]
+    """
+    recipients = []
+    seen_ids = set()
+
+    # 1. If explicit comma-separated or single usernames/user_ids provided
+    if username_str:
+        unames = [u.strip() for u in str(username_str).split(',') if u.strip()]
+        for un in unames:
+            try:
+                from django.contrib.auth import get_user_model
+                u = get_user_model().objects.filter(username=un).first()
+                if u:
+                    if str(u.pk) not in seen_ids:
+                        seen_ids.add(str(u.pk))
+                        fn = f"{getattr(u, 'first_name', '') or ''} {getattr(u, 'last_name', '') or ''}".strip() or u.username
+                        recipients.append({
+                            'id': str(u.pk),
+                            'username': u.username,
+                            'full_name': fn,
+                            'role': getattr(getattr(u, 'role', None), 'name', '') or ''
+                        })
+                else:
+                    if un not in seen_ids:
+                        seen_ids.add(un)
+                        recipients.append({
+                            'id': user_id_str or '',
+                            'username': un,
+                            'full_name': full_name_str or un,
+                            'role': ''
+                        })
+            except Exception:
+                pass
+
+    # 2. If stage/stage_name is available, also find all active admins for that stage role
+    stage_text = target_stage_name or target_stage
+    if stage_text:
+        alias_map = [
+            (['joint commissioner', 'jc'], 'Joint commissioner'),
+            (['deputy commissioner', 'dc'], 'Deputy Commissioner'),
+            (['commissioner', 'excise commissioner'], 'Commissioner'),
+            (['oic', 'officer in charge', 'offcier in charge'], 'Offcier-In-Charge'),
+            (['site inquiry', 'site enquiry', 'inquiry officer', 'enquiry officer'], 'Site Inquiry Officer'),
+            (['permit section', 'permit'], 'Permit Section'),
+            (['secretary'], 'Secretary'),
+            (['district user', 'district'], 'District User'),
+            (['factory admin', 'factory'], 'Factory Admin'),
+            (['licensee'], 'Licensee'),
+            (['distributor'], 'Distributor'),
+            (['it cell', 'itcell'], 'IT Cell'),
+            (['single window'], 'Single Window'),
+        ]
+        try:
+            from auth.workflow.models import Role, WorkflowStage, StagePermission
+            from django.contrib.auth import get_user_model
+            User = get_user_model()
+
+            roles = set()
+            st_obj = WorkflowStage.objects.filter(name__iexact=str(stage_text)).first()
+            if not st_obj and target_stage:
+                st_obj = WorkflowStage.objects.filter(name__iexact=str(target_stage)).first()
+            if st_obj:
+                for sp in StagePermission.objects.filter(stage=st_obj, can_process=True).select_related('role'):
+                    if sp.role:
+                        roles.add(sp.role)
+            
+            if not roles:
+                t_clean = ' '.join(str(stage_text).lower().replace('_', ' ').split())
+                all_roles = list(Role.objects.all())
+                for aliases, target_role_name in alias_map:
+                    if any(alias in t_clean for alias in aliases):
+                        matched = next((r for r in all_roles if r.name.lower() == target_role_name.lower()), None)
+                        if matched:
+                            roles.add(matched)
+                            break
+            
+            for r in roles:
+                qs = User.objects.filter(role=r, is_active=True)
+                if district and qs.filter(district=district).exists():
+                    qs = qs.filter(district=district)
+                for u in qs:
+                    if str(u.pk) not in seen_ids:
+                        seen_ids.add(str(u.pk))
+                        fn = f"{getattr(u, 'first_name', '') or ''} {getattr(u, 'last_name', '') or ''}".strip() or u.username
+                        recipients.append({
+                            'id': str(u.pk),
+                            'username': u.username,
+                            'full_name': fn,
+                            'role': getattr(getattr(u, 'role', None), 'name', str(r.name))
+                        })
+        except Exception:
+            pass
+
+    return recipients
+
+
 class AdminLogService:
     @staticmethod
     def log(
@@ -164,6 +263,7 @@ class AdminLogService:
         to_stage_username=None,
         to_stage_full_name=None,
         to_stage_name=None,
+        to_stage_recipients=None,
         status=None,
         remarks=None,
         reverted_by=None,
@@ -265,8 +365,27 @@ class AdminLogService:
                 if not final_to_stage_full_name:
                     final_to_stage_full_name = reverted_to_name
 
-            # Auto-resolve target user ID and full name if username is present but ID is missing
-            if final_to_stage_username and (not final_to_stage_user_id or not final_to_stage_full_name):
+            # Resolve multiple recipients if provided or derive from stage
+            final_recipients = to_stage_recipients or []
+            if not final_recipients and (str_to_stage or final_to_stage_name or final_to_stage_username):
+                app_district = getattr(application, 'district', None)
+                final_recipients = resolve_stage_recipients(
+                    target_stage=str_to_stage,
+                    target_stage_name=final_to_stage_name,
+                    username_str=final_to_stage_username,
+                    user_id_str=final_to_stage_user_id,
+                    full_name_str=final_to_stage_full_name,
+                    district=app_district
+                )
+
+            if final_recipients:
+                if not final_to_stage_user_id:
+                    final_to_stage_user_id = ", ".join([str(r['id']) for r in final_recipients if r.get('id')])
+                if not final_to_stage_username:
+                    final_to_stage_username = ", ".join([r['username'] for r in final_recipients if r.get('username')])
+                if not final_to_stage_full_name:
+                    final_to_stage_full_name = ", ".join([r['full_name'] for r in final_recipients if r.get('full_name')])
+            elif final_to_stage_username and (not final_to_stage_user_id or not final_to_stage_full_name):
                 try:
                     from django.contrib.auth import get_user_model
                     target_u = get_user_model().objects.filter(username=final_to_stage_username).first()
@@ -280,6 +399,10 @@ class AdminLogService:
                             final_to_stage_full_name = " ".join(n_p) if n_p else (target_u.username or getattr(target_u, 'email', None))
                 except Exception:
                     pass
+
+            meta_payload = dict(metadata or {})
+            if final_recipients:
+                meta_payload['forwarded_recipients'] = final_recipients
 
             # 6. Create AdminLog
             log_entry = AdminLog.objects.create(
@@ -312,13 +435,12 @@ class AdminLogService:
                 reverted_to_stage=str(str_rev_to_stage) if str_rev_to_stage else None,
                 ip_address=final_ip,
                 user_agent=final_ua,
-                metadata=metadata or {},
+                metadata=meta_payload,
                 timestamp=timestamp or timezone.now()
             )
             return log_entry
 
         except Exception as e:
-
             logger.error("Failed to write to admin_log: %s", e, exc_info=True)
             return None
 
@@ -326,13 +448,6 @@ class AdminLogService:
 def log_admin_action(*args, **kwargs):
     """
     Convenience global function to log admin actions.
-    Usage:
-        log_admin_action(
-            action='APPROVE',
-            user=request.user,
-            request=request,
-            application=app_instance,
-            remarks='Approved by Commissioner'
-        )
     """
     return AdminLogService.log(*args, **kwargs)
+

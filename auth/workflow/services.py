@@ -907,7 +907,7 @@ class WorkflowService:
             else:
                 effective_action = "FORWARD"
 
-        to_stage_username = WorkflowService._resolve_to_stage_username(
+        to_stage_recipients = WorkflowService._resolve_to_stage_recipients(
             application=application,
             target_stage=target_stage,
             action=effective_action,
@@ -915,6 +915,9 @@ class WorkflowService:
             forwarded_to=forwarded_to,
             user_for_txn=user_for_txn
         )
+        to_stage_username = ", ".join([r['username'] for r in to_stage_recipients if r.get('username')]) if to_stage_recipients else None
+        to_stage_user_id = ", ".join([str(r['id']) for r in to_stage_recipients if r.get('id')]) if to_stage_recipients else None
+        to_stage_full_name = ", ".join([r['full_name'] for r in to_stage_recipients if r.get('full_name')]) if to_stage_recipients else None
 
         to_stage_name_str = getattr(target_stage, 'description', None) or getattr(target_stage, 'name', str(target_stage))
 
@@ -925,7 +928,10 @@ class WorkflowService:
             from_stage=initial_from_stage,
             to_stage=target_stage,
             to_stage_name=to_stage_name_str,
+            to_stage_user_id=to_stage_user_id,
             to_stage_username=to_stage_username,
+            to_stage_full_name=to_stage_full_name,
+            to_stage_recipients=to_stage_recipients,
             status=f"Stage moved to {getattr(target_stage, 'name', '')}",
             remarks=remarks or (context or {}).get("remarks", ""),
             reverted_by=user if (action == "REVERT" or is_reverted) else None,
@@ -935,115 +941,123 @@ class WorkflowService:
         )
 
     @staticmethod
-    def _resolve_to_stage_username(application, target_stage, action="FORWARD", context=None, forwarded_to=None, user_for_txn=None):
+    def _resolve_to_stage_recipients(application, target_stage, action="FORWARD", context=None, forwarded_to=None, user_for_txn=None):
         ctx = context or {}
+        recipients = []
+        seen_ids = set()
+
+        def _add_user(u):
+            if not u:
+                return
+            uid = str(getattr(u, 'pk', None) or getattr(u, 'id', None) or '')
+            uname = getattr(u, 'username', None)
+            if not uid and not uname:
+                return
+            key = uid or uname
+            if key not in seen_ids:
+                seen_ids.add(key)
+                fn = f"{getattr(u, 'first_name', '') or ''} {getattr(u, 'last_name', '') or ''}".strip() or uname
+                recipients.append({
+                    'id': uid,
+                    'username': uname or '',
+                    'full_name': fn,
+                    'role': getattr(getattr(u, 'role', None), 'name', '') or ''
+                })
+
         # 1. Explicit keys from context
-        for k in ("to_stage_username", "forwarded_to_username", "forward_to_user", "assigned_user", "assigned_to", "forward_to", "target_username"):
+        for k in ("to_stage_username", "forwarded_to_username", "forward_to_user", "assigned_user", "assigned_to", "forward_to", "target_username", "forward_to_users"):
             if ctx.get(k):
                 val = ctx[k]
-                if isinstance(val, str) and val.strip():
-                    return val.strip()
-                elif hasattr(val, "username") and str(val.username).strip():
-                    return str(val.username).strip()
+                if isinstance(val, (list, tuple)):
+                    for item in val:
+                        if hasattr(item, 'username'):
+                            _add_user(item)
+                        elif isinstance(item, str):
+                            try:
+                                from django.contrib.auth import get_user_model
+                                u = get_user_model().objects.filter(username=item.strip()).first()
+                                if u:
+                                    _add_user(u)
+                            except Exception:
+                                pass
+                elif hasattr(val, "username"):
+                    _add_user(val)
+                elif isinstance(val, str) and val.strip():
+                    try:
+                        from django.contrib.auth import get_user_model
+                        for un in val.split(','):
+                            un = un.strip()
+                            if un:
+                                u = get_user_model().objects.filter(username=un).first()
+                                if u:
+                                    _add_user(u)
+                    except Exception:
+                        pass
+
+        if recipients:
+            return recipients
 
         app_district = getattr(application, 'district', None) or (getattr(user_for_txn, 'district', None) if user_for_txn else None)
-        performer_username = getattr(user_for_txn, 'username', None)
         target_stage_clean = ' '.join(str(getattr(target_stage, 'name', '') or '').lower().replace('_', ' ').split())
-
-        alias_map = [
-            (['oic', 'officer in charge', 'offcier in charge'], 'Offcier-In-Charge'),
-            (['site inquiry', 'site enquiry', 'inquiry officer', 'enquiry officer'], 'Site Inquiry Officer'),
-            (['permit section', 'permit'], 'Permit Section'),
-            (['joint commissioner', 'jc'], 'Joint commissioner'),
-            (['deputy commissioner', 'dc'], 'Deputy Commissioner'),
-            (['commissioner', 'excise commissioner'], 'Commissioner'),
-            (['secretary'], 'Secretary'),
-            (['district user', 'district'], 'District User'),
-            (['factory admin', 'factory'], 'Factory Admin'),
-            (['licensee'], 'Licensee'),
-            (['distributor'], 'Distributor'),
-            (['it cell', 'itcell'], 'IT Cell'),
-            (['single window'], 'Single Window'),
-        ]
-
-        def _get_user_for_role(role_obj):
-            if not role_obj:
-                return None
-            try:
-                from auth.user.models import CustomUser
-                qs = CustomUser.objects.filter(role=role_obj, is_active=True)
-                if app_district and qs.filter(district=app_district).exists():
-                    qs = qs.filter(district=app_district)
-                u = qs.first()
-                if u:
-                    return u.username
-                return getattr(role_obj, 'name', str(role_obj))
-            except Exception:
-                return getattr(role_obj, 'name', str(role_obj))
-
-        def _find_role_from_text(text):
-            if not text:
-                return None
-            t_clean = ' '.join(str(text).lower().replace('_', ' ').split())
-            from auth.workflow.models import Role
-            all_roles = list(Role.objects.all())
-            for aliases, target_role_name in alias_map:
-                if any(alias in t_clean for alias in aliases):
-                    matched = next((r for r in all_roles if r.name.lower() == target_role_name.lower()), None)
-                    if matched:
-                        return matched
-            for r in all_roles:
-                r_clean = ' '.join(r.name.lower().replace('_', ' ').split())
-                if r_clean in t_clean or t_clean in r_clean:
-                    return r
-            return None
 
         # 2. Check objection / payment / return to applicant
         is_target_obj = "objection" in target_stage_clean and "reject" not in target_stage_clean and not getattr(target_stage, "is_final", False)
         if is_target_obj or "awaiting_payment" in target_stage_clean:
             applicant = getattr(application, 'user', None) or getattr(application, 'applicant_user', None) or getattr(application, 'applicant', None)
-            if applicant and hasattr(applicant, 'username'):
-                return applicant.username
+            if applicant:
+                _add_user(applicant)
+                return recipients
             first_txn = getattr(application, 'transactions', None)
             if first_txn and first_txn.exists():
                 t = first_txn.order_by('id').first()
                 if t and t.performed_by:
-                    return t.performed_by.username
+                    _add_user(t.performed_by)
+                    return recipients
 
-        # 3. Direct forwarded_to role
-        candidate = None
+        # 3. Roles resolution from target_stage permissions / aliases
+        from models.transactional.logs.services import resolve_stage_recipients
+        stage_name_str = getattr(target_stage, 'name', str(target_stage)) if target_stage else ''
+        res = resolve_stage_recipients(
+            target_stage=stage_name_str,
+            target_stage_name=getattr(target_stage, 'description', None) or stage_name_str,
+            district=app_district
+        )
+        if res:
+            return res
+
+        # 4. Direct forwarded_to role
         if forwarded_to:
-            candidate = _get_user_for_role(forwarded_to)
-
-        # 4. If no candidate or candidate is the performer themselves, resolve from stage name or next transition
-        if not candidate or candidate == performer_username:
-            target_role = _find_role_from_text(target_stage_clean)
-            cand_from_stage = _get_user_for_role(target_role) if target_role else None
-            if cand_from_stage and cand_from_stage != performer_username:
-                candidate = cand_from_stage
-            elif hasattr(target_stage, 'workflow') and target_stage.workflow:
-                from auth.workflow.models import WorkflowTransition, StagePermission
-                for tr in WorkflowTransition.objects.filter(workflow=target_stage.workflow, from_stage=target_stage):
-                    if tr.to_stage and tr.to_stage != target_stage:
-                        p_perm = StagePermission.objects.filter(stage=tr.to_stage, can_process=True).first()
-                        next_r = p_perm.role if (p_perm and p_perm.role) else _find_role_from_text(tr.to_stage.name)
-                        next_u = _get_user_for_role(next_r)
-                        if next_u and next_u != performer_username:
-                            candidate = next_u
-                            break
-
-        if candidate:
-            return candidate
+            try:
+                from django.contrib.auth import get_user_model
+                qs = get_user_model().objects.filter(role=forwarded_to, is_active=True)
+                if app_district and qs.filter(district=app_district).exists():
+                    qs = qs.filter(district=app_district)
+                for u in qs:
+                    _add_user(u)
+                if recipients:
+                    return recipients
+            except Exception:
+                pass
 
         # 5. Final fallback to applicant / licensee
         applicant = getattr(application, 'user', None) or getattr(application, 'applicant_user', None) or getattr(application, 'applicant', None) or getattr(application, 'created_by', None)
-        if applicant and hasattr(applicant, 'username'):
-            return applicant.username
-        elif hasattr(application, 'transactions') and application.transactions.exists():
-            t = application.transactions.order_by('id').first()
-            if t and t.performed_by:
-                return t.performed_by.username
+        if applicant:
+            _add_user(applicant)
 
+        return recipients
+
+    @staticmethod
+    def _resolve_to_stage_username(application, target_stage, action="FORWARD", context=None, forwarded_to=None, user_for_txn=None):
+        recipients = WorkflowService._resolve_to_stage_recipients(
+            application=application,
+            target_stage=target_stage,
+            action=action,
+            context=context,
+            forwarded_to=forwarded_to,
+            user_for_txn=user_for_txn
+        )
+        if recipients:
+            return ", ".join([r['username'] for r in recipients if r.get('username')])
         return None
 
 

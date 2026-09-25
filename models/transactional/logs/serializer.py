@@ -46,6 +46,7 @@ class AdminLogSerializer(serializers.ModelSerializer):
     forwarded_to_id = serializers.CharField(source='to_stage_user_id', read_only=True, allow_null=True)
     forwarded_to_name = serializers.CharField(source='to_stage_full_name', read_only=True, allow_null=True)
     forwarded_to_username = serializers.CharField(source='to_stage_username', read_only=True, allow_null=True)
+    forwarded_recipients = serializers.SerializerMethodField()
 
     class Meta:
         model = AdminLog
@@ -71,6 +72,7 @@ class AdminLogSerializer(serializers.ModelSerializer):
             'forwarded_to_id',
             'forwarded_to_name',
             'forwarded_to_username',
+            'forwarded_recipients',
             'status',
             'remarks',
 
@@ -89,10 +91,24 @@ class AdminLogSerializer(serializers.ModelSerializer):
             'timestamp',
             'timestamp_formatted',
         ]
-        read_only_fields = ['id', 'timestamp', 'timestamp_formatted']
+        read_only_fields = ['id', 'timestamp', 'timestamp_formatted', 'forwarded_recipients']
 
     def get_timestamp_formatted(self, obj):
         if obj.timestamp:
             return obj.timestamp.strftime("%d-%m-%Y %I:%M:%S %p")
         return None
+
+    def get_forwarded_recipients(self, obj):
+        meta = obj.metadata or {}
+        if isinstance(meta, dict) and 'forwarded_recipients' in meta and isinstance(meta['forwarded_recipients'], list) and meta['forwarded_recipients']:
+            return meta['forwarded_recipients']
+        
+        from .services import resolve_stage_recipients
+        return resolve_stage_recipients(
+            target_stage=obj.to_stage,
+            target_stage_name=obj.to_stage_name,
+            username_str=obj.to_stage_username,
+            user_id_str=obj.to_stage_user_id,
+            full_name_str=obj.to_stage_full_name
+        )
 
