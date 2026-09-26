@@ -145,13 +145,16 @@ def admin_log_list(request):
     queryset = AdminLog.objects.all()
 
     if not is_admin:
-        # Non-admin / Licensee users can view actions performed by them or actions targeted at their licensee ID / applications
+        # Non-admin / Licensee users can ONLY view actions performed BY THEM (their own activity).
+        # Actions performed by Site Admin or excise officers (e.g. security amount deductions, administrative updates) are kept with Site Admin/officers only.
         queryset = queryset.filter(
-            Q(username=request.user.username) |
-            Q(admin_id=str(request.user.pk)) |
             Q(user=request.user) |
-            Q(metadata__licensee_id__iexact=request.user.username) |
-            Q(metadata__target_username__iexact=request.user.username)
+            Q(username__iexact=request.user.username) |
+            Q(admin_id=str(request.user.pk))
+        ).exclude(
+            Q(role__iexact="Site Admin") |
+            Q(username__iexact="admin") |
+            Q(username__iexact="SYSTEM")
         )
     else:
         # By default, officers/admins view their own action audit records (scope='mine')
