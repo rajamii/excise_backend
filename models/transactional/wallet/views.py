@@ -557,204 +557,208 @@ def deduct_security_deposit(request, pk):
     from .wallet_service import debit_wallet_balance
     logger = logging.getLogger(__name__)
 
-    try:
-        record = SecurityDepositRecord.objects.select_for_update().get(pk=pk)
-    except SecurityDepositRecord.DoesNotExist:
-        return Response({"detail": "Security deposit record not found."}, status=status.HTTP_404_NOT_FOUND)
-
     raw_deduct_amount = request.data.get("deduct_amount") or request.data.get("amount")
     remarks = str(request.data.get("remarks") or request.data.get("reason") or "Security deposit deducted by admin").strip()
     action_type = str(request.data.get("action_type") or "DEDUCTED").upper()
     if action_type not in ("DEDUCTED", "FORFEITED"):
         action_type = "DEDUCTED"
 
-    current_balance = Decimal(str(record.balance_amount or record.amount or 0)).quantize(Decimal("0.01"))
-    if current_balance <= Decimal("0.00"):
-        return Response(
-            {"detail": "No balance left to deduct in this security deposit record."},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+    try:
+        with transaction.atomic():
+            try:
+                record = SecurityDepositRecord.objects.select_for_update().get(pk=pk)
+            except SecurityDepositRecord.DoesNotExist:
+                return Response({"detail": "Security deposit record not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    if raw_deduct_amount is not None and str(raw_deduct_amount).strip():
-        try:
-            deduct_amt = Decimal(str(raw_deduct_amount)).quantize(Decimal("0.01"))
-            if deduct_amt <= Decimal("0.00"):
-                return Response({"detail": "Deduction amount must be greater than zero."}, status=status.HTTP_400_BAD_REQUEST)
-            if deduct_amt > current_balance:
+            current_balance = Decimal(str(record.balance_amount or record.amount or 0)).quantize(Decimal("0.01"))
+            if current_balance <= Decimal("0.00"):
                 return Response(
-                    {"detail": f"Deduction amount (₹{deduct_amt}) cannot exceed available balance (₹{current_balance})."},
+                    {"detail": "No balance left to deduct in this security deposit record."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-        except Exception as exc:
-            return Response({"detail": f"Invalid deduction amount: {exc}"}, status=status.HTTP_400_BAD_REQUEST)
-    else:
-        deduct_amt = current_balance
 
-    with transaction.atomic():
-        # 1. Update SecurityDepositRecord
-        old_refunded = Decimal(str(record.refunded_amount or 0)).quantize(Decimal("0.01"))
-        record.refunded_amount = old_refunded + deduct_amt
-        record.balance_amount = max(Decimal("0.00"), record.amount - record.refunded_amount)
-        record.status = action_type
-        record.to_date = timezone.now().date()
-        admin_info = f"Deducted ₹{deduct_amt} by {request.user.username} on {timezone.now().strftime('%d-%m-%Y %H:%M')}. Reason: {remarks}"
-        if record.remarks:
-            record.remarks = f"{record.remarks}\n[{admin_info}]"
-        else:
-            record.remarks = admin_info
-        record.save()
+            if raw_deduct_amount is not None and str(raw_deduct_amount).strip():
+                try:
+                    deduct_amt = Decimal(str(raw_deduct_amount)).quantize(Decimal("0.01"))
+                    if deduct_amt <= Decimal("0.00"):
+                        return Response({"detail": "Deduction amount must be greater than zero."}, status=status.HTTP_400_BAD_REQUEST)
+                    if deduct_amt > current_balance:
+                        return Response(
+                            {"detail": f"Deduction amount (₹{deduct_amt}) cannot exceed available balance (₹{current_balance})."},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                except Exception as exc:
+                    return Response({"detail": f"Invalid deduction amount: {exc}"}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                deduct_amt = current_balance
 
-        # 2. Update NewLicenseApplication: current_stage = Terminated, is_security_fee_paid = False, is_approved = False
-        app_updated = False
-        to_stage_name = "Terminated"
-        try:
-            from models.transactional.new_license_application.models import NewLicenseApplication
-            from auth.workflow.models import WorkflowStage, Transaction as WorkflowTransaction
-            from django.contrib.contenttypes.models import ContentType
+            # 1. Update SecurityDepositRecord
+            old_refunded = Decimal(str(record.refunded_amount or 0)).quantize(Decimal("0.01"))
+            record.refunded_amount = old_refunded + deduct_amt
+            record.balance_amount = max(Decimal("0.00"), record.amount - record.refunded_amount)
+            record.status = action_type
+            record.to_date = timezone.now().date()
+            admin_info = f"Deducted ₹{deduct_amt} by {request.user.username} on {timezone.now().strftime('%d-%m-%Y %H:%M')}. Reason: {remarks}"
+            if record.remarks:
+                record.remarks = f"{record.remarks}\n[{admin_info}]"
+            else:
+                record.remarks = admin_info
+            record.save()
 
-            app = None
-            if record.application_id:
-                app = NewLicenseApplication.objects.select_related("current_stage", "workflow").filter(application_id=record.application_id).first()
-            if not app and record.user:
-                app = NewLicenseApplication.objects.select_related("current_stage", "workflow").filter(applicant=record.user).first()
+            # 2. Update NewLicenseApplication: current_stage = Terminated, is_security_fee_paid = False, is_approved = False
+            app_updated = False
+            to_stage_name = "Terminated"
+            try:
+                from models.transactional.new_license_application.models import NewLicenseApplication
+                from auth.workflow.models import WorkflowStage, Transaction as WorkflowTransaction
+                from django.contrib.contenttypes.models import ContentType
 
-            if app:
-                old_stage = app.current_stage
-                wf = app.workflow
-                term_stage, _ = WorkflowStage.objects.get_or_create(
-                    workflow=wf,
-                    name="Terminated",
-                    defaults={
-                        "description": "Application terminated and security deposit deducted/forfeited",
-                        "is_final": True,
-                        "is_initial": False,
+                app = None
+                if record.application_id:
+                    app = NewLicenseApplication.objects.select_related("current_stage", "workflow").filter(application_id=record.application_id).first()
+                if not app and record.user:
+                    app = NewLicenseApplication.objects.select_related("current_stage", "workflow").filter(applicant=record.user).first()
+
+                if app:
+                    wf = app.workflow
+                    term_stage, _ = WorkflowStage.objects.get_or_create(
+                        workflow=wf,
+                        name="Terminated",
+                        defaults={
+                            "description": "Application terminated and security deposit deducted/forfeited",
+                            "is_final": True,
+                            "is_initial": False,
+                        }
+                    )
+                    app.current_stage = term_stage
+                    app.is_security_fee_paid = False
+                    app.is_approved = False
+                    app.save(update_fields=["current_stage", "is_security_fee_paid", "is_approved", "updated_at"])
+                    app_updated = True
+
+                    # Record polymorphic workflow transaction
+                    try:
+                        ct = ContentType.objects.get_for_model(app)
+                        WorkflowTransaction.objects.create(
+                            content_type=ct,
+                            object_id=str(app.pk),
+                            stage=term_stage,
+                            remarks=f"Security deposit deducted ({deduct_amt}). License suspended and application moved to Terminated stage. Reason: {remarks}",
+                            performed_by=request.user if request.user and request.user.is_authenticated else None,
+                        )
+                    except Exception as txn_err:
+                        logger.warning("Failed to create workflow Transaction on termination: %s", txn_err)
+            except Exception as app_err:
+                logger.error("Error updating NewLicenseApplication on security deposit deduction: %s", app_err, exc_info=True)
+
+            # 3. Deactivate License (is_active = False)
+            license_suspended = False
+            license_id_str = record.license_id or ""
+            try:
+                from models.masters.license.models import License
+                lic = None
+                if record.license_id:
+                    lic = License.objects.filter(license_id=record.license_id).first()
+                if not lic and record.application_id:
+                    lic = License.objects.filter(source_object_id=record.application_id).first()
+                if not lic and record.user:
+                    lic = License.objects.filter(applicant=record.user, is_active=True).first()
+                if lic:
+                    lic.is_active = False
+                    lic.save(update_fields=["is_active"])
+                    license_suspended = True
+                    license_id_str = lic.license_id
+            except Exception as lic_err:
+                logger.error("Error deactivating License on security deposit deduction: %s", lic_err, exc_info=True)
+
+            # 4. Debit Wallet Balance (security_deposit wallet)
+            wallet_debited = False
+            try:
+                target_licensee_id = record.license_id or record.application_id or str(record.user_id or "")
+                txn_id = f"DED-SD-{record.pk}-{int(timezone.now().timestamp())}"
+                wallet_txn, w_bal, _ = debit_wallet_balance(
+                    transaction_id=txn_id,
+                    licensee_id=target_licensee_id,
+                    wallet_type="security_deposit",
+                    head_of_account="non",
+                    amount=deduct_amt,
+                    user_id=record.username or str(record.user_id or ""),
+                    licensee_name=record.applicant_name or record.establishment_name or "",
+                    source_module="security_deposit_deduction",
+                    remarks=remarks,
+                    transaction_type="deduction",
+                )
+                if wallet_txn:
+                    wallet_debited = True
+            except Exception as w_err:
+                logger.warning("Could not debit security deposit wallet balance: %s", w_err)
+
+            # 5. Log in AdminLog with rich audit details
+            try:
+                from models.transactional.logs.services import log_admin_action
+                target_username = record.username or (record.user.username if record.user else "")
+                target_name = record.applicant_name or (record.user.get_full_name() if record.user else "") or record.establishment_name or target_username
+                target_app_id = record.application_id or record.license_id or f"SD-{record.pk}"
+                target_lic_id = license_id_str or record.license_id or ""
+
+                log_remarks = (
+                    f"Deducted ₹{deduct_amt:,.2f} from Security Deposit of License '{target_lic_id or target_app_id}' "
+                    f"(Licensee: {target_name}, Username: @{target_username}). "
+                    f"Previous Balance: ₹{current_balance:,.2f} → New Balance: ₹{record.balance_amount:,.2f}. "
+                    f"License is suspended (is_active=False), application moved to Terminated stage, "
+                    f"and is_security_fee_paid set to False. Reason: {remarks}"
+                )
+
+                log_admin_action(
+                    user=request.user,
+                    request=request,
+                    module_name="Security Deposit Master",
+                    application_id=target_app_id,
+                    action="DEDUCT_SECURITY_DEPOSIT",
+                    from_stage=f"Active (Balance: ₹{current_balance:,.2f})",
+                    to_stage="Terminated",
+                    to_stage_name="Terminated",
+                    status="COMPLETED",
+                    remarks=log_remarks,
+                    metadata={
+                        "security_deposit_record_id": record.pk,
+                        "target_user_id": record.user_id or (record.user.pk if record.user else None),
+                        "target_username": target_username,
+                        "target_applicant_name": target_name,
+                        "establishment_name": record.establishment_name or "",
+                        "license_id": target_lic_id,
+                        "application_id": record.application_id or "",
+                        "deducted_amount": float(deduct_amt),
+                        "previous_balance": float(current_balance),
+                        "remaining_balance": float(record.balance_amount),
+                        "action_type": action_type,
+                        "license_suspended": license_suspended,
+                        "application_terminated": app_updated,
+                        "wallet_debited": wallet_debited,
+                        "admin_username": request.user.username if request.user else "SYSTEM",
+                        "admin_role": getattr(getattr(request.user, 'role', None), 'name', 'Site Admin'),
+                        "reason": remarks,
                     }
                 )
-                app.current_stage = term_stage
-                app.is_security_fee_paid = False
-                app.is_approved = False
-                app.save(update_fields=["current_stage", "is_security_fee_paid", "is_approved", "updated_at"])
-                app_updated = True
+            except Exception as log_err:
+                logger.error("Error creating AdminLog for security deposit deduction: %s", log_err, exc_info=True)
 
-                # Record polymorphic workflow transaction
-                try:
-                    ct = ContentType.objects.get_for_model(app)
-                    WorkflowTransaction.objects.create(
-                        content_type=ct,
-                        object_id=str(app.application_id),
-                        stage=term_stage,
-                        remarks=f"Security deposit deducted ({deduct_amt}). License suspended and application moved to Terminated stage. Reason: {remarks}",
-                        performed_by=request.user if request.user and request.user.is_authenticated else None,
-                    )
-                except Exception as txn_err:
-                    logger.warning("Failed to create workflow Transaction on termination: %s", txn_err)
-        except Exception as app_err:
-            logger.error("Error updating NewLicenseApplication on security deposit deduction: %s", app_err, exc_info=True)
+        return Response({
+            "status": "success",
+            "message": f"Successfully deducted ₹{deduct_amt} from Security Deposit. License has been suspended and security fee status updated.",
+            "record": SecurityDepositRecordSerializer(record).data,
+            "details": {
+                "deducted_amount": float(deduct_amt),
+                "remaining_balance": float(record.balance_amount),
+                "license_suspended": license_suspended,
+                "license_id": license_id_str,
+                "application_updated": app_updated,
+            }
+        }, status=status.HTTP_200_OK)
 
-        # 3. Deactivate License (is_active = False)
-        license_suspended = False
-        license_id_str = record.license_id or ""
-        try:
-            from models.masters.license.models import License
-            lic = None
-            if record.license_id:
-                lic = License.objects.filter(license_id=record.license_id).first()
-            if not lic and record.application_id:
-                lic = License.objects.filter(source_object_id=record.application_id).first()
-            if not lic and record.user:
-                lic = License.objects.filter(applicant=record.user, is_active=True).first()
-            if lic:
-                lic.is_active = False
-                lic.save(update_fields=["is_active"])
-                license_suspended = True
-                license_id_str = lic.license_id
-        except Exception as lic_err:
-            logger.error("Error deactivating License on security deposit deduction: %s", lic_err, exc_info=True)
-
-        # 4. Debit Wallet Balance (security_deposit wallet)
-        wallet_debited = False
-        try:
-            target_licensee_id = record.license_id or record.application_id or str(record.user_id or "")
-            txn_id = f"DED-SD-{record.pk}-{int(timezone.now().timestamp())}"
-            wallet_txn, w_bal, _ = debit_wallet_balance(
-                transaction_id=txn_id,
-                licensee_id=target_licensee_id,
-                wallet_type="security_deposit",
-                head_of_account="non",
-                amount=deduct_amt,
-                user_id=record.username or str(record.user_id or ""),
-                licensee_name=record.applicant_name or record.establishment_name or "",
-                source_module="security_deposit_deduction",
-                remarks=remarks,
-                transaction_type="deduction",
-            )
-            if wallet_txn:
-                wallet_debited = True
-        except Exception as w_err:
-            logger.warning("Could not debit security deposit wallet balance: %s", w_err)
-
-        # 5. Log in AdminLog with rich audit details
-        try:
-            from models.transactional.logs.services import log_admin_action
-            target_username = record.username or (record.user.username if record.user else "")
-            target_name = record.applicant_name or (record.user.get_full_name() if record.user else "") or record.establishment_name or target_username
-            target_app_id = record.application_id or record.license_id or f"SD-{record.pk}"
-            target_lic_id = license_id_str or record.license_id or ""
-
-            log_remarks = (
-                f"Deducted ₹{deduct_amt:,.2f} from Security Deposit of License '{target_lic_id or target_app_id}' "
-                f"(Licensee: {target_name}, Username: @{target_username}). "
-                f"Previous Balance: ₹{current_balance:,.2f} → New Balance: ₹{record.balance_amount:,.2f}. "
-                f"License is suspended (is_active=False), application moved to Terminated stage, "
-                f"and is_security_fee_paid set to False. Reason: {remarks}"
-            )
-
-            log_admin_action(
-                user=request.user,
-                request=request,
-                module_name="Security Deposit Master",
-                application_id=target_app_id,
-                action="DEDUCT_SECURITY_DEPOSIT",
-                from_stage=f"Active (Balance: ₹{current_balance:,.2f})",
-                to_stage="Terminated",
-                to_stage_name="Terminated",
-                status="COMPLETED",
-                remarks=log_remarks,
-                metadata={
-                    "security_deposit_record_id": record.pk,
-                    "target_user_id": record.user_id or (record.user.pk if record.user else None),
-                    "target_username": target_username,
-                    "target_applicant_name": target_name,
-                    "establishment_name": record.establishment_name or "",
-                    "license_id": target_lic_id,
-                    "application_id": record.application_id or "",
-                    "deducted_amount": float(deduct_amt),
-                    "previous_balance": float(current_balance),
-                    "remaining_balance": float(record.balance_amount),
-                    "action_type": action_type,
-                    "license_suspended": license_suspended,
-                    "application_terminated": app_updated,
-                    "wallet_debited": wallet_debited,
-                    "admin_username": request.user.username if request.user else "SYSTEM",
-                    "admin_role": getattr(getattr(request.user, 'role', None), 'name', 'Site Admin'),
-                    "reason": remarks,
-                }
-            )
-        except Exception as log_err:
-            logger.error("Error creating AdminLog for security deposit deduction: %s", log_err, exc_info=True)
-
-    return Response({
-        "status": "success",
-        "message": f"Successfully deducted ₹{deduct_amt} from Security Deposit. License has been suspended and security fee status updated.",
-        "record": SecurityDepositRecordSerializer(record).data,
-        "details": {
-            "deducted_amount": float(deduct_amt),
-            "remaining_balance": float(record.balance_amount),
-            "license_suspended": license_suspended,
-            "license_id": license_id_str,
-            "application_updated": app_updated,
-        }
-    }, status=status.HTTP_200_OK)
+    except Exception as exc:
+        logger.error("Deduct security deposit failed with exception: %s", exc, exc_info=True)
+        return Response({"detail": f"Failed to execute deduction: {str(exc)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(["POST"])
@@ -763,54 +767,62 @@ def refund_security_deposit(request, pk):
     """
     Refund / return security deposit to licensee.
     """
+    import logging
     from .serializers import SecurityDepositRecordSerializer
-
-    try:
-        record = SecurityDepositRecord.objects.select_for_update().get(pk=pk)
-    except SecurityDepositRecord.DoesNotExist:
-        return Response({"detail": "Security deposit record not found."}, status=status.HTTP_404_NOT_FOUND)
+    logger = logging.getLogger(__name__)
 
     raw_refund_amount = request.data.get("refund_amount") or request.data.get("amount")
     remarks = str(request.data.get("remarks") or request.data.get("reason") or "Security deposit refunded").strip()
 
-    current_balance = Decimal(str(record.balance_amount or 0)).quantize(Decimal("0.01"))
-    if current_balance <= Decimal("0.00"):
-        return Response({"detail": "No balance remaining to refund."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        with transaction.atomic():
+            try:
+                record = SecurityDepositRecord.objects.select_for_update().get(pk=pk)
+            except SecurityDepositRecord.DoesNotExist:
+                return Response({"detail": "Security deposit record not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    if raw_refund_amount is not None and str(raw_refund_amount).strip():
-        try:
-            refund_amt = Decimal(str(raw_refund_amount)).quantize(Decimal("0.01"))
-            if refund_amt <= Decimal("0.00"):
-                return Response({"detail": "Refund amount must be greater than zero."}, status=status.HTTP_400_BAD_REQUEST)
-            if refund_amt > current_balance:
-                return Response(
-                    {"detail": f"Refund amount (₹{refund_amt}) cannot exceed remaining balance (₹{current_balance})."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-        except Exception as exc:
-            return Response({"detail": f"Invalid refund amount: {exc}"}, status=status.HTTP_400_BAD_REQUEST)
-    else:
-        refund_amt = current_balance
+            current_balance = Decimal(str(record.balance_amount or 0)).quantize(Decimal("0.01"))
+            if current_balance <= Decimal("0.00"):
+                return Response({"detail": "No balance remaining to refund."}, status=status.HTTP_400_BAD_REQUEST)
 
-    with transaction.atomic():
-        old_refunded = Decimal(str(record.refunded_amount or 0)).quantize(Decimal("0.01"))
-        record.refunded_amount = old_refunded + refund_amt
-        record.balance_amount = max(Decimal("0.00"), record.amount - record.refunded_amount)
-        if record.balance_amount == Decimal("0.00"):
-            record.status = "REFUNDED"
-        else:
-            record.status = "PARTIALLY_REFUNDED"
-        record.to_date = timezone.now().date()
-        admin_info = f"Refunded ₹{refund_amt} on {timezone.now().strftime('%d-%m-%Y %H:%M')}. Remarks: {remarks}"
-        if record.remarks:
-            record.remarks = f"{record.remarks}\n[{admin_info}]"
-        else:
-            record.remarks = admin_info
-        record.save()
+            if raw_refund_amount is not None and str(raw_refund_amount).strip():
+                try:
+                    refund_amt = Decimal(str(raw_refund_amount)).quantize(Decimal("0.01"))
+                    if refund_amt <= Decimal("0.00"):
+                        return Response({"detail": "Refund amount must be greater than zero."}, status=status.HTTP_400_BAD_REQUEST)
+                    if refund_amt > current_balance:
+                        return Response(
+                            {"detail": f"Refund amount (₹{refund_amt}) cannot exceed remaining balance (₹{current_balance})."},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+                except Exception as exc:
+                    return Response({"detail": f"Invalid refund amount: {exc}"}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                refund_amt = current_balance
 
-    return Response({
-        "status": "success",
-        "message": f"Successfully refunded ₹{refund_amt} to licensee.",
-        "record": SecurityDepositRecordSerializer(record).data,
-    }, status=status.HTTP_200_OK)
+            old_refunded = Decimal(str(record.refunded_amount or 0)).quantize(Decimal("0.01"))
+            record.refunded_amount = old_refunded + refund_amt
+            record.balance_amount = max(Decimal("0.00"), record.amount - record.refunded_amount)
+            if record.balance_amount == Decimal("0.00"):
+                record.status = "REFUNDED"
+            else:
+                record.status = "PARTIALLY_REFUNDED"
+            record.to_date = timezone.now().date()
+            admin_info = f"Refunded ₹{refund_amt} on {timezone.now().strftime('%d-%m-%Y %H:%M')}. Remarks: {remarks}"
+            if record.remarks:
+                record.remarks = f"{record.remarks}\n[{admin_info}]"
+            else:
+                record.remarks = admin_info
+            record.save()
+
+        return Response({
+            "status": "success",
+            "message": f"Successfully refunded ₹{refund_amt} to licensee.",
+            "record": SecurityDepositRecordSerializer(record).data,
+        }, status=status.HTTP_200_OK)
+
+    except Exception as exc:
+        logger.error("Refund security deposit failed with exception: %s", exc, exc_info=True)
+        return Response({"detail": f"Failed to execute refund: {str(exc)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
