@@ -1361,6 +1361,29 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                         user = getattr(app, "applicant", None)
 
                     _ensure_new_license_app_submitted(app, user)
+
+                    # ---------- Admin Audit Log ('admin_log') ----------
+                    try:
+                        from models.transactional.logs.services import log_admin_action
+                        fee_amt = parsed_amount or Decimal(str(tx.transaction_amount or 500)).quantize(Decimal("0.01"))
+                        log_admin_action(
+                            action="PAY_APPLICATION_FEE",
+                            user=user,
+                            application=app,
+                            module_name="New License Application",
+                            application_id=application_id,
+                            status="SUCCESS",
+                            remarks=f"Application Fee of ₹{fee_amt:,.2f} paid successfully via BillDesk (Txn ID: {txn_ref}).",
+                            metadata={
+                                "fee_type": "application_fee",
+                                "amount": str(fee_amt),
+                                "transaction_id": txn_ref,
+                                "bank_reference_no": bank_ref or "",
+                                "payment_status": "SUCCESS",
+                            }
+                        )
+                    except Exception as log_exc:
+                        logger.warning("Failed to log PAY_APPLICATION_FEE in admin_log: %s", log_exc)
                 except Exception as e:
                     logger.error(f"Error auto-submitting workflow for application_id={application_id}: {e}", exc_info=True)
 

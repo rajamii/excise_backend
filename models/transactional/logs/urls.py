@@ -6,6 +6,7 @@ from .views import (
     admin_log_history,
     admin_log_modules,
     admin_log_actions,
+    admin_log_roles,
     track_admin_log,
 )
 
@@ -18,6 +19,7 @@ urlpatterns = [
     path('admin-logs/history/<str:application_id>/', admin_log_history, name='admin-log-history'),
     path('admin-logs/modules/', admin_log_modules, name='admin-log-modules'),
     path('admin-logs/actions/', admin_log_actions, name='admin-log-actions'),
+    path('admin-logs/roles/', admin_log_roles, name='admin-log-roles'),
     path('admin-logs/track/', track_admin_log, name='admin-log-track'),
 
     # Underscore aliases for compatibility

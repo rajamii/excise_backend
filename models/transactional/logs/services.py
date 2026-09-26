@@ -114,6 +114,18 @@ def _resolve_user_snapshot(user=None, request=None, explicit_user_info=None):
         user_obj = user
     elif request and getattr(request, 'user', None) and getattr(request.user, 'is_authenticated', False):
         user_obj = request.user
+    elif user and isinstance(user, (str, int)):
+        try:
+            from django.contrib.auth import get_user_model
+            from django.db.models import Q
+            User = get_user_model()
+            val_str = str(user).strip()
+            if val_str.isdigit():
+                user_obj = User.objects.filter(Q(pk=int(val_str)) | Q(username__iexact=val_str)).first()
+            else:
+                user_obj = User.objects.filter(username__iexact=val_str).first()
+        except Exception:
+            pass
 
     if user_obj:
         admin_id = str(user_obj.pk)
@@ -126,18 +138,20 @@ def _resolve_user_snapshot(user=None, request=None, explicit_user_info=None):
         if name_parts:
             full_name = " ".join(name_parts)
         else:
-            full_name = username
+            full_name = getattr(user_obj, 'get_full_name', lambda: '')() or username
 
         # Role / Designation resolution
         role_rel = getattr(user_obj, 'role', None)
         if role_rel and hasattr(role_rel, 'name'):
             role = str(role_rel.name).strip()
+        elif role_rel and isinstance(role_rel, str):
+            role = role_rel.strip()
         elif getattr(user_obj, 'is_superuser', False):
             role = 'Super Admin'
         elif getattr(user_obj, 'is_staff', False):
-            role = 'Staff Admin'
+            role = 'Site Admin'
         else:
-            role = 'User'
+            role = 'Licensee'
 
     return {
         'user_obj': user_obj,

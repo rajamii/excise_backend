@@ -156,6 +156,58 @@ def credit_wallet_balance(
                 created_at=now_ts,
             )
 
+        # ---------- Admin Audit Log ('admin_log') ----------
+        try:
+            from models.transactional.logs.services import log_admin_action
+            from django.contrib.auth import get_user_model
+            from django.db.models import Q
+            User = get_user_model()
+            actor_user = None
+            if user_id:
+                if str(user_id).isdigit():
+                    actor_user = User.objects.filter(pk=int(user_id)).first()
+                if not actor_user:
+                    actor_user = User.objects.filter(username__iexact=str(user_id).strip()).first()
+            if not actor_user and resolved_licensee_id:
+                actor_user = User.objects.filter(username__iexact=resolved_licensee_id).first()
+
+            wallet_label = str(getattr(getattr(wallet, 'wallet_type', None), 'name', None) or wtype).replace('_', ' ').title()
+            
+            recharge_remarks = (
+                f"Recharged ₹{amt:,.2f} to {wallet_label} Wallet for Licensee '{resolved_licensee_id}'. "
+                f"Previous Balance: ₹{before:,.2f} → New Balance: ₹{after:,.2f} (Txn: {txn})."
+            )
+            if remarks:
+                recharge_remarks += f" ({remarks})"
+
+            log_admin_action(
+                action="WALLET_RECHARGE",
+                user=actor_user,
+                module_name="Wallet Management",
+                application_id=str(wallet.licensee_id or resolved_licensee_id),
+                from_stage=f"₹{before:,.2f}",
+                to_stage=f"₹{after:,.2f}",
+                status="SUCCESS",
+                remarks=recharge_remarks,
+                metadata={
+                    "wallet_id": getattr(wallet, 'pk', None),
+                    "wallet_type": str(getattr(getattr(wallet, 'wallet_type', None), 'code', None) or wtype),
+                    "wallet_label": wallet_label,
+                    "licensee_id": str(wallet.licensee_id or resolved_licensee_id),
+                    "licensee_name": str(wallet.licensee_name or licensee_name or ""),
+                    "amount": str(amt),
+                    "balance_before": str(before),
+                    "balance_after": str(after),
+                    "head_of_account": str(wallet.head_of_account or hoa),
+                    "transaction_id": txn,
+                    "reference_no": str(reference_no or txn),
+                    "entry_type": "CR",
+                    "source_module": str(source_module or "billdesk"),
+                }
+            )
+        except Exception as log_exc:
+            logger.warning("Failed to record admin_log for wallet recharge: %s", log_exc)
+
     return created, wallet, False
 
 
@@ -380,6 +432,59 @@ def debit_wallet_balance(
             created_at=now_ts,
         )
 
+        # ---------- Admin Audit Log ('admin_log') ----------
+        try:
+            from models.transactional.logs.services import log_admin_action
+            from django.contrib.auth import get_user_model
+            from django.db.models import Q
+            User = get_user_model()
+            actor_user = None
+            if user_id:
+                if str(user_id).isdigit():
+                    actor_user = User.objects.filter(pk=int(user_id)).first()
+                if not actor_user:
+                    actor_user = User.objects.filter(username__iexact=str(user_id).strip()).first()
+            if not actor_user and resolved_licensee_id:
+                actor_user = User.objects.filter(username__iexact=resolved_licensee_id).first()
+
+            wallet_label = str(getattr(getattr(wallet, 'wallet_type', None), 'name', None) or wtype).replace('_', ' ').title()
+            
+            debit_remarks = (
+                f"Debited ₹{amt:,.2f} from {wallet_label} Wallet for Licensee '{resolved_licensee_id}'. "
+                f"Previous Balance: ₹{before:,.2f} → New Balance: ₹{after:,.2f}."
+            )
+            if remarks:
+                debit_remarks += f" Reason: {remarks}."
+
+            log_admin_action(
+                action="WALLET_DEBIT",
+                user=actor_user,
+                module_name="Wallet Management",
+                application_id=str(wallet.licensee_id or resolved_licensee_id),
+                from_stage=f"₹{before:,.2f}",
+                to_stage=f"₹{after:,.2f}",
+                status="SUCCESS",
+                remarks=debit_remarks,
+                metadata={
+                    "wallet_id": getattr(wallet, 'pk', None),
+                    "wallet_type": str(getattr(getattr(wallet, 'wallet_type', None), 'code', None) or wtype),
+                    "wallet_label": wallet_label,
+                    "licensee_id": str(wallet.licensee_id or resolved_licensee_id),
+                    "licensee_name": str(wallet.licensee_name or licensee_name or ""),
+                    "amount": str(amt),
+                    "balance_before": str(before),
+                    "balance_after": str(after),
+                    "head_of_account": str(wallet.head_of_account or hoa),
+                    "transaction_id": txn,
+                    "reference_no": str(reference_no or txn),
+                    "entry_type": "DR",
+                    "purpose": str(remarks or transaction_type),
+                    "source_module": str(source_module or "wallet_payment"),
+                }
+            )
+        except Exception as log_exc:
+            logger.warning("Failed to record admin_log for wallet debit: %s", log_exc)
+
     return created, wallet, False
 
 
@@ -562,13 +667,36 @@ def create_or_update_security_deposit_record(
                 record.from_date = from_date
             elif not record.from_date and pay_date:
                 record.from_date = pay_date.date() if hasattr(pay_date, "date") else pay_date
-            if to_date:
-                record.to_date = to_date
-            if rem:
-                record.remarks = rem
-
             record.save()
-            return record
+
+        # ---------- Admin Audit Log ('admin_log') ----------
+        try:
+            from models.transactional.logs.services import log_admin_action
+            target_id = record.application_id or record.license_id or f"SD-{record.pk}"
+            paid_amount = record.amount or resolved_amount or Decimal("0.00")
+            log_admin_action(
+                action="PAY_SECURITY_DEPOSIT",
+                user=record.user or user_obj,
+                module_name="Security Deposit Master",
+                application_id=target_id,
+                status="SUCCESS",
+                remarks=f"Security Deposit of ₹{paid_amount:,.2f} recorded/paid for Application/License '{target_id}' (Licensee: {record.applicant_name or resolved_applicant_name}, Txn: {record.transaction_id or txn_id}).",
+                metadata={
+                    "security_deposit_record_id": record.pk,
+                    "application_id": record.application_id or "",
+                    "license_id": record.license_id or "",
+                    "amount": str(paid_amount),
+                    "balance_amount": str(record.balance_amount or paid_amount),
+                    "transaction_id": record.transaction_id or txn_id,
+                    "reference_no": record.reference_no or ref_no,
+                    "licensee_name": record.applicant_name or resolved_applicant_name,
+                    "establishment_name": record.establishment_name or resolved_est_name,
+                }
+            )
+        except Exception as log_exc:
+            logger.warning("Failed to record admin_log for security deposit payment: %s", log_exc)
+
+        return record
     except Exception as exc:
         logger.error("Failed to create/update SecurityDepositRecord: %s", exc, exc_info=True)
         return None

@@ -145,11 +145,17 @@ def admin_log_list(request):
     queryset = AdminLog.objects.all()
 
     if not is_admin:
-        # Non-admin users can only view actions performed by them or on their applications
-        queryset = queryset.filter(Q(username=request.user.username) | Q(admin_id=str(request.user.pk)))
+        # Non-admin / Licensee users can view actions performed by them or actions targeted at their licensee ID / applications
+        queryset = queryset.filter(
+            Q(username=request.user.username) |
+            Q(admin_id=str(request.user.pk)) |
+            Q(user=request.user) |
+            Q(metadata__licensee_id__iexact=request.user.username) |
+            Q(metadata__target_username__iexact=request.user.username)
+        )
     else:
         # By default, officers/admins view their own action audit records (scope='mine')
-        # If scope='all' is explicitly requested, all system logs are shown
+        # If scope='all' or role/username/admin_id is explicitly requested, broader logs are shown
         if scope != 'all' and not request.query_params.get('username') and not request.query_params.get('role') and not request.query_params.get('admin_id'):
             queryset = queryset.filter(
                 Q(username=request.user.username) |
@@ -312,8 +318,18 @@ def admin_log_actions(request):
     """
     Returns distinct action types recorded in the audit log.
     """
-    actions = AdminLog.objects.values_list('action', flat=True).distinct().order_by('action')
+    actions = AdminLog.objects.exclude(action__isnull=True).exclude(action__exact='').values_list('action', flat=True).distinct().order_by('action')
     return Response(list(actions))
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def admin_log_roles(request):
+    """
+    Returns distinct roles recorded in the audit log.
+    """
+    roles = AdminLog.objects.exclude(role__isnull=True).exclude(role__exact='').values_list('role', flat=True).distinct().order_by('role')
+    return Response(list(roles))
 
 
 @api_view(['POST'])

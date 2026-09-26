@@ -321,6 +321,35 @@ def _create_application(request, workflow_id: int, serializer_cls, *, auto_submi
         # changes made by the model's save() (e.g. licensee_fee_id).
         application.refresh_from_db()
 
+        # Record in AdminLog for applicant/licensee audit tracking
+        try:
+            from models.transactional.logs.services import log_admin_action
+            lic_cat = str(getattr(application.license_category, 'name', '') or '')
+            lic_subcat = str(getattr(application.license_subcategory, 'name', '') or '')
+            lic_dist = str(getattr(application.site_district, 'name', '') or '')
+            applicant_full_name = f"{getattr(application, 'first_name', '')} {getattr(application, 'last_name', '')}".strip() or getattr(request.user, 'username', '')
+            log_admin_action(
+                action="APPLY_NEW_LICENSE",
+                user=request.user,
+                request=request,
+                application=application,
+                module_name="New License Application",
+                application_id=new_application_id,
+                status="SUBMITTED" if auto_submit else "DRAFT",
+                remarks=f"Applicant '{applicant_full_name}' applied for New License Application '{new_application_id}' (Category: {lic_cat or 'N/A'}, Subcategory: {lic_subcat or 'N/A'}, District: {lic_dist or 'N/A'}).",
+                metadata={
+                    "application_id": new_application_id,
+                    "license_category": lic_cat,
+                    "license_subcategory": lic_subcat,
+                    "district": lic_dist,
+                    "establishment_name": getattr(application, 'establishment_name', '') or '',
+                    "applicant_name": applicant_full_name,
+                    "is_auto_submitted": auto_submit,
+                }
+            )
+        except Exception as log_exc:
+            logger.warning("Failed to record admin_log for APPLY_NEW_LICENSE: %s", log_exc)
+
         # Create the linked SalesmanBarmanModel record AFTER the NLI transaction has
         # committed and in its own separate transaction. This avoids nested atomic()
         # calls inside generate_application_id() aborting the outer NLI transaction.
