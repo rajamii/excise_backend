@@ -165,22 +165,28 @@ def get_license_valid_up_to(issue_date: date) -> datetime:
     from zoneinfo import ZoneInfo
     from models.masters.core.models import RenewalApplicationConfig
     
-    issue_day = issue_date.date() if isinstance(issue_date, datetime) else issue_date
-    year = issue_day.year
+    tz = ZoneInfo("Asia/Kolkata")
+    if isinstance(issue_date, datetime):
+        local_dt = timezone.localtime(issue_date, tz) if timezone.is_aware(issue_date) else issue_date
+    else:
+        local_dt = datetime.combine(issue_date, time.min)
+    
+    year = local_dt.year
     
     config = RenewalApplicationConfig.objects.first()
     r_month = config.renewal_month if config else 3
     r_day = config.renewal_day if config else 31
     r_time = config.renewal_time if config else time(23, 59, 59)
     
-    if issue_day.month > r_month or (issue_day.month == r_month and issue_day.day >= r_day):
+    cutoff_this_year = datetime.combine(date(year, r_month, r_day), r_time)
+    
+    if local_dt.replace(tzinfo=None) > cutoff_this_year:
         end_year = year + 1
     else:
         end_year = year
 
     fy_end_day = date(end_year, r_month, r_day)
     fy_end_dt = datetime.combine(fy_end_day, r_time)
-    tz = ZoneInfo("Asia/Kolkata")
     return timezone.make_aware(fy_end_dt, tz) if timezone.is_naive(fy_end_dt) else fy_end_dt
 
 
@@ -353,15 +359,23 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
     issue_day = issue_dt.date()
     is_renewal = hasattr(application, 'renewal_of') and application.renewal_of is not None
 
-    def get_current_fy_end(d):
-        y = d.year
+    def get_current_fy_end(dt_or_date):
         from models.masters.core.models import RenewalApplicationConfig
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Asia/Kolkata")
+        if isinstance(dt_or_date, datetime):
+            local_dt = timezone.localtime(dt_or_date, tz) if timezone.is_aware(dt_or_date) else dt_or_date
+        else:
+            local_dt = datetime.combine(dt_or_date, time.min)
+
+        y = local_dt.year
         config = RenewalApplicationConfig.objects.first()
         r_month = config.renewal_month if config else 3
         r_day = config.renewal_day if config else 31
         r_time = config.renewal_time if config else time(23, 59, 59)
-        
-        if d.month > r_month or (d.month == r_month and d.day >= r_day):
+
+        cutoff_this_year = datetime.combine(date(y, r_month, r_day), r_time)
+        if local_dt.replace(tzinfo=None) > cutoff_this_year:
             return date(y + 1, r_month, r_day), r_time
         else:
             return date(y, r_month, r_day), r_time
@@ -380,10 +394,10 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
             valid_day = date(local_old_val.year + 1, r_month, r_day)
             valid_time = r_time
         else:
-            fy_end, valid_time = get_current_fy_end(issue_day)
+            fy_end, valid_time = get_current_fy_end(issue_dt)
             valid_day = fy_end.replace(year=fy_end.year + 1)
     else:
-        valid_day, valid_time = get_current_fy_end(issue_day)
+        valid_day, valid_time = get_current_fy_end(issue_dt)
 
     from zoneinfo import ZoneInfo
     valid_up_to_dt = timezone.make_aware(
