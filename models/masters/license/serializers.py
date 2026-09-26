@@ -43,6 +43,16 @@ class LicenseSerializer(serializers.ModelSerializer):
             rep['is_special_permit_allowed'] = getattr(cat, 'is_special_permit_allowed', False)
             rep['isDistributorUser'] = getattr(cat, 'is_distributor_user', False)
             rep['is_distributor_user'] = getattr(cat, 'is_distributor_user', False)
+
+        from django.utils import timezone
+        now_val = timezone.now()
+        is_expired = bool(instance.valid_up_to and instance.valid_up_to < now_val)
+        is_active = bool(instance.is_active and not is_expired)
+        rep['is_expired'] = is_expired
+        rep['is_valid_now'] = is_active
+        rep['isValidNow'] = is_active
+        rep['can_access_supply_chain'] = is_active
+        rep['canAccessSupplyChain'] = is_active
         return rep
 
 
