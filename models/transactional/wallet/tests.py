@@ -682,4 +682,111 @@ class SecurityDepositRecordTests(TestCase):
         self.assertEqual(record.status, "PAID")
         self.assertEqual(record.transaction_id, "TXN_SD_E2E_001")
 
+    def test_security_deposit_record_list_and_deduction(self):
+        from models.transactional.wallet.models import SecurityDepositRecord
+        from models.masters.license.models import License
+
+        from models.masters.core.models import LicenseType, PoliceStation
+        from auth.workflow.models import Workflow, WorkflowStage
+        from models.transactional.new_license_application.models import NewLicenseApplication
+
+        cat = LicenseCategory.objects.create(license_category="Bar Cat 2")
+        subcat = LicenseSubcategory.objects.create(description="Bar Sub 2", category=cat)
+        ltype = LicenseType.objects.create(license_type="Bar Type")
+        wf = Workflow.objects.create(name="License Test Workflow")
+        st_app = WorkflowStage.objects.create(workflow=wf, name="Approved", is_final=True)
+        ps = PoliceStation.objects.create(police_station="Test PS 2", police_station_code=99882, district_code=self.district, is_active=True)
+
+        app = NewLicenseApplication.objects.create(
+            application_id="NLI/GTK/2026-27/0099",
+            workflow=wf,
+            current_stage=st_app,
+            applicant=self.user,
+            applicant_name="Deposit Tester",
+            license_type=ltype,
+            license_category=cat,
+            license_sub_category=subcat,
+            establishment_name="Skyview Bar",
+            site_district=self.district,
+            site_subdivision=self.subdivision,
+            police_station=ps,
+            location_category="Urban",
+            is_application_fee_paid=True,
+            is_license_fee_paid=True,
+            is_security_fee_paid=True,
+            is_approved=True,
+        )
+
+        lic = License.objects.create(
+            license_id="NA/01/2026-27/0055",
+            applicant=self.user,
+            license_category=cat,
+            license_sub_category=subcat,
+            excise_district=self.district,
+            issue_date=timezone.now(),
+            valid_up_to=timezone.now() + timezone.timedelta(days=365),
+            is_active=True,
+            source_type="new_license_application",
+            source_object_id="NLI/GTK/2026-27/0099"
+        )
+
+        record = SecurityDepositRecord.objects.create(
+            user=self.user,
+            applicant_user_id=str(self.user.pk),
+            username=self.user.username,
+            applicant_name="Deposit Tester",
+            application_id="NLI/GTK/2026-27/0099",
+            license_id="NA/01/2026-27/0055",
+            establishment_name="Skyview Bar",
+            amount=Decimal("20000.00"),
+            status="PAID"
+        )
+
+        admin_user = CustomUser.objects.create_superuser(
+            username="admin_sec_tester",
+            email="admin_sec@example.com",
+            password="adminpassword123",
+            first_name="Admin",
+            last_name="SecTester",
+            phone_number="8877665544",
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=admin_user)
+
+        # GET security deposit records
+        list_url = reverse("payment:security-deposit-records-list")
+        resp = client.get(list_url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertGreaterEqual(resp.data["count"], 1)
+
+        # POST deduct security deposit
+        deduct_url = reverse("payment:security-deposit-record-deduct", kwargs={"pk": record.pk})
+        deduct_payload = {
+            "deduct_amount": 20000.00,
+            "remarks": "Violation penalty - cancel license",
+            "action_type": "DEDUCTED"
+        }
+        resp = client.post(deduct_url, deduct_payload, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["status"], "success")
+
+        # Verify record updated
+        record.refresh_from_db()
+        self.assertEqual(record.status, "DEDUCTED")
+        self.assertEqual(record.balance_amount, Decimal("0.00"))
+        self.assertEqual(record.refunded_amount, Decimal("20000.00"))
+        self.assertIsNotNone(record.to_date)
+
+        # Verify license is suspended
+        lic.refresh_from_db()
+        self.assertFalse(lic.is_active)
+
+        # Verify application is moved to Terminated stage
+        app.refresh_from_db()
+        self.assertEqual(app.current_stage.name, "Terminated")
+        self.assertFalse(app.is_security_fee_paid)
+        self.assertFalse(app.is_approved)
+
+
 

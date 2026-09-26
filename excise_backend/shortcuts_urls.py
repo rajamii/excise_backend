@@ -47,6 +47,9 @@ urlpatterns = [
 
     # Admin Audit Logs (short aliases)
     path('admin-logs/', include('models.transactional.logs.urls')),
+
+    # Security Deposit Records (short aliases)
+    path('security-deposit-records/', include('models.transactional.wallet.urls')),
 ]
 
 

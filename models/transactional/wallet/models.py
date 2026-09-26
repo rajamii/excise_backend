@@ -426,6 +426,8 @@ class SecurityDepositRecord(models.Model):
             ("REFUNDED", "REFUNDED"),
             ("PARTIALLY_REFUNDED", "PARTIALLY_REFUNDED"),
             ("ADJUSTED", "ADJUSTED"),
+            ("DEDUCTED", "DEDUCTED"),
+            ("FORFEITED", "FORFEITED"),
         ],
         db_index=True
     )
@@ -457,20 +459,24 @@ class SecurityDepositRecord(models.Model):
         ref = Decimal(str(self.refunded_amount or 0)).quantize(Decimal("0.01"))
         self.amount = amt
         self.refunded_amount = ref
-        self.balance_amount = (amt - ref).quantize(Decimal("0.01"))
+        self.balance_amount = max(Decimal("0.00"), (amt - ref).quantize(Decimal("0.01")))
         if not self.from_date and self.payment_date:
             try:
                 self.from_date = self.payment_date.date() if hasattr(self.payment_date, "date") else self.payment_date
             except Exception:
                 pass
-        if ref >= amt and amt > 0:
-            self.status = "REFUNDED"
+        if self.status not in ("DEDUCTED", "FORFEITED", "ADJUSTED"):
+            if ref >= amt and amt > 0:
+                self.status = "REFUNDED"
+                if not self.to_date:
+                    self.to_date = timezone.now().date()
+            elif ref > 0 and ref < amt:
+                self.status = "PARTIALLY_REFUNDED"
+            elif ref == 0 and self.status in ("REFUNDED", "PARTIALLY_REFUNDED"):
+                self.status = "PAID"
+        elif self.status in ("DEDUCTED", "FORFEITED"):
             if not self.to_date:
                 self.to_date = timezone.now().date()
-        elif ref > 0 and ref < amt:
-            self.status = "PARTIALLY_REFUNDED"
-        elif ref == 0 and self.status in ("REFUNDED", "PARTIALLY_REFUNDED"):
-            self.status = "PAID"
         super().save(*args, **kwargs)
 
     @property
@@ -483,7 +489,7 @@ class SecurityDepositRecord(models.Model):
         return None
 
     def __str__(self):
-        return f"Security Deposit: {self.application_id} - {self.username or self.applicant_user_id} (₹{self.amount})"
+        return f"Security Deposit: {self.application_id} - {self.username or self.applicant_user_id} (Rs. {self.amount})"
 
 
 # Alias for case sensitivity / alternative import naming
