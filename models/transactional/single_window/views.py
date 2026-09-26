@@ -606,6 +606,16 @@ def single_window_search(request):
         stage = getattr(app, 'current_stage', None)
         if not stage:
             return "N/A"
+        stage_name = stage.name if hasattr(stage, 'name') else str(stage)
+        stage_lower = stage_name.lower()
+        if "terminat" in stage_lower or getattr(app, 'is_terminated', False):
+            return "Terminated"
+        if "reject" in stage_lower or getattr(app, 'is_rejected', False):
+            return "Rejected"
+        if "objection" in stage_lower or (hasattr(app, 'objections') and app.objections.filter(is_resolved=False).exists()):
+            return "Applicant (Needs Reply)"
+        if "payment" in stage_lower or ("awaiting" in stage_lower and "fee" in stage_lower):
+            return "Applicant (Fees Pending)"
         try:
             from auth.workflow.models import StagePermission
             perm = StagePermission.objects.filter(stage=stage, can_process=True).first()
@@ -613,11 +623,13 @@ def single_window_search(request):
                 return perm.role.name
         except Exception:
             pass
-        return "N/A"
+        return stage_name
 
     # Helper function to get linked NLA ID for different objects
     def get_linked_nla_id(obj):
         if isinstance(obj, License):
+            if getattr(obj, 'source_object_id', None):
+                return obj.source_object_id
             if obj.source_application and isinstance(obj.source_application, NewLicenseApplication):
                 return obj.source_application.application_id
             if obj.applicant:
@@ -627,8 +639,11 @@ def single_window_search(request):
         elif isinstance(obj, RenewalApplication):
             if obj.old_license_id:
                 lic = License.objects.filter(license_id=obj.old_license_id).first()
-                if lic and lic.source_application and isinstance(lic.source_application, NewLicenseApplication):
-                    return lic.source_application.application_id
+                if lic:
+                    if getattr(lic, 'source_object_id', None):
+                        return lic.source_object_id
+                    if lic.source_application and isinstance(lic.source_application, NewLicenseApplication):
+                        return lic.source_application.application_id
             if obj.applicant:
                 nla = NewLicenseApplication.objects.filter(applicant=obj.applicant).first()
                 if nla:
@@ -637,6 +652,8 @@ def single_window_search(request):
             if obj.new_license_application:
                 return obj.new_license_application.application_id
             if obj.license:
+                if getattr(obj.license, 'source_object_id', None):
+                    return obj.license.source_object_id
                 if obj.license.source_application and isinstance(obj.license.source_application, NewLicenseApplication):
                     return obj.license.source_application.application_id
             if obj.applicant:
@@ -831,31 +848,68 @@ def single_window_search(request):
     new_apps = _filter_by_user_district(new_apps, request.user, 'site_district')
     new_apps = new_apps.order_by("-created_at")[:15]
 
+    covered_nla_ids = set()
+    covered_license_ids = set()
+
     for app in new_apps:
+        covered_nla_ids.add(app.application_id)
+        covered_nla_ids.add(app.application_id.upper().strip())
+
         applicant_name = get_user_display_name(app.applicant) if app.applicant else "Unknown"
         applicant_username = app.applicant.username if app.applicant else "N/A"
 
-        # Find issued license for this applicant (if application approved)
+        # Find issued license for this applicant or application
         issued_license_id = None
         license_is_active = False
-        if app.is_approved and app.applicant:
+        lic = License.objects.filter(
+            Q(source_type='new_license_application', source_object_id=app.application_id) |
+            Q(license_id=app.application_id)
+        ).first()
+        if not lic and app.applicant:
             lic = License.objects.filter(applicant=app.applicant).order_by("-issue_date").first()
-            if lic:
-                issued_license_id = lic.license_id
-                license_is_active = lic.is_active
 
-        # Determine where application is pending (current stage role)
-        pending_at = "Completed"
-        if not app.is_approved:
-            pending_at = "N/A"
-            if app.current_stage:
-                try:
-                    from auth.workflow.models import StagePermission
-                    perm = StagePermission.objects.filter(stage=app.current_stage, can_process=True).first()
-                    if perm and perm.role:
-                        pending_at = perm.role.name
-                except Exception:
-                    pass
+        if lic:
+            issued_license_id = lic.license_id
+            covered_license_ids.add(lic.license_id)
+            covered_license_ids.add(lic.license_id.upper().strip())
+            from django.utils.timezone import now as tz_now
+            is_expired = bool(lic.valid_up_to and lic.valid_up_to < tz_now())
+            license_is_active = bool(lic.is_active and not is_expired and app.is_approved)
+
+        # Determine application stage, status, and pending_at
+        stage_obj = app.current_stage
+        stage_name = stage_obj.name if stage_obj else "Draft"
+        stage_lower = stage_name.lower()
+        has_unresolved_objection = False
+        try:
+            has_unresolved_objection = app.objections.filter(is_resolved=False).exists()
+        except Exception:
+            pass
+
+        if "terminat" in stage_lower or getattr(app, 'is_terminated', False):
+            display_stage = "Terminated"
+            display_status = "Terminated"
+            pending_at = "Terminated"
+        elif "reject" in stage_lower or getattr(app, 'is_rejected', False):
+            display_stage = "Rejected"
+            display_status = "Rejected"
+            pending_at = "Rejected"
+        elif "objection" in stage_lower or has_unresolved_objection:
+            display_stage = stage_name if "objection" in stage_lower else "Under Objection"
+            display_status = "Under Objection"
+            pending_at = "Applicant (Needs Reply)"
+        elif "payment" in stage_lower or ("awaiting" in stage_lower and "fee" in stage_lower) or (not app.is_license_fee_paid and getattr(app, 'awaiting_payment_entered_at', None) is not None and not app.is_approved):
+            display_stage = "Awaiting Payment"
+            display_status = "Awaiting Payment"
+            pending_at = "Applicant (Fees Pending)"
+        elif app.is_approved:
+            display_stage = "Approved"
+            display_status = "Approved"
+            pending_at = "Completed"
+        else:
+            display_stage = stage_name
+            display_status = stage_name
+            pending_at = _resolve_pending_at(app)
 
         meta = {
             "application_id": app.application_id,
@@ -874,7 +928,7 @@ def single_window_search(request):
             "id": app.application_id,
             "title": f"New App: {app.application_id}",
             "subtitle": f"Establishment: {app.establishment_name or 'N/A'} | Applicant: {applicant_name}",
-            "status": app.current_stage.name if app.current_stage else "Draft",
+            "status": display_status,
             
             "application_id": app.application_id,
             "establishment_name": app.establishment_name or "N/A",
@@ -883,7 +937,7 @@ def single_window_search(request):
             "license_category": app.license_category.license_category if app.license_category else "N/A",
             "issued_license_id": issued_license_id,
             "license_is_active": license_is_active,
-            "current_stage": app.current_stage.name if app.current_stage else "Draft",
+            "current_stage": display_stage,
             "pending_at": pending_at,
             "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
             
@@ -891,19 +945,30 @@ def single_window_search(request):
         })
 
     # Add License results
-    # Collect NLA IDs already covered by the new_apps results to avoid duplicates
-    covered_nla_ids = set()
-    for app in new_apps:
-        if app.is_approved:
-            covered_nla_ids.add(app.application_id)
-
     for lic in licenses:
-        applicant_name = get_user_display_name(lic.applicant) if lic.applicant else "Unknown"
+        if lic.license_id in covered_license_ids or (lic.license_id and lic.license_id.upper().strip() in covered_license_ids):
+            continue
         nla_id = get_linked_nla_id(lic)
         # Skip this license entry if its linked NLA is already shown (avoids duplicate rows)
-        if nla_id and nla_id in covered_nla_ids:
+        if nla_id and (nla_id in covered_nla_ids or nla_id.upper().strip() in covered_nla_ids):
             continue
+            
+        applicant_name = get_user_display_name(lic.applicant) if lic.applicant else "Unknown"
         nla_suffix = f" | Linked NLA: {nla_id}" if nla_id else ""
+        
+        from django.utils.timezone import now as tz_now
+        is_expired = bool(lic.valid_up_to and lic.valid_up_to < tz_now())
+        license_is_active = bool(lic.is_active and not is_expired)
+        if not lic.is_active:
+            lic_status = "Suspended / Inactive"
+            lic_stage = "Suspended License"
+        elif is_expired:
+            lic_status = "Expired"
+            lic_stage = "Expired License"
+        else:
+            lic_status = "Active"
+            lic_stage = "Active License"
+
         # Get establishment name from linked NLA if available
         establishment = "Active License"
         if nla_id:
@@ -918,7 +983,7 @@ def single_window_search(request):
             "id": lic.license_id,
             "title": f"License: {lic.license_id}",
             "subtitle": f"Applicant: {applicant_name} | Category: {lic.license_category.license_category if lic.license_category else 'N/A'}{nla_suffix}",
-            "status": "Active" if lic.is_active else "Expired/Inactive",
+            "status": lic_status,
             
             "application_id": nla_id or lic.license_id,
             "establishment_name": establishment,
@@ -926,8 +991,8 @@ def single_window_search(request):
             "applicant_username": lic.applicant.username if lic.applicant else "N/A",
             "license_category": lic.license_category.license_category if lic.license_category else "N/A",
             "issued_license_id": lic.license_id,
-            "license_is_active": lic.is_active,
-            "current_stage": "Approved",
+            "license_is_active": license_is_active,
+            "current_stage": lic_stage,
             "pending_at": "Completed",
             "created_at": lic.issue_date.strftime("%Y-%m-%d") if lic.issue_date else "N/A",
             
@@ -945,6 +1010,41 @@ def single_window_search(request):
         applicant_name = get_user_display_name(app.applicant) if app.applicant else "Unknown"
         nla_id = get_linked_nla_id(app)
         nla_suffix = f" | Linked NLA: {nla_id}" if nla_id else ""
+
+        stage_obj = app.current_stage
+        stage_name = stage_obj.name if stage_obj else "Draft"
+        stage_lower = stage_name.lower()
+        has_unresolved_objection = False
+        try:
+            has_unresolved_objection = app.objections.filter(is_resolved=False).exists()
+        except Exception:
+            pass
+
+        if "terminat" in stage_lower:
+            r_stage = "Terminated"
+            r_status = "Terminated"
+            r_pending = "Terminated"
+        elif "reject" in stage_lower:
+            r_stage = "Rejected"
+            r_status = "Rejected"
+            r_pending = "Rejected"
+        elif "objection" in stage_lower or has_unresolved_objection:
+            r_stage = stage_name if "objection" in stage_lower else "Under Objection"
+            r_status = "Under Objection"
+            r_pending = "Applicant (Needs Reply)"
+        elif "payment" in stage_lower:
+            r_stage = "Awaiting Payment"
+            r_status = "Awaiting Payment"
+            r_pending = "Applicant (Fees Pending)"
+        elif app.is_approved:
+            r_stage = "Approved"
+            r_status = "Approved"
+            r_pending = "Completed"
+        else:
+            r_stage = stage_name
+            r_status = stage_name
+            r_pending = _resolve_pending_at(app)
+
         meta = {
             "application_id": nla_id,
             "renewal_app_id": app.application_id,
@@ -963,7 +1063,7 @@ def single_window_search(request):
             "id": app.application_id,
             "title": f"Renewal App: {app.application_id}",
             "subtitle": f"Old License: {app.old_license_id or 'N/A'}{nla_suffix} | Applicant: {applicant_name}",
-            "status": app.current_stage.name if app.current_stage else "Draft",
+            "status": r_status,
             
             "application_id": app.application_id,
             "establishment_name": f"Renewal for: {app.old_license_id or 'N/A'}",
@@ -972,8 +1072,8 @@ def single_window_search(request):
             "license_category": app.license_category.license_category if app.license_category else "N/A",
             "issued_license_id": app.old_license_id,
             "license_is_active": True,
-            "current_stage": app.current_stage.name if app.current_stage else "Draft",
-            "pending_at": _resolve_pending_at(app),
+            "current_stage": r_stage,
+            "pending_at": r_pending,
             "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
             
             "meta": meta
@@ -984,6 +1084,41 @@ def single_window_search(request):
         applicant_name = f"{app.firstName} {app.lastName}"
         nla_id = get_linked_nla_id(app)
         nla_suffix = f" | Linked NLA: {nla_id}" if nla_id else ""
+
+        stage_obj = app.current_stage
+        stage_name = stage_obj.name if stage_obj else "Draft"
+        stage_lower = stage_name.lower()
+        has_unresolved_objection = False
+        try:
+            has_unresolved_objection = app.objections.filter(is_resolved=False).exists()
+        except Exception:
+            pass
+
+        if "terminat" in stage_lower:
+            s_stage = "Terminated"
+            s_status = "Terminated"
+            s_pending = "Terminated"
+        elif "reject" in stage_lower:
+            s_stage = "Rejected"
+            s_status = "Rejected"
+            s_pending = "Rejected"
+        elif "objection" in stage_lower or has_unresolved_objection:
+            s_stage = stage_name if "objection" in stage_lower else "Under Objection"
+            s_status = "Under Objection"
+            s_pending = "Applicant (Needs Reply)"
+        elif "payment" in stage_lower:
+            s_stage = "Awaiting Payment"
+            s_status = "Awaiting Payment"
+            s_pending = "Applicant (Fees Pending)"
+        elif app.is_approved:
+            s_stage = "Approved"
+            s_status = "Approved"
+            s_pending = "Completed"
+        else:
+            s_stage = stage_name
+            s_status = stage_name
+            s_pending = _resolve_pending_at(app)
+
         meta = {
             "application_id": nla_id,
             "sbm_app_id": app.application_id,
@@ -1002,7 +1137,7 @@ def single_window_search(request):
             "id": app.application_id,
             "title": f"Salesman/Barman App: {app.application_id}",
             "subtitle": f"Name: {applicant_name} | Role: {app.role or 'N/A'}{nla_suffix} | Mobile: {app.mobileNumber or 'N/A'}",
-            "status": app.current_stage.name if app.current_stage else "Draft",
+            "status": s_status,
             
             "application_id": app.application_id,
             "establishment_name": f"Salesman/Barman: {applicant_name}",
@@ -1011,8 +1146,8 @@ def single_window_search(request):
             "license_category": app.role or "Salesman/Barman",
             "issued_license_id": app.license_id or "N/A",
             "license_is_active": True,
-            "current_stage": app.current_stage.name if app.current_stage else "Draft",
-            "pending_at": _resolve_pending_at(app),
+            "current_stage": s_stage,
+            "pending_at": s_pending,
             "created_at": app.created_at.strftime("%Y-%m-%d") if app.created_at else "N/A",
             
             "meta": meta
@@ -1119,16 +1254,41 @@ def single_window_new_app_detail(request, application_id):
     app = get_object_or_404(NewLicenseApplication, application_id=application_id)
 
     # Pending stage/role info
-    pending_at_role = "N/A"
-    pending_at_stage = app.current_stage.name if app.current_stage else "Draft"
-    if app.current_stage and not app.is_approved:
-        try:
-            from auth.workflow.models import StagePermission
-            perm = StagePermission.objects.filter(stage=app.current_stage, can_process=True).first()
-            if perm and perm.role:
-                pending_at_role = perm.role.name
-        except Exception:
-            pass
+    stage_obj = app.current_stage
+    stage_name = stage_obj.name if stage_obj else "Draft"
+    stage_lower = stage_name.lower()
+    has_unresolved_objection = False
+    try:
+        has_unresolved_objection = app.objections.filter(is_resolved=False).exists()
+    except Exception:
+        pass
+
+    if "terminat" in stage_lower or getattr(app, 'is_terminated', False):
+        pending_at_stage = "Terminated"
+        pending_at_role = "Terminated"
+    elif "reject" in stage_lower or getattr(app, 'is_rejected', False):
+        pending_at_stage = "Rejected"
+        pending_at_role = "Rejected"
+    elif "objection" in stage_lower or has_unresolved_objection:
+        pending_at_stage = stage_name if "objection" in stage_lower else "Under Objection"
+        pending_at_role = "Applicant (Needs Reply)"
+    elif "payment" in stage_lower or ("awaiting" in stage_lower and "fee" in stage_lower) or (not app.is_license_fee_paid and getattr(app, 'awaiting_payment_entered_at', None) is not None and not app.is_approved):
+        pending_at_stage = "Awaiting Payment"
+        pending_at_role = "Applicant (Fees Pending)"
+    elif app.is_approved:
+        pending_at_stage = "Approved"
+        pending_at_role = "Completed"
+    else:
+        pending_at_stage = stage_name
+        pending_at_role = "N/A"
+        if app.current_stage:
+            try:
+                from auth.workflow.models import StagePermission
+                perm = StagePermission.objects.filter(stage=app.current_stage, can_process=True).first()
+                if perm and perm.role:
+                    pending_at_role = perm.role.name
+            except Exception:
+                pass
 
     # Find issued license directly linked to this application (Main License)
     issued_license = None
@@ -1174,20 +1334,31 @@ def single_window_new_app_detail(request, application_id):
     if app.applicant:
         renewals = RenewalApplication.objects.filter(applicant=app.applicant).order_by("-created_at")
         for r in renewals:
-            # Renewal pending stage
-            r_pending = "N/A"
-            if r.current_stage and not r.is_approved:
-                try:
-                    from auth.workflow.models import StagePermission
-                    rp = StagePermission.objects.filter(stage=r.current_stage, can_process=True).first()
-                    if rp and rp.role:
-                        r_pending = rp.role.name
-                except Exception:
-                    pass
+            r_stage_name = r.current_stage.name if r.current_stage else "Draft"
+            r_stage_lower = r_stage_name.lower()
+            if "terminat" in r_stage_lower:
+                r_stage = "Terminated"
+                r_pending = "Terminated"
+            elif "reject" in r_stage_lower:
+                r_stage = "Rejected"
+                r_pending = "Rejected"
+            elif "objection" in r_stage_lower or (hasattr(r, 'objections') and r.objections.filter(is_resolved=False).exists()):
+                r_stage = r_stage_name if "objection" in r_stage_lower else "Under Objection"
+                r_pending = "Applicant (Needs Reply)"
+            elif "payment" in r_stage_lower:
+                r_stage = "Awaiting Payment"
+                r_pending = "Applicant (Fees Pending)"
+            elif r.is_approved:
+                r_stage = "Approved"
+                r_pending = "Completed"
+            else:
+                r_stage = r_stage_name
+                r_pending = _resolve_pending_at(r)
+
             renewal_list.append({
                 "application_id": r.application_id,
                 "old_license_id": r.old_license_id,
-                "current_stage": r.current_stage.name if r.current_stage else "Draft",
+                "current_stage": r_stage,
                 "is_approved": r.is_approved,
                 "is_license_fee_paid": r.is_license_fee_paid,
                 "is_security_fee_paid": r.is_security_fee_paid,
@@ -1203,20 +1374,32 @@ def single_window_new_app_detail(request, application_id):
     if app.applicant:
         sbms = SalesmanBarmanModel.objects.filter(applicant=app.applicant).order_by("-created_at")
         for s in sbms:
-            s_pending = "N/A"
-            if s.current_stage and not s.is_approved:
-                try:
-                    from auth.workflow.models import StagePermission
-                    sp = StagePermission.objects.filter(stage=s.current_stage, can_process=True).first()
-                    if sp and sp.role:
-                        s_pending = sp.role.name
-                except Exception:
-                    pass
+            s_stage_name = s.current_stage.name if s.current_stage else "Draft"
+            s_stage_lower = s_stage_name.lower()
+            if "terminat" in s_stage_lower:
+                s_stage = "Terminated"
+                s_pending = "Terminated"
+            elif "reject" in s_stage_lower:
+                s_stage = "Rejected"
+                s_pending = "Rejected"
+            elif "objection" in s_stage_lower or (hasattr(s, 'objections') and s.objections.filter(is_resolved=False).exists()):
+                s_stage = s_stage_name if "objection" in s_stage_lower else "Under Objection"
+                s_pending = "Applicant (Needs Reply)"
+            elif "payment" in s_stage_lower:
+                s_stage = "Awaiting Payment"
+                s_pending = "Applicant (Fees Pending)"
+            elif s.is_approved:
+                s_stage = "Approved"
+                s_pending = "Completed"
+            else:
+                s_stage = s_stage_name
+                s_pending = _resolve_pending_at(s)
+
             sbm_list.append({
                 "application_id": s.application_id,
                 "name": f"{s.firstName} {s.lastName}",
                 "role": s.role,
-                "current_stage": s.current_stage.name if s.current_stage else "Draft",
+                "current_stage": s_stage,
                 "is_approved": s.is_approved,
                 "is_print_fee_paid": s.is_print_fee_paid,
                 "pending_at_role": s_pending,
@@ -1267,6 +1450,27 @@ def single_window_new_app_detail(request, application_id):
 def single_window_renewal_app_detail(request, application_id):
     app = get_object_or_404(RenewalApplication, application_id=application_id)
 
+    r_stage_name = app.current_stage.name if app.current_stage else "Draft"
+    r_stage_lower = r_stage_name.lower()
+    if "terminat" in r_stage_lower:
+        r_stage = "Terminated"
+        r_pending = "Terminated"
+    elif "reject" in r_stage_lower:
+        r_stage = "Rejected"
+        r_pending = "Rejected"
+    elif "objection" in r_stage_lower or (hasattr(app, 'objections') and app.objections.filter(is_resolved=False).exists()):
+        r_stage = r_stage_name if "objection" in r_stage_lower else "Under Objection"
+        r_pending = "Applicant (Needs Reply)"
+    elif "payment" in r_stage_lower:
+        r_stage = "Awaiting Payment"
+        r_pending = "Applicant (Fees Pending)"
+    elif app.is_approved:
+        r_stage = "Approved"
+        r_pending = "Completed"
+    else:
+        r_stage = r_stage_name
+        r_pending = _resolve_pending_at(app)
+
     data = {
         "application_id": app.application_id,
         "old_license_id": app.old_license_id,
@@ -1274,7 +1478,8 @@ def single_window_renewal_app_detail(request, application_id):
         "applicant_email": app.applicant.email if app.applicant else "N/A",
         "license_category": app.license_category.license_category if app.license_category else "N/A",
         "license_sub_category": app.license_sub_category.description if app.license_sub_category else "N/A",
-        "current_stage": app.current_stage.name if app.current_stage else "Draft",
+        "current_stage": r_stage,
+        "pending_at_role": r_pending,
         "is_approved": app.is_approved,
         "is_license_fee_paid": app.is_license_fee_paid,
         "is_security_fee_paid": app.is_security_fee_paid,
@@ -1315,6 +1520,27 @@ def single_window_license_detail(request, license_id):
 def single_window_salesman_barman_detail(request, application_id):
     app = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
 
+    s_stage_name = app.current_stage.name if app.current_stage else "Draft"
+    s_stage_lower = s_stage_name.lower()
+    if "terminat" in s_stage_lower:
+        s_stage = "Terminated"
+        s_pending = "Terminated"
+    elif "reject" in s_stage_lower:
+        s_stage = "Rejected"
+        s_pending = "Rejected"
+    elif "objection" in s_stage_lower or (hasattr(app, 'objections') and app.objections.filter(is_resolved=False).exists()):
+        s_stage = s_stage_name if "objection" in s_stage_lower else "Under Objection"
+        s_pending = "Applicant (Needs Reply)"
+    elif "payment" in s_stage_lower:
+        s_stage = "Awaiting Payment"
+        s_pending = "Applicant (Fees Pending)"
+    elif app.is_approved:
+        s_stage = "Approved"
+        s_pending = "Completed"
+    else:
+        s_stage = s_stage_name
+        s_pending = _resolve_pending_at(app)
+
     data = {
         "application_id": app.application_id,
         "applicant_name": f"{app.applicant.first_name} {app.applicant.last_name}" if app.applicant else "N/A",
@@ -1329,7 +1555,8 @@ def single_window_salesman_barman_detail(request, application_id):
         "aadhaar": app.aadhaar,
         "pan": app.pan,
         "address": app.address,
-        "current_stage": app.current_stage.name if app.current_stage else "Draft",
+        "current_stage": s_stage,
+        "pending_at_role": s_pending,
         "is_approved": app.is_approved,
         "is_print_fee_paid": app.is_print_fee_paid,
         "print_count": app.print_count,

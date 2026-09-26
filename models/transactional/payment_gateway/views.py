@@ -1898,10 +1898,25 @@ def billdesk_response(request):
 def list_billdesk_transactions(request):
     from django.db.models import Q
     
-    # Authorization check: only allow roleId 1 (Site Admin) or roleId 3 (Single Window)
-    role_id = getattr(getattr(request.user, 'role', None), 'id', None)
-    if role_id not in (1, 3):
-        return Response({"detail": "Permission denied. Admin/Single Window only."}, status=status.HTTP_403_FORBIDDEN)
+    def _has_permission(user) -> bool:
+        if not user or not user.is_authenticated:
+            return False
+        if getattr(user, 'is_superuser', False) or getattr(user, 'is_staff', False):
+            return True
+        role_id = getattr(user, 'role_id', None) or (user.role.id if getattr(user, 'role', None) else None)
+        if role_id in (1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12):
+            return True
+        role_name = str(getattr(user, 'role', '') or '').lower()
+        if any(kw in role_name for kw in ['admin', 'commissioner', 'officer', 'cell', 'window', 'district', 'secretary', 'enquiry', 'inquiry', 'permit', 'single']):
+            return True
+        try:
+            from auth.roles.permissions import HasAppPermission
+            return HasAppPermission('payment_gateway', 'view').has_permission(request, None)
+        except Exception:
+            return False
+
+    if not _has_permission(request.user):
+        return Response({"detail": "Permission denied. Administrative/Officer access required."}, status=status.HTTP_403_FORBIDDEN)
 
     queryset = PaymentBilldeskTransaction.objects.all()
 
@@ -1936,7 +1951,15 @@ def list_billdesk_transactions(request):
         except ValueError:
             pass
 
-        q_obj = Q(utr__icontains=query) | Q(transaction_id_no_hoa__icontains=query) | Q(payer_id__icontains=query) | Q(user_id__icontains=query)
+        q_obj = (
+            Q(utr__icontains=query)
+            | Q(transaction_id_no_hoa__icontains=query)
+            | Q(payer_id__icontains=query)
+            | Q(user_id__icontains=query)
+            | Q(response_bankreferenceno__icontains=query)
+            | Q(response_txnreferenceno__icontains=query)
+            | Q(request_additionalinfo1__icontains=query)
+        )
         if amount_query is not None:
             q_obj |= Q(transaction_amount=amount_query)
         queryset = queryset.filter(q_obj)
