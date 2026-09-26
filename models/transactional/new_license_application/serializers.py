@@ -689,4 +689,28 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
             rep['is_special_permit_allowed'] = getattr(cat, 'is_special_permit_allowed', False)
             rep['isDistributorUser'] = getattr(cat, 'is_distributor_user', False)
             rep['is_distributor_user'] = getattr(cat, 'is_distributor_user', False)
+
+        if not rep.get('application_fee_transaction_id') and getattr(instance, 'is_application_fee_paid', False):
+            try:
+                from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+                tx = PaymentBilldeskTransaction.objects.filter(
+                    payer_id__iexact=str(instance.application_id),
+                    payment_module_code="001",
+                ).order_by("-transaction_date", "-utr").first()
+                if tx:
+                    rep['application_fee_transaction_id'] = tx.utr
+                    rep['application_fee_payment_status'] = tx.payment_status
+                    rep['application_fee_payment_date'] = tx.transaction_date.isoformat() if tx.transaction_date else None
+            except Exception:
+                pass
+
+        try:
+            from models.transactional.salesman_barman.models import SalesmanBarmanModel
+            sbm = SalesmanBarmanModel.objects.filter(applicant=instance.applicant, application_id__istartswith="SBM/").order_by("-created_at").first()
+            if sbm:
+                rep['sbm_application_id'] = sbm.application_id
+        except Exception:
+            pass
+
         return rep
+
