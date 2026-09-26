@@ -604,12 +604,29 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         stage_id = getattr(stage, 'id', None)
         stage_lower = stage_name.lower()
 
+        # 1. Primary check: Current stage is Terminated or Forfeited
+        if 'terminat' in stage_lower or 'forfeit' in stage_lower or 'revoke' in stage_lower or 'suspend' in stage_lower:
+            try:
+                from django.contrib.contenttypes.models import ContentType
+                from auth.workflow.models import Transaction as WorkflowTransaction
+                ct = ContentType.objects.get_for_model(obj)
+                term_tx = WorkflowTransaction.objects.filter(
+                    content_type=ct,
+                    object_id=str(obj.pk),
+                    stage__name__icontains="terminat"
+                ).order_by('-timestamp').first()
+                if term_tx and term_tx.remarks:
+                    return term_tx.remarks
+            except Exception:
+                pass
+            return "Application and associated license officially terminated by department administration. Security deposit deducted/forfeited."
+
         # Check explicit timer-based auto-rejection stages
         if stage_id == 180 or ('payment' in stage_lower and 'reject' in stage_lower):
-            return "Application automatically rejected: Required License Fee and Security Deposit payments were not completed within the configured payment deadline."
+            return "Application payment window closed before completing required fee payments."
         
         if stage_id == 166 or ('objection' in stage_lower and 'reject' in stage_lower):
-            return "Application automatically rejected: No action or clarification was submitted on the raised objection within the allowed time limit."
+            return "Application objection response period expired without clarification."
 
         # Check explicit Rejection entry in database
         try:
@@ -647,12 +664,25 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         stage_name = str(getattr(stage, 'name', '') or '').strip()
         stage_id = getattr(stage, 'id', None)
         stage_lower = stage_name.lower()
+        if 'terminat' in stage_lower or 'forfeit' in stage_lower or 'revoke' in stage_lower or 'suspend' in stage_lower:
+            return False
         if stage_id in (166, 180) or ('reject' in stage_lower and ('no action' in stage_lower or 'payment' in stage_lower or 'objection' in stage_lower)):
             return True
         return False
 
     def to_representation(self, instance):
         rep = super().to_representation(instance)
+        stage_name = str(getattr(getattr(instance, 'current_stage', None), 'name', '') or '').strip()
+        stage_lower = stage_name.lower()
+        if 'terminat' in stage_lower or 'forfeit' in stage_lower:
+            rep['status'] = 'Terminated'
+        elif 'reject' in stage_lower:
+            rep['status'] = 'Rejected'
+        elif getattr(instance, 'is_approved', False):
+            rep['status'] = 'Approved'
+        else:
+            rep['status'] = stage_name or 'Pending'
+
         cat = getattr(instance, 'license_category', None)
         if cat:
             rep['isSpecialPermitAllowed'] = getattr(cat, 'is_special_permit_allowed', False)

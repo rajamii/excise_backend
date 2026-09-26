@@ -643,7 +643,7 @@ def deduct_security_deposit(request, pk):
                             content_type=ct,
                             object_id=str(app.pk),
                             stage=term_stage,
-                            remarks=f"Security deposit deducted ({deduct_amt}). License suspended and application moved to Terminated stage. Reason: {remarks}",
+                            remarks=f"Application and associated license officially terminated. Security deposit deducted (₹{deduct_amt}). Reason: {remarks}",
                             performed_by=request.user if request.user and request.user.is_authenticated else None,
                         )
                     except Exception as txn_err:

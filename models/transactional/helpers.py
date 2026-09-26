@@ -49,17 +49,27 @@ def _get_stage_sets(workflow_id: int):
         key=lambda name: _extract_level_index(name) or 0
     )
     level_indexes = {name: _extract_level_index(name) for name in level_stage_names}
+    TERMINAL_NEGATIVE_KEYWORDS = ('reject', 'rejected', 'terminat', 'terminated', 'cancel', 'cancelled', 'revoke', 'revoked', 'suspend', 'suspended', 'forfeit', 'forfeited')
     objection_stage_names = {
         name for name in stage_names
-        if 'objection' in str(name).lower() and 'reject' not in str(name).lower() and not stages.filter(name=name, is_final=True).exists()
+        if 'objection' in str(name).lower() and not any(kw in str(name).lower() for kw in TERMINAL_NEGATIVE_KEYWORDS) and not stages.filter(name=name, is_final=True).exists()
     }
-    rejected_stage_names = {name for name in stage_names if 'rejected' in str(name).lower() or 'reject' in str(name).lower()}
+    rejected_stage_names = {
+        name for name in stage_names
+        if any(kw in str(name).lower() for kw in TERMINAL_NEGATIVE_KEYWORDS)
+    }
     approved_stage_names = {
         stage.name for stage in stages
-        if stage.is_final and 'rejected' not in stage.name.lower() and 'reject' not in stage.name.lower()
+        if stage.is_final and not any(kw in stage.name.lower() for kw in TERMINAL_NEGATIVE_KEYWORDS)
     }
-    approved_stage_names.update({name for name in stage_names if 'approved' in str(name).lower() and 'reject' not in str(name).lower()})
-    payment_stage_names = {name for name in stage_names if 'payment' in str(name).lower() and 'reject' not in str(name).lower()}
+    approved_stage_names.update({
+        name for name in stage_names
+        if 'approved' in str(name).lower() and not any(kw in str(name).lower() for kw in TERMINAL_NEGATIVE_KEYWORDS)
+    })
+    payment_stage_names = {
+        name for name in stage_names
+        if 'payment' in str(name).lower() and not any(kw in str(name).lower() for kw in TERMINAL_NEGATIVE_KEYWORDS)
+    }
     initial_stage_names = set(stages.filter(is_initial=True).values_list('name', flat=True))
 
     return {
