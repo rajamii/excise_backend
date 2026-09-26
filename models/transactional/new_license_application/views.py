@@ -1790,7 +1790,7 @@ def force_pay_security_fee(request, application_id=None):
 # Dashboard Counts
 
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, HasAppPermission('new_license_application', 'view'), HasStagePermission])
+@permission_classes([IsAuthenticated])
 @dashboard_counts_cache("new_license_application")
 def dashboard_counts(request):
     try:

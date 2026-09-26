@@ -884,7 +884,7 @@ def final_license_qr_code(request, application_id):
 
 # Dashboard Counts
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, HasAppPermission('salesman_barman_registration', 'view'), HasStagePermission])
+@permission_classes([IsAuthenticated])
 @dashboard_counts_cache("salesman_barman")
 def dashboard_counts(request):
     try:

@@ -124,7 +124,7 @@ def company_registration_detail(request, application_id):
 
 # Dashboard Counts
 @api_view(['GET'])
-@permission_classes([IsAuthenticated, HasAppPermission('company_registration', 'view')])
+@permission_classes([IsAuthenticated])
 @dashboard_counts_cache("company_registration")
 def dashboard_counts(request):
     try:
