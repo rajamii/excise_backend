@@ -739,7 +739,7 @@ def create_or_update_security_deposit_record(
             log_admin_action(
                 action="PAY_SECURITY_DEPOSIT",
                 user=record.user or user_obj,
-                module_name="Security Deposit Master",
+                module_name="Security Deposit",
                 application_id=target_id,
                 status="SUCCESS",
                 remarks=f"Security Deposit of ₹{paid_amount:,.2f} recorded/paid for Application/License '{target_id}' (Licensee: {record.applicant_name or resolved_applicant_name}, Txn: {record.transaction_id or txn_id}).",

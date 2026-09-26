@@ -21,7 +21,9 @@ AUDIT_APP_LABELS = {
 # Explicit models to ignore from automatic signal logging to prevent noise or recursion
 IGNORED_MODELS = {
     'adminlog', 'useractivity', 'session', 'logentry', 'contenttype',
-    'permission', 'migraterecorder', 'token', 'authtoken', 'outstandingtoken', 'blacklistedtoken'
+    'permission', 'migraterecorder', 'token', 'authtoken', 'outstandingtoken', 'blacklistedtoken',
+    'wallettransaction', 'walletbalance', 'wallet', 'securitydepositrecord',
+    'licensevalidationtoken', 'transaction', 'license', 'masterfactory'
 }
 
 
@@ -156,9 +158,16 @@ def track_admin_master_crud_save(sender, instance, created, **kwargs):
     if getattr(instance, '_admin_log_handled', False):
         return
 
-    # Only log if requested via active HTTP request by an authenticated user
+    # Only log if requested via active HTTP request by an authenticated administrative/staff user
     request = get_current_request()
     if not request or not hasattr(request, 'user') or not getattr(request.user, 'is_authenticated', False):
+        return
+
+    req_user = request.user
+    role_id = getattr(req_user, 'role_id', None) or (req_user.role.id if getattr(req_user, 'role', None) else None)
+    role_name = str(getattr(req_user, 'role', '') or '').lower()
+    is_admin = getattr(req_user, 'is_staff', False) or getattr(req_user, 'is_superuser', False) or (role_id in [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) or any(kw in role_name for kw in ['admin', 'commissioner', 'officer', 'cell', 'window', 'district', 'secretary', 'enquiry', 'inquiry'])
+    if not is_admin:
         return
 
     app_label = instance._meta.app_label if hasattr(instance, '_meta') else ''
@@ -270,8 +279,16 @@ def track_admin_master_crud_delete(sender, instance, **kwargs):
     if getattr(instance, '_admin_log_handled', False):
         return
 
+    # Only log if requested via active HTTP request by an authenticated administrative/staff user
     request = get_current_request()
     if not request or not hasattr(request, 'user') or not getattr(request.user, 'is_authenticated', False):
+        return
+
+    req_user = request.user
+    role_id = getattr(req_user, 'role_id', None) or (req_user.role.id if getattr(req_user, 'role', None) else None)
+    role_name = str(getattr(req_user, 'role', '') or '').lower()
+    is_admin = getattr(req_user, 'is_staff', False) or getattr(req_user, 'is_superuser', False) or (role_id in [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) or any(kw in role_name for kw in ['admin', 'commissioner', 'officer', 'cell', 'window', 'district', 'secretary', 'enquiry', 'inquiry'])
+    if not is_admin:
         return
 
     app_label = instance._meta.app_label if hasattr(instance, '_meta') else ''

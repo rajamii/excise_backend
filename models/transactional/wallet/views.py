@@ -743,7 +743,7 @@ def deduct_security_deposit(request, pk):
                 log_admin_action(
                     user=request.user,
                     request=request,
-                    module_name="Security Deposit Master",
+                    module_name="Security Deposit",
                     application_id=target_app_id,
                     action="DEDUCT_SECURITY_DEPOSIT",
                     from_stage=f"Active (Balance: ₹{current_balance:,.2f})",

@@ -116,6 +116,74 @@ from .models import AdminLog
 from .serializer import AdminLogSerializer
 from .services import log_admin_action
 
+def _is_admin_user(user, request=None) -> bool:
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser or user.is_staff:
+        return True
+    role_id = getattr(user, 'role_id', None) or (user.role.id if getattr(user, 'role', None) else None)
+    if role_id in [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
+        return True
+    role_name = str(getattr(user, 'role', '') or '').lower()
+    if any(kw in role_name for kw in ['admin', 'commissioner', 'officer', 'cell', 'window', 'district', 'secretary', 'enquiry', 'inquiry']):
+        return True
+    if request:
+        try:
+            return HasAppPermission('logs', 'view').has_permission(request, None)
+        except Exception:
+            return False
+    return False
+
+
+def _get_scoped_admin_logs(request):
+    is_admin = _is_admin_user(request.user, request)
+    queryset = AdminLog.objects.all()
+
+    if is_admin:
+        # Every officer/admin user strictly views actions performed by themselves.
+        queryset = queryset.filter(
+            Q(username__iexact=request.user.username) |
+            Q(admin_id=str(request.user.pk)) |
+            Q(user=request.user)
+        )
+    else:
+        # For Licensee users: strictly scope to actions PERFORMED BY the licensee themselves
+        queryset = queryset.filter(
+            Q(username__iexact=request.user.username) |
+            Q(admin_id=str(request.user.pk)) |
+            Q(user=request.user)
+        )
+
+        # Exclude administrative / officer actions
+        queryset = queryset.exclude(role__in=[
+            'Commissioner', 'Joint commissioner', 'Joint Commissioner', 'Deputy Commissioner',
+            'District User', 'Site Inquiry Officer', 'Site Officer', 'Permit Section',
+            'IT Cell', 'Offcier-In-Charge', 'Officer-In-Charge', 'Secretary', 'Super Admin', 'Site Admin'
+        ])
+
+        # Exclude administrative internal / master data tables from Licensee view
+        excluded_internal_modules = [
+            'Master Factory', 'District Master', 'Sub Division Master',
+            'Police Station Master', 'Taluk Master', 'Village Master',
+            'Road Master', 'Ward Master', 'State Master', 'Fixed Fee Master',
+            'Timer Configuration', 'License Validation Token',
+            'Wallet Transaction', 'Wallet Balance'
+        ]
+        queryset = queryset.exclude(module_name__in=excluded_internal_modules)
+
+        # Exclude internal technical updates on License / Security Deposit records
+        queryset = queryset.exclude(
+            Q(module_name='License', action__in=['UPDATE', 'TOGGLE_ACTIVE']) |
+            Q(module_name='Security Deposit Master', action='UPDATE') |
+            Q(module_name='Security Deposit', action='UPDATE')
+        )
+
+        # Exclude raw integer record IDs (e.g., '19', '31') so only valid application/license records show
+        queryset = queryset.exclude(application_id__regex=r'^\d+$')
+
+    return queryset
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def admin_log_list(request):
@@ -123,30 +191,7 @@ def admin_log_list(request):
     List and filter all administrative audit logs across all modules.
     Supports filtering by module, application ID, action, username, role, date, month, and date ranges.
     """
-    def _is_admin_user(user) -> bool:
-        if not user or not user.is_authenticated:
-            return False
-        if user.is_superuser or user.is_staff:
-            return True
-        role_id = getattr(user, 'role_id', None) or (user.role.id if getattr(user, 'role', None) else None)
-        if role_id in [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
-            return True
-        role_name = str(getattr(user, 'role', '') or '').lower()
-        if any(kw in role_name for kw in ['admin', 'commissioner', 'officer', 'cell', 'window', 'district', 'secretary', 'enquiry', 'inquiry']):
-            return True
-        try:
-            return HasAppPermission('logs', 'view').has_permission(request, None)
-        except Exception:
-            return False
-
-    is_admin = _is_admin_user(request.user)
-    queryset = AdminLog.objects.all()
-    # Every user (officer, administrator, or licensee) strictly views actions performed by themselves.
-    queryset = queryset.filter(
-        Q(username__iexact=request.user.username) |
-        Q(admin_id=str(request.user.pk)) |
-        Q(user=request.user)
-    )
+    queryset = _get_scoped_admin_logs(request)
 
     # Filters
     module_name = request.query_params.get('module_name') or request.query_params.get('module')
@@ -291,9 +336,9 @@ def admin_log_history(request, application_id):
 @permission_classes([IsAuthenticated])
 def admin_log_modules(request):
     """
-    Returns distinct module names recorded in the audit log.
+    Returns distinct module names recorded in the audit log for the current user's scope.
     """
-    modules = AdminLog.objects.values_list('module_name', flat=True).distinct().order_by('module_name')
+    modules = _get_scoped_admin_logs(request).values_list('module_name', flat=True).distinct().order_by('module_name')
     return Response(list(modules))
 
 
@@ -301,9 +346,9 @@ def admin_log_modules(request):
 @permission_classes([IsAuthenticated])
 def admin_log_actions(request):
     """
-    Returns distinct action types recorded in the audit log.
+    Returns distinct action types recorded in the audit log for the current user's scope.
     """
-    actions = AdminLog.objects.exclude(action__isnull=True).exclude(action__exact='').values_list('action', flat=True).distinct().order_by('action')
+    actions = _get_scoped_admin_logs(request).exclude(action__isnull=True).exclude(action__exact='').values_list('action', flat=True).distinct().order_by('action')
     return Response(list(actions))
 
 
@@ -311,9 +356,9 @@ def admin_log_actions(request):
 @permission_classes([IsAuthenticated])
 def admin_log_roles(request):
     """
-    Returns distinct roles recorded in the audit log.
+    Returns distinct roles recorded in the audit log for the current user's scope.
     """
-    roles = AdminLog.objects.exclude(role__isnull=True).exclude(role__exact='').values_list('role', flat=True).distinct().order_by('role')
+    roles = _get_scoped_admin_logs(request).exclude(role__isnull=True).exclude(role__exact='').values_list('role', flat=True).distinct().order_by('role')
     return Response(list(roles))
 
 
