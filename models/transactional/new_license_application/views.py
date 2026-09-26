@@ -1960,8 +1960,8 @@ def dashboard_counts(request):
 
 # Application Grouping
 
-@permission_classes([HasAppPermission('new_license_application', 'view'), HasStagePermission])
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
 @parser_classes([JSONParser])
 @dashboard_counts_cache("new_license_application:list")
 def application_group(request):
