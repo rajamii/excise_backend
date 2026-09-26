@@ -123,8 +123,8 @@ def company_registration_detail(request, application_id):
 
 
 # Dashboard Counts
-@permission_classes([HasAppPermission('company_registration', 'view')])
 @api_view(['GET'])
+@permission_classes([IsAuthenticated, HasAppPermission('company_registration', 'view')])
 @dashboard_counts_cache("company_registration")
 def dashboard_counts(request):
     try:
@@ -132,11 +132,15 @@ def dashboard_counts(request):
         deactivate_all_expired_licenses()
     except Exception:
         pass
+
+    if not request.user or not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
     from django.db.models import Q, Exists, OuterRef
     from django.contrib.contenttypes.models import ContentType
     from auth.workflow.models import Transaction as WorkflowTransaction
 
-    role = _normalize_role(request.user.role.name if request.user.role else None)
+    role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     workflow_id = WORKFLOW_IDS['COMPANY_REGISTRATION']
     stage_sets = _get_stage_sets(workflow_id)
     all_qs = CompanyRegistration.objects.all()

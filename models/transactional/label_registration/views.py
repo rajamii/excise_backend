@@ -8,6 +8,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from auth.workflow.models import Workflow
@@ -242,10 +243,12 @@ def label_registration_detail(request, application_id):
 
 
 @api_view(['GET'])
-@permission_classes([HasStagePermission])
+@permission_classes([IsAuthenticated, HasStagePermission])
 @dashboard_counts_cache("label_registration:counts")
 def dashboard_counts(request):
-    role = _normalize_role(request.user.role.name if getattr(request.user, 'role', None) else None)
+    if not request.user or not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     base_qs = LabelRegistration.objects
 
     if role in ROLE_STAGE_MAP:

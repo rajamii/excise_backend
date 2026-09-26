@@ -842,11 +842,13 @@ def final_license_detail(request, application_id):
     return Response(response, status=status.HTTP_200_OK)
 
 
-@permission_classes([HasAppPermission('salesman_barman_registration', 'view')])
 @api_view(['GET'])
+@permission_classes([HasAppPermission('salesman_barman_registration', 'view')])
 def final_license_passport_photo(request, application_id):
+    if not request.user or not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
     application = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
-    role = _normalize_role(request.user.role.name if request.user.role else None)
+    role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     if role == "licensee" and application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -862,11 +864,13 @@ def final_license_passport_photo(request, application_id):
     return FileResponse(f, content_type=mime)
 
 
-@permission_classes([HasAppPermission('salesman_barman_registration', 'view')])
 @api_view(['GET'])
+@permission_classes([HasAppPermission('salesman_barman_registration', 'view')])
 def final_license_qr_code(request, application_id):
+    if not request.user or not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
     application = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
-    role = _normalize_role(request.user.role.name if request.user.role else None)
+    role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     if role == "licensee" and application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -879,8 +883,8 @@ def final_license_qr_code(request, application_id):
 
 
 # Dashboard Counts
-@permission_classes([HasAppPermission('salesman_barman_registration', 'view'), HasStagePermission])
 @api_view(['GET'])
+@permission_classes([IsAuthenticated, HasAppPermission('salesman_barman_registration', 'view'), HasStagePermission])
 @dashboard_counts_cache("salesman_barman")
 def dashboard_counts(request):
     try:
@@ -889,11 +893,14 @@ def dashboard_counts(request):
     except Exception:
         pass
 
+    if not request.user or not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
     from django.contrib.contenttypes.models import ContentType
     from django.db.models import Exists, OuterRef, Q
     from auth.workflow.models import Transaction as WorkflowTransaction
 
-    role = _normalize_role(request.user.role.name if request.user.role else None)
+    role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     workflow_id = WORKFLOW_IDS['SALESMAN_BARMAN']
     stage_sets = _get_stage_sets(workflow_id)
     all_qs = _filter_by_user_district(SalesmanBarmanModel.objects.all(), request.user, 'excise_district')

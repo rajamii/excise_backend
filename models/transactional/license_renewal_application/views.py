@@ -1163,8 +1163,8 @@ def license_application_detail(request, pk):
     return Response(_serialize_renewal_application(obj), status=status.HTTP_200_OK)
 
 
-@permission_classes([IsAuthenticated])
 @api_view(["GET"])
+@permission_classes([IsAuthenticated])
 @dashboard_counts_cache("license_renewal_application")
 def dashboard_counts(request):
     try:
@@ -1173,15 +1173,18 @@ def dashboard_counts(request):
     except Exception:
         pass
 
+    if not request.user or not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
     wf = _get_renewal_workflow()
     if not wf:
-        return Response({"applied": 0, "pending": 0, "objection": 0, "approved": 0, "rejected": 0})
+        return Response({"applied": 0, "pending": 0, "objection": 0, "approved": 0, "rejected": 0, "awaiting_payment": 0})
 
     from django.db.models import Q, Exists, OuterRef
     from django.contrib.contenttypes.models import ContentType
     from auth.workflow.models import Transaction as WorkflowTransaction
 
-    role = _normalize_role(request.user.role.name if request.user.role else None)
+    role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     stage_sets = _get_stage_sets(wf.id)
     all_qs = _filter_by_user_district(LicenseApplication.objects.filter(workflow_id=wf.id), request.user, 'applicant__district')
 

@@ -557,7 +557,9 @@ def workflow_action(request, application_id):
 @permission_classes([permissions.IsAuthenticated])
 @dashboard_counts_cache("company_collaboration")
 def dashboard_counts(request):
-    role = _normalize_role(request.user.role.name if request.user.role else None)
+    if not request.user or not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     base_qs = CompanyCollaboration.objects.all()
 
     # Filter by month and year if provided

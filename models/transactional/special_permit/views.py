@@ -527,7 +527,9 @@ def special_permit_detail(request, application_id):
 @permission_classes([IsAuthenticated])
 @dashboard_counts_cache("special_permit")
 def dashboard_counts(request):
-    role = _normalize_role(request.user.role.name if getattr(request.user, 'role', None) else None)
+    if not request.user or not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     workflow = _get_special_permit_workflow()
     if not workflow:
         return Response({

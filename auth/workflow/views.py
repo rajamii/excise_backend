@@ -12,6 +12,7 @@ from importlib import import_module
 from django.contrib.contenttypes.models import ContentType
 from .models import Workflow, WorkflowStage, WorkflowTransition, StagePermission, Objection, Transaction, Rejection
 from .serializers import WorkflowSerializer, WorkflowStageSerializer, WorkflowTransitionSerializer, WorkflowObjectionSerializer, WorkflowRejectionSerializer, StagePermissionSerializer
+from rest_framework.permissions import IsAuthenticated
 from auth.roles.permissions import HasAppPermission
 from .permissions import HasStagePermission
 from .services import SERIALIZER_MAPPING, WorkflowService
@@ -537,7 +538,7 @@ def get_rejections(request, application_id):
     serializer = WorkflowRejectionSerializer(rejections, many=True)
     return Response(serializer.data)
 @api_view(['GET'])
-@permission_classes([HasStagePermission])
+@permission_classes([IsAuthenticated, HasStagePermission])
 @dashboard_counts_cache("workflow")
 def dashboard_counts(request):
     try:
@@ -545,6 +546,8 @@ def dashboard_counts(request):
         deactivate_all_expired_licenses()
     except Exception:
         pass
+    if not request.user or not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
     models = [_get_model("license_application", "LicenseApplication"),
               _get_model("new_license_application", "NewLicenseApplication")]
 
@@ -571,9 +574,11 @@ def dashboard_counts(request):
 
 # ---------- REUSABLE: Grouped Applications (by role) ----------
 @api_view(['GET'])
-@permission_classes([HasStagePermission])
+@permission_classes([IsAuthenticated, HasStagePermission])
 def application_group(request):
-    role_name = request.user.role.name if request.user.role else None
+    if not request.user or not getattr(request.user, "is_authenticated", False):
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+    role_name = getattr(getattr(request.user, 'role', None), 'name', None)
     if not role_name:
         return Response({"detail": "User has no role"}, status=400)
 

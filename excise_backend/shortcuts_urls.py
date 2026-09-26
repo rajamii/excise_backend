@@ -2,6 +2,7 @@ from django.urls import include, path, register_converter
 
 from models.masters.supply_chain.liquor_data import views as liquor_data_views
 from models.transactional.public_validation import views as public_validation_views
+from models.transactional.wallet import views as wallet_views
 
 
 class EverythingConverter:
@@ -49,7 +50,9 @@ urlpatterns = [
     path('admin-logs/', include('models.transactional.logs.urls')),
 
     # Security Deposit Records (short aliases)
-    path('security-deposit-records/', include('models.transactional.wallet.urls')),
+    path('security-deposit-records/', wallet_views.security_deposit_record_list, name='short-security-deposit-records'),
+    path('security-deposit-records/<int:pk>/deduct/', wallet_views.deduct_security_deposit, name='short-security-deposit-record-deduct'),
+    path('security-deposit-records/<int:pk>/refund/', wallet_views.refund_security_deposit, name='short-security-deposit-record-refund'),
 ]
 
 
