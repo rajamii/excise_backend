@@ -19,6 +19,79 @@ def _is_pending_payment_status(value: str | None) -> bool:
     return raw in {"p", "pending", "processing", "in_progress", "inprogress"}
 
 
+def _resolve_module_display(module_name: str = "", source_module: str = "") -> str:
+    if module_name and str(module_name).strip():
+        return str(module_name).strip()
+    sm = str(source_module or "").strip().lower()
+    mapping = {
+        "billdesk": "Wallet Management",
+        "wallet_recharge": "Wallet Management",
+        "wallet_payment": "Wallet Management",
+        "wallet": "Wallet Management",
+        "ena_requisition": "ENA Bulk Requisition",
+        "requisition": "ENA Bulk Requisition",
+        "enarequisition": "ENA Bulk Requisition",
+        "hologram_procurement": "Hologram Procurement",
+        "hologram": "Hologram Procurement",
+        "imfl_hologram_procurement": "Hologram Procurement",
+        "transit_permit": "ENA Transit Permit",
+        "transit": "ENA Transit Permit",
+        "enatransitpermit": "ENA Transit Permit",
+        "distributor_permit": "Distributor Permit",
+        "license_renewal": "License Renewal",
+        "renewal": "License Renewal",
+        "new_license": "New License Application",
+        "new_license_application": "New License Application",
+        "company_registration": "Company Registration",
+        "company_collaboration": "Company Collaboration",
+        "label_registration": "Label Registration",
+        "salesman": "Salesman/Barman Registration",
+        "salesman_barman": "Salesman/Barman Registration",
+    }
+    return mapping.get(sm, sm.replace("_", " ").title() if sm else "Wallet Management")
+
+
+def _resolve_actor_user(user_id=None, resolved_licensee_id=None, wallet=None, actor_user_explicit=None):
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
+    if actor_user_explicit and getattr(actor_user_explicit, "is_authenticated", False):
+        return actor_user_explicit
+    if user_id:
+        u_str = str(user_id).strip()
+        if u_str.isdigit():
+            u = User.objects.filter(pk=int(u_str)).first()
+            if u:
+                return u
+        u = User.objects.filter(username__iexact=u_str).first()
+        if u:
+            return u
+        u = User.objects.filter(email__iexact=u_str).first()
+        if u:
+            return u
+    if resolved_licensee_id:
+        lic_str = str(resolved_licensee_id).strip()
+        u = User.objects.filter(username__iexact=lic_str).first()
+        if u:
+            return u
+        try:
+            from models.masters.license.models import License
+            lic = License.objects.filter(license_id__iexact=lic_str).first()
+            if lic and getattr(lic, "applicant", None):
+                return lic.applicant
+        except Exception:
+            pass
+    if wallet and getattr(wallet, "user_id", None):
+        w_uid = str(wallet.user_id).strip()
+        if w_uid.isdigit():
+            u = User.objects.filter(pk=int(w_uid)).first()
+            if u:
+                return u
+        u = User.objects.filter(username__iexact=w_uid).first()
+        if u:
+            return u
+    return None
+
+
 def credit_wallet_balance(
     *,
     transaction_id: str,
@@ -34,6 +107,9 @@ def credit_wallet_balance(
     payment_status: str = "success",
     remarks: str = "",
     reference_no: str = "",
+    application_id: str = "",
+    module_name: str = "",
+    actor_user=None,
 ) -> tuple[WalletTransaction | None, WalletBalance | None, bool]:
     txn = str(transaction_id or "").strip()
     if not txn:
@@ -90,23 +166,6 @@ def credit_wallet_balance(
                 f"Wallet not found for licensee_id={resolved_licensee_id}, wallet_type={wtype}. "
                 "Wallet must be initialized at license approval before any payment can be credited."
             )
-        # if not wallet:
-        #     template = WalletBalance.objects.select_for_update().filter(wallet_filter).order_by("wallet_balance_id").first()
-        #     wallet = WalletBalance.objects.create(
-        #         licensee_id=resolved_licensee_id,
-        #         licensee_name=str(licensee_name or getattr(template, "licensee_name", "") or "").strip(),
-        #         manufacturing_unit=str(getattr(template, "manufacturing_unit", "") or "").strip() if template else "",
-        #         user_id=str(user_id or getattr(template, "user_id", "") or "").strip(),
-        #         module_type=str(getattr(template, "module_type", "") or "").strip() if template else resolved_module_type,
-        #         wallet_type=wtype,
-        #         head_of_account=hoa,
-        #         opening_balance=Decimal("0.00"),
-        #         total_credit=Decimal("0.00"),
-        #         total_debit=Decimal("0.00"),
-        #         current_balance=Decimal("0.00"),
-        #         last_updated_at=now_ts,
-        #         created_at=now_ts,
-        #     )
 
         before = Decimal(str(wallet.current_balance or 0)).quantize(Decimal("0.01"))
         after = (before + amt).quantize(Decimal("0.01"))
@@ -159,22 +218,19 @@ def credit_wallet_balance(
         # ---------- Admin Audit Log ('admin_log') ----------
         try:
             from models.transactional.logs.services import log_admin_action
-            from django.contrib.auth import get_user_model
-            from django.db.models import Q
-            User = get_user_model()
-            actor_user = None
-            if user_id:
-                if str(user_id).isdigit():
-                    actor_user = User.objects.filter(pk=int(user_id)).first()
-                if not actor_user:
-                    actor_user = User.objects.filter(username__iexact=str(user_id).strip()).first()
-            if not actor_user and resolved_licensee_id:
-                actor_user = User.objects.filter(username__iexact=resolved_licensee_id).first()
+            resolved_actor = _resolve_actor_user(
+                user_id=user_id,
+                resolved_licensee_id=resolved_licensee_id,
+                wallet=wallet,
+                actor_user_explicit=actor_user,
+            )
 
             wallet_label = str(getattr(getattr(wallet, 'wallet_type', None), 'name', None) or wtype).replace('_', ' ').title()
-            
+            effective_mod_name = _resolve_module_display(module_name=module_name, source_module=source_module)
+            effective_target_id = str(application_id or reference_no or wallet.licensee_id or resolved_licensee_id).strip()
+
             recharge_remarks = (
-                f"Recharged ₹{amt:,.2f} to {wallet_label} Wallet for Licensee '{resolved_licensee_id}'. "
+                f"Recharged ₹{amt:,.2f} into {wallet_label} Wallet for Licensee '{resolved_licensee_id}'. "
                 f"Previous Balance: ₹{before:,.2f} → New Balance: ₹{after:,.2f} (Txn: {txn})."
             )
             if remarks:
@@ -182,9 +238,9 @@ def credit_wallet_balance(
 
             log_admin_action(
                 action="WALLET_RECHARGE",
-                user=actor_user,
-                module_name="Wallet Management",
-                application_id=str(wallet.licensee_id or resolved_licensee_id),
+                user=resolved_actor,
+                module_name=effective_mod_name,
+                application_id=effective_target_id,
                 from_stage=f"₹{before:,.2f}",
                 to_stage=f"₹{after:,.2f}",
                 status="SUCCESS",
@@ -203,6 +259,7 @@ def credit_wallet_balance(
                     "reference_no": str(reference_no or txn),
                     "entry_type": "CR",
                     "source_module": str(source_module or "billdesk"),
+                    "target_module": effective_mod_name,
                 }
             )
         except Exception as log_exc:
@@ -342,6 +399,9 @@ def debit_wallet_balance(
     remarks: str = "",
     transaction_type: str = "payment",
     reference_no: str = "",
+    application_id: str = "",
+    module_name: str = "",
+    actor_user=None,
 ) -> tuple[WalletTransaction | None, WalletBalance | None, bool]:
     """
     Debit a wallet balance and create a DR WalletTransaction.
@@ -433,57 +493,59 @@ def debit_wallet_balance(
         )
 
         # ---------- Admin Audit Log ('admin_log') ----------
-        try:
-            from models.transactional.logs.services import log_admin_action
-            from django.contrib.auth import get_user_model
-            from django.db.models import Q
-            User = get_user_model()
-            actor_user = None
-            if user_id:
-                if str(user_id).isdigit():
-                    actor_user = User.objects.filter(pk=int(user_id)).first()
-                if not actor_user:
-                    actor_user = User.objects.filter(username__iexact=str(user_id).strip()).first()
-            if not actor_user and resolved_licensee_id:
-                actor_user = User.objects.filter(username__iexact=resolved_licensee_id).first()
+        # Note: If triggered from security_deposit_deduction, deduct_security_deposit()
+        # already creates the dedicated AdminLog attributed to Site Admin.
+        if str(source_module or "").strip() != "security_deposit_deduction":
+            try:
+                from models.transactional.logs.services import log_admin_action
+                resolved_actor = _resolve_actor_user(
+                    user_id=user_id,
+                    resolved_licensee_id=resolved_licensee_id,
+                    wallet=wallet,
+                    actor_user_explicit=actor_user,
+                )
 
-            wallet_label = str(getattr(getattr(wallet, 'wallet_type', None), 'name', None) or wtype).replace('_', ' ').title()
-            
-            debit_remarks = (
-                f"Debited ₹{amt:,.2f} from {wallet_label} Wallet for Licensee '{resolved_licensee_id}'. "
-                f"Previous Balance: ₹{before:,.2f} → New Balance: ₹{after:,.2f}."
-            )
-            if remarks:
-                debit_remarks += f" Reason: {remarks}."
+                wallet_label = str(getattr(getattr(wallet, 'wallet_type', None), 'name', None) or wtype).replace('_', ' ').title()
+                effective_mod_name = _resolve_module_display(module_name=module_name, source_module=source_module)
+                effective_target_id = str(application_id or reference_no or wallet.licensee_id or resolved_licensee_id).strip()
 
-            log_admin_action(
-                action="WALLET_DEBIT",
-                user=actor_user,
-                module_name="Wallet Management",
-                application_id=str(wallet.licensee_id or resolved_licensee_id),
-                from_stage=f"₹{before:,.2f}",
-                to_stage=f"₹{after:,.2f}",
-                status="SUCCESS",
-                remarks=debit_remarks,
-                metadata={
-                    "wallet_id": getattr(wallet, 'pk', None),
-                    "wallet_type": str(getattr(getattr(wallet, 'wallet_type', None), 'code', None) or wtype),
-                    "wallet_label": wallet_label,
-                    "licensee_id": str(wallet.licensee_id or resolved_licensee_id),
-                    "licensee_name": str(wallet.licensee_name or licensee_name or ""),
-                    "amount": str(amt),
-                    "balance_before": str(before),
-                    "balance_after": str(after),
-                    "head_of_account": str(wallet.head_of_account or hoa),
-                    "transaction_id": txn,
-                    "reference_no": str(reference_no or txn),
-                    "entry_type": "DR",
-                    "purpose": str(remarks or transaction_type),
-                    "source_module": str(source_module or "wallet_payment"),
-                }
-            )
-        except Exception as log_exc:
-            logger.warning("Failed to record admin_log for wallet debit: %s", log_exc)
+                debit_remarks = (
+                    f"Spent ₹{amt:,.2f} from {wallet_label} Wallet for {effective_mod_name} (Ref: {effective_target_id}). "
+                    f"Previous Balance: ₹{before:,.2f} → New Balance: ₹{after:,.2f}."
+                )
+                if remarks and remarks.strip() != "Wallet payment":
+                    debit_remarks += f" Purpose: {remarks}."
+
+                log_admin_action(
+                    action="WALLET_DEBIT",
+                    user=resolved_actor,
+                    module_name=effective_mod_name,
+                    application_id=effective_target_id,
+                    from_stage=f"₹{before:,.2f}",
+                    to_stage=f"₹{after:,.2f}",
+                    status="SUCCESS",
+                    remarks=debit_remarks,
+                    metadata={
+                        "wallet_id": getattr(wallet, 'pk', None),
+                        "wallet_type": str(getattr(getattr(wallet, 'wallet_type', None), 'code', None) or wtype),
+                        "wallet_label": wallet_label,
+                        "licensee_id": str(wallet.licensee_id or resolved_licensee_id),
+                        "licensee_name": str(wallet.licensee_name or licensee_name or ""),
+                        "amount": str(amt),
+                        "balance_before": str(before),
+                        "balance_after": str(after),
+                        "head_of_account": str(wallet.head_of_account or hoa),
+                        "transaction_id": txn,
+                        "reference_no": str(reference_no or txn),
+                        "application_id": effective_target_id,
+                        "entry_type": "DR",
+                        "purpose": str(remarks or transaction_type),
+                        "source_module": str(source_module or "wallet_payment"),
+                        "target_module": effective_mod_name,
+                    }
+                )
+            except Exception as log_exc:
+                logger.warning("Failed to record admin_log for wallet debit: %s", log_exc)
 
     return created, wallet, False
 
