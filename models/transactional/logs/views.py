@@ -140,31 +140,13 @@ def admin_log_list(request):
             return False
 
     is_admin = _is_admin_user(request.user)
-    scope = str(request.query_params.get('scope') or 'mine').strip().lower()
-
     queryset = AdminLog.objects.all()
-
-    if not is_admin:
-        # Non-admin / Licensee users can ONLY view actions performed BY THEM (their own activity).
-        # Actions performed by Site Admin or excise officers (e.g. security amount deductions, administrative updates) are kept with Site Admin/officers only.
-        queryset = queryset.filter(
-            Q(user=request.user) |
-            Q(username__iexact=request.user.username) |
-            Q(admin_id=str(request.user.pk))
-        ).exclude(
-            Q(role__iexact="Site Admin") |
-            Q(username__iexact="admin") |
-            Q(username__iexact="SYSTEM")
-        )
-    else:
-        # By default, officers/admins view their own action audit records (scope='mine')
-        # If scope='all' or role/username/admin_id is explicitly requested, broader logs are shown
-        if scope != 'all' and not request.query_params.get('username') and not request.query_params.get('role') and not request.query_params.get('admin_id'):
-            queryset = queryset.filter(
-                Q(username=request.user.username) |
-                Q(admin_id=str(request.user.pk)) |
-                Q(user=request.user)
-            )
+    # Every user (officer, administrator, or licensee) strictly views actions performed by themselves.
+    queryset = queryset.filter(
+        Q(username__iexact=request.user.username) |
+        Q(admin_id=str(request.user.pk)) |
+        Q(user=request.user)
+    )
 
     # Filters
     module_name = request.query_params.get('module_name') or request.query_params.get('module')
