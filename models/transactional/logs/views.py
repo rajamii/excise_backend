@@ -123,23 +123,39 @@ def admin_log_list(request):
     List and filter all administrative audit logs across all modules.
     Supports filtering by module, application ID, action, username, role, date, month, and date ranges.
     """
-    def _has_logs_view_permission() -> bool:
+    def _is_admin_user(user) -> bool:
+        if not user or not user.is_authenticated:
+            return False
+        if user.is_superuser or user.is_staff:
+            return True
+        role_id = getattr(user, 'role_id', None) or (user.role.id if getattr(user, 'role', None) else None)
+        if role_id in [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
+            return True
+        role_name = str(getattr(user, 'role', '') or '').lower()
+        if any(kw in role_name for kw in ['admin', 'commissioner', 'officer', 'cell', 'window', 'district', 'secretary', 'enquiry', 'inquiry']):
+            return True
         try:
             return HasAppPermission('logs', 'view').has_permission(request, None)
         except Exception:
             return False
 
-    is_admin = (
-        request.user.is_superuser
-        or request.user.is_staff
-        or _has_logs_view_permission()
-    )
+    is_admin = _is_admin_user(request.user)
+    scope = str(request.query_params.get('scope') or 'mine').strip().lower()
 
     queryset = AdminLog.objects.all()
 
     if not is_admin:
         # Non-admin users can only view actions performed by them or on their applications
         queryset = queryset.filter(Q(username=request.user.username) | Q(admin_id=str(request.user.pk)))
+    else:
+        # By default, officers/admins view their own action audit records (scope='mine')
+        # If scope='all' is explicitly requested, all system logs are shown
+        if scope != 'all' and not request.query_params.get('username') and not request.query_params.get('role') and not request.query_params.get('admin_id'):
+            queryset = queryset.filter(
+                Q(username=request.user.username) |
+                Q(admin_id=str(request.user.pk)) |
+                Q(user=request.user)
+            )
 
     # Filters
     module_name = request.query_params.get('module_name') or request.query_params.get('module')

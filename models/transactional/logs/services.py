@@ -42,15 +42,29 @@ MODULE_NAME_MAP = {
     'newlicenseapplication': 'New License Application',
     'licenseapplication': 'License Application',
     'licenserenewalapplication': 'License Renewal',
-    'license': 'License Master',
-
-    # Personnel & Permits
-    'salesmanbarmanmodel': 'Salesman/Barman Registration',
-    'specialpermitapplication': 'Dry Day Permit',
-    'distributorpermitapplication': 'Distributor Permit',
-    'labelregistration': 'Label Registration',
-    'siteenquiryreport': 'Site Enquiry',
-    'preventiveraid': 'Preventive Raids',
+    # Master Data & Administration
+    'securitydepositrecord': 'Security Deposit Master',
+    'licensecategory': 'License Category Master',
+    'licensesubcategory': 'License Sub Category Master',
+    'licensetype': 'License Type Master',
+    'licensetitle': 'License Title Master',
+    'licensefee': 'License Fee Master',
+    'masterdistrict': 'District Master',
+    'mastersubdivision': 'Sub Division Master',
+    'masterpolicestation': 'Police Station Master',
+    'mastertaluk': 'Taluk Master',
+    'mastervillage': 'Village Master',
+    'masterroad': 'Road Master',
+    'masterward': 'Ward Master',
+    'locationcategory': 'Location Category Master',
+    'locationsubcategory': 'Location Sub Category Master',
+    'supplychaintimerconfig': 'Timer Configuration',
+    'masterfixedfee': 'Fixed Fee Master',
+    'customuser': 'User Management',
+    'oicofficerassignment': 'OIC Officer Assignment',
+    'oicdistributorassignment': 'OIC Distributor Assignment',
+    'masterbrand': 'Brand Master Data',
+    'brandmaster': 'Brand Master Data',
 }
 
 
@@ -461,4 +475,51 @@ def log_admin_action(*args, **kwargs):
     Convenience global function to log admin actions.
     """
     return AdminLogService.log(*args, **kwargs)
+
+
+def log_crud_action(
+    action: str,
+    user=None,
+    request=None,
+    module_name: str = None,
+    target_id: str = None,
+    target_name: str = None,
+    fields_changed: list = None,
+    old_data: dict = None,
+    new_data: dict = None,
+    remarks: str = None,
+    metadata: dict = None,
+):
+    """
+    Convenience helper for logging CRUD / Master Data operations by Site Admin or other administrators.
+    """
+    meta = dict(metadata or {})
+    if target_name:
+        meta['target_name'] = str(target_name)
+    if fields_changed:
+        meta['fields_changed'] = fields_changed
+    if old_data:
+        meta['old_values'] = old_data
+    if new_data:
+        meta['new_values'] = new_data
+
+    action_upper = str(action or 'UPDATE').strip().upper()
+    act_name = "Created" if action_upper == "CREATE" else ("Updated" if action_upper in ("UPDATE", "EDIT") else ("Deleted" if action_upper == "DELETE" else action_upper.title()))
+
+    if not remarks:
+        target_desc = f"'{target_name}' " if target_name else ""
+        item_id_desc = f"(ID: {target_id}) " if target_id else ""
+        field_desc = f"Changed fields: {', '.join(fields_changed)}. " if fields_changed else ""
+        remarks = f"{act_name} {module_name or 'Master record'} {target_desc}{item_id_desc}. {field_desc}".strip()
+
+    return AdminLogService.log(
+        action=action_upper,
+        user=user,
+        request=request,
+        module_name=module_name or "Master Data",
+        application_id=str(target_id or target_name or ""),
+        status="SUCCESS",
+        remarks=remarks,
+        metadata=meta
+    )
 

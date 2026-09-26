@@ -693,28 +693,55 @@ def deduct_security_deposit(request, pk):
         except Exception as w_err:
             logger.warning("Could not debit security deposit wallet balance: %s", w_err)
 
-        # 5. Log in AdminLog
+        # 5. Log in AdminLog with rich audit details
         try:
             from models.transactional.logs.services import log_admin_action
+            target_username = record.username or (record.user.username if record.user else "")
+            target_name = record.applicant_name or (record.user.get_full_name() if record.user else "") or record.establishment_name or target_username
+            target_app_id = record.application_id or record.license_id or f"SD-{record.pk}"
+            target_lic_id = license_id_str or record.license_id or ""
+
+            log_remarks = (
+                f"Deducted ₹{deduct_amt:,.2f} from Security Deposit of License '{target_lic_id or target_app_id}' "
+                f"(Licensee: {target_name}, Username: @{target_username}). "
+                f"Previous Balance: ₹{current_balance:,.2f} → New Balance: ₹{record.balance_amount:,.2f}. "
+                f"License is suspended (is_active=False), application moved to Terminated stage, "
+                f"and is_security_fee_paid set to False. Reason: {remarks}"
+            )
+
             log_admin_action(
                 user=request.user,
+                request=request,
                 module_name="Security Deposit Master",
-                application_id=record.application_id or record.license_id or f"SD-{record.pk}",
+                application_id=target_app_id,
                 action="DEDUCT_SECURITY_DEPOSIT",
-                remarks=f"Deducted ₹{deduct_amt} from Security Deposit. License {'suspended' if license_suspended else 'marked inactive'}. Reason: {remarks}",
+                from_stage=f"Active (Balance: ₹{current_balance:,.2f})",
+                to_stage="Terminated",
+                to_stage_name="Terminated",
                 status="COMPLETED",
+                remarks=log_remarks,
                 metadata={
                     "security_deposit_record_id": record.pk,
-                    "deduct_amount": float(deduct_amt),
+                    "target_user_id": record.user_id or (record.user.pk if record.user else None),
+                    "target_username": target_username,
+                    "target_applicant_name": target_name,
+                    "establishment_name": record.establishment_name or "",
+                    "license_id": target_lic_id,
+                    "application_id": record.application_id or "",
+                    "deducted_amount": float(deduct_amt),
+                    "previous_balance": float(current_balance),
                     "remaining_balance": float(record.balance_amount),
+                    "action_type": action_type,
                     "license_suspended": license_suspended,
-                    "license_id": license_id_str,
-                    "application_updated": app_updated,
+                    "application_terminated": app_updated,
                     "wallet_debited": wallet_debited,
+                    "admin_username": request.user.username if request.user else "SYSTEM",
+                    "admin_role": getattr(getattr(request.user, 'role', None), 'name', 'Site Admin'),
+                    "reason": remarks,
                 }
             )
         except Exception as log_err:
-            logger.error("Error creating AdminLog for security deposit deduction: %s", log_err)
+            logger.error("Error creating AdminLog for security deposit deduction: %s", log_err, exc_info=True)
 
     return Response({
         "status": "success",
