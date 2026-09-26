@@ -77,6 +77,18 @@ def _active_na_license_id_for_applicant(user) -> str:
             lid = str(lic.license_id).strip()
             if lid.upper().startswith("NA/"):
                 return lid
+
+        # Also find any NA/ license for the applicant even if not active yet
+        base_all = License.objects.filter(applicant=user)
+        lic = base_all.filter(license_id__istartswith="NA/").order_by("-issue_date", "-license_id").first()
+        if lic and lic.license_id:
+            return str(lic.license_id).strip()
+
+        lic = base_all.filter(source_type="new_license_application").order_by("-issue_date", "-license_id").first()
+        if lic and lic.license_id:
+            lid = str(lic.license_id).strip()
+            if lid.upper().startswith("NA/"):
+                return lid
     except Exception:
         pass
     return ""
@@ -185,8 +197,13 @@ def wallet_summary(request, licensee_id):
         qs = qs.filter(wallet_type__iexact=scope)
 
     # Safety net: if balances were not initialized by the workflow signal, initialize them on-demand
-    # for the active license and re-query.
-    if qs.count() == 0:
+    # for the applicant's license and re-query.
+    needs_heal = (
+        qs.count() == 0
+        or (scope == "wallets" and qs.count() == 0)
+        or (not scope and qs.count() < 5)
+    )
+    if needs_heal:
         try:
             from models.masters.license.models import License
             from models.transactional.wallet.wallet_initializer import initialize_wallet_balances_for_license
@@ -196,29 +213,43 @@ def wallet_summary(request, licensee_id):
                 na_id = _active_na_license_id_for_applicant(request.user)
                 if na_id:
                     lic = (
-                        License.objects.filter(applicant=request.user, is_active=True, license_id__iexact=na_id)
-                        .order_by("-issue_date", "-license_id")
+                        License.objects.filter(applicant=request.user, license_id__iexact=na_id)
+                        .order_by("-is_active", "-issue_date", "-license_id")
                         .first()
                     )
             except Exception:
                 lic = None
 
-            if lic is None:
+            if lic is None and request.user and getattr(request.user, "is_authenticated", False):
                 lic = (
-                    License.objects.filter(applicant=request.user, is_active=True)
-                    .order_by("-issue_date", "-license_id")
+                    License.objects.filter(applicant=request.user)
+                    .order_by("-is_active", "-issue_date", "-license_id")
                     .first()
                 )
 
             if lic is None and candidates:
                 lic = (
-                    License.objects.filter(is_active=True)
-                    .filter(Q(license_id__in=candidates) | Q(source_object_id__in=candidates))
-                    .order_by("-issue_date", "-license_id")
+                    License.objects.filter(Q(license_id__in=candidates) | Q(source_object_id__in=candidates))
+                    .order_by("-is_active", "-issue_date", "-license_id")
                     .first()
                 )
 
             if lic is not None:
+                # Sync subcategory/category from source application if needed
+                source = getattr(lic, "source_application", None)
+                if source is not None:
+                    src_sub = getattr(source, "license_sub_category", None)
+                    src_cat = getattr(source, "license_category", None)
+                    update_f = []
+                    if src_sub and lic.license_sub_category_id != src_sub.id:
+                        lic.license_sub_category = src_sub
+                        update_f.append("license_sub_category")
+                    if src_cat and lic.license_category_id != src_cat.id:
+                        lic.license_category = src_cat
+                        update_f.append("license_category")
+                    if update_f:
+                        lic.save(update_fields=update_f)
+
                 initialize_wallet_balances_for_license(lic)
 
                 qs = WalletBalance.objects.filter(wallet_filter).order_by("wallet_type", "head_of_account")

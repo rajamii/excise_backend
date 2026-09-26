@@ -226,27 +226,45 @@ def create_license_on_final_approval(sender, instance, created, **kwargs):
         .first()
     )
     if existing_license:
+        update_fields = []
+        app_cat = getattr(application, 'license_category', None)
+        app_subcat = getattr(application, 'license_sub_category', None)
+        app_district = getattr(application, 'excise_district', None) or getattr(application, 'site_district', None)
+
+        if app_cat and existing_license.license_category_id != app_cat.id:
+            existing_license.license_category = app_cat
+            update_fields.append("license_category")
+        if app_subcat and existing_license.license_sub_category_id != app_subcat.id:
+            existing_license.license_sub_category = app_subcat
+            update_fields.append("license_sub_category")
+        if app_district and existing_license.excise_district_id != app_district.id:
+            existing_license.excise_district = app_district
+            update_fields.append("excise_district")
+
         if source_type := getattr(existing_license, "source_type", None):
             if source_type == "new_license_application":
                 should_be_active = _new_license_payments_complete(application)
                 if existing_license.is_active != should_be_active:
                     existing_license.is_active = should_be_active
-                    existing_license.save(update_fields=["is_active"])
+                    update_fields.append("is_active")
             elif source_type == "salesman_barman":
                 app_print_paid = getattr(application, "is_print_fee_paid", False)
                 if existing_license.is_print_fee_paid != app_print_paid:
                     existing_license.is_print_fee_paid = app_print_paid
-                    existing_license.save(update_fields=["is_print_fee_paid"])
+                    update_fields.append("is_print_fee_paid")
             elif source_type == "company_registration":
                 should_be_active = getattr(application, "is_approved", False) and getattr(application, "payment_amount", None) is not None
                 if existing_license.is_active != should_be_active:
                     existing_license.is_active = should_be_active
-                    existing_license.save(update_fields=["is_active"])
+                    update_fields.append("is_active")
             elif source_type == "company_collaboration":
                 should_be_active = getattr(application, "is_approved", False) or txn_stage_name == "approved" or getattr(txn_stage, "is_final", False)
                 if existing_license.is_active != should_be_active:
                     existing_license.is_active = should_be_active
-                    existing_license.save(update_fields=["is_active"])
+                    update_fields.append("is_active")
+
+        if update_fields:
+            existing_license.save(update_fields=list(dict.fromkeys(update_fields)))
 
         # Still ensure wallets exist (and get updated metadata) whenever an approval-stage
         # transaction is logged for the application.

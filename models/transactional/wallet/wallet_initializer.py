@@ -26,9 +26,13 @@ def _looks_like_distributor(text: str) -> bool:
 
 
 def _resolve_module_type(license_obj) -> str:
+    if license_obj is None:
+        return "other"
+
+    # 1. Direct subcategory on license_obj
     sub_category_id = getattr(license_obj, "license_sub_category_id", None)
     sub_category = getattr(license_obj, "license_sub_category", None)
-    sub_desc = str(getattr(sub_category, "description", "") or "").strip().lower()
+    sub_desc = str(getattr(sub_category, "description", "") or getattr(sub_category, "name", "") or "").strip().lower()
     if _looks_like_distillery(sub_desc):
         return "distillery"
     if _looks_like_brewery(sub_desc):
@@ -36,29 +40,62 @@ def _resolve_module_type(license_obj) -> str:
     if _looks_like_distributor(sub_desc):
         return "distributor"
 
+    # 2. Check source_application if available
+    source = getattr(license_obj, "source_application", None)
+    if source is not None:
+        src_sub = getattr(source, "license_sub_category", None)
+        src_sub_id = getattr(source, "license_sub_category_id", None)
+        src_sub_desc = str(getattr(src_sub, "description", "") or getattr(src_sub, "name", "") or "").strip().lower()
+        if _looks_like_distillery(src_sub_desc):
+            return "distillery"
+        if _looks_like_brewery(src_sub_desc):
+            return "brewery"
+        if _looks_like_distributor(src_sub_desc):
+            return "distributor"
+        if src_sub_id in {2, 6, 7, 8}:
+            return "distillery"
+        if src_sub_id in {1, 24}:
+            return "brewery"
+        if src_sub_id == 31:
+            return "distributor"
+
+        src_cat = getattr(source, "license_category", None)
+        src_cat_desc = str(
+            getattr(src_cat, "license_category", None)
+            or getattr(src_cat, "name", None)
+            or getattr(src_cat, "description", None)
+            or ""
+        ).strip().lower()
+        if _looks_like_distributor(src_cat_desc) or getattr(source, "license_category_id", None) == 2:
+            return "distributor"
+        if _looks_like_distillery(src_cat_desc):
+            return "distillery"
+        if _looks_like_brewery(src_cat_desc):
+            return "brewery"
+
+    # 3. Check Category on license_obj
     category = getattr(license_obj, "license_category", None)
     cat_desc = str(
-        getattr(category, "name", None)
+        getattr(category, "license_category", None)
+        or getattr(category, "name", None)
         or getattr(category, "description", None)
-        or getattr(category, "license_category", None)
         or ""
     ).strip().lower()
-    if _looks_like_distributor(cat_desc):
+    if _looks_like_distributor(cat_desc) or getattr(license_obj, "license_category_id", None) == 2:
         return "distributor"
     if _looks_like_distillery(cat_desc):
         return "distillery"
     if _looks_like_brewery(cat_desc):
         return "brewery"
 
-    # Fallback: Some deployments use stable numeric IDs (frontend also uses these).
-    # Only apply when description is missing.
+    # 4. Fallback: Numeric IDs
     try:
         sid = int(sub_category_id or 0)
     except Exception:
         sid = 0
-    if sid == 2:
+    if sid in {2, 6, 7, 8}:
         return "distillery"
-    if sid == 1:
+    if sid in {1, 24}:
         return "brewery"
     if sid == 31:
         return "distributor"
@@ -67,7 +104,6 @@ def _resolve_module_type(license_obj) -> str:
     if source_type in {"salesman_barman", "license_application"}:
         return "other"
 
-    source = getattr(license_obj, "source_application", None)
     license_type = getattr(source, "license_type", None) if source is not None else None
     type_name = str(getattr(license_type, "license_type", "") or "").strip().lower()
     if _looks_like_distillery(type_name):
@@ -76,17 +112,7 @@ def _resolve_module_type(license_obj) -> str:
         return "brewery"
     if _looks_like_distributor(type_name):
         return "distributor"
-    if type_name:
-        return "other"
 
-    if sub_desc:
-        return "other"
-
-    logger.warning(
-        "Unknown license_sub_category_id=%s for license_id=%s. Falling back to other mapping.",
-        sub_category_id,
-        getattr(license_obj, "license_id", None),
-    )
     return "other"
 
 
