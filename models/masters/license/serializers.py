@@ -173,6 +173,9 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
     reminder_window_days = serializers.SerializerMethodField()
     renewal_count = serializers.SerializerMethodField()
     renewal_details = serializers.SerializerMethodField()
+    has_active_renewal = serializers.SerializerMethodField()
+    active_renewal_id = serializers.SerializerMethodField()
+    active_renewal_status = serializers.SerializerMethodField()
 
     first_name = serializers.CharField(source='source_application.applicant.first_name', read_only=True)
     middle_name = serializers.CharField(source='source_application.applicant.middle_name', read_only=True)
@@ -381,6 +384,33 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
         except Exception:
             return []
 
+    def _get_active_renewal_app(self, obj):
+        try:
+            from django.db.models import Q
+            from models.transactional.license_renewal_application.models import LicenseApplication
+            filters = Q(old_license_id=str(obj.license_id))
+            if getattr(obj, 'source_object_id', None):
+                filters |= Q(source_object_id=str(obj.source_object_id))
+            return LicenseApplication.objects.filter(
+                filters,
+                is_approved=False
+            ).exclude(current_stage__name__icontains="reject").order_by('-created_at').first()
+        except Exception:
+            return None
+
+    def get_has_active_renewal(self, obj):
+        return self._get_active_renewal_app(obj) is not None
+
+    def get_active_renewal_id(self, obj):
+        app = self._get_active_renewal_app(obj)
+        return app.application_id if app else None
+
+    def get_active_renewal_status(self, obj):
+        app = self._get_active_renewal_app(obj)
+        if app and getattr(app, "current_stage", None):
+            return app.current_stage.name
+        return "Under Process" if app else None
+
     class Meta:
         model = License
         fields = [
@@ -419,6 +449,9 @@ class MyLicenseDetailsSerializer(serializers.ModelSerializer):
             'site_district',
             'renewal_count',
             'renewal_details',
+            'has_active_renewal',
+            'active_renewal_id',
+            'active_renewal_status',
             'salesman_barman_role',
             'yearly_license_fee',
         ]
