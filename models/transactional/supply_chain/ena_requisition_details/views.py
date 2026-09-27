@@ -21,6 +21,7 @@ from .models import (
 from .serializers import EnaRequisitionDetailSerializer, RequisitionBulkLiterDetailSerializer
 from auth.workflow.constants import WORKFLOW_IDS
 from models.transactional.dashboard_cache import dashboard_counts_cache, invalidate_dashboard_counts_cache
+from models.transactional.helpers import paginate_queryset, build_paginated_response, apply_query_filters
 from models.transactional.supply_chain.access_control import (
     has_workflow_access,
     scope_by_profile_or_workflow,
@@ -234,7 +235,157 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
         if our_ref_no is not None:
             queryset = queryset.filter(our_ref_no=our_ref_no)
         return queryset
-    
+
+    def get_dashboard_counts(self, request):
+        base_qs = self.get_queryset()
+        counts = {
+            'total': base_qs.count(),
+            'applied': base_qs.filter(models.Q(status__icontains='applied') | models.Q(status__icontains='submit')).count(),
+            'pending': base_qs.filter(
+                models.Q(status__icontains='pending') |
+                models.Q(current_stage__name__icontains='pending') |
+                models.Q(status__icontains='forward') |
+                models.Q(current_stage__name__icontains='forward') |
+                models.Q(status_code__in=['RQ_01', 'RQ_00', 'RQ_02'])
+            ).count(),
+            'underprocess': base_qs.filter(
+                models.Q(status__icontains='process') |
+                models.Q(current_stage__name__icontains='process') |
+                models.Q(status__icontains='awaiting') |
+                models.Q(status__icontains='payslip') |
+                models.Q(status__icontains='Approved Commissioner') |
+                models.Q(status_code__in=['RQ_02', 'RQ_03', 'RQ_04'])
+            ).count(),
+            'approved': base_qs.filter(
+                models.Q(status__iexact='Approved') |
+                (models.Q(status__icontains='approv') & ~models.Q(status__icontains='commissioner') & ~models.Q(status__icontains='payslip')) |
+                models.Q(current_stage__name__iexact='Approved') |
+                models.Q(status_code='RQ_09')
+            ).count(),
+            'rejected': base_qs.filter(
+                models.Q(status__icontains='reject') |
+                models.Q(current_stage__name__icontains='reject')
+            ).count(),
+            'cancellation': base_qs.filter(
+                models.Q(status__icontains='cancel') |
+                models.Q(current_stage__name__icontains='cancel')
+            ).count(),
+        }
+        return Response(counts, status=status.HTTP_200_OK)
+
+    def list(self, request, *args, **kwargs):
+        if request.query_params.get('view') == 'counts':
+            return self.get_dashboard_counts(request)
+
+        queryset = self.get_queryset()
+
+        status_filter = str(request.query_params.get('status', '') or '').strip().lower()
+        if status_filter and status_filter != 'all':
+            if status_filter == 'pending':
+                queryset = queryset.filter(
+                    models.Q(status__icontains='pending') |
+                    models.Q(current_stage__name__icontains='pending') |
+                    models.Q(status__icontains='forward') |
+                    models.Q(current_stage__name__icontains='forward') |
+                    models.Q(status_code__in=['RQ_01', 'RQ_00', 'RQ_02'])
+                )
+            elif status_filter in ['approved', 'approv']:
+                queryset = queryset.filter(
+                    models.Q(status__iexact='Approved') |
+                    (models.Q(status__icontains='approv') & ~models.Q(status__icontains='commissioner') & ~models.Q(status__icontains='payslip')) |
+                    models.Q(current_stage__name__iexact='Approved') |
+                    models.Q(status_code='RQ_09')
+                )
+            elif status_filter in ['rejected', 'reject']:
+                queryset = queryset.filter(
+                    models.Q(status__icontains='reject') |
+                    models.Q(current_stage__name__icontains='reject')
+                )
+            elif status_filter in ['underprocess', 'under_process', 'processing']:
+                queryset = queryset.filter(
+                    models.Q(status__icontains='process') |
+                    models.Q(current_stage__name__icontains='process') |
+                    models.Q(status__icontains='awaiting') |
+                    models.Q(status__icontains='payslip') |
+                    models.Q(status__icontains='Approved Commissioner') |
+                    models.Q(status_code__in=['RQ_02', 'RQ_03', 'RQ_04'])
+                )
+            elif status_filter in ['cancellation', 'cancelled', 'cancel']:
+                queryset = queryset.filter(
+                    models.Q(status__icontains='cancel') |
+                    models.Q(current_stage__name__icontains='cancel')
+                )
+            elif status_filter in ['awaitingpayment', 'awaiting_payment', 'payment']:
+                queryset = queryset.filter(
+                    models.Q(status__icontains='awaiting') |
+                    models.Q(current_stage__name__icontains='payment') |
+                    models.Q(status__icontains='Approved Commissioner')
+                )
+            else:
+                queryset = queryset.filter(
+                    models.Q(status__icontains=status_filter) |
+                    models.Q(status_code__iexact=status_filter) |
+                    models.Q(current_stage__name__icontains=status_filter)
+                )
+
+        search_term = str(request.query_params.get('search', '') or '').strip()
+        if search_term:
+            queryset = queryset.filter(
+                models.Q(our_ref_no__icontains=search_term) |
+                models.Q(lifted_from_distillery_name__icontains=search_term) |
+                models.Q(licensee_id__icontains=search_term) |
+                models.Q(state__icontains=search_term) |
+                models.Q(purpose_name__icontains=search_term) |
+                models.Q(bulk_spirit_type__icontains=search_term) |
+                models.Q(details_permits_number__icontains=search_term)
+            )
+
+        date_val = str(request.query_params.get('date', '') or '').strip()
+        if date_val:
+            queryset = queryset.filter(
+                models.Q(requisition_date__date=date_val) |
+                models.Q(created_at__date=date_val)
+            )
+
+        month_val = str(request.query_params.get('month', '') or '').strip()
+        if month_val:
+            if '-' in month_val:
+                try:
+                    y, m = month_val.split('-')[:2]
+                    queryset = queryset.filter(created_at__year=int(y), created_at__month=int(m))
+                except Exception:
+                    pass
+            elif month_val.isdigit():
+                queryset = queryset.filter(created_at__month=int(month_val))
+
+        year_val = str(request.query_params.get('year', '') or '').strip()
+        if year_val and year_val.isdigit():
+            queryset = queryset.filter(created_at__year=int(year_val))
+
+        company_val = str(request.query_params.get('company', '') or '').strip()
+        if company_val:
+            queryset = queryset.filter(
+                models.Q(lifted_from_distillery_name__icontains=company_val) |
+                models.Q(licensee_id__icontains=company_val)
+            )
+
+        page_obj, paginated_data = paginate_queryset(
+            request,
+            queryset,
+            default_page_size=10,
+            ordering=('-updated_at', '-id')
+        )
+
+        if paginated_data is not None:
+            serializer = self.get_serializer(page_obj, many=True)
+            return Response({
+                **paginated_data,
+                'results': serializer.data
+            })
+
+        serializer = self.get_serializer(queryset.order_by('-updated_at', '-id'), many=True)
+        return Response(serializer.data)
+
     def perform_create(self, serializer):
         super().perform_create(serializer)
         invalidate_dashboard_counts_cache()
@@ -247,9 +398,16 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
         context['request'] = self.request
         return context
 
-    @dashboard_counts_cache("supply_chain_ena_requisitions")
-    def get(self, request, *args, **kwargs):
-        return super().get(request, *args, **kwargs)
+
+class RequisitionDashboardCountsAPIView(APIView):
+    """
+    Returns dashboard count metrics for ENA requisitions.
+    """
+    def get(self, request):
+        view = EnaRequisitionDetailListCreateAPIView()
+        view.request = request
+        view.format_kwarg = None
+        return view.get_dashboard_counts(request)
 
 
 class EnaRequisitionDetailRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):

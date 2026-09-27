@@ -8,6 +8,7 @@ from django.utils import timezone
 from decimal import Decimal
 from datetime import timedelta
 import logging
+import math
 from .models import EnaRevalidationDetail
 from .serializers import EnaRevalidationDetailSerializer
 from models.transactional.dashboard_cache import (
@@ -16,6 +17,7 @@ from models.transactional.dashboard_cache import (
     _mark_cache_response,
     invalidate_dashboard_counts_cache,
 )
+from models.transactional.helpers import parse_pagination_params, build_paginated_response
 from models.transactional.supply_chain.ena_requisition_details.models import EnaRequisitionDetail
 from models.transactional.supply_chain.ena_requisition_details.models import EnaRevalidationActivationSchedule
 from auth.workflow.constants import WORKFLOW_IDS
@@ -635,11 +637,8 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         context['request'] = self.request
         return context
 
-    def list(self, request, *args, **kwargs):
+    def _get_combined_revalidations(self, request):
         self._process_due_activation_schedules()
-        cached_data = get_cached_api_response(request, "supply_chain_ena_revalidations")
-        if cached_data is not None:
-            return _mark_cache_response(Response(cached_data), "HIT")
 
         # 1. Get submitted revalidations from database (which excludes RV_00)
         queryset = self.filter_queryset(self.get_queryset())
@@ -720,22 +719,170 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         # 3. Combine both lists
         combined_list = object_list + in_memory_revals
         combined_list.sort(key=lambda x: x.created_at or timezone.now(), reverse=True)
+        return combined_list
 
-        # 4. Paginate and serialize the list
-        page = self.paginate_queryset(combined_list)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            response = self.get_paginated_response(serializer.data)
-        else:
-            serializer = self.get_serializer(combined_list, many=True)
-            response = Response(serializer.data)
+    @action(detail=False, methods=['get'], url_path='dashboard-counts')
+    def dashboard_counts(self, request):
+        combined = self._get_combined_revalidations(request)
+        total = len(combined)
+        pending = 0
+        approved = 0
+        rejected = 0
+        underprocess = 0
+        live = 0
+        invalid = 0
 
-        if getattr(response, "status_code", 200) < 300:
-            set_cached_api_response(request, "supply_chain_ena_revalidations", response.data)
-            _mark_cache_response(response, "MISS")
-        else:
-            _mark_cache_response(response, "BYPASS")
-        return response
+        for item in combined:
+            status_text = str(getattr(item, 'status', '') or '').lower()
+            code_text = str(getattr(item, 'status_code', '') or '').upper()
+            stage_text = ''
+            if getattr(item, 'current_stage', None):
+                stage_text = str(getattr(item.current_stage, 'name', '') or '').lower()
+            merged = f"{status_text} {stage_text}"
+
+            if 'reject' in merged:
+                rejected += 1
+            elif 'approv' in merged or code_text == 'RV_09':
+                approved += 1
+            elif 'process' in merged or code_text in ['RV_02', 'RV_03', 'RV_04']:
+                underprocess += 1
+            elif 'pending' in merged or (code_text != 'RV_00' and 'submit' in merged):
+                pending += 1
+            elif 'invalid' in merged or 'expire' in merged or code_text == 'RV_00':
+                invalid += 1
+
+            if not ('invalid' in status_text or 'expire' in status_text or code_text == 'RV_00'):
+                live += 1
+
+        return Response({
+            'total': total,
+            'pending': pending,
+            'approved': approved,
+            'rejected': rejected,
+            'underprocess': underprocess,
+            'live': live,
+            'invalid': invalid
+        }, status=status.HTTP_200_OK)
+
+    def list(self, request, *args, **kwargs):
+        if request.query_params.get('view') == 'counts':
+            return self.dashboard_counts(request)
+
+        combined_list = self._get_combined_revalidations(request)
+
+        # Apply filters
+        status_filter = str(request.query_params.get('status', '') or '').strip().lower()
+        search_term = str(request.query_params.get('search', '') or '').strip().lower()
+        date_filter = str(request.query_params.get('date', '') or '').strip()
+        month_filter = str(request.query_params.get('month', '') or '').strip()
+        year_filter = str(request.query_params.get('year', '') or '').strip()
+        company_filter = str(request.query_params.get('company', '') or '').strip().lower()
+
+        filtered_list = []
+        for item in combined_list:
+            status_text = str(getattr(item, 'status', '') or '').lower()
+            code_text = str(getattr(item, 'status_code', '') or '').upper()
+            stage_text = ''
+            if getattr(item, 'current_stage', None):
+                stage_text = str(getattr(item.current_stage, 'name', '') or '').lower()
+            merged = f"{status_text} {stage_text}"
+
+            if status_filter and status_filter != 'all':
+                if status_filter == 'pending':
+                    if not ('pending' in merged or (code_text != 'RV_00' and 'submit' in merged)):
+                        continue
+                elif status_filter in ['approved', 'approv']:
+                    if not ('approv' in merged or code_text == 'RV_09'):
+                        continue
+                elif status_filter in ['rejected', 'reject']:
+                    if 'reject' not in merged:
+                        continue
+                elif status_filter in ['underprocess', 'under_process', 'processing']:
+                    if not ('process' in merged or code_text in ['RV_02', 'RV_03', 'RV_04']):
+                        continue
+                elif status_filter in ['invalid', 'expired']:
+                    if not ('invalid' in merged or 'expire' in merged or code_text == 'RV_00'):
+                        continue
+                elif status_filter == 'live':
+                    if 'invalid' in status_text or 'expire' in status_text or code_text == 'RV_00':
+                        continue
+                else:
+                    if status_filter not in merged and status_filter != code_text.lower():
+                        continue
+
+            if search_term:
+                ref_no = str(getattr(item, 'our_ref_no', '') or '').lower()
+                permits = str(getattr(item, 'details_permits_number', '') or '').lower()
+                dist = str(getattr(item, 'distillery_name', '') or getattr(item, 'branch_name', '') or '').lower()
+                lic_id = str(getattr(item, 'licensee_id', '') or '').lower()
+                state_str = str(getattr(item, 'state', '') or '').lower()
+                if not (search_term in ref_no or search_term in permits or search_term in dist or search_term in lic_id or search_term in state_str):
+                    continue
+
+            if company_filter:
+                dist = str(getattr(item, 'distillery_name', '') or getattr(item, 'branch_name', '') or '').lower()
+                lic_id = str(getattr(item, 'licensee_id', '') or '').lower()
+                if company_filter not in dist and company_filter not in lic_id:
+                    continue
+
+            if date_filter:
+                c_date = getattr(item, 'revalidation_date', None) or getattr(item, 'created_at', None)
+                if c_date:
+                    d_str = c_date.strftime('%Y-%m-%d') if hasattr(c_date, 'strftime') else str(c_date)[:10]
+                    if d_str != date_filter:
+                        continue
+
+            if month_filter:
+                c_date = getattr(item, 'revalidation_date', None) or getattr(item, 'created_at', None)
+                if c_date:
+                    if '-' in month_filter:
+                        m_str = c_date.strftime('%Y-%m') if hasattr(c_date, 'strftime') else str(c_date)[:7]
+                        if m_str != month_filter:
+                            continue
+                    elif month_filter.isdigit():
+                        m_num = c_date.month if hasattr(c_date, 'month') else None
+                        if m_num and m_num != int(month_filter):
+                            continue
+
+            if year_filter and year_filter.isdigit():
+                c_date = getattr(item, 'revalidation_date', None) or getattr(item, 'created_at', None)
+                if c_date:
+                    y_num = c_date.year if hasattr(c_date, 'year') else None
+                    if y_num and y_num != int(year_filter):
+                        continue
+
+            filtered_list.append(item)
+
+        # Check if pagination is requested
+        page_num_str = request.query_params.get('page', None)
+        page_size_str = request.query_params.get('page_size', None)
+        if page_num_str is not None or page_size_str is not None:
+            total_count = len(filtered_list)
+            try:
+                page = max(1, int(page_num_str or 1))
+            except Exception:
+                page = 1
+            try:
+                page_size = max(1, int(page_size_str or 10))
+            except Exception:
+                page_size = 10
+
+            total_pages = max(1, math.ceil(total_count / page_size)) if total_count > 0 else 0
+            start = (page - 1) * page_size
+            end = start + page_size
+            page_slice = filtered_list[start:end]
+
+            serializer = self.get_serializer(page_slice, many=True)
+            return Response({
+                'count': total_count,
+                'page': page,
+                'page_size': page_size,
+                'total_pages': total_pages,
+                'results': serializer.data
+            }, status=status.HTTP_200_OK)
+
+        serializer = self.get_serializer(filtered_list, many=True)
+        return Response(serializer.data)
 
     @action(detail=False, methods=['post'], url_path='from-requisition')
     def create_from_requisition(self, request):

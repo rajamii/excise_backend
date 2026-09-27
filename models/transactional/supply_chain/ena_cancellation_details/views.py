@@ -15,6 +15,7 @@ from models.transactional.dashboard_cache import (
     _mark_cache_response,
     invalidate_dashboard_counts_cache,
 )
+from models.transactional.helpers import paginate_queryset, build_paginated_response, apply_query_filters
 from models.transactional.supply_chain.access_control import (
     has_workflow_access,
     scope_by_profile_or_workflow,
@@ -647,34 +648,133 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
         our_ref_no = self.request.query_params.get('our_ref_no', None)
         requisition_ref_no = self.request.query_params.get('requisition_ref_no', None)
-        status_param = self.request.query_params.get('status', None)
-        
+        status_param = str(self.request.query_params.get('status', '') or '').strip().lower()
+        search_term = str(self.request.query_params.get('search', '') or '').strip()
+        date_filter = str(self.request.query_params.get('date', '') or '').strip()
+        month_filter = str(self.request.query_params.get('month', '') or '').strip()
+        year_filter = str(self.request.query_params.get('year', '') or '').strip()
+        company_filter = str(self.request.query_params.get('company', '') or '').strip()
+
         if our_ref_no is not None:
             queryset = queryset.filter(our_ref_no__icontains=our_ref_no)
         if requisition_ref_no is not None:
             queryset = queryset.filter(requisition_ref_no__icontains=requisition_ref_no)
-        if status_param is not None:
-            queryset = queryset.filter(status=status_param)
-            
+
+        if status_param and status_param != 'all':
+            if status_param == 'pending':
+                queryset = queryset.filter(
+                    models.Q(status__icontains='pending') |
+                    models.Q(current_stage__name__icontains='pending') |
+                    models.Q(status_code__in=['CN_01', 'CN_00'])
+                )
+            elif status_param in ['approved', 'approv']:
+                queryset = queryset.filter(
+                    models.Q(status__icontains='approv') |
+                    models.Q(current_stage__name__icontains='approv') |
+                    models.Q(status_code='CN_09')
+                )
+            elif status_param in ['rejected', 'reject']:
+                queryset = queryset.filter(
+                    models.Q(status__icontains='reject') |
+                    models.Q(current_stage__name__icontains='reject')
+                )
+            elif status_param in ['processing', 'underprocess', 'under_process']:
+                queryset = queryset.filter(
+                    models.Q(status__icontains='process') |
+                    models.Q(current_stage__name__icontains='process') |
+                    models.Q(status_code__in=['CN_02', 'CN_03', 'CN_04'])
+                )
+            else:
+                queryset = queryset.filter(
+                    models.Q(status__icontains=status_param) |
+                    models.Q(current_stage__name__icontains=status_param)
+                )
+
+        if search_term:
+            queryset = queryset.filter(
+                models.Q(our_ref_no__icontains=search_term) |
+                models.Q(requisition_ref_no__icontains=search_term) |
+                models.Q(licensee_id__icontains=search_term) |
+                models.Q(cancellation_reason__icontains=search_term) |
+                models.Q(cancelled_permit_numbers__icontains=search_term)
+            )
+
+        if date_filter:
+            queryset = queryset.filter(
+                models.Q(cancellation_date__date=date_filter) |
+                models.Q(created_at__date=date_filter)
+            )
+
+        if month_filter:
+            if '-' in month_filter:
+                try:
+                    y, m = month_filter.split('-')[:2]
+                    queryset = queryset.filter(created_at__year=int(y), created_at__month=int(m))
+                except Exception:
+                    pass
+            elif month_filter.isdigit():
+                queryset = queryset.filter(created_at__month=int(month_filter))
+
+        if year_filter and year_filter.isdigit():
+            queryset = queryset.filter(created_at__year=int(year_filter))
+
+        if company_filter:
+            queryset = queryset.filter(
+                models.Q(licensee_id__icontains=company_filter)
+            )
+
         return queryset
 
+    @action(detail=False, methods=['get'], url_path='dashboard-counts')
+    def dashboard_counts(self, request):
+        base_qs = self.get_queryset()
+        counts = {
+            'total': base_qs.count(),
+            'pending': base_qs.filter(
+                models.Q(status__icontains='pending') |
+                models.Q(current_stage__name__icontains='pending') |
+                models.Q(status_code__in=['CN_01', 'CN_00'])
+            ).count(),
+            'approved': base_qs.filter(
+                models.Q(status__icontains='approv') |
+                models.Q(current_stage__name__icontains='approv') |
+                models.Q(status_code='CN_09')
+            ).count(),
+            'rejected': base_qs.filter(
+                models.Q(status__icontains='reject') |
+                models.Q(current_stage__name__icontains='reject')
+            ).count(),
+            'processing': base_qs.filter(
+                models.Q(status__icontains='process') |
+                models.Q(current_stage__name__icontains='process') |
+                models.Q(status_code__in=['CN_02', 'CN_03', 'CN_04'])
+            ).count(),
+        }
+        return Response(counts, status=status.HTTP_200_OK)
+
     def list(self, request, *args, **kwargs):
+        if request.query_params.get('view') == 'counts':
+            return self.dashboard_counts(request)
+
         queryset = self.filter_queryset(self.get_queryset())
 
         cached_data = get_cached_api_response(request, "supply_chain_ena_cancellations")
-        if cached_data is not None:
+        if cached_data is not None and not (request.query_params.get('page') or request.query_params.get('search')):
             return _mark_cache_response(Response(cached_data), "HIT")
 
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            response = self.get_paginated_response(serializer.data)
-            if getattr(response, "status_code", 200) < 300:
-                set_cached_api_response(request, "supply_chain_ena_cancellations", response.data)
-                _mark_cache_response(response, "MISS")
-            else:
-                _mark_cache_response(response, "BYPASS")
-            return response
+        page_obj, paginated_data = paginate_queryset(
+            request,
+            queryset,
+            default_page_size=10,
+            ordering=('-created_at', '-id')
+        )
+
+        if paginated_data is not None:
+            serializer = self.get_serializer(page_obj, many=True)
+            return Response({
+                **paginated_data,
+                'results': serializer.data
+            }, status=status.HTTP_200_OK)
 
         serializer = self.get_serializer(queryset, many=True)
         response = Response(serializer.data)

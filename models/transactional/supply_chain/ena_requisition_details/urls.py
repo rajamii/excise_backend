@@ -7,6 +7,7 @@ from .views import (
     RequisitionArrivalBulkLiterDetailAPIView,
     RequisitionArrivalBulkLiterDetailsListAPIView,
     RequisitionArrivalBulkLiterReviewAPIView,
+    RequisitionDashboardCountsAPIView,
 )
 
 
@@ -15,6 +16,7 @@ app_name = 'ena_requisition_details'
 
 urlpatterns = [
     path('', EnaRequisitionDetailListCreateAPIView.as_view(), name='list-create'),
+    path('dashboard-counts/', RequisitionDashboardCountsAPIView.as_view(), name='dashboard-counts'),
     path('<int:pk>/', EnaRequisitionDetailRetrieveUpdateDestroyAPIView.as_view(), name='detail'),
     path('next-ref-number/', GetNextRefNumberAPIView.as_view(), name='next-ref-number'),
     path('arrival-bulk-liter-details/', RequisitionArrivalBulkLiterDetailsListAPIView.as_view(), name='arrival-bulk-liter-details-list'),
@@ -22,5 +24,3 @@ urlpatterns = [
     path('<int:pk>/perform-action/', PerformRequisitionActionAPIView.as_view(), name='perform-action'),
     path('<int:pk>/arrival-bulk-liter-details/', RequisitionArrivalBulkLiterDetailAPIView.as_view(), name='arrival-bulk-liter-details'),
 ]
-
-
