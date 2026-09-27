@@ -267,17 +267,23 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
             underprocess_q = ~approved_q & ~rejected_q & ~cancellation_q & ~pending_q
 
         elif is_licensee:
+            # For Licensee: all active in-flight applications (pending review, awaiting payment, payslip review) are under Pending
+            pending_q = ~approved_q & ~rejected_q & ~cancellation_q
+            underprocess_q = models.Q(pk__in=[])
+
+        elif is_ps:
+            # For Permit Section: initial submissions needing PS review, and payslip submissions forwarded to PS
             pending_q = (
                 models.Q(status__iexact='Pending') |
                 models.Q(status__iexact='Submitted') |
                 models.Q(current_stage__name__iexact='Pending') |
                 models.Q(current_stage__name__iexact='Submitted') |
-                models.Q(status__icontains='Approved Commissioner') |
-                models.Q(current_stage__name__icontains='Approved Commissioner') |
-                models.Q(status__icontains='awaiting') |
-                models.Q(status__icontains='payment') |
-                models.Q(status_code__in=['RQ_00', 'RQ_01', 'RQ_07'])
-            ) & ~approved_q & ~rejected_q & ~cancellation_q & ~models.Q(status__icontains='Forwarded PaySLip') & ~models.Q(current_stage__name__icontains='Forwarded PaySLip') & ~models.Q(status__icontains='Forwarded Commissioner') & ~models.Q(current_stage__name__icontains='Forwarded Commissioner')
+                models.Q(status_code='RQ_01') |
+                (models.Q(status__icontains='permit') & (models.Q(status__icontains='payslip') | models.Q(status__icontains='forward') | models.Q(status__icontains='submit'))) |
+                (models.Q(current_stage__name__icontains='permit') & (models.Q(current_stage__name__icontains='payslip') | models.Q(current_stage__name__icontains='forward') | models.Q(current_stage__name__icontains='submit'))) |
+                (models.Q(status__icontains='payslip') & ~models.Q(status__icontains='commissioner')) |
+                (models.Q(current_stage__name__icontains='payslip') & ~models.Q(current_stage__name__icontains='commissioner'))
+            ) & ~models.Q(status__icontains='Approved Commissioner') & ~models.Q(current_stage__name__icontains='Approved Commissioner') & ~approved_q & ~rejected_q & ~cancellation_q
 
             underprocess_q = ~approved_q & ~rejected_q & ~cancellation_q & ~pending_q
 

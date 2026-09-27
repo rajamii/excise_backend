@@ -633,6 +633,41 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
             'fee': fee_result,
         }
 
+    def _get_status_queries(self, user):
+        approved_q = (
+            models.Q(status__iexact='Approved') |
+            models.Q(status__icontains='Approved By Commissioner') |
+            models.Q(status__icontains='Approved Commissioner') |
+            (models.Q(status__icontains='approv') & ~models.Q(status__icontains='reject')) |
+            models.Q(current_stage__name__icontains='approv') |
+            models.Q(status_code='CN_09')
+        ) & ~models.Q(status__icontains='reject')
+
+        rejected_q = (
+            models.Q(status__icontains='reject') |
+            models.Q(current_stage__name__icontains='reject')
+        )
+
+        pending_q = (
+            models.Q(status__icontains='pending') |
+            models.Q(status__icontains='Forwarded To Commissioner') |
+            models.Q(status__icontains='Forwarded Commissioner') |
+            models.Q(status__icontains='Forwarded') |
+            models.Q(status__icontains='Submitted') |
+            models.Q(current_stage__name__icontains='pending') |
+            models.Q(current_stage__name__icontains='forward') |
+            models.Q(current_stage__name__icontains='submit') |
+            models.Q(status_code__in=['CN_01', 'CN_00'])
+        ) & ~approved_q & ~rejected_q
+
+        underprocess_q = (
+            models.Q(status__icontains='process') |
+            models.Q(current_stage__name__icontains='process') |
+            models.Q(status_code__in=['CN_02', 'CN_03', 'CN_04'])
+        ) & ~approved_q & ~rejected_q & ~pending_q
+
+        return approved_q, rejected_q, pending_q, underprocess_q
+
     def get_queryset(self):
         """
         Optionally restricts the returned cancellations by filtering against
@@ -660,30 +695,17 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         if requisition_ref_no is not None:
             queryset = queryset.filter(requisition_ref_no__icontains=requisition_ref_no)
 
+        approved_q, rejected_q, pending_q, underprocess_q = self._get_status_queries(self.request.user)
+
         if status_param and status_param != 'all':
-            if status_param == 'pending':
-                queryset = queryset.filter(
-                    models.Q(status__icontains='pending') |
-                    models.Q(current_stage__name__icontains='pending') |
-                    models.Q(status_code__in=['CN_01', 'CN_00'])
-                )
-            elif status_param in ['approved', 'approv']:
-                queryset = queryset.filter(
-                    models.Q(status__icontains='approv') |
-                    models.Q(current_stage__name__icontains='approv') |
-                    models.Q(status_code='CN_09')
-                )
+            if status_param in ['approved', 'approv']:
+                queryset = queryset.filter(approved_q)
             elif status_param in ['rejected', 'reject']:
-                queryset = queryset.filter(
-                    models.Q(status__icontains='reject') |
-                    models.Q(current_stage__name__icontains='reject')
-                )
+                queryset = queryset.filter(rejected_q)
+            elif status_param == 'pending':
+                queryset = queryset.filter(pending_q)
             elif status_param in ['processing', 'underprocess', 'under_process']:
-                queryset = queryset.filter(
-                    models.Q(status__icontains='process') |
-                    models.Q(current_stage__name__icontains='process') |
-                    models.Q(status_code__in=['CN_02', 'CN_03', 'CN_04'])
-                )
+                queryset = queryset.filter(underprocess_q)
             else:
                 queryset = queryset.filter(
                     models.Q(status__icontains=status_param) |
@@ -727,28 +749,20 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='dashboard-counts')
     def dashboard_counts(self, request):
-        base_qs = self.get_queryset()
+        base_qs = scope_by_profile_or_workflow(
+            request.user,
+            EnaCancellationDetail.objects.all(),
+            WORKFLOW_IDS['ENA_CANCELLATION'],
+            licensee_field='licensee_id'
+        )
+        approved_q, rejected_q, pending_q, underprocess_q = self._get_status_queries(request.user)
         counts = {
             'total': base_qs.count(),
-            'pending': base_qs.filter(
-                models.Q(status__icontains='pending') |
-                models.Q(current_stage__name__icontains='pending') |
-                models.Q(status_code__in=['CN_01', 'CN_00'])
-            ).count(),
-            'approved': base_qs.filter(
-                models.Q(status__icontains='approv') |
-                models.Q(current_stage__name__icontains='approv') |
-                models.Q(status_code='CN_09')
-            ).count(),
-            'rejected': base_qs.filter(
-                models.Q(status__icontains='reject') |
-                models.Q(current_stage__name__icontains='reject')
-            ).count(),
-            'processing': base_qs.filter(
-                models.Q(status__icontains='process') |
-                models.Q(current_stage__name__icontains='process') |
-                models.Q(status_code__in=['CN_02', 'CN_03', 'CN_04'])
-            ).count(),
+            'pending': base_qs.filter(pending_q).count(),
+            'approved': base_qs.filter(approved_q).count(),
+            'rejected': base_qs.filter(rejected_q).count(),
+            'underprocess': base_qs.filter(underprocess_q).count(),
+            'processing': base_qs.filter(underprocess_q).count(),
         }
         return Response(counts, status=status.HTTP_200_OK)
 
@@ -759,7 +773,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
         queryset = self.filter_queryset(self.get_queryset())
 
         cached_data = get_cached_api_response(request, "supply_chain_ena_cancellations")
-        if cached_data is not None and not (request.query_params.get('page') or request.query_params.get('search')):
+        if cached_data is not None and not (request.query_params.get('page') or request.query_params.get('search') or request.query_params.get('status')):
             return _mark_cache_response(Response(cached_data), "HIT")
 
         page_obj, paginated_data = paginate_queryset(
