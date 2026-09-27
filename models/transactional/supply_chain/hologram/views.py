@@ -17,6 +17,7 @@ from models.masters.supply_chain.profile.models import UserManufacturingUnit
 from models.masters.supply_chain.hologram_supplier.models import MasterHologramSupplier
 from models.transactional.supply_chain.access_control import scope_by_profile_or_workflow
 from models.transactional.dashboard_cache import dashboard_counts_cache, invalidate_dashboard_counts_cache
+from models.transactional.pagination import paginate_queryset
 from utils.simple_pdf import PdfPage, build_text_pdf, paginate_lines
 
 HOLOGRAM_REF_PREFIX = 'HQR'
@@ -479,7 +480,129 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
 
     @dashboard_counts_cache("supply_chain_hologram_procurement")
     def list(self, request, *args, **kwargs):
-        return super().list(request, *args, **kwargs)
+        queryset = self.filter_queryset(self.get_queryset())
+
+        # Status filtering
+        status_val = str(request.query_params.get('status') or '').strip()
+        if status_val and status_val.lower() not in {'all', ''}:
+            if status_val.lower() == 'pending':
+                queryset = queryset.exclude(
+                    models.Q(current_stage__name__icontains='Approved') |
+                    models.Q(current_stage__name__icontains='Reject') |
+                    models.Q(current_stage__name__icontains='Completed') |
+                    models.Q(current_stage__name__icontains='Cartoon Assigned')
+                )
+            elif status_val.lower() == 'approved':
+                queryset = queryset.filter(
+                    models.Q(current_stage__name__icontains='Approved') |
+                    models.Q(current_stage__name__icontains='Payment') |
+                    models.Q(current_stage__name__icontains='Cartoon Assigned')
+                )
+            elif status_val.lower() == 'rejected':
+                queryset = queryset.filter(current_stage__name__icontains='Reject')
+            else:
+                queryset = queryset.filter(
+                    models.Q(current_stage__name__iexact=status_val) |
+                    models.Q(current_stage__name__icontains=status_val) |
+                    models.Q(payment_status__iexact=status_val)
+                )
+
+        search_val = str(request.query_params.get('search') or '').strip()
+        if search_val:
+            queryset = queryset.filter(
+                models.Q(ref_no__icontains=search_val) |
+                models.Q(manufacturing_unit__icontains=search_val) |
+                models.Q(licensee__manufacturing_unit_name__icontains=search_val) |
+                models.Q(licensee__licensee_id__icontains=search_val)
+            )
+
+        company_val = str(request.query_params.get('company') or '').strip()
+        if company_val and company_val.lower() not in {'all', ''}:
+            queryset = queryset.filter(
+                models.Q(manufacturing_unit__icontains=company_val) |
+                models.Q(licensee__manufacturing_unit_name__icontains=company_val)
+            )
+
+        date_val = str(request.query_params.get('date') or '').strip()
+        if date_val:
+            queryset = queryset.filter(date__date=date_val)
+
+        month_val = str(request.query_params.get('month') or '').strip()
+        if month_val:
+            if '-' in month_val:
+                parts = month_val.split('-')
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    queryset = queryset.filter(date__year=int(parts[0]), date__month=int(parts[1]))
+            elif month_val.isdigit():
+                queryset = queryset.filter(date__month=int(month_val))
+
+        year_val = str(request.query_params.get('year') or '').strip()
+        if year_val and year_val.isdigit():
+            queryset = queryset.filter(date__year=int(year_val))
+
+        page_qs, paginated_meta = paginate_queryset(
+            request,
+            queryset,
+            default_page_size=10,
+            ordering=('-date', '-id')
+        )
+        if paginated_meta is not None:
+            serializer = self.get_serializer(page_qs, many=True)
+            return Response({
+                **paginated_meta,
+                'results': serializer.data
+            })
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='dashboard-counts')
+    def dashboard_counts(self, request):
+        base_qs = self.filter_queryset(self.get_queryset())
+        
+        company_val = str(request.query_params.get('company') or '').strip()
+        if company_val and company_val.lower() not in {'all', ''}:
+            base_qs = base_qs.filter(
+                models.Q(manufacturing_unit__icontains=company_val) |
+                models.Q(licensee__manufacturing_unit_name__icontains=company_val)
+            )
+
+        date_val = str(request.query_params.get('date') or '').strip()
+        if date_val:
+            base_qs = base_qs.filter(date__date=date_val)
+
+        month_val = str(request.query_params.get('month') or '').strip()
+        if month_val:
+            if '-' in month_val:
+                parts = month_val.split('-')
+                if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                    base_qs = base_qs.filter(date__year=int(parts[0]), date__month=int(parts[1]))
+            elif month_val.isdigit():
+                base_qs = base_qs.filter(date__month=int(month_val))
+
+        year_val = str(request.query_params.get('year') or '').strip()
+        if year_val and year_val.isdigit():
+            base_qs = base_qs.filter(date__year=int(year_val))
+
+        approved_qs = base_qs.filter(
+            models.Q(current_stage__name__icontains='Approved') |
+            models.Q(current_stage__name__icontains='Payment') |
+            models.Q(current_stage__name__icontains='Cartoon Assigned')
+        )
+        rejected_qs = base_qs.filter(current_stage__name__icontains='Reject')
+        pending_qs = base_qs.exclude(
+            models.Q(current_stage__name__icontains='Approved') |
+            models.Q(current_stage__name__icontains='Reject') |
+            models.Q(current_stage__name__icontains='Completed') |
+            models.Q(current_stage__name__icontains='Cartoon Assigned')
+        )
+
+        return Response({
+            'total': base_qs.count(),
+            'pending': pending_qs.count(),
+            'approved': approved_qs.count(),
+            'rejected': rejected_qs.count(),
+        })
 
     def perform_create(self, serializer):
         unit = _get_or_create_active_manufacturing_unit(self.request.user)

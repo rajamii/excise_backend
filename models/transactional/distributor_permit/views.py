@@ -303,7 +303,20 @@ class DistributorPermitListCreateView(DistributorRoleRequiredMixin, APIView):
                     Q(current_stage__name__icontains='process') |
                     Q(status__icontains='awaiting') |
                     Q(status__icontains='payslip') |
-                    Q(current_stage_id__in=[149, 153, 154, 155, 156, 157])
+                    Q(status__icontains='pending') |
+                    Q(current_stage__name__icontains='pending') |
+                    Q(status__icontains='submit') |
+                    Q(current_stage__name__icontains='submit') |
+                    Q(status__icontains='forward') |
+                    Q(current_stage__name__icontains='forward') |
+                    Q(current_stage_id__in=[147, 148, 149, 153, 154, 155, 156, 157, 160, 162, 163])
+                ).exclude(
+                    Q(status__iexact='Approved') |
+                    Q(current_stage_id=151) |
+                    Q(current_stage__is_final=True) |
+                    Q(status__icontains='reject') |
+                    Q(current_stage__name__icontains='reject') |
+                    Q(current_stage_id__in=[152, 166])
                 )
             elif status_filter == 'pending':
                 queryset = queryset.filter(
@@ -1698,7 +1711,21 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
             elif status_filter == 'pending':
                 queryset = queryset.filter(Q(status__icontains='pending') | Q(current_stage__name__icontains='forward') | Q(status__icontains='submit'))
             elif status_filter in ['under_process', 'underprocess', 'processing']:
-                queryset = queryset.filter(Q(status__icontains='process') | Q(current_stage__name__icontains='process'))
+                queryset = queryset.filter(
+                    Q(status__icontains='process') |
+                    Q(current_stage__name__icontains='process') |
+                    Q(status__icontains='pending') |
+                    Q(current_stage__name__icontains='pending') |
+                    Q(status__icontains='forward') |
+                    Q(current_stage__name__icontains='forward') |
+                    Q(status__icontains='submit')
+                ).exclude(
+                    Q(status__icontains='approved') |
+                    Q(current_stage__name__icontains='approved') |
+                    Q(current_stage__is_final=True) |
+                    Q(status__icontains='reject') |
+                    Q(current_stage__name__icontains='reject')
+                )
             else:
                 queryset = queryset.filter(Q(status__icontains=status_filter) | Q(current_stage__name__icontains=status_filter))
 
@@ -2005,7 +2032,22 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
             elif status_filter == 'pending':
                 queryset = queryset.filter(Q(status__icontains='pending') | Q(current_stage__name__icontains='forward') | Q(status__icontains='submit'))
             elif status_filter in ['under_process', 'underprocess', 'processing']:
-                queryset = queryset.filter(Q(status__icontains='process') | Q(current_stage__name__icontains='process'))
+                queryset = queryset.filter(
+                    Q(status__icontains='process') |
+                    Q(current_stage__name__icontains='process') |
+                    Q(status__icontains='pending') |
+                    Q(current_stage__name__icontains='pending') |
+                    Q(status__icontains='forward') |
+                    Q(current_stage__name__icontains='forward') |
+                    Q(status__icontains='submit')
+                ).exclude(
+                    Q(status__icontains='approved') |
+                    Q(current_stage__name__icontains='approved') |
+                    Q(current_stage__is_final=True) |
+                    Q(current_stage_id=165) |
+                    Q(status__icontains='reject') |
+                    Q(current_stage__name__icontains='reject')
+                )
             else:
                 queryset = queryset.filter(Q(status__icontains=status_filter) | Q(current_stage__name__icontains=status_filter))
 
