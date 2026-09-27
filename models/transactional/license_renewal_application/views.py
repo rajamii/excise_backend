@@ -1224,11 +1224,11 @@ def dashboard_counts(request):
         return Response(
             {
                 "applied": base_qs.count(),
-                "pending": base_qs.filter(current_stage__name__in=pending_stages | payment_stages).count(),
-                "objection": base_qs.filter(current_stage__name__in=objection_stages).count(),
-                "approved": base_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True)).count(),
+                "pending": base_qs.filter(current_stage__name__in=pending_stages | payment_stages).exclude(current_stage__name__in=rejected_stages).count(),
+                "objection": base_qs.filter(current_stage__name__in=objection_stages).exclude(current_stage__name__in=rejected_stages).count(),
+                "approved": base_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True)).exclude(current_stage__name__in=rejected_stages).count(),
                 "rejected": base_qs.filter(current_stage__name__in=rejected_stages).count(),
-                "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
+                "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).exclude(current_stage__name__in=rejected_stages).count(),
             }
         )
 
@@ -1236,11 +1236,11 @@ def dashboard_counts(request):
         return Response(
             {
                 "applied": all_qs.count(),
-                "pending": all_qs.filter(current_stage__name__in=pending_stages).exclude(is_approved=True).count(),
-                "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
-                "approved": all_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True)).count(),
+                "pending": all_qs.filter(current_stage__name__in=pending_stages).exclude(is_approved=True).exclude(current_stage__name__in=rejected_stages).count(),
+                "objection": all_qs.filter(current_stage__name__in=objection_stages).exclude(current_stage__name__in=rejected_stages).count(),
+                "approved": all_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True)).exclude(current_stage__name__in=rejected_stages).count(),
                 "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
-                "awaiting_payment": all_qs.filter(current_stage__name__in=payment_stages).count(),
+                "awaiting_payment": all_qs.filter(current_stage__name__in=payment_stages).exclude(current_stage__name__in=rejected_stages).count(),
             }
         )
 
@@ -1248,8 +1248,8 @@ def dashboard_counts(request):
     if role_stage_names:
         visible_qs = _renewal_queryset_visible_to_role(all_qs, request.user, role_stage_names)
         pending_for_role = set(role_stage_names)
-        pending_count = visible_qs.filter(current_stage__name__in=pending_for_role).count()
-        objection_count = visible_qs.filter(current_stage__name__in=objection_stages).count()
+        pending_count = visible_qs.filter(current_stage__name__in=pending_for_role).exclude(current_stage__name__in=rejected_stages).count()
+        objection_count = visible_qs.filter(current_stage__name__in=objection_stages).exclude(current_stage__name__in=rejected_stages).count()
         approved_count = visible_qs.exclude(current_stage__name__in=pending_for_role | objection_stages | rejected_stages).count()
         rejected_count = visible_qs.filter(current_stage__name__in=rejected_stages).count()
         return Response(
@@ -1278,13 +1278,13 @@ def dashboard_counts(request):
 
     approved_count = all_qs_annotated.filter(
         Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True) | Q(is_approved=True)
-    ).count()
+    ).exclude(current_stage__name__in=rejected_stages).count()
 
     return Response(
         {
             "applied": all_qs.count(),
-            "pending": all_qs.filter(current_stage__name__in=pending_stages).count(),
-            "objection": all_qs.filter(current_stage__name__in=objection_stages).count(),
+            "pending": all_qs.filter(current_stage__name__in=pending_stages).exclude(current_stage__name__in=rejected_stages).count(),
+            "objection": all_qs.filter(current_stage__name__in=objection_stages).exclude(current_stage__name__in=rejected_stages).count(),
             "approved": approved_count,
             "rejected": all_qs.filter(current_stage__name__in=rejected_stages).count(),
         }
@@ -1326,29 +1326,29 @@ def application_group(request):
             if status_filter == "applied":
                 target_qs = target_qs.filter(current_stage__name__in=applied_stages)
             elif status_filter == "pending":
-                target_qs = target_qs.filter(current_stage__name__in=pending_stages | payment_stages)
+                target_qs = target_qs.filter(current_stage__name__in=pending_stages | payment_stages).exclude(current_stage__name__in=rejected_stages)
             elif status_filter == "objection":
-                target_qs = target_qs.filter(current_stage__name__in=objection_stages)
+                target_qs = target_qs.filter(current_stage__name__in=objection_stages).exclude(current_stage__name__in=rejected_stages)
             elif status_filter == "approved":
-                target_qs = target_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True))
+                target_qs = target_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True)).exclude(current_stage__name__in=rejected_stages)
             elif status_filter == "rejected":
                 target_qs = target_qs.filter(current_stage__name__in=rejected_stages)
             elif status_filter in ["awaiting-payment", "awaiting_payment"]:
-                target_qs = target_qs.filter(current_stage__name__in=payment_stages)
+                target_qs = target_qs.filter(current_stage__name__in=payment_stages).exclude(current_stage__name__in=rejected_stages)
         elif role in ['site_admin', 'site_administrator', 'secretary', 'super_admin']:
             target_qs = all_qs
             if status_filter == "applied":
                 target_qs = target_qs.filter(current_stage__name__in=applied_stages)
             elif status_filter == "pending":
-                target_qs = target_qs.filter(current_stage__name__in=pending_stages).exclude(is_approved=True)
+                target_qs = target_qs.filter(current_stage__name__in=pending_stages).exclude(is_approved=True).exclude(current_stage__name__in=rejected_stages)
             elif status_filter == "objection":
-                target_qs = target_qs.filter(current_stage__name__in=objection_stages)
+                target_qs = target_qs.filter(current_stage__name__in=objection_stages).exclude(current_stage__name__in=rejected_stages)
             elif status_filter == "approved":
-                target_qs = target_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True))
+                target_qs = target_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True)).exclude(current_stage__name__in=rejected_stages)
             elif status_filter == "rejected":
                 target_qs = target_qs.filter(current_stage__name__in=rejected_stages)
             elif status_filter in ["awaiting-payment", "awaiting_payment"]:
-                target_qs = target_qs.filter(current_stage__name__in=payment_stages)
+                target_qs = target_qs.filter(current_stage__name__in=payment_stages).exclude(current_stage__name__in=rejected_stages)
         else:
             role_stage_names = _renewal_role_stage_names(request.user, wf.id)
             if not role_stage_names:
@@ -1363,9 +1363,9 @@ def application_group(request):
             pending_for_role = set(role_stage_names)
             target_qs = visible_qs
             if status_filter == "pending":
-                target_qs = target_qs.filter(current_stage__name__in=pending_for_role)
+                target_qs = target_qs.filter(current_stage__name__in=pending_for_role).exclude(current_stage__name__in=rejected_stages)
             elif status_filter == "objection":
-                target_qs = target_qs.filter(current_stage__name__in=objection_stages)
+                target_qs = target_qs.filter(current_stage__name__in=objection_stages).exclude(current_stage__name__in=rejected_stages)
             elif status_filter == "approved":
                 target_qs = target_qs.exclude(current_stage__name__in=pending_for_role | objection_stages | rejected_stages)
             elif status_filter == "rejected":
@@ -1390,13 +1390,13 @@ def application_group(request):
                     base_qs.filter(current_stage__name__in=applied_stages), many=True
                 ).data,
                 "pending": LicenseApplicationSerializer(
-                    base_qs.filter(current_stage__name__in=pending_stages | payment_stages), many=True
+                    base_qs.filter(current_stage__name__in=pending_stages | payment_stages).exclude(current_stage__name__in=rejected_stages), many=True
                 ).data,
                 "objection": LicenseApplicationSerializer(
-                    base_qs.filter(current_stage__name__in=objection_stages), many=True
+                    base_qs.filter(current_stage__name__in=objection_stages).exclude(current_stage__name__in=rejected_stages), many=True
                 ).data,
                 "approved": LicenseApplicationSerializer(
-                    base_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True)), many=True
+                    base_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True)).exclude(current_stage__name__in=rejected_stages), many=True
                 ).data,
                 "rejected": LicenseApplicationSerializer(
                     base_qs.filter(current_stage__name__in=rejected_stages), many=True
@@ -1411,13 +1411,13 @@ def application_group(request):
                     all_qs.filter(current_stage__name__in=applied_stages), many=True
                 ).data,
                 "pending": LicenseApplicationSerializer(
-                    all_qs.filter(current_stage__name__in=pending_stages).exclude(is_approved=True), many=True
+                    all_qs.filter(current_stage__name__in=pending_stages).exclude(is_approved=True).exclude(current_stage__name__in=rejected_stages), many=True
                 ).data,
                 "objection": LicenseApplicationSerializer(
-                    all_qs.filter(current_stage__name__in=objection_stages), many=True
+                    all_qs.filter(current_stage__name__in=objection_stages).exclude(current_stage__name__in=rejected_stages), many=True
                 ).data,
                 "approved": LicenseApplicationSerializer(
-                    all_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True)), many=True
+                    all_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True)).exclude(current_stage__name__in=rejected_stages), many=True
                 ).data,
                 "rejected": LicenseApplicationSerializer(
                     all_qs.filter(current_stage__name__in=rejected_stages), many=True

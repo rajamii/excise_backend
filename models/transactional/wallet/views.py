@@ -682,6 +682,80 @@ def deduct_security_deposit(request, pk):
             except Exception as app_err:
                 logger.error("Error updating NewLicenseApplication on security deposit deduction: %s", app_err, exc_info=True)
 
+            # 2b. Update associated LicenseRenewalApplication(s): current_stage = Terminated, is_license_fee_paid = False, is_approved = False
+            try:
+                from models.transactional.license_renewal_application.models import LicenseApplication as RenewalApp
+                from auth.workflow.models import WorkflowStage as WFStage, Transaction as WFTransaction
+                from django.contrib.contenttypes.models import ContentType
+                from django.db.models import Q
+
+                target_lic_id = record.license_id or license_id_str or (app.application_id if app else None)
+                renewal_qs = RenewalApp.objects.filter(
+                    Q(old_license_id=record.license_id) |
+                    Q(old_license_id=license_id_str) |
+                    Q(source_object_id=record.application_id) |
+                    (Q(applicant=record.user) if record.user else Q())
+                ).distinct()
+
+                for r_app in renewal_qs:
+                    r_wf = r_app.workflow
+                    if r_wf:
+                        r_term_stage, _ = WFStage.objects.get_or_create(
+                            workflow=r_wf,
+                            name="Terminated",
+                            defaults={
+                                "description": "Application terminated and security deposit deducted/forfeited",
+                                "is_final": True,
+                                "is_initial": False,
+                            }
+                        )
+                        r_app.current_stage = r_term_stage
+                        r_app.is_license_fee_paid = False
+                        r_app.is_approved = False
+                        r_app.save(update_fields=["current_stage", "is_license_fee_paid", "is_approved", "updated_at"])
+
+                        try:
+                            r_ct = ContentType.objects.get_for_model(r_app)
+                            WFTransaction.objects.create(
+                                content_type=r_ct,
+                                object_id=str(r_app.pk),
+                                stage=r_term_stage,
+                                remarks=f"Renewal application and associated license officially terminated. Security deposit deducted (₹{deduct_amt}). Reason: {remarks}",
+                                performed_by=request.user if request.user and request.user.is_authenticated else None,
+                            )
+                        except Exception as r_txn_err:
+                            logger.warning("Failed to create workflow Transaction on renewal termination: %s", r_txn_err)
+            except Exception as r_err:
+                logger.error("Error updating LicenseRenewalApplication on security deposit deduction: %s", r_err, exc_info=True)
+
+            # 2c. Update associated SalesmanBarmanModel(s):
+            try:
+                from models.transactional.salesman_barman.models import SalesmanBarmanModel
+                from auth.workflow.models import WorkflowStage as WFStage
+                from django.db.models import Q
+                sb_qs = SalesmanBarmanModel.objects.filter(
+                    (Q(new_license_application=app) if app else Q()) |
+                    Q(license__license_id=record.license_id) |
+                    Q(license__license_id=license_id_str) |
+                    (Q(applicant=record.user) if record.user else Q())
+                ).distinct()
+                for sb_item in sb_qs:
+                    if sb_item.workflow:
+                        sb_term_stage, _ = WFStage.objects.get_or_create(
+                            workflow=sb_item.workflow,
+                            name="Terminated",
+                            defaults={
+                                "description": "Application terminated due to primary license termination",
+                                "is_final": True,
+                                "is_initial": False,
+                            }
+                        )
+                        sb_item.current_stage = sb_term_stage
+                        sb_item.is_approved = False
+                        sb_item.save(update_fields=["current_stage", "is_approved"])
+            except Exception as sb_err:
+                logger.error("Error updating SalesmanBarman on license termination: %s", sb_err, exc_info=True)
+
             # 3. Deactivate License (is_active = False)
             license_suspended = False
             license_id_str = record.license_id or ""
