@@ -771,11 +771,13 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                 rejected += 1
             elif 'approv' in merged or code_text == 'RV_09':
                 approved += 1
-            elif 'process' in merged or code_text in ['RV_02', 'RV_03', 'RV_04']:
-                underprocess += 1
             elif 'invalid' in merged or 'expire' in merged or code_text == 'RV_00':
                 invalid += 1
-            elif 'pending' in merged or 'forward' in merged or 'submit' in merged or 'review' in merged or code_text != 'RV_00':
+            elif 'forward' in merged or 'pending' in merged or 'submit' in merged or 'review' in merged or 'commissioner' in merged:
+                pending += 1
+            elif 'under_process' in merged or 'underprocess' in merged or 'processing' in merged:
+                underprocess += 1
+            else:
                 pending += 1
 
             if not ('invalid' in status_text or 'expire' in status_text or code_text == 'RV_00'):
@@ -816,7 +818,9 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
 
             if status_filter and status_filter != 'all':
                 if status_filter == 'pending':
-                    if not ('pending' in merged or 'forward' in merged or 'submit' in merged or 'review' in merged or (code_text != 'RV_00' and 'process' not in merged and 'approv' not in merged and 'reject' not in merged and 'invalid' not in merged and 'expire' not in merged)):
+                    if 'approv' in merged or 'reject' in merged or 'invalid' in merged or 'expire' in merged or code_text == 'RV_09':
+                        continue
+                    if not ('pending' in merged or 'forward' in merged or 'submit' in merged or 'review' in merged or 'commissioner' in merged or code_text != 'RV_00'):
                         continue
                 elif status_filter in ['approved', 'approv']:
                     if not ('approv' in merged or code_text == 'RV_09'):
@@ -825,7 +829,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                     if 'reject' not in merged:
                         continue
                 elif status_filter in ['underprocess', 'under_process', 'processing']:
-                    if not ('process' in merged or code_text in ['RV_02', 'RV_03', 'RV_04']):
+                    if not ('under_process' in merged or 'underprocess' in merged or 'processing' in merged):
                         continue
                 elif status_filter in ['invalid', 'expired', 'action_required', 'actionrequired']:
                     if not ('invalid' in merged or 'expire' in merged or code_text == 'RV_00' or 'importpermitextends' in merged):
