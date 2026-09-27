@@ -878,12 +878,6 @@ class RequisitionArrivalBulkLiterDetailsListAPIView(APIView):
                     'data': []
                 }, status=status.HTTP_200_OK)
 
-            licensee_candidates = set()
-            if hasattr(request.user, 'manufacturing_units'):
-                for raw_id in request.user.manufacturing_units.exclude(licensee_id__isnull=True).exclude(licensee_id='').values_list('licensee_id', flat=True):
-                    for alias in self._expand_license_aliases(raw_id):
-                        licensee_candidates.add(alias)
-
             review_status = str(request.query_params.get('review_status', '') or '').strip().upper()
             rows_qs = RequisitionBulkLiterDetail.objects.select_related('requisition').filter(
                 requisition_id__in=requisition_ids
@@ -894,27 +888,6 @@ class RequisitionArrivalBulkLiterDetailsListAPIView(APIView):
                 rows_qs = rows_qs.filter(
                     approval_status=RequisitionBulkLiterDetail.ApprovalStatus.APPROVED
                 )
-            if licensee_candidates:
-                license_q = models.Q()
-                for cid in licensee_candidates:
-                    token = str(cid or '').strip()
-                    if token:
-                        license_q |= models.Q(licensee_id__iexact=token)
-                if license_q:
-                    rows_qs = rows_qs.filter(license_q)
-                if not rows_qs.exists():
-                    ref_nos = list(
-                        requisitions.exclude(our_ref_no__isnull=True).exclude(our_ref_no='').values_list('our_ref_no', flat=True)
-                    )
-                    if ref_nos:
-                        rows_qs = RequisitionBulkLiterDetail.objects.filter(
-                            requisition_id__in=requisition_ids,
-                            reference_no__in=ref_nos
-                        ).select_related('requisition').order_by('-updated_at')
-                        if review_status and review_status != 'ALL':
-                            rows_qs = rows_qs.filter(approval_status=review_status)
-                        elif not review_status:
-                            rows_qs = rows_qs.filter(approval_status=RequisitionBulkLiterDetail.ApprovalStatus.APPROVED)
             rows = rows_qs
 
             data = []

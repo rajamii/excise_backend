@@ -244,16 +244,56 @@ def scope_by_profile_or_workflow(user, queryset, workflow_id, licensee_field='li
     is_oic_user = _is_oic_scoped_user(user)
 
     # OIC users must be scoped to mapped assignment/license IDs, not their own profile ID.
-    if is_oic_user and hasattr(user, 'oic_assignment'):
-        assignment = getattr(user, 'oic_assignment')
-        mapped_values = [
-            getattr(assignment, 'licensee_id', ''),
-            getattr(getattr(assignment, 'license', None), 'license_id', ''),
-            getattr(getattr(assignment, 'approved_application', None), 'application_id', ''),
-        ]
-        for raw_value in mapped_values:
-            for alias in _expand_license_aliases(raw_value):
-                scoped_values.add(alias)
+    if is_oic_user:
+        assignments = []
+        if hasattr(user, 'oic_assignment'):
+            assignments.append(getattr(user, 'oic_assignment'))
+        try:
+            from models.masters.user.models import OICOfficerAssignment
+            assignments.extend(list(OICOfficerAssignment.objects.filter(officer=user)))
+        except Exception:
+            pass
+
+        seen_assignment_ids = set()
+        for assignment in assignments:
+            assign_id = getattr(assignment, 'id', None)
+            if assign_id and assign_id in seen_assignment_ids:
+                continue
+            if assign_id:
+                seen_assignment_ids.add(assign_id)
+
+            mapped_values = [
+                getattr(assignment, 'licensee_id', ''),
+                getattr(getattr(assignment, 'license', None), 'license_id', ''),
+                getattr(getattr(assignment, 'approved_application', None), 'application_id', ''),
+            ]
+            for raw_value in mapped_values:
+                for alias in _expand_license_aliases(raw_value):
+                    scoped_values.add(alias)
+
+            # Resolve sibling licenses belonging to the same applicant/unit (e.g. company collaboration CC/..., registration CR/...)
+            try:
+                assigned_license = getattr(assignment, 'license', None)
+                applicant = None
+                if assigned_license and getattr(assigned_license, 'applicant', None):
+                    applicant = assigned_license.applicant
+                elif getattr(assignment, 'approved_application', None):
+                    app = getattr(assignment, 'approved_application')
+                    applicant = getattr(app, 'applicant', None)
+                elif getattr(assignment, 'distributor_user', None):
+                    applicant = getattr(assignment, 'distributor_user')
+
+                if not applicant and getattr(assignment, 'licensee_id', None):
+                    lic = License.objects.filter(license_id__iexact=str(assignment.licensee_id).strip()).first()
+                    if lic and lic.applicant:
+                        applicant = lic.applicant
+
+                if applicant:
+                    for sibling_lic_id in License.objects.filter(applicant=applicant).values_list('license_id', flat=True):
+                        for alias in _expand_license_aliases(sibling_lic_id):
+                            scoped_values.add(alias)
+            except Exception:
+                pass
 
     # Fallback: users with mapped manufacturing units but no active supply-chain profile
     # should still see their own records.
