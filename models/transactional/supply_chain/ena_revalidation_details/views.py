@@ -620,6 +620,17 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             'balance_after': str(after),
         }
 
+    def _is_licensee_user(self, user) -> bool:
+        if not user or not user.is_authenticated:
+            return False
+        if getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False):
+            return False
+        role_token = ''.join(ch for ch in str(getattr(getattr(user, 'role', None), 'name', '') or '').lower() if ch.isalnum())
+        admin_roles = ['commissioner', 'permit', 'admin', 'officer', 'oic', 'level1', 'level2', 'level3', 'level4', 'level5', 'itcell', 'siteadmin']
+        if any(admin_r in role_token for admin_r in admin_roles):
+            return False
+        return 'licensee' in role_token or 'licencee' in role_token or bool(role_token and not any(admin_r in role_token for admin_r in admin_roles))
+
     def get_queryset(self):
         queryset = EnaRevalidationDetail.objects.all().order_by('-created_at')
         if getattr(self, 'action', None) == 'list':
@@ -644,8 +655,14 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         queryset = self.filter_queryset(self.get_queryset())
         object_list = list(queryset)
 
-        # 2. Get active revalidation schedules (PROCESSED)
         user = request.user
+        # Administrative users (Commissioner, Permit Section, IT Cell, Admin) must ONLY see submitted revalidations.
+        # Unsubmitted 45-day revalidation drafts/schedules (RV_00 / "IMPORT PERMIT EXTENDS 45 DAYS") belong exclusively to licensees!
+        if not self._is_licensee_user(user):
+            object_list.sort(key=lambda x: x.created_at or timezone.now(), reverse=True)
+            return object_list
+
+        # 2. Get active revalidation schedules (PROCESSED) - ONLY FOR LICENSEES
         schedules = EnaRevalidationActivationSchedule.objects.filter(
             status=EnaRevalidationActivationSchedule.STATUS_PROCESSED
         ).select_related('requisition')
