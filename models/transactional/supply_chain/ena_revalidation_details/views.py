@@ -625,11 +625,21 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             return False
         if getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False):
             return False
+        username = str(getattr(user, 'username', '') or '').lower()
         role_token = ''.join(ch for ch in str(getattr(getattr(user, 'role', None), 'name', '') or '').lower() if ch.isalnum())
-        admin_roles = ['commissioner', 'permit', 'admin', 'officer', 'oic', 'level1', 'level2', 'level3', 'level4', 'level5', 'itcell', 'siteadmin']
-        if any(admin_r in role_token for admin_r in admin_roles):
+        admin_tokens = ['commissioner', 'permit', 'admin', 'officer', 'oic', 'level1', 'level2', 'level3', 'level4', 'level5', 'itcell', 'siteadmin']
+        if any(admin_t in username for admin_t in admin_tokens):
             return False
-        return 'licensee' in role_token or 'licencee' in role_token or bool(role_token and not any(admin_r in role_token for admin_r in admin_roles))
+        if any(admin_t in role_token for admin_t in admin_tokens):
+            return False
+        try:
+            for g in user.groups.all():
+                g_token = ''.join(ch for ch in str(g.name or '').lower() if ch.isalnum())
+                if any(admin_t in g_token for admin_t in admin_tokens):
+                    return False
+        except Exception:
+            pass
+        return 'licensee' in role_token or 'licencee' in role_token or 'licensee' in username or 'licencee' in username or not any(admin_t in role_token for admin_t in admin_tokens)
 
     def get_queryset(self):
         queryset = EnaRevalidationDetail.objects.all().order_by('-created_at')
@@ -763,10 +773,10 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                 approved += 1
             elif 'process' in merged or code_text in ['RV_02', 'RV_03', 'RV_04']:
                 underprocess += 1
-            elif 'pending' in merged or (code_text != 'RV_00' and 'submit' in merged):
-                pending += 1
             elif 'invalid' in merged or 'expire' in merged or code_text == 'RV_00':
                 invalid += 1
+            elif 'pending' in merged or 'forward' in merged or 'submit' in merged or 'review' in merged or code_text != 'RV_00':
+                pending += 1
 
             if not ('invalid' in status_text or 'expire' in status_text or code_text == 'RV_00'):
                 live += 1
@@ -806,7 +816,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
 
             if status_filter and status_filter != 'all':
                 if status_filter == 'pending':
-                    if not ('pending' in merged or (code_text != 'RV_00' and 'submit' in merged)):
+                    if not ('pending' in merged or 'forward' in merged or 'submit' in merged or 'review' in merged or (code_text != 'RV_00' and 'process' not in merged and 'approv' not in merged and 'reject' not in merged and 'invalid' not in merged and 'expire' not in merged)):
                         continue
                 elif status_filter in ['approved', 'approv']:
                     if not ('approv' in merged or code_text == 'RV_09'):
@@ -817,8 +827,8 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                 elif status_filter in ['underprocess', 'under_process', 'processing']:
                     if not ('process' in merged or code_text in ['RV_02', 'RV_03', 'RV_04']):
                         continue
-                elif status_filter in ['invalid', 'expired']:
-                    if not ('invalid' in merged or 'expire' in merged or code_text == 'RV_00'):
+                elif status_filter in ['invalid', 'expired', 'action_required', 'actionrequired']:
+                    if not ('invalid' in merged or 'expire' in merged or code_text == 'RV_00' or 'importpermitextends' in merged):
                         continue
                 elif status_filter == 'live':
                     if 'invalid' in status_text or 'expire' in status_text or code_text == 'RV_00':
