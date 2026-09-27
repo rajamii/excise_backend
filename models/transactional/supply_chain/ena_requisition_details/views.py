@@ -238,38 +238,50 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
 
     def get_dashboard_counts(self, request):
         base_qs = self.get_queryset()
+
+        approved_q = (
+            models.Q(status__iexact='Approved') |
+            (models.Q(status__icontains='approv') & ~models.Q(status__icontains='commissioner') & ~models.Q(status__icontains='payslip')) |
+            models.Q(current_stage__name__iexact='Approved') |
+            models.Q(status_code='RQ_09')
+        ) & ~models.Q(status__icontains='reject') & ~models.Q(status__icontains='cancel')
+
+        rejected_q = (
+            models.Q(status__icontains='reject') |
+            models.Q(current_stage__name__icontains='reject')
+        )
+
+        cancellation_q = (
+            models.Q(status__icontains='cancel') |
+            models.Q(current_stage__name__icontains='cancel')
+        )
+
+        pending_q = (
+            models.Q(status__iexact='Pending') |
+            models.Q(status__iexact='Submitted') |
+            models.Q(current_stage__name__iexact='Pending') |
+            models.Q(current_stage__name__iexact='Submitted')
+        ) & ~approved_q & ~rejected_q & ~cancellation_q & ~models.Q(status__icontains='process') & ~models.Q(status__icontains='forward') & ~models.Q(status__icontains='payslip')
+
+        underprocess_q = (
+            models.Q(status__icontains='process') |
+            models.Q(current_stage__name__icontains='process') |
+            models.Q(status__icontains='awaiting') |
+            models.Q(status__icontains='payslip') |
+            models.Q(status__icontains='Approved Commissioner') |
+            models.Q(status__icontains='forward') |
+            models.Q(current_stage__name__icontains='forward') |
+            models.Q(current_stage__name__icontains='commissioner')
+        ) & ~approved_q & ~rejected_q & ~cancellation_q & ~pending_q
+
         counts = {
             'total': base_qs.count(),
             'applied': base_qs.filter(models.Q(status__icontains='applied') | models.Q(status__icontains='submit')).count(),
-            'pending': base_qs.filter(
-                models.Q(status__icontains='pending') |
-                models.Q(current_stage__name__icontains='pending') |
-                models.Q(status__icontains='forward') |
-                models.Q(current_stage__name__icontains='forward') |
-                models.Q(status_code__in=['RQ_01', 'RQ_00', 'RQ_02'])
-            ).count(),
-            'underprocess': base_qs.filter(
-                models.Q(status__icontains='process') |
-                models.Q(current_stage__name__icontains='process') |
-                models.Q(status__icontains='awaiting') |
-                models.Q(status__icontains='payslip') |
-                models.Q(status__icontains='Approved Commissioner') |
-                models.Q(status_code__in=['RQ_02', 'RQ_03', 'RQ_04'])
-            ).count(),
-            'approved': base_qs.filter(
-                models.Q(status__iexact='Approved') |
-                (models.Q(status__icontains='approv') & ~models.Q(status__icontains='commissioner') & ~models.Q(status__icontains='payslip')) |
-                models.Q(current_stage__name__iexact='Approved') |
-                models.Q(status_code='RQ_09')
-            ).count(),
-            'rejected': base_qs.filter(
-                models.Q(status__icontains='reject') |
-                models.Q(current_stage__name__icontains='reject')
-            ).count(),
-            'cancellation': base_qs.filter(
-                models.Q(status__icontains='cancel') |
-                models.Q(current_stage__name__icontains='cancel')
-            ).count(),
+            'pending': base_qs.filter(pending_q).count(),
+            'underprocess': base_qs.filter(underprocess_q).count(),
+            'approved': base_qs.filter(approved_q).count(),
+            'rejected': base_qs.filter(rejected_q).count(),
+            'cancellation': base_qs.filter(cancellation_q).count(),
         }
         return Response(counts, status=status.HTTP_200_OK)
 
@@ -281,40 +293,51 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
 
         status_filter = str(request.query_params.get('status', '') or '').strip().lower()
         if status_filter and status_filter != 'all':
+            approved_q = (
+                models.Q(status__iexact='Approved') |
+                (models.Q(status__icontains='approv') & ~models.Q(status__icontains='commissioner') & ~models.Q(status__icontains='payslip')) |
+                models.Q(current_stage__name__iexact='Approved') |
+                models.Q(status_code='RQ_09')
+            ) & ~models.Q(status__icontains='reject') & ~models.Q(status__icontains='cancel')
+
+            rejected_q = (
+                models.Q(status__icontains='reject') |
+                models.Q(current_stage__name__icontains='reject')
+            )
+
+            cancellation_q = (
+                models.Q(status__icontains='cancel') |
+                models.Q(current_stage__name__icontains='cancel')
+            )
+
+            pending_q = (
+                models.Q(status__iexact='Pending') |
+                models.Q(status__iexact='Submitted') |
+                models.Q(current_stage__name__iexact='Pending') |
+                models.Q(current_stage__name__iexact='Submitted')
+            ) & ~approved_q & ~rejected_q & ~cancellation_q & ~models.Q(status__icontains='process') & ~models.Q(status__icontains='forward') & ~models.Q(status__icontains='payslip')
+
+            underprocess_q = (
+                models.Q(status__icontains='process') |
+                models.Q(current_stage__name__icontains='process') |
+                models.Q(status__icontains='awaiting') |
+                models.Q(status__icontains='payslip') |
+                models.Q(status__icontains='Approved Commissioner') |
+                models.Q(status__icontains='forward') |
+                models.Q(current_stage__name__icontains='forward') |
+                models.Q(current_stage__name__icontains='commissioner')
+            ) & ~approved_q & ~rejected_q & ~cancellation_q & ~pending_q
+
             if status_filter == 'pending':
-                queryset = queryset.filter(
-                    models.Q(status__icontains='pending') |
-                    models.Q(current_stage__name__icontains='pending') |
-                    models.Q(status__icontains='forward') |
-                    models.Q(current_stage__name__icontains='forward') |
-                    models.Q(status_code__in=['RQ_01', 'RQ_00', 'RQ_02'])
-                )
+                queryset = queryset.filter(pending_q)
             elif status_filter in ['approved', 'approv']:
-                queryset = queryset.filter(
-                    models.Q(status__iexact='Approved') |
-                    (models.Q(status__icontains='approv') & ~models.Q(status__icontains='commissioner') & ~models.Q(status__icontains='payslip')) |
-                    models.Q(current_stage__name__iexact='Approved') |
-                    models.Q(status_code='RQ_09')
-                )
+                queryset = queryset.filter(approved_q)
             elif status_filter in ['rejected', 'reject']:
-                queryset = queryset.filter(
-                    models.Q(status__icontains='reject') |
-                    models.Q(current_stage__name__icontains='reject')
-                )
+                queryset = queryset.filter(rejected_q)
             elif status_filter in ['underprocess', 'under_process', 'processing']:
-                queryset = queryset.filter(
-                    models.Q(status__icontains='process') |
-                    models.Q(current_stage__name__icontains='process') |
-                    models.Q(status__icontains='awaiting') |
-                    models.Q(status__icontains='payslip') |
-                    models.Q(status__icontains='Approved Commissioner') |
-                    models.Q(status_code__in=['RQ_02', 'RQ_03', 'RQ_04'])
-                )
+                queryset = queryset.filter(underprocess_q)
             elif status_filter in ['cancellation', 'cancelled', 'cancel']:
-                queryset = queryset.filter(
-                    models.Q(status__icontains='cancel') |
-                    models.Q(current_stage__name__icontains='cancel')
-                )
+                queryset = queryset.filter(cancellation_q)
             elif status_filter in ['awaitingpayment', 'awaiting_payment', 'payment']:
                 queryset = queryset.filter(
                     models.Q(status__icontains='awaiting') |
