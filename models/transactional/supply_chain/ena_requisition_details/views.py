@@ -236,9 +236,7 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
             queryset = queryset.filter(our_ref_no=our_ref_no)
         return queryset
 
-    def get_dashboard_counts(self, request):
-        base_qs = self.get_queryset()
-
+    def _get_status_queries(self, is_comm: bool):
         approved_q = (
             models.Q(status__iexact='Approved') |
             (models.Q(status__icontains='approv') & ~models.Q(status__icontains='commissioner') & ~models.Q(status__icontains='payslip')) |
@@ -256,23 +254,39 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
             models.Q(current_stage__name__icontains='cancel')
         )
 
-        pending_q = (
-            models.Q(status__iexact='Pending') |
-            models.Q(status__iexact='Submitted') |
-            models.Q(current_stage__name__iexact='Pending') |
-            models.Q(current_stage__name__iexact='Submitted')
-        ) & ~approved_q & ~rejected_q & ~cancellation_q & ~models.Q(status__icontains='process') & ~models.Q(status__icontains='forward') & ~models.Q(status__icontains='payslip')
+        if is_comm:
+            pending_q = (
+                (models.Q(status__icontains='commissioner') & (models.Q(status__icontains='forward') | models.Q(status__icontains='pending') | models.Q(status__icontains='review') | models.Q(status__icontains='submit'))) |
+                (models.Q(current_stage__name__icontains='commissioner') & (models.Q(current_stage__name__icontains='forward') | models.Q(current_stage__name__icontains='pending') | models.Q(current_stage__name__icontains='review') | models.Q(current_stage__name__icontains='submit')))
+            ) & ~models.Q(status__icontains='Approved Commissioner') & ~models.Q(current_stage__name__icontains='Approved Commissioner') & ~approved_q & ~rejected_q & ~cancellation_q
 
-        underprocess_q = (
-            models.Q(status__icontains='process') |
-            models.Q(current_stage__name__icontains='process') |
-            models.Q(status__icontains='awaiting') |
-            models.Q(status__icontains='payslip') |
-            models.Q(status__icontains='Approved Commissioner') |
-            models.Q(status__icontains='forward') |
-            models.Q(current_stage__name__icontains='forward') |
-            models.Q(current_stage__name__icontains='commissioner')
-        ) & ~approved_q & ~rejected_q & ~cancellation_q & ~pending_q
+            underprocess_q = ~approved_q & ~rejected_q & ~cancellation_q & ~pending_q
+        else:
+            pending_q = (
+                models.Q(status__iexact='Pending') |
+                models.Q(status__iexact='Submitted') |
+                models.Q(current_stage__name__iexact='Pending') |
+                models.Q(current_stage__name__iexact='Submitted') |
+                models.Q(status_code='RQ_01')
+            ) & ~approved_q & ~rejected_q & ~cancellation_q & ~models.Q(status__icontains='process') & ~models.Q(status__icontains='forward') & ~models.Q(status__icontains='payslip')
+
+            underprocess_q = (
+                models.Q(status__icontains='process') |
+                models.Q(current_stage__name__icontains='process') |
+                models.Q(status__icontains='awaiting') |
+                models.Q(status__icontains='payslip') |
+                models.Q(status__icontains='Approved Commissioner') |
+                models.Q(status__icontains='forward') |
+                models.Q(current_stage__name__icontains='forward') |
+                models.Q(current_stage__name__icontains='commissioner')
+            ) & ~approved_q & ~rejected_q & ~cancellation_q & ~pending_q
+
+        return approved_q, rejected_q, cancellation_q, pending_q, underprocess_q
+
+    def get_dashboard_counts(self, request):
+        base_qs = self.get_queryset()
+        is_comm = _is_commissioner_user(request.user)
+        approved_q, rejected_q, cancellation_q, pending_q, underprocess_q = self._get_status_queries(is_comm)
 
         counts = {
             'total': base_qs.count(),
@@ -290,44 +304,11 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
             return self.get_dashboard_counts(request)
 
         queryset = self.get_queryset()
+        is_comm = _is_commissioner_user(request.user)
+        approved_q, rejected_q, cancellation_q, pending_q, underprocess_q = self._get_status_queries(is_comm)
 
         status_filter = str(request.query_params.get('status', '') or '').strip().lower()
         if status_filter and status_filter != 'all':
-            approved_q = (
-                models.Q(status__iexact='Approved') |
-                (models.Q(status__icontains='approv') & ~models.Q(status__icontains='commissioner') & ~models.Q(status__icontains='payslip')) |
-                models.Q(current_stage__name__iexact='Approved') |
-                models.Q(status_code='RQ_09')
-            ) & ~models.Q(status__icontains='reject') & ~models.Q(status__icontains='cancel')
-
-            rejected_q = (
-                models.Q(status__icontains='reject') |
-                models.Q(current_stage__name__icontains='reject')
-            )
-
-            cancellation_q = (
-                models.Q(status__icontains='cancel') |
-                models.Q(current_stage__name__icontains='cancel')
-            )
-
-            pending_q = (
-                models.Q(status__iexact='Pending') |
-                models.Q(status__iexact='Submitted') |
-                models.Q(current_stage__name__iexact='Pending') |
-                models.Q(current_stage__name__iexact='Submitted')
-            ) & ~approved_q & ~rejected_q & ~cancellation_q & ~models.Q(status__icontains='process') & ~models.Q(status__icontains='forward') & ~models.Q(status__icontains='payslip')
-
-            underprocess_q = (
-                models.Q(status__icontains='process') |
-                models.Q(current_stage__name__icontains='process') |
-                models.Q(status__icontains='awaiting') |
-                models.Q(status__icontains='payslip') |
-                models.Q(status__icontains='Approved Commissioner') |
-                models.Q(status__icontains='forward') |
-                models.Q(current_stage__name__icontains='forward') |
-                models.Q(current_stage__name__icontains='commissioner')
-            ) & ~approved_q & ~rejected_q & ~cancellation_q & ~pending_q
-
             if status_filter == 'pending':
                 queryset = queryset.filter(pending_q)
             elif status_filter in ['approved', 'approv']:
