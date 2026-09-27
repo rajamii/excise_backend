@@ -1274,8 +1274,8 @@ def dashboard_counts(request):
     )
 
 
-@permission_classes([IsAuthenticated])
 @api_view(["GET"])
+@permission_classes([IsAuthenticated])
 @dashboard_counts_cache("license_renewal_application:list")
 def application_group(request):
     wf = _get_renewal_workflow()
