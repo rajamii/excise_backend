@@ -236,7 +236,11 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
             queryset = queryset.filter(our_ref_no=our_ref_no)
         return queryset
 
-    def _get_status_queries(self, is_comm: bool):
+    def _get_status_queries(self, user):
+        is_comm = _is_commissioner_user(user)
+        is_ps = _normalize_role_token(getattr(getattr(user, 'role', None), 'name', '')) in {'permitsection', 'permit_section'}
+        is_licensee = _is_licensee_user(user) or not (user.is_superuser or getattr(user, 'is_staff', False) or is_comm or is_ps)
+
         approved_q = (
             models.Q(status__iexact='Approved') |
             (models.Q(status__icontains='approv') & ~models.Q(status__icontains='commissioner') & ~models.Q(status__icontains='payslip')) |
@@ -261,6 +265,22 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
             ) & ~models.Q(status__icontains='Approved Commissioner') & ~models.Q(current_stage__name__icontains='Approved Commissioner') & ~approved_q & ~rejected_q & ~cancellation_q
 
             underprocess_q = ~approved_q & ~rejected_q & ~cancellation_q & ~pending_q
+
+        elif is_licensee:
+            pending_q = (
+                models.Q(status__iexact='Pending') |
+                models.Q(status__iexact='Submitted') |
+                models.Q(current_stage__name__iexact='Pending') |
+                models.Q(current_stage__name__iexact='Submitted') |
+                models.Q(status__icontains='Approved Commissioner') |
+                models.Q(current_stage__name__icontains='Approved Commissioner') |
+                models.Q(status__icontains='awaiting') |
+                models.Q(status__icontains='payment') |
+                models.Q(status_code__in=['RQ_00', 'RQ_01', 'RQ_07'])
+            ) & ~approved_q & ~rejected_q & ~cancellation_q & ~models.Q(status__icontains='Forwarded PaySLip') & ~models.Q(current_stage__name__icontains='Forwarded PaySLip') & ~models.Q(status__icontains='Forwarded Commissioner') & ~models.Q(current_stage__name__icontains='Forwarded Commissioner')
+
+            underprocess_q = ~approved_q & ~rejected_q & ~cancellation_q & ~pending_q
+
         else:
             pending_q = (
                 models.Q(status__iexact='Pending') |
@@ -285,8 +305,7 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
 
     def get_dashboard_counts(self, request):
         base_qs = self.get_queryset()
-        is_comm = _is_commissioner_user(request.user)
-        approved_q, rejected_q, cancellation_q, pending_q, underprocess_q = self._get_status_queries(is_comm)
+        approved_q, rejected_q, cancellation_q, pending_q, underprocess_q = self._get_status_queries(request.user)
 
         counts = {
             'total': base_qs.count(),
@@ -304,8 +323,7 @@ class EnaRequisitionDetailListCreateAPIView(generics.ListCreateAPIView):
             return self.get_dashboard_counts(request)
 
         queryset = self.get_queryset()
-        is_comm = _is_commissioner_user(request.user)
-        approved_q, rejected_q, cancellation_q, pending_q, underprocess_q = self._get_status_queries(is_comm)
+        approved_q, rejected_q, cancellation_q, pending_q, underprocess_q = self._get_status_queries(request.user)
 
         status_filter = str(request.query_params.get('status', '') or '').strip().lower()
         if status_filter and status_filter != 'all':
