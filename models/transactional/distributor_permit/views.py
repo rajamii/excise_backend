@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from models.transactional.dashboard_cache import dashboard_counts_cache, invalidate_dashboard_counts_cache
+from models.transactional.pagination import paginate_queryset
 from models.masters.supply_chain.hologram_supplier.models import MasterHologramSupplier
 from models.masters.supply_chain.liquor_data.models import LiquorData, MasterBrandList
 from models.masters.supply_chain.transit_permit.models import BrandMlInCases
@@ -282,9 +283,99 @@ class DistributorPermitListCreateView(DistributorRoleRequiredMixin, APIView):
 
     def get(self, request):
         queryset = self.get_queryset(request)
-        status_filter = str(request.query_params.get('status') or '').strip()
-        if status_filter:
-            queryset = queryset.filter(status__iexact=status_filter)
+        status_filter = str(request.query_params.get('status') or '').strip().lower()
+        if status_filter and status_filter != 'all':
+            if status_filter in ['approved', 'approv']:
+                queryset = queryset.filter(
+                    Q(status__iexact='Approved') |
+                    (Q(status__icontains='approv') & ~Q(status__icontains='commissioner') & ~Q(status__icontains='payslip')) |
+                    Q(current_stage__name__iexact='Approved') |
+                    Q(current_stage_id=151)
+                )
+            elif status_filter in ['rejected', 'reject']:
+                queryset = queryset.filter(
+                    Q(status__icontains='reject') |
+                    Q(current_stage__name__icontains='reject')
+                )
+            elif status_filter in ['under_process', 'underprocess', 'processing']:
+                queryset = queryset.filter(
+                    Q(status__icontains='process') |
+                    Q(current_stage__name__icontains='process') |
+                    Q(status__icontains='awaiting') |
+                    Q(status__icontains='payslip') |
+                    Q(current_stage_id__in=[149, 153, 154, 155, 156, 157])
+                )
+            elif status_filter == 'pending':
+                queryset = queryset.filter(
+                    Q(status__icontains='pending') |
+                    Q(current_stage__name__icontains='pending') |
+                    Q(status__icontains='submit') |
+                    Q(current_stage__name__icontains='submit') |
+                    Q(current_stage_id__in=[147, 148, 153, 156, 157])
+                )
+            elif status_filter in ['cancellation', 'cancelled', 'cancel']:
+                queryset = queryset.filter(
+                    Q(status__icontains='cancel') |
+                    Q(current_stage__name__icontains='cancel') |
+                    Q(current_stage_id__in=[152, 166])
+                )
+            else:
+                queryset = queryset.filter(
+                    Q(status__icontains=status_filter) |
+                    Q(current_stage__name__icontains=status_filter)
+                )
+
+        search_term = str(request.query_params.get('search') or request.query_params.get('q') or '').strip()
+        if search_term:
+            queryset = queryset.filter(
+                Q(reference_no__icontains=search_term) |
+                Q(supplier_company_name__icontains=search_term) |
+                Q(applicant__username__icontains=search_term) |
+                Q(applicant__first_name__icontains=search_term) |
+                Q(applicant__last_name__icontains=search_term) |
+                Q(current_stage__name__icontains=search_term) |
+                Q(permit_number__icontains=search_term)
+            )
+
+        date_val = str(request.query_params.get('date') or '').strip()
+        if date_val:
+            queryset = queryset.filter(
+                Q(created_at__date=date_val) |
+                Q(submitted_at__date=date_val)
+            )
+
+        month_val = str(request.query_params.get('month') or '').strip()
+        if month_val:
+            if '-' in month_val:
+                try:
+                    y, m = month_val.split('-')[:2]
+                    queryset = queryset.filter(created_at__year=int(y), created_at__month=int(m))
+                except Exception:
+                    pass
+            elif month_val.isdigit():
+                queryset = queryset.filter(created_at__month=int(month_val))
+
+        year_val = str(request.query_params.get('year') or '').strip()
+        if year_val and year_val.isdigit():
+            queryset = queryset.filter(created_at__year=int(year_val))
+
+        page_qs, paginated_meta = paginate_queryset(
+            request,
+            queryset,
+            default_page_size=10,
+            ordering=('-created_at', '-reference_no')
+        )
+        if paginated_meta is not None:
+            serializer = DistributorPermitApplicationSerializer(
+                page_qs,
+                many=True,
+                context={'request': request},
+            )
+            return Response({
+                **paginated_meta,
+                'results': serializer.data
+            })
+
         serializer = DistributorPermitApplicationSerializer(
             queryset,
             many=True,
@@ -1596,14 +1687,69 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
 
     def list(self, request, *args, **kwargs):
         _process_due_imfl_activation_schedules()
-        queryset = self.filter_queryset(self.get_queryset())
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
+        queryset = self.get_queryset()
+
+        status_filter = str(request.query_params.get('status') or '').strip().lower()
+        if status_filter and status_filter != 'all':
+            if status_filter in ['approved', 'approv']:
+                queryset = queryset.filter(Q(status__icontains='approved') | Q(current_stage__name__icontains='approved') | Q(current_stage__is_final=True))
+            elif status_filter in ['rejected', 'reject']:
+                queryset = queryset.filter(Q(status__icontains='reject') | Q(current_stage__name__icontains='reject'))
+            elif status_filter == 'pending':
+                queryset = queryset.filter(Q(status__icontains='pending') | Q(current_stage__name__icontains='forward') | Q(status__icontains='submit'))
+            elif status_filter in ['under_process', 'underprocess', 'processing']:
+                queryset = queryset.filter(Q(status__icontains='process') | Q(current_stage__name__icontains='process'))
+            else:
+                queryset = queryset.filter(Q(status__icontains=status_filter) | Q(current_stage__name__icontains=status_filter))
+
+        search_term = str(request.query_params.get('search') or request.query_params.get('q') or '').strip()
+        if search_term:
+            queryset = queryset.filter(
+                Q(reference_no__icontains=search_term) |
+                Q(revalidated_permit_number__icontains=search_term) |
+                Q(distributor_permit__reference_no__icontains=search_term) |
+                Q(distributor_permit__supplier_company_name__icontains=search_term) |
+                Q(applicant__username__icontains=search_term) |
+                Q(applicant__first_name__icontains=search_term) |
+                Q(applicant__last_name__icontains=search_term) |
+                Q(current_stage__name__icontains=search_term)
+            )
+
+        date_val = str(request.query_params.get('date') or '').strip()
+        if date_val:
+            queryset = queryset.filter(Q(submitted_at__date=date_val) | Q(created_at__date=date_val))
+
+        month_val = str(request.query_params.get('month') or '').strip()
+        if month_val:
+            if '-' in month_val:
+                try:
+                    y, m = month_val.split('-')[:2]
+                    queryset = queryset.filter(submitted_at__year=int(y), submitted_at__month=int(m))
+                except Exception:
+                    pass
+            elif month_val.isdigit():
+                queryset = queryset.filter(submitted_at__month=int(month_val))
+
+        year_val = str(request.query_params.get('year') or '').strip()
+        if year_val and year_val.isdigit():
+            queryset = queryset.filter(submitted_at__year=int(year_val))
+
+        page_qs, paginated_meta = paginate_queryset(
+            request,
+            queryset,
+            default_page_size=10,
+            ordering=('-submitted_at', '-created_at', '-reference_no')
+        )
+        if paginated_meta is not None:
+            serializer = self.get_serializer(page_qs, many=True)
             data = list(serializer.data)
-        else:
-            serializer = self.get_serializer(queryset, many=True)
-            data = list(serializer.data)
+            return Response({
+                **paginated_meta,
+                'results': data
+            })
+
+        serializer = self.get_serializer(queryset, many=True)
+        data = list(serializer.data)
 
         # Only append unsubmitted activation schedules for non-officer (licensee/distributor) applicants so they can submit revalidation.
         # Officers (Commissioner, Permit Section, OIC, etc.) must only see actual submitted revalidations awaiting review/approval.
@@ -1714,8 +1860,6 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                     'submitted_at': sched.activated_at or sched.updated_at,
                 })
 
-        if page is not None:
-            return self.get_paginated_response(data)
         return Response(data)
 
     def perform_create(self, serializer):
@@ -1848,6 +1992,70 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = IMFLCancellation.objects.select_related('distributor_permit', 'applicant', 'current_stage').all()
         return scope_permit_queryset(qs, self.request.user)
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+
+        status_filter = str(request.query_params.get('status') or '').strip().lower()
+        if status_filter and status_filter != 'all':
+            if status_filter in ['approved', 'approv']:
+                queryset = queryset.filter(Q(status__icontains='approved') | Q(current_stage__name__icontains='approved') | Q(current_stage__is_final=True) | Q(current_stage_id=165))
+            elif status_filter in ['rejected', 'reject']:
+                queryset = queryset.filter(Q(status__icontains='reject') | Q(current_stage__name__icontains='reject'))
+            elif status_filter == 'pending':
+                queryset = queryset.filter(Q(status__icontains='pending') | Q(current_stage__name__icontains='forward') | Q(status__icontains='submit'))
+            elif status_filter in ['under_process', 'underprocess', 'processing']:
+                queryset = queryset.filter(Q(status__icontains='process') | Q(current_stage__name__icontains='process'))
+            else:
+                queryset = queryset.filter(Q(status__icontains=status_filter) | Q(current_stage__name__icontains=status_filter))
+
+        search_term = str(request.query_params.get('search') or request.query_params.get('q') or '').strip()
+        if search_term:
+            queryset = queryset.filter(
+                Q(reference_no__icontains=search_term) |
+                Q(cancelled_permit_number__icontains=search_term) |
+                Q(distributor_permit_ref_no__icontains=search_term) |
+                Q(distributor_permit__reference_no__icontains=search_term) |
+                Q(applicant__username__icontains=search_term) |
+                Q(applicant__first_name__icontains=search_term) |
+                Q(applicant__last_name__icontains=search_term) |
+                Q(current_stage__name__icontains=search_term)
+            )
+
+        date_val = str(request.query_params.get('date') or '').strip()
+        if date_val:
+            queryset = queryset.filter(Q(submitted_at__date=date_val) | Q(created_at__date=date_val))
+
+        month_val = str(request.query_params.get('month') or '').strip()
+        if month_val:
+            if '-' in month_val:
+                try:
+                    y, m = month_val.split('-')[:2]
+                    queryset = queryset.filter(submitted_at__year=int(y), submitted_at__month=int(m))
+                except Exception:
+                    pass
+            elif month_val.isdigit():
+                queryset = queryset.filter(submitted_at__month=int(month_val))
+
+        year_val = str(request.query_params.get('year') or '').strip()
+        if year_val and year_val.isdigit():
+            queryset = queryset.filter(submitted_at__year=int(year_val))
+
+        page_qs, paginated_meta = paginate_queryset(
+            request,
+            queryset,
+            default_page_size=10,
+            ordering=('-submitted_at', '-created_at', '-reference_no')
+        )
+        if paginated_meta is not None:
+            serializer = self.get_serializer(page_qs, many=True)
+            return Response({
+                **paginated_meta,
+                'results': serializer.data
+            })
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
     def perform_create(self, serializer):
         from django.utils import timezone
@@ -2898,6 +3106,83 @@ class IMFLHologramProcurementViewSet(viewsets.ModelViewSet):
         if not is_officer_or_admin:
             qs = qs.filter(applicant=user)
         return qs.order_by('-created_at')
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        search_term = str(request.query_params.get('search') or request.query_params.get('q') or '').strip()
+        if search_term:
+            queryset = queryset.filter(
+                Q(ref_no__icontains=search_term) |
+                Q(distributor_name__icontains=search_term) |
+                Q(license_number__icontains=search_term) |
+                Q(establishment_name__icontains=search_term) |
+                Q(applicant__username__icontains=search_term) |
+                Q(applicant__first_name__icontains=search_term) |
+                Q(applicant__last_name__icontains=search_term) |
+                Q(current_stage__name__icontains=search_term)
+            )
+
+        status_filter = str(request.query_params.get('status') or '').strip().lower()
+        if status_filter and status_filter != 'all':
+            if status_filter in ['approved', 'approv']:
+                queryset = queryset.filter(
+                    Q(status__icontains='approved') |
+                    Q(current_stage__name__icontains='approved') |
+                    Q(current_stage__name__icontains='production completed') |
+                    Q(current_stage__is_final=True)
+                )
+            elif status_filter in ['rejected', 'reject', 'cancelled']:
+                queryset = queryset.filter(Q(status__icontains='reject') | Q(current_stage__name__icontains='reject') | Q(status__icontains='cancel'))
+            elif status_filter == 'pending':
+                queryset = queryset.filter(
+                    ~Q(status__icontains='approved') &
+                    ~Q(current_stage__name__icontains='approved') &
+                    ~Q(status__icontains='reject') &
+                    ~Q(current_stage__name__icontains='reject') &
+                    ~Q(status__icontains='payment')
+                )
+            elif status_filter in ['payment', 'payment_pending']:
+                queryset = queryset.filter(
+                    Q(status__icontains='payment') |
+                    Q(current_stage__name__icontains='payment')
+                )
+            else:
+                queryset = queryset.filter(Q(status__icontains=status_filter) | Q(current_stage__name__icontains=status_filter))
+
+        date_val = str(request.query_params.get('date') or '').strip()
+        if date_val:
+            queryset = queryset.filter(created_at__date=date_val)
+
+        month_val = str(request.query_params.get('month') or '').strip()
+        if month_val:
+            if '-' in month_val:
+                try:
+                    y, m = month_val.split('-')[:2]
+                    queryset = queryset.filter(created_at__year=int(y), created_at__month=int(m))
+                except Exception:
+                    pass
+            elif month_val.isdigit():
+                queryset = queryset.filter(created_at__month=int(month_val))
+
+        year_val = str(request.query_params.get('year') or '').strip()
+        if year_val and year_val.isdigit():
+            queryset = queryset.filter(created_at__year=int(year_val))
+
+        page_qs, paginated_meta = paginate_queryset(
+            request,
+            queryset,
+            default_page_size=10,
+            ordering=('-created_at', '-id')
+        )
+        if paginated_meta is not None:
+            serializer = self.get_serializer(page_qs, many=True)
+            return Response({
+                **paginated_meta,
+                'results': serializer.data
+            })
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
     def perform_destroy(self, instance):
         super().perform_destroy(instance)
