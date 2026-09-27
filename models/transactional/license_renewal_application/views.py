@@ -12,7 +12,17 @@ from .serializers import LicenseApplicationSerializer
 from auth.workflow.models import Workflow
 from auth.workflow.services import WorkflowService
 from models.masters.license.models import License
-from models.transactional.helpers import _normalize_role, _get_stage_sets, _get_role_stage_names, _filter_by_user_district, _is_district_scoped_role
+from models.transactional.helpers import (
+    _normalize_role,
+    _get_stage_sets,
+    _get_role_stage_names,
+    _filter_by_user_district,
+    _is_district_scoped_role,
+    paginate_queryset,
+    apply_query_filters,
+    build_paginated_response,
+    parse_pagination_params,
+)
 from models.transactional.dashboard_cache import dashboard_counts_cache
 from models.masters.core.models import SupplyChainTimerConfig
 from models.transactional.wallet.wallet_initializer import _resolve_hoa_code
@@ -1163,6 +1173,18 @@ def license_application_detail(request, pk):
     return Response(_serialize_renewal_application(obj), status=status.HTTP_200_OK)
 
 
+RENEWAL_SEARCH_FIELDS = [
+    "application_id",
+    "old_license_id",
+    "applicant__first_name",
+    "applicant__last_name",
+    "applicant__username",
+    "applicant__email",
+    "license_category__license_category",
+    "license_sub_category__description",
+]
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 @dashboard_counts_cache("license_renewal_application")
@@ -1180,20 +1202,15 @@ def dashboard_counts(request):
     if not wf:
         return Response({"applied": 0, "pending": 0, "objection": 0, "approved": 0, "rejected": 0, "awaiting_payment": 0})
 
-    from django.db.models import Q, Exists, OuterRef
-    from django.contrib.contenttypes.models import ContentType
-    from auth.workflow.models import Transaction as WorkflowTransaction
-
+    from django.db.models import Q
     role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     stage_sets = _get_stage_sets(wf.id)
-    all_qs = _filter_by_user_district(LicenseApplication.objects.filter(workflow_id=wf.id), request.user, 'applicant__district')
-
-    month = request.query_params.get('month')
-    year = request.query_params.get('year')
-    if month:
-        all_qs = all_qs.filter(created_at__month=month)
-    if year:
-        all_qs = all_qs.filter(created_at__year=year)
+    all_qs = _filter_by_user_district(
+        LicenseApplication.objects.filter(workflow_id=wf.id),
+        request.user,
+        'applicant__district'
+    )
+    all_qs = apply_query_filters(request, all_qs, search_fields=RENEWAL_SEARCH_FIELDS)
 
     applied_stages = set(stage_sets["initial"])
     objection_stages = set(stage_sets["objection"])
@@ -1206,10 +1223,10 @@ def dashboard_counts(request):
         base_qs = all_qs.filter(applicant=request.user)
         return Response(
             {
-                "applied": base_qs.filter(current_stage__name__in=applied_stages).count(),
-                "pending": base_qs.filter(current_stage__name__in=pending_stages).count(),
+                "applied": base_qs.count(),
+                "pending": base_qs.filter(current_stage__name__in=pending_stages | payment_stages).count(),
                 "objection": base_qs.filter(current_stage__name__in=objection_stages).count(),
-                "approved": base_qs.filter(current_stage__name__in=approved_stages).count(),
+                "approved": base_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True)).count(),
                 "rejected": base_qs.filter(current_stage__name__in=rejected_stages).count(),
                 "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
             }
@@ -1233,7 +1250,7 @@ def dashboard_counts(request):
         pending_for_role = set(role_stage_names)
         pending_count = visible_qs.filter(current_stage__name__in=pending_for_role).count()
         objection_count = visible_qs.filter(current_stage__name__in=objection_stages).count()
-        approved_count = visible_qs.filter(current_stage__name__in=approved_stages).count()
+        approved_count = visible_qs.exclude(current_stage__name__in=pending_for_role | objection_stages | rejected_stages).count()
         rejected_count = visible_qs.filter(current_stage__name__in=rejected_stages).count()
         return Response(
             {
@@ -1260,7 +1277,7 @@ def dashboard_counts(request):
     all_qs_annotated = all_qs.annotate(_acted_by_admin=acted_by_admin)
 
     approved_count = all_qs_annotated.filter(
-        Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True)
+        Q(current_stage__name__in=approved_stages) | Q(_acted_by_admin=True) | Q(is_approved=True)
     ).count()
 
     return Response(
@@ -1282,10 +1299,13 @@ def application_group(request):
     if not wf:
         return Response({"applied": [], "pending": [], "objection": [], "approved": [], "rejected": []})
 
+    from django.db.models import Q
     role = _normalize_role(request.user.role.name if request.user.role else None)
     stage_sets = _get_stage_sets(wf.id)
     all_qs = _filter_by_user_district(
-        LicenseApplication.objects.filter(workflow_id=wf.id).select_related("current_stage", "workflow"),
+        LicenseApplication.objects.filter(workflow_id=wf.id).select_related(
+            "current_stage", "workflow", "license_category", "license_sub_category", "applicant"
+        ),
         request.user,
         'applicant__district'
     )
@@ -1294,8 +1314,74 @@ def application_group(request):
     objection_stages = set(stage_sets["objection"])
     approved_stages = set(stage_sets["approved"])
     rejected_stages = set(stage_sets["rejected"])
-    pending_stages = set(stage_sets["all"]) - applied_stages - approved_stages - rejected_stages - objection_stages
+    payment_stages = set(stage_sets["payment"])
+    pending_stages = set(stage_sets["all"]) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
 
+    is_paginated, _, _ = parse_pagination_params(request)
+    status_filter = (request.query_params.get("status") or request.query_params.get("status_group") or "").strip().lower()
+
+    if is_paginated:
+        if role == "licensee":
+            target_qs = all_qs.filter(applicant=request.user)
+            if status_filter == "applied":
+                target_qs = target_qs.filter(current_stage__name__in=applied_stages)
+            elif status_filter == "pending":
+                target_qs = target_qs.filter(current_stage__name__in=pending_stages | payment_stages)
+            elif status_filter == "objection":
+                target_qs = target_qs.filter(current_stage__name__in=objection_stages)
+            elif status_filter == "approved":
+                target_qs = target_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True))
+            elif status_filter == "rejected":
+                target_qs = target_qs.filter(current_stage__name__in=rejected_stages)
+            elif status_filter in ["awaiting-payment", "awaiting_payment"]:
+                target_qs = target_qs.filter(current_stage__name__in=payment_stages)
+        elif role in ['site_admin', 'site_administrator', 'secretary', 'super_admin']:
+            target_qs = all_qs
+            if status_filter == "applied":
+                target_qs = target_qs.filter(current_stage__name__in=applied_stages)
+            elif status_filter == "pending":
+                target_qs = target_qs.filter(current_stage__name__in=pending_stages).exclude(is_approved=True)
+            elif status_filter == "objection":
+                target_qs = target_qs.filter(current_stage__name__in=objection_stages)
+            elif status_filter == "approved":
+                target_qs = target_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True))
+            elif status_filter == "rejected":
+                target_qs = target_qs.filter(current_stage__name__in=rejected_stages)
+            elif status_filter in ["awaiting-payment", "awaiting_payment"]:
+                target_qs = target_qs.filter(current_stage__name__in=payment_stages)
+        else:
+            role_stage_names = _renewal_role_stage_names(request.user, wf.id)
+            if not role_stage_names:
+                return Response({
+                    "count": 0,
+                    "page": 1,
+                    "page_size": 10,
+                    "total_pages": 1,
+                    "results": []
+                })
+            visible_qs = _renewal_queryset_visible_to_role(all_qs, request.user, role_stage_names)
+            pending_for_role = set(role_stage_names)
+            target_qs = visible_qs
+            if status_filter == "pending":
+                target_qs = target_qs.filter(current_stage__name__in=pending_for_role)
+            elif status_filter == "objection":
+                target_qs = target_qs.filter(current_stage__name__in=objection_stages)
+            elif status_filter == "approved":
+                target_qs = target_qs.exclude(current_stage__name__in=pending_for_role | objection_stages | rejected_stages)
+            elif status_filter == "rejected":
+                target_qs = target_qs.filter(current_stage__name__in=rejected_stages)
+
+        target_qs = apply_query_filters(request, target_qs, search_fields=RENEWAL_SEARCH_FIELDS)
+        page_qs, meta = paginate_queryset(
+            request,
+            target_qs,
+            default_page_size=10,
+            ordering=["-created_at", "-application_id"]
+        )
+        return build_paginated_response(page_qs, LicenseApplicationSerializer, meta)
+
+    # Legacy grouped response when not paginated
+    all_qs = apply_query_filters(request, all_qs, search_fields=RENEWAL_SEARCH_FIELDS)
     if role == "licensee":
         base_qs = all_qs.filter(applicant=request.user)
         return Response(
@@ -1304,13 +1390,13 @@ def application_group(request):
                     base_qs.filter(current_stage__name__in=applied_stages), many=True
                 ).data,
                 "pending": LicenseApplicationSerializer(
-                    base_qs.filter(current_stage__name__in=pending_stages), many=True
+                    base_qs.filter(current_stage__name__in=pending_stages | payment_stages), many=True
                 ).data,
                 "objection": LicenseApplicationSerializer(
                     base_qs.filter(current_stage__name__in=objection_stages), many=True
                 ).data,
                 "approved": LicenseApplicationSerializer(
-                    base_qs.filter(current_stage__name__in=approved_stages), many=True
+                    base_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True)), many=True
                 ).data,
                 "rejected": LicenseApplicationSerializer(
                     base_qs.filter(current_stage__name__in=rejected_stages), many=True
@@ -1325,13 +1411,13 @@ def application_group(request):
                     all_qs.filter(current_stage__name__in=applied_stages), many=True
                 ).data,
                 "pending": LicenseApplicationSerializer(
-                    all_qs.filter(current_stage__name__in=pending_stages), many=True
+                    all_qs.filter(current_stage__name__in=pending_stages).exclude(is_approved=True), many=True
                 ).data,
                 "objection": LicenseApplicationSerializer(
                     all_qs.filter(current_stage__name__in=objection_stages), many=True
                 ).data,
                 "approved": LicenseApplicationSerializer(
-                    all_qs.filter(current_stage__name__in=approved_stages), many=True
+                    all_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True)), many=True
                 ).data,
                 "rejected": LicenseApplicationSerializer(
                     all_qs.filter(current_stage__name__in=rejected_stages), many=True
@@ -1362,3 +1448,4 @@ def application_group(request):
             ).data,
         }
     )
+
