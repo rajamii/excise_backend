@@ -53,8 +53,7 @@ from decimal import Decimal
 
 def _with_application_fee_payment_annotations(qs):
     """
-    Annotate NewLicenseApplication queryset with latest BillDesk application-fee payment info
-    and auto-heal any paid applications stuck in initial stage.
+    Annotate NewLicenseApplication queryset with latest BillDesk application-fee payment info.
 
     - application_fee_payment_status: 'P'/'S'/'F'
     - application_fee_transaction_id: utr
@@ -69,27 +68,12 @@ def _with_application_fee_payment_annotations(qs):
             payment_module_code="001",
         ).order_by("-transaction_date", "-utr")
 
-        annotated_qs = qs.annotate(
+        return qs.annotate(
             application_fee_payment_status=Subquery(base.values("payment_status")[:1]),
             application_fee_transaction_id=Subquery(base.values("utr")[:1]),
             application_fee_payment_date=Subquery(base.values("transaction_date")[:1]),
             application_fee_error=Subquery(base.values("response_errordescription")[:1]),
         )
-
-        try:
-            for app in list(annotated_qs):
-                st = str(getattr(app, "application_fee_payment_status", "") or "").strip().upper()
-                if st == "S":
-                    needs_update = not getattr(app, "is_application_fee_paid", False)
-                    current_stage = getattr(app, "current_stage", None)
-                    needs_submit = not current_stage or getattr(current_stage, "is_initial", False)
-                    if needs_update or needs_submit:
-                        from models.transactional.payment_gateway.views import _ensure_new_license_app_submitted
-                        _ensure_new_license_app_submitted(app, getattr(app, "applicant", None))
-        except Exception:
-            pass
-
-        return annotated_qs
     except Exception:
         return qs
 
@@ -1819,12 +1803,43 @@ def dashboard_counts(request):
     all_qs = NewLicenseApplication.objects.all()
     all_qs = _filter_by_user_district(all_qs, request.user, 'site_district')
 
-    month = request.query_params.get('month')
-    year = request.query_params.get('year')
+    search = (request.query_params.get('search') or request.query_params.get('query') or request.query_params.get('q') or '').strip()
+    date_val = (request.query_params.get('date') or '').strip()
+    month = (request.query_params.get('month') or '').strip()
+    year = (request.query_params.get('year') or '').strip()
+
+    if search:
+        all_qs = all_qs.filter(
+            Q(application_id__icontains=search)
+            | Q(applicant_name__icontains=search)
+            | Q(establishment_name__icontains=search)
+            | Q(current_stage__name__icontains=search)
+            | Q(applicant__username__icontains=search)
+            | Q(applicant__first_name__icontains=search)
+            | Q(applicant__last_name__icontains=search)
+            | Q(site_district__district__icontains=search)
+        )
+    if date_val:
+        try:
+            from datetime import datetime
+            parsed_date = datetime.strptime(date_val, "%Y-%m-%d").date()
+            all_qs = all_qs.filter(created_at__date=parsed_date)
+        except Exception:
+            pass
     if month:
-        all_qs = all_qs.filter(created_at__month=month)
-    if year:
-        all_qs = all_qs.filter(created_at__year=year)
+        try:
+            if '-' in month:
+                yr, mon = month.split('-')
+                all_qs = all_qs.filter(created_at__year=int(yr), created_at__month=int(mon))
+            else:
+                all_qs = all_qs.filter(created_at__month=int(month))
+        except Exception:
+            pass
+    if year and ('-' not in month):
+        try:
+            all_qs = all_qs.filter(created_at__year=int(year))
+        except Exception:
+            pass
 
     is_negative_stage = (
         Q(current_stage__name__in=stage_sets['rejected'])
@@ -1982,6 +1997,52 @@ def application_group(request):
     stage_sets = _get_stage_sets(workflow_id)
     all_qs = _filter_by_user_district(NewLicenseApplication.objects.all(), request.user, 'site_district')
 
+    search = (request.query_params.get('search') or request.query_params.get('query') or request.query_params.get('q') or '').strip()
+    date_str = (request.query_params.get('date') or '').strip()
+    month_str = (request.query_params.get('month') or '').strip()
+    year_str = (request.query_params.get('year') or '').strip()
+    status_filter = (request.query_params.get('status') or request.query_params.get('status_group') or '').strip().lower()
+    page_raw = request.query_params.get('page')
+    page_size_raw = request.query_params.get('page_size') or request.query_params.get('limit')
+
+    # Apply global search filter
+    if search:
+        all_qs = all_qs.filter(
+            Q(application_id__icontains=search)
+            | Q(applicant_name__icontains=search)
+            | Q(establishment_name__icontains=search)
+            | Q(current_stage__name__icontains=search)
+            | Q(applicant__username__icontains=search)
+            | Q(applicant__first_name__icontains=search)
+            | Q(applicant__last_name__icontains=search)
+            | Q(site_district__district__icontains=search)
+        )
+
+    # Apply date filter
+    if date_str:
+        try:
+            from datetime import datetime
+            parsed_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            all_qs = all_qs.filter(created_at__date=parsed_date)
+        except Exception:
+            pass
+
+    # Apply month / year filter
+    if month_str:
+        try:
+            if '-' in month_str:
+                yr, mon = month_str.split('-')
+                all_qs = all_qs.filter(created_at__year=int(yr), created_at__month=int(mon))
+            else:
+                all_qs = all_qs.filter(created_at__month=int(month_str))
+        except Exception:
+            pass
+    if year_str and ('-' not in month_str):
+        try:
+            all_qs = all_qs.filter(created_at__year=int(year_str))
+        except Exception:
+            pass
+
     is_negative_stage = (
         Q(current_stage__name__in=stage_sets['rejected'])
         | Q(current_stage__name__icontains='reject')
@@ -1992,10 +2053,10 @@ def application_group(request):
         | Q(current_stage__name__icontains='forfeit')
     )
 
+    is_paginated = (page_raw is not None or page_size_raw is not None or status_filter or search or date_str or month_str or year_str)
+
     if role == 'licensee':
-        base_qs = _with_site_enquiry_revert_annotations(
-            _with_application_fee_payment_annotations(NewLicenseApplication.objects.filter(applicant=request.user))
-        )
+        base_qs = all_qs.filter(applicant=request.user)
         unpaid_qs = base_qs.filter(is_application_fee_paid=False).exclude(is_negative_stage)
         paid_qs = base_qs.filter(is_application_fee_paid=True)
         applied_stages = set(stage_sets['initial'])
@@ -2011,7 +2072,58 @@ def application_group(request):
         ).exclude(
             is_negative_stage
         )
+        approved_qs = paid_qs.filter(current_stage__name__in=approved_stages, is_approved=True).exclude(is_negative_stage)
+        objection_qs = paid_qs.filter(current_stage__name__in=objection_stages).exclude(is_negative_stage)
+        rejected_qs = base_qs.filter(is_negative_stage)
+        applied_qs = paid_qs.filter(current_stage__name__in=applied_stages).exclude(is_negative_stage)
 
+        if is_paginated:
+            if status_filter == 'pending':
+                target_qs = pending_qs
+            elif status_filter == 'approved':
+                target_qs = approved_qs
+            elif status_filter == 'objection':
+                target_qs = objection_qs
+            elif status_filter == 'rejected':
+                target_qs = rejected_qs
+            elif status_filter == 'applied':
+                target_qs = applied_qs
+            elif status_filter in ('awaiting_payment', 'awaiting-payment'):
+                target_qs = paid_qs.filter(current_stage__name__in=payment_stages).exclude(is_negative_stage)
+            else:
+                target_qs = base_qs
+
+            target_qs = _with_site_enquiry_revert_annotations(_with_application_fee_payment_annotations(target_qs))
+            target_qs = target_qs.select_related(
+                'license_type', 'license_category', 'license_sub_category',
+                'site_district', 'site_subdivision', 'police_station',
+                'current_stage', 'renewal_of', 'applicant', 'workflow'
+            ).prefetch_related('transactions', 'objections').order_by('-created_at', '-application_id')
+
+            try:
+                page = int(page_raw) if page_raw is not None else 1
+                page_size = int(page_size_raw) if page_size_raw is not None else 10
+            except (ValueError, TypeError):
+                page = 1
+                page_size = 10
+
+            page = max(1, page)
+            page_size = max(1, min(page_size, 100))
+            total_count = target_qs.count()
+            offset = (page - 1) * page_size
+            items = target_qs[offset : offset + page_size]
+
+            serializer = NewLicenseApplicationSerializer(items, many=True)
+            return Response({
+                'count': total_count,
+                'page': page,
+                'page_size': page_size,
+                'total_pages': (total_count + page_size - 1) // page_size if page_size > 0 else 1,
+                'results': serializer.data,
+            })
+
+        # Legacy unpaginated fallback
+        base_qs = _with_site_enquiry_revert_annotations(_with_application_fee_payment_annotations(base_qs))
         return Response({
             "applied": NewLicenseApplicationSerializer(
                 paid_qs.filter(current_stage__name__in=applied_stages).exclude(is_negative_stage), many=True
@@ -2020,18 +2132,17 @@ def application_group(request):
                 pending_qs, many=True
             ).data,
             "objection": NewLicenseApplicationSerializer(
-                paid_qs.filter(current_stage__name__in=objection_stages).exclude(is_negative_stage), many=True
+                objection_qs, many=True
             ).data,
             "approved": NewLicenseApplicationSerializer(
-                paid_qs.filter(current_stage__name__in=approved_stages, is_approved=True).exclude(is_negative_stage), many=True
+                approved_qs, many=True
             ).data,
             "rejected": NewLicenseApplicationSerializer(
-                base_qs.filter(is_negative_stage), many=True
+                rejected_qs, many=True
             ).data
         })
 
     if role in ['site_admin', 'site_administrator', 'secretary', 'super_admin']:
-        all_qs = _with_site_enquiry_revert_annotations(_with_application_fee_payment_annotations(all_qs))
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
@@ -2039,29 +2150,79 @@ def application_group(request):
         payment_stages = set(stage_sets.get('payment', []))
         pending_stages = (set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages) | payment_stages
 
+        pending_qs = all_qs.filter(current_stage__name__in=pending_stages).exclude(is_negative_stage)
+        approved_qs = all_qs.filter(current_stage__name__in=approved_stages, is_approved=True).exclude(is_negative_stage)
+        objection_qs = all_qs.filter(current_stage__name__in=objection_stages).exclude(is_negative_stage)
+        rejected_qs = all_qs.filter(is_negative_stage)
+        applied_qs = all_qs.filter(current_stage__name__in=applied_stages).exclude(is_negative_stage)
+
+        if is_paginated:
+            if status_filter == 'pending':
+                target_qs = pending_qs
+            elif status_filter == 'approved':
+                target_qs = approved_qs
+            elif status_filter == 'objection':
+                target_qs = objection_qs
+            elif status_filter == 'rejected':
+                target_qs = rejected_qs
+            elif status_filter == 'applied':
+                target_qs = applied_qs
+            elif status_filter in ('awaiting_payment', 'awaiting-payment'):
+                target_qs = all_qs.filter(current_stage__name__in=payment_stages).exclude(is_negative_stage)
+            else:
+                target_qs = all_qs
+
+            target_qs = _with_site_enquiry_revert_annotations(_with_application_fee_payment_annotations(target_qs))
+            target_qs = target_qs.select_related(
+                'license_type', 'license_category', 'license_sub_category',
+                'site_district', 'site_subdivision', 'police_station',
+                'current_stage', 'renewal_of', 'applicant', 'workflow'
+            ).prefetch_related('transactions', 'objections').order_by('-created_at', '-application_id')
+
+            try:
+                page = int(page_raw) if page_raw is not None else 1
+                page_size = int(page_size_raw) if page_size_raw is not None else 10
+            except (ValueError, TypeError):
+                page = 1
+                page_size = 10
+
+            page = max(1, page)
+            page_size = max(1, min(page_size, 100))
+            total_count = target_qs.count()
+            offset = (page - 1) * page_size
+            items = target_qs[offset : offset + page_size]
+
+            serializer = NewLicenseApplicationSerializer(items, many=True)
+            return Response({
+                'count': total_count,
+                'page': page,
+                'page_size': page_size,
+                'total_pages': (total_count + page_size - 1) // page_size if page_size > 0 else 1,
+                'results': serializer.data,
+            })
+
+        # Legacy unpaginated fallback
+        all_qs = _with_site_enquiry_revert_annotations(_with_application_fee_payment_annotations(all_qs))
         return Response({
             "applied": NewLicenseApplicationSerializer(
-                all_qs.filter(current_stage__name__in=applied_stages).exclude(is_negative_stage), many=True
+                applied_qs, many=True
             ).data,
             "pending": NewLicenseApplicationSerializer(
-                all_qs.filter(current_stage__name__in=pending_stages).exclude(
-                    is_negative_stage
-                ), many=True
+                pending_qs, many=True
             ).data,
             "objection": NewLicenseApplicationSerializer(
-                all_qs.filter(current_stage__name__in=objection_stages).exclude(is_negative_stage), many=True
+                objection_qs, many=True
             ).data,
             "approved": NewLicenseApplicationSerializer(
-                all_qs.filter(current_stage__name__in=approved_stages, is_approved=True).exclude(is_negative_stage), many=True
+                approved_qs, many=True
             ).data,
             "rejected": NewLicenseApplicationSerializer(
-                all_qs.filter(is_negative_stage), many=True
+                rejected_qs, many=True
             ).data
         })
 
     role_stage_names = _get_role_stage_names(request.user, workflow_id)
     if role_stage_names:
-        all_qs = _with_site_enquiry_revert_annotations(_with_application_fee_payment_annotations(all_qs))
         from django.contrib.contenttypes.models import ContentType
         from django.db.models import OuterRef, Exists, Q
 
@@ -2080,28 +2241,72 @@ def application_group(request):
         pending_stages = set(role_stage_names) - role_objection_stages
         role_rejected_stages = set(stage_sets['rejected'])
         
+        pending_qs = all_qs.filter(current_stage__name__in=pending_stages)
         approved_qs = (
             all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
             .annotate(_acted_by_role=acted_by_role)
             .filter(_acted_by_role=True)
         )
-
         rejected_qs = (
             all_qs.filter(current_stage__name__in=role_rejected_stages)
             .annotate(_acted_by_role=acted_by_role)
             .filter(_acted_by_role=True)
         )
-
         objection_qs = (
             all_qs.filter(current_stage__name__in=role_objection_stages)
             .annotate(_acted_by_role=acted_by_role)
             .filter(_acted_by_role=True)
         )
 
+        if is_paginated:
+            if status_filter == 'pending':
+                target_qs = pending_qs
+            elif status_filter == 'approved':
+                target_qs = approved_qs
+            elif status_filter == 'objection':
+                target_qs = objection_qs
+            elif status_filter == 'rejected':
+                target_qs = rejected_qs
+            else:
+                target_qs = all_qs.annotate(_acted_by_role=acted_by_role).filter(
+                    Q(current_stage__name__in=pending_stages) | Q(_acted_by_role=True)
+                )
+
+            target_qs = _with_site_enquiry_revert_annotations(_with_application_fee_payment_annotations(target_qs))
+            target_qs = target_qs.select_related(
+                'license_type', 'license_category', 'license_sub_category',
+                'site_district', 'site_subdivision', 'police_station',
+                'current_stage', 'renewal_of', 'applicant', 'workflow'
+            ).prefetch_related('transactions', 'objections').order_by('-created_at', '-application_id')
+
+            try:
+                page = int(page_raw) if page_raw is not None else 1
+                page_size = int(page_size_raw) if page_size_raw is not None else 10
+            except (ValueError, TypeError):
+                page = 1
+                page_size = 10
+
+            page = max(1, page)
+            page_size = max(1, min(page_size, 100))
+            total_count = target_qs.count()
+            offset = (page - 1) * page_size
+            items = target_qs[offset : offset + page_size]
+
+            serializer = NewLicenseApplicationSerializer(items, many=True)
+            return Response({
+                'count': total_count,
+                'page': page,
+                'page_size': page_size,
+                'total_pages': (total_count + page_size - 1) // page_size if page_size > 0 else 1,
+                'results': serializer.data,
+            })
+
+        # Legacy unpaginated fallback
+        all_qs = _with_site_enquiry_revert_annotations(_with_application_fee_payment_annotations(all_qs))
         return Response({
              "applied": [],
              "pending": NewLicenseApplicationSerializer(
-                 all_qs.filter(current_stage__name__in=pending_stages), many=True
+                 pending_qs, many=True
              ).data,
              "objection": NewLicenseApplicationSerializer(
                  objection_qs, many=True
@@ -2112,6 +2317,34 @@ def application_group(request):
              "rejected": NewLicenseApplicationSerializer(
                  rejected_qs, many=True
              ).data
+        })
+
+    if is_paginated:
+        try:
+            page = int(page_raw) if page_raw is not None else 1
+            page_size = int(page_size_raw) if page_size_raw is not None else 10
+        except (ValueError, TypeError):
+            page = 1
+            page_size = 10
+
+        page = max(1, page)
+        page_size = max(1, min(page_size, 100))
+        target_qs = _with_site_enquiry_revert_annotations(_with_application_fee_payment_annotations(all_qs))
+        target_qs = target_qs.select_related(
+            'license_type', 'license_category', 'license_sub_category',
+            'site_district', 'site_subdivision', 'police_station',
+            'current_stage', 'renewal_of', 'applicant', 'workflow'
+        ).prefetch_related('transactions', 'objections').order_by('-created_at', '-application_id')
+        total_count = target_qs.count()
+        offset = (page - 1) * page_size
+        items = target_qs[offset : offset + page_size]
+        serializer = NewLicenseApplicationSerializer(items, many=True)
+        return Response({
+            'count': total_count,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': (total_count + page_size - 1) // page_size if page_size > 0 else 1,
+            'results': serializer.data,
         })
 
     return Response({
