@@ -643,7 +643,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = EnaRevalidationDetail.objects.all().order_by('-created_at')
-        if getattr(self, 'action', None) == 'list':
+        if not self._is_licensee_user(getattr(self.request, 'user', None)) or getattr(self, 'action', None) in ['list', 'dashboard_counts']:
             queryset = queryset.exclude(status_code='RV_00')
         return scope_by_profile_or_workflow(
             self.request.user,
