@@ -2168,6 +2168,7 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                     latest_schedules_by_permit[key] = sched
 
             pending_permit_refs = set()
+            pending_requisition_refs = set()
             for item in data:
                 status_str = str(item.get('status') or '').upper()
                 stage_dict = item.get('current_stage') or {}
@@ -2178,22 +2179,26 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                 # Only mark permit as "pending" if it has an unapproved revalidation in progress
                 if not is_final and 'APPROVED' not in status_str:
                     rev_pnum = item.get('revalidated_permit_number') or item.get('revalidatedPermitNumber')
-                    if rev_pnum:
-                        pending_permit_refs.add(str(rev_pnum).strip().lower())
-                    dp_id = item.get('distributor_permit') or item.get('distributor_permit_id')
-                    if isinstance(dp_id, dict):
-                        ref = dp_id.get('reference_no') or dp_id.get('referenceNo')
-                        if ref:
-                            pending_permit_refs.add(str(ref).strip().lower())
-                        dp_pk = dp_id.get('id')
-                        if dp_pk:
-                            pending_permit_refs.add(str(dp_pk).strip().lower())
-                    elif dp_id:
-                        pending_permit_refs.add(str(dp_id).strip().lower())
+                    if rev_pnum and str(rev_pnum).strip().upper() != 'ALL':
+                        for p in str(rev_pnum).split(','):
+                            p_clean = p.strip().lower()
+                            if p_clean:
+                                pending_permit_refs.add(p_clean)
+                    else:
+                        dp_id = item.get('distributor_permit') or item.get('distributor_permit_id')
+                        if isinstance(dp_id, dict):
+                            ref = dp_id.get('reference_no') or dp_id.get('referenceNo')
+                            if ref:
+                                pending_requisition_refs.add(str(ref).strip().lower())
+                            dp_pk = dp_id.get('id')
+                            if dp_pk:
+                                pending_requisition_refs.add(str(dp_pk).strip().lower())
+                        elif dp_id:
+                            pending_requisition_refs.add(str(dp_id).strip().lower())
 
-                    dp_ref = item.get('distributor_permit_ref_no') or item.get('distributor_permit_ref')
-                    if dp_ref:
-                        pending_permit_refs.add(str(dp_ref).strip().lower())
+                        dp_ref = item.get('distributor_permit_ref_no') or item.get('distributor_permit_ref')
+                        if dp_ref:
+                            pending_requisition_refs.add(str(dp_ref).strip().lower())
 
             for (ref_no, permit_num), sched in latest_schedules_by_permit.items():
                 # Check if the schedule entry is actually PROCESSED and has activated_at set
@@ -2211,8 +2216,10 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                 if 'reject' in dp_status or 'cancel' in dp_status or 'reject' in dp_stage_name or 'cancel' in dp_stage_name:
                     continue
 
-                # Skip if there is an active unapproved revalidation application currently in progress for this permit
-                if permit_num.lower() in pending_permit_refs or ref_no.lower() in pending_permit_refs:
+                # Skip if there is an active unapproved revalidation application currently in progress for this specific permit
+                if permit_num and permit_num.lower() in pending_permit_refs:
+                    continue
+                if not sched.permit_number and ref_no.lower() in pending_requisition_refs:
                     continue
 
                 # Skip if action has already been taken on this permit (e.g. physical stock arrival recorded)
@@ -2245,11 +2252,13 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                     dp_pdetails = matched if matched else all_pwd
 
                 data.append({
+                    'id': f"{ref_no}-{permit_num}" if permit_num and permit_num != ref_no else ref_no,
                     'reference_no': ref_no,
                     'referenceNo': ref_no,
                     'applicationId': ref_no,
                     'distributor_permit': ref_no,
                     'distributor_permit_id': ref_no,
+                    'distributor_permit_ref_no': ref_no,
                     'revalidated_permit_number': permit_num,
                     'revalidatedPermitNumber': permit_num,
                     'applicant_name': applicant_name,
