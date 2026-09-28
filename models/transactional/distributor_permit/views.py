@@ -293,10 +293,19 @@ class DistributorPermitListCreateView(DistributorRoleRequiredMixin, APIView):
         if status_filter and status_filter != 'all':
             if status_filter in ['approved', 'approv']:
                 queryset = queryset.filter(
-                    Q(status__iexact='Approved') |
-                    (Q(status__icontains='approv') & ~Q(status__icontains='commissioner') & ~Q(status__icontains='payslip')) |
+                    Q(current_stage_id__in=[151, 165]) |
                     Q(current_stage__name__iexact='Approved') |
-                    Q(current_stage_id=151)
+                    Q(status__iexact='Approved') |
+                    (Q(current_stage__is_final=True) & ~Q(current_stage_id__in=[152, 166]) & ~Q(status__icontains='reject'))
+                ).exclude(
+                    Q(current_stage_id__in=[144, 147, 148, 149, 150, 152, 153, 154, 155, 156, 157, 160, 162, 163, 166]) |
+                    Q(status__icontains='reject') |
+                    Q(status__icontains='cancel') |
+                    Q(current_stage__name__icontains='reject') |
+                    Q(current_stage__name__icontains='cancel') |
+                    Q(current_stage__name__icontains='payment') |
+                    Q(current_stage__name__icontains='awaiting') |
+                    Q(current_stage__name__icontains='forward')
                 )
             elif status_filter in ['rejected', 'reject']:
                 queryset = queryset.filter(
@@ -314,7 +323,7 @@ class DistributorPermitListCreateView(DistributorRoleRequiredMixin, APIView):
                         Q(current_stage__name__icontains='payment')
                     ).exclude(
                         Q(status__iexact='Approved') |
-                        Q(current_stage_id__in=[151, 152, 165, 166]) |
+                        Q(current_stage_id__in=[147, 148, 149, 151, 152, 155, 156, 165, 166]) |
                         Q(current_stage__is_final=True) |
                         Q(status__icontains='reject')
                     )
@@ -323,11 +332,14 @@ class DistributorPermitListCreateView(DistributorRoleRequiredMixin, APIView):
                         Q(current_stage_id__in=[147, 148, 149, 154, 155, 156, 144]) |
                         Q(status__icontains='permit') |
                         Q(status__icontains='payment') |
+                        Q(status__icontains='awaiting') |
                         Q(current_stage__name__icontains='permit') |
-                        Q(current_stage__name__icontains='payment')
+                        Q(current_stage__name__icontains='payment') |
+                        Q(current_stage__name__icontains='awaiting') |
+                        Q(current_stage__name__icontains='approved commissioner')
                     ).exclude(
+                        Q(current_stage_id__in=[151, 152, 153, 157, 165, 166]) |
                         Q(status__iexact='Approved') |
-                        Q(current_stage_id__in=[151, 152, 165, 166]) |
                         Q(current_stage__is_final=True) |
                         Q(status__icontains='reject')
                     )
@@ -336,11 +348,17 @@ class DistributorPermitListCreateView(DistributorRoleRequiredMixin, APIView):
                         Q(current_stage_id__in=[147, 148, 149, 153, 155, 156, 157, 160, 162, 163]) |
                         Q(status__icontains='permit') |
                         Q(status__icontains='commissioner') |
+                        Q(status__icontains='submit') |
+                        Q(status__iexact='Pending') |
                         Q(current_stage__name__icontains='permit') |
-                        Q(current_stage__name__icontains='commissioner')
+                        Q(current_stage__name__icontains='commissioner') |
+                        Q(current_stage__name__icontains='submit') |
+                        Q(current_stage__name__iexact='Pending')
                     ).exclude(
                         Q(status__iexact='Approved') |
-                        Q(current_stage_id__in=[151, 152, 165, 166]) |
+                        Q(current_stage_id__in=[144, 151, 152, 154, 165, 166]) |
+                        Q(current_stage__name__icontains='payment') |
+                        Q(current_stage__name__icontains='awaiting') |
                         Q(current_stage__is_final=True) |
                         Q(status__icontains='reject')
                     )
@@ -376,21 +394,27 @@ class DistributorPermitListCreateView(DistributorRoleRequiredMixin, APIView):
                 elif is_comm:
                     queryset = queryset.filter(
                         Q(current_stage_id__in=[153, 157, 160, 162, 163]) |
-                        (Q(status__icontains='commissioner') & ~Q(status__icontains='payslip permit')) |
-                        Q(current_stage__name__icontains='commissioner')
+                        (Q(status__icontains='commissioner') & ~Q(status__icontains='payslip permit') & ~Q(status__icontains='payment') & ~Q(status__icontains='awaiting') & ~Q(status__icontains='approved commissioner')) |
+                        (Q(current_stage__name__icontains='commissioner') & ~Q(current_stage__name__icontains='payslip permit') & ~Q(current_stage__name__icontains='payment') & ~Q(current_stage__name__icontains='awaiting') & ~Q(current_stage__name__icontains='approved commissioner'))
                     ).exclude(
-                        Q(current_stage_id__in=[151, 152, 165, 166]) |
+                        Q(current_stage_id__in=[147, 148, 149, 151, 152, 154, 155, 156, 165, 166]) |
                         Q(status__iexact='Approved') |
+                        Q(status__icontains='payment') |
+                        Q(status__icontains='awaiting') |
+                        Q(current_stage__name__icontains='payment') |
+                        Q(current_stage__name__icontains='awaiting') |
+                        Q(current_stage__name__icontains='approved commissioner') |
                         Q(current_stage__is_final=True) |
                         Q(status__icontains='reject')
                     )
                 elif is_dist:
                     queryset = queryset.filter(
                         Q(current_stage_id__in=[144, 154]) |
-                        Q(status__icontains='payment') |
-                        Q(current_stage__name__icontains='payment')
+                        Q(current_stage__name__icontains='payment') |
+                        Q(current_stage__name__icontains='awaiting') |
+                        Q(status__icontains='awaiting payment')
                     ).exclude(
-                        Q(current_stage_id__in=[151, 152, 165, 166]) |
+                        Q(current_stage_id__in=[147, 148, 149, 151, 152, 153, 155, 156, 157, 160, 162, 163, 165, 166]) |
                         Q(status__iexact='Approved') |
                         Q(current_stage__is_final=True) |
                         Q(status__icontains='reject')
@@ -599,29 +623,41 @@ def _is_item_pending_for_user(item, user):
     text = _stage_text(item)
     stage_id = getattr(item, 'current_stage_id', None) or getattr(getattr(item, 'current_stage', None), 'id', None)
     is_final = getattr(getattr(item, 'current_stage', None), 'is_final', False)
-    if is_final or stage_id in (151, 152, 165):
+    if is_final or stage_id in (151, 152, 165, 166) or any(k in text for k in ('reject', 'cancel')):
         return False
 
-    is_commissioner_stage = stage_id in (153, 157, 160, 162, 163) or ('commissioner' in text and 'payslip' not in text) or ('payslip' in text and 'commissioner' in text)
-    is_permit_section_stage = stage_id in (148, 147, 149, 155, 156) or ('permit' in text and 'commissioner' not in text) or ('payslip' in text and 'permit' in text) or 'submitted' in text or text == 'pending'
-    is_payment_stage = stage_id == 154 or ('awaiting' in text and 'payment' in text) or ('approved' in text and 'payment' in text and 'payslip' not in text)
+    is_payment_stage = (
+        stage_id in (154, 144) or
+        ('payment' in text and 'payslip' not in text) or
+        'awaiting payment' in text or
+        'approved commissioner' in text or
+        'awaiting' in text
+    )
+
+    is_commissioner_stage = (
+        stage_id in (153, 157, 160, 162, 163) or
+        ('forwarded commissioner' in text) or
+        ('forwarded to commissioner' in text) or
+        ('payslip commissioner' in text) or
+        ('commissioner review' in text)
+    ) and not is_payment_stage
+
+    is_permit_section_stage = (
+        stage_id in (148, 147, 149, 155, 156) or
+        ('payslip permit' in text) or
+        ('permit section' in text and 'commissioner' not in text) or
+        text == 'submitted' or
+        text == 'pending'
+    ) and not is_payment_stage
 
     if is_permit_section:
-        if is_commissioner_stage or is_payment_stage:
-            return False  # Under Process for Permit Section
-        if is_permit_section_stage:
-            return True   # Pending for Permit Section (includes Stage 148 submitted & Stage 156 Forwarded PaySlip Permit Section)
+        return bool(is_permit_section_stage)
     elif is_commissioner:
-        if is_permit_section_stage or is_payment_stage:
-            return False  # Under Process for Commissioner
-        if is_commissioner_stage:
-            return True   # Pending for Commissioner (includes Stage 153 Forwarded to Commissioner & Stage 157 Forwarded PaySlip Commissioner)
+        return bool(is_commissioner_stage)
     elif is_distributor:
-        if is_payment_stage:
-            return True   # Awaiting Payment / Action for Distributor
-        return True
+        return bool(is_payment_stage)
 
-    return True
+    return False
 
 
 @api_view(['GET'])
