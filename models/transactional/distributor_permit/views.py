@@ -870,6 +870,80 @@ def dashboard_counts(request):
             'under_process': 0
         })
 
+    if tab == 'revalidation':
+        _process_due_imfl_activation_schedules()
+        unsubmitted_activated_count = 0
+        if not _is_officer_user(request.user):
+            all_schedules = IMFLRevalidationActivationSchedule.objects.exclude(
+                Q(distributor_permit__status__icontains='reject') |
+                Q(distributor_permit__status__icontains='cancel') |
+                Q(distributor_permit__current_stage__name__icontains='reject') |
+                Q(distributor_permit__current_stage__name__icontains='cancel')
+            ).select_related('distributor_permit', 'distributor_permit__applicant', 'distributor_permit__current_stage').order_by('-id')
+
+            if _is_distributor_user(request.user):
+                all_schedules = all_schedules.filter(distributor_permit__applicant=request.user)
+
+            latest_schedules_by_permit = {}
+            for sched in all_schedules:
+                key = (str(sched.distributor_permit_ref_no), str(sched.permit_number or sched.distributor_permit_ref_no))
+                if key not in latest_schedules_by_permit:
+                    latest_schedules_by_permit[key] = sched
+
+            submitted_permit_numbers = set()
+            for it in items:
+                status_str = str(getattr(it, 'status', '') or '').upper()
+                stage = getattr(it, 'current_stage', None)
+                is_final = getattr(stage, 'is_final', False)
+                if not is_final and 'APPROVED' not in status_str:
+                    rev_pnum = str(getattr(it, 'revalidated_permit_number', '') or '').strip().lower()
+                    if rev_pnum:
+                        submitted_permit_numbers.add(rev_pnum)
+                    dp = getattr(it, 'distributor_permit', None)
+                    if dp and getattr(dp, 'reference_no', None):
+                        submitted_permit_numbers.add(str(dp.reference_no).strip().lower())
+
+            for (ref_no, permit_num), sched in latest_schedules_by_permit.items():
+                if sched.status != IMFLRevalidationActivationSchedule.STATUS_PROCESSED or not sched.activated_at:
+                    continue
+                dp = sched.distributor_permit
+                if not dp:
+                    continue
+                dp_status = str(getattr(dp, 'status', '') or '').strip().lower()
+                dp_stage_name = str(getattr(getattr(dp, 'current_stage', None), 'name', '') or '').strip().lower()
+                if 'reject' in dp_status or 'cancel' in dp_status or 'reject' in dp_stage_name or 'cancel' in dp_stage_name:
+                    continue
+                if permit_num.lower() in submitted_permit_numbers or ref_no.lower() in submitted_permit_numbers:
+                    continue
+                has_arrival = (
+                    IMFLArrival.objects.filter(permit_number__iexact=permit_num).exists() or
+                    IMFLBrandWarehouse.objects.filter(permit_number__iexact=permit_num).exists()
+                )
+                if not has_arrival and not sched.permit_number:
+                    has_arrival = IMFLArrival.objects.filter(distributor_permit=dp).exists() or IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists()
+                if has_arrival:
+                    continue
+                unsubmitted_activated_count += 1
+
+        applied_count = len(items) + unsubmitted_activated_count
+        pending_count = sum(1 for it in items if not _is_item_final(it)) + unsubmitted_activated_count
+        approved_count = sum(1 for it in items if _is_item_approved(it))
+        rejected_count = sum(1 for it in items if any(k in _stage_text(it) for k in ('reject', 'cancel')) or getattr(it, 'current_stage_id', None) in (152, 166))
+
+        return Response({
+            'tab': tab,
+            'applied': applied_count,
+            'total': applied_count,
+            'pending': pending_count,
+            'under_process': 0,
+            'underProcess': 0,
+            'objection': 0,
+            'approved': approved_count,
+            'rejected': rejected_count,
+            'awaiting_payment': 0,
+            'awaitingPayment': 0,
+        }, status=status.HTTP_200_OK)
+
     approved = sum(1 for item in items if _is_item_approved(item))
     rejected = sum(1 for item in items if any(k in _stage_text(item) for k in ('reject', 'cancel')) or getattr(item, 'current_stage_id', None) in (152, 166))
     objection = sum(1 for item in items if _is_objection_imfl_item(item))
@@ -1464,6 +1538,47 @@ class DistributorPermitPerformActionView(APIView):
             total_holo = request.data.get('total_holograms_assigned') or request.data.get('totalHologramsAssigned')
             permit_details = request.data.get('permit_wise_details') or request.data.get('permitWiseDetails')
 
+            # Preserve and compute individual permit approval and validity timestamps
+            if isinstance(permit_details, list) and permit_details:
+                existing_p_list = list(getattr(application, 'permit_wise_details', []) or [])
+                existing_p_map = {}
+                for ep in existing_p_list:
+                    if isinstance(ep, dict):
+                        k = str(ep.get('permit_number') or ep.get('permitNumber') or ep.get('permit_sequence') or ep.get('permit_index') or '').lower().strip()
+                        if k:
+                            existing_p_map[k] = ep
+
+                from datetime import timedelta
+                delay_seconds = _resolve_imfl_revalidation_activation_delay_seconds()
+                now_dt = timezone.now()
+
+                processed_permit_details = []
+                for idx, p in enumerate(permit_details):
+                    if not isinstance(p, dict):
+                        processed_permit_details.append(p)
+                        continue
+                    p_copy = dict(p)
+                    k = str(p_copy.get('permit_number') or p_copy.get('permitNumber') or p_copy.get('permit_sequence') or p_copy.get('permit_index') or f"p{idx+1}").lower().strip()
+                    ep = existing_p_map.get(k) or (existing_p_list[idx] if idx < len(existing_p_list) and isinstance(existing_p_list[idx], dict) else None)
+
+                    is_appr = str(p_copy.get('status', '')).upper() == 'APPROVED' or p_copy.get('isApproved') is True or p_copy.get('is_approved') is True
+
+                    # 1. Preserve existing timestamps if already approved earlier!
+                    if ep and (ep.get('approved_at') or ep.get('approvedAt') or ep.get('approval_date')):
+                        p_copy['approved_at'] = ep.get('approved_at') or ep.get('approvedAt') or ep.get('approval_date')
+                        p_copy['approvedAt'] = p_copy['approved_at']
+                        p_copy['valid_up_to'] = ep.get('valid_up_to') or ep.get('validUpTo') or p_copy.get('valid_up_to')
+                        p_copy['validUpTo'] = p_copy['valid_up_to']
+                    elif is_appr and not p_copy.get('approved_at') and not p_copy.get('approvedAt'):
+                        # Newly approved permit: set its timer from current timestamp
+                        p_copy['approved_at'] = now_dt.isoformat()
+                        p_copy['approvedAt'] = now_dt.isoformat()
+                        p_copy['valid_up_to'] = (now_dt + timedelta(seconds=delay_seconds)).isoformat()
+                        p_copy['validUpTo'] = p_copy['valid_up_to']
+
+                    processed_permit_details.append(p_copy)
+                permit_details = processed_permit_details
+
             # Final Commissioner approval is permit-wise.  Keep the requisition at
             # Forwarded PaySLip Commissioner until every permit has been approved.
             is_partial_permit_approval = (
@@ -1483,6 +1598,7 @@ class DistributorPermitPerformActionView(APIView):
                     pass
                 application.status = 'Forwarded PaySLip Commissioner'
                 application.save(update_fields=['permit_wise_details', 'assigned_hologram_ranges', 'total_holograms_assigned', 'status', 'updated_at'])
+                _schedule_imfl_revalidation_activation(application, timezone.now())
                 invalidate_dashboard_counts_cache()
                 return Response({
                     'status': 'success',
@@ -1676,22 +1792,115 @@ def _resolve_imfl_validity_days() -> int:
 
 
 def _schedule_imfl_revalidation_activation(application, approved_at=None):
-    from datetime import timedelta
+    from datetime import datetime, timedelta
     from django.utils import timezone
+    from django.utils.dateparse import parse_datetime
     from .models import IMFLRevalidationActivationSchedule
 
     approved_at = approved_at or timezone.now()
     delay_seconds = _resolve_imfl_revalidation_activation_delay_seconds()
     valid_until = approved_at + timedelta(seconds=delay_seconds)
 
-    application.approval_date = approved_at
-    application.valid_up_to = valid_until
-    application.save(update_fields=['approval_date', 'valid_up_to', 'updated_at'])
+    if not getattr(application, 'approval_date', None):
+        application.approval_date = approved_at
+    if not getattr(application, 'valid_up_to', None):
+        application.valid_up_to = valid_until
 
+    # Check if application has permit_wise_details
+    p_details = getattr(application, 'permit_wise_details', []) or []
+    if isinstance(p_details, str):
+        try:
+            import json
+            p_details = json.loads(p_details)
+        except Exception:
+            p_details = []
+
+    if isinstance(p_details, list) and p_details:
+        has_approved_permit = False
+        for idx, p in enumerate(p_details):
+            if not isinstance(p, dict):
+                continue
+            is_approved = (
+                str(p.get('status', '')).upper() == 'APPROVED' or
+                p.get('is_approved') is True or
+                p.get('isApproved') is True or
+                bool(p.get('assigned_hologram_ranges') or p.get('assignedRanges'))
+            )
+            if not is_approved:
+                continue
+
+            has_approved_permit = True
+            p_num = str(p.get('permit_number') or p.get('permitNumber') or f"{application.reference_no}-P{p.get('permit_index', idx + 1)}").strip()
+
+            # Parse or set permit approval time
+            p_app_at = None
+            raw_p_app = p.get('approved_at') or p.get('approvedAt')
+            if raw_p_app:
+                if isinstance(raw_p_app, str):
+                    p_app_at = parse_datetime(raw_p_app)
+                elif isinstance(raw_p_app, datetime):
+                    p_app_at = raw_p_app
+            if not p_app_at:
+                p_app_at = approved_at
+                p['approved_at'] = p_app_at.isoformat()
+                p['approvedAt'] = p_app_at.isoformat()
+
+            # Parse or set permit valid_up_to
+            p_due_at = None
+            raw_p_due = p.get('valid_up_to') or p.get('validUpTo')
+            if raw_p_due:
+                if isinstance(raw_p_due, str):
+                    p_due_at = parse_datetime(raw_p_due)
+                elif isinstance(raw_p_due, datetime):
+                    p_due_at = raw_p_due
+            if not p_due_at:
+                p_due_at = p_app_at + timedelta(seconds=delay_seconds)
+                p['valid_up_to'] = p_due_at.isoformat()
+                p['validUpTo'] = p_due_at.isoformat()
+
+            # Find or create schedule for this permit
+            existing_pending = IMFLRevalidationActivationSchedule.objects.filter(
+                distributor_permit=application,
+                permit_number=p_num,
+                status=IMFLRevalidationActivationSchedule.STATUS_PENDING
+            ).order_by('-id').first()
+
+            if existing_pending:
+                # Keep existing approval_date and activation_due_at to prevent resetting earlier timers
+                existing_pending.permit_wise_details = [p]
+                existing_pending.save(update_fields=['permit_wise_details', 'updated_at'])
+            else:
+                IMFLRevalidationActivationSchedule.objects.create(
+                    distributor_permit=application,
+                    distributor_permit_ref_no=str(application.reference_no),
+                    permit_number=p_num,
+                    permit_wise_details=[p],
+                    approval_date=p_app_at,
+                    activation_due_at=p_due_at,
+                    activated_at=None,
+                    status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
+                    notes=f"Revalidation schedule for permit {p_num} under {application.reference_no}"
+                )
+
+        if has_approved_permit:
+            application.permit_wise_details = p_details
+            application.save(update_fields=['approval_date', 'valid_up_to', 'permit_wise_details', 'updated_at'])
+            return
+
+    # Fallback for single permit / simple application without permit_wise_details
+    application.save(update_fields=['approval_date', 'valid_up_to', 'updated_at'])
     existing_pending = IMFLRevalidationActivationSchedule.objects.filter(
         distributor_permit=application,
+        permit_number=str(application.reference_no),
         status=IMFLRevalidationActivationSchedule.STATUS_PENDING
     ).order_by('-id').first()
+
+    if not existing_pending:
+        existing_pending = IMFLRevalidationActivationSchedule.objects.filter(
+            distributor_permit=application,
+            permit_number='',
+            status=IMFLRevalidationActivationSchedule.STATUS_PENDING
+        ).order_by('-id').first()
 
     if existing_pending:
         existing_pending.approval_date = approved_at
@@ -1703,6 +1912,8 @@ def _schedule_imfl_revalidation_activation(application, approved_at=None):
         IMFLRevalidationActivationSchedule.objects.create(
             distributor_permit=application,
             distributor_permit_ref_no=str(application.reference_no),
+            permit_number=str(application.reference_no),
+            permit_wise_details=[],
             approval_date=approved_at,
             activation_due_at=valid_until,
             activated_at=None,
@@ -1729,23 +1940,18 @@ def _process_due_imfl_activation_schedules():
         dp_status = str(getattr(dp, 'status', '') or '').strip().lower()
         dp_stage_name = str(getattr(getattr(dp, 'current_stage', None), 'name', '') or '').strip().lower()
 
-        # If permit is rejected, cancelled, or NOT final approved by commissioner, cancel/delete schedule
+        # If permit is rejected or cancelled, cancel schedule
         if 'reject' in dp_status or 'cancel' in dp_status or 'reject' in dp_stage_name or 'cancel' in dp_stage_name:
             schedule.status = 'cancelled'
             schedule.save(update_fields=['status', 'updated_at'])
             continue
 
-        is_dp_approved = (
-            dp_status == 'approved' or
-            getattr(dp.current_stage, 'id', None) == 151 or
-            ('approved' in dp_stage_name and getattr(dp.current_stage, 'is_final', False))
-        )
-        if not is_dp_approved:
-            continue
+        permit_no = str(schedule.permit_number or dp.reference_no).strip()
 
         # Skip if permit has approved cancellation
         has_cancellation = IMFLCancellation.objects.filter(
-            distributor_permit=dp
+            Q(distributor_permit=dp) |
+            Q(cancelled_permit_number__iexact=permit_no)
         ).filter(status__icontains='approved').exists()
 
         if has_cancellation:
@@ -1755,14 +1961,20 @@ def _process_due_imfl_activation_schedules():
 
         # Check if action has already been taken on the permit (e.g. brand arrival received / completed)
         has_arrival = (
-            IMFLArrival.objects.filter(distributor_permit=dp).exists() or
-            IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists() or
-            IMFLArrival.objects.filter(permit_number__icontains=str(dp.reference_no)).exists() or
-            IMFLBrandWarehouse.objects.filter(permit_number__icontains=str(dp.reference_no)).exists()
+            IMFLArrival.objects.filter(permit_number__iexact=permit_no).exists() or
+            IMFLBrandWarehouse.objects.filter(permit_number__iexact=permit_no).exists()
         )
+        if not has_arrival and not schedule.permit_number:
+            has_arrival = (
+                IMFLArrival.objects.filter(distributor_permit=dp).exists() or
+                IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists() or
+                IMFLArrival.objects.filter(permit_number__icontains=str(dp.reference_no)).exists() or
+                IMFLBrandWarehouse.objects.filter(permit_number__icontains=str(dp.reference_no)).exists()
+            )
+
         if has_arrival:
             schedule.status = 'cancelled'
-            schedule.notes = f"Cancelled due to physical stock arrival already recorded by OIC on {dp.reference_no}"
+            schedule.notes = f"Cancelled due to physical stock arrival already recorded by OIC on {permit_no}"
             schedule.save(update_fields=['status', 'notes', 'updated_at'])
             continue
 
@@ -1794,10 +2006,6 @@ class IMFLRevalidationActivationScheduleViewSet(viewsets.ReadOnlyModelViewSet):
             Q(distributor_permit__status__icontains='cancel') |
             Q(distributor_permit__current_stage__name__icontains='reject') |
             Q(distributor_permit__current_stage__name__icontains='cancel')
-        ).filter(
-            Q(distributor_permit__status__iexact='approved') |
-            Q(distributor_permit__current_stage_id=151) |
-            Q(distributor_permit__current_stage__name__icontains='approved', distributor_permit__current_stage__is_final=True)
         )
         if _is_distributor_user(user):
             qs = qs.filter(distributor_permit__applicant=user)
@@ -1883,19 +2091,8 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
         if year_val and year_val.isdigit():
             queryset = queryset.filter(submitted_at__year=int(year_val))
 
-        page_qs, paginated_meta = paginate_queryset(
-            request,
-            queryset,
-            default_page_size=10,
-            ordering=('-submitted_at', '-created_at', '-reference_no')
-        )
-        if paginated_meta is not None:
-            serializer = self.get_serializer(page_qs, many=True)
-            data = list(serializer.data)
-            return Response({
-                **paginated_meta,
-                'results': data
-            })
+        page_str = request.query_params.get('page')
+        page_size_str = request.query_params.get('page_size')
 
         serializer = self.get_serializer(queryset, many=True)
         data = list(serializer.data)
@@ -1908,20 +2105,16 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                 Q(distributor_permit__status__icontains='cancel') |
                 Q(distributor_permit__current_stage__name__icontains='reject') |
                 Q(distributor_permit__current_stage__name__icontains='cancel')
-            ).filter(
-                Q(distributor_permit__status__iexact='approved') |
-                Q(distributor_permit__current_stage_id=151) |
-                Q(distributor_permit__current_stage__name__icontains='approved', distributor_permit__current_stage__is_final=True)
             ).select_related('distributor_permit', 'distributor_permit__applicant', 'distributor_permit__current_stage').order_by('-id')
 
             if _is_distributor_user(request.user):
                 all_schedules = all_schedules.filter(distributor_permit__applicant=request.user)
 
-            latest_schedules_by_ref = {}
+            latest_schedules_by_permit = {}
             for sched in all_schedules:
-                ref_no = str(sched.distributor_permit_ref_no)
-                if ref_no not in latest_schedules_by_ref:
-                    latest_schedules_by_ref[ref_no] = sched
+                key = (str(sched.distributor_permit_ref_no), str(sched.permit_number or sched.distributor_permit_ref_no))
+                if key not in latest_schedules_by_permit:
+                    latest_schedules_by_permit[key] = sched
 
             pending_permit_refs = set()
             for item in data:
@@ -1933,23 +2126,26 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
 
                 # Only mark permit as "pending" if it has an unapproved revalidation in progress
                 if not is_final and 'APPROVED' not in status_str:
+                    rev_pnum = item.get('revalidated_permit_number') or item.get('revalidatedPermitNumber')
+                    if rev_pnum:
+                        pending_permit_refs.add(str(rev_pnum).strip().lower())
                     dp_id = item.get('distributor_permit') or item.get('distributor_permit_id')
                     if isinstance(dp_id, dict):
                         ref = dp_id.get('reference_no') or dp_id.get('referenceNo')
                         if ref:
-                            pending_permit_refs.add(str(ref))
+                            pending_permit_refs.add(str(ref).strip().lower())
                         dp_pk = dp_id.get('id')
                         if dp_pk:
-                            pending_permit_refs.add(str(dp_pk))
+                            pending_permit_refs.add(str(dp_pk).strip().lower())
                     elif dp_id:
-                        pending_permit_refs.add(str(dp_id))
+                        pending_permit_refs.add(str(dp_id).strip().lower())
 
                     dp_ref = item.get('distributor_permit_ref_no') or item.get('distributor_permit_ref')
                     if dp_ref:
-                        pending_permit_refs.add(str(dp_ref))
+                        pending_permit_refs.add(str(dp_ref).strip().lower())
 
-            for ref_no, sched in latest_schedules_by_ref.items():
-                # Check if the latest schedule entry is actually PROCESSED and has activated_at set
+            for (ref_no, permit_num), sched in latest_schedules_by_permit.items():
+                # Check if the schedule entry is actually PROCESSED and has activated_at set
                 if sched.status != IMFLRevalidationActivationSchedule.STATUS_PROCESSED or not sched.activated_at:
                     continue
 
@@ -1960,40 +2156,51 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                 dp_status = str(getattr(dp, 'status', '') or '').strip().lower()
                 dp_stage_name = str(getattr(getattr(dp, 'current_stage', None), 'name', '') or '').strip().lower()
 
-                # Strictly skip if permit is not final approved or is rejected / cancelled
+                # Strictly skip if permit is rejected / cancelled
                 if 'reject' in dp_status or 'cancel' in dp_status or 'reject' in dp_stage_name or 'cancel' in dp_stage_name:
                     continue
 
-                is_dp_approved = (
-                    dp_status == 'approved' or
-                    getattr(dp.current_stage, 'id', None) == 151 or
-                    ('approved' in dp_stage_name and getattr(dp.current_stage, 'is_final', False))
+                # Skip if there is an active unapproved revalidation application currently in progress for this permit
+                if permit_num.lower() in pending_permit_refs or ref_no.lower() in pending_permit_refs:
+                    continue
+
+                # Skip if action has already been taken on this permit (e.g. physical stock arrival recorded)
+                has_arrival = (
+                    IMFLArrival.objects.filter(permit_number__iexact=permit_num).exists() or
+                    IMFLBrandWarehouse.objects.filter(permit_number__iexact=permit_num).exists()
                 )
-                if not is_dp_approved:
-                    continue
-
-                dp_pk = str(sched.distributor_permit_id) if sched.distributor_permit_id else None
-
-                # Skip if there is an active unapproved revalidation application currently in progress
-                if ref_no in pending_permit_refs or (dp_pk and dp_pk in pending_permit_refs):
-                    continue
-
-                # Skip if action has already been taken on this permit (e.g. cases already arrived or brand arrival recorded)
-                has_arrival = IMFLArrival.objects.filter(distributor_permit=dp).exists() or IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists()
+                if not has_arrival and not sched.permit_number:
+                    has_arrival = IMFLArrival.objects.filter(distributor_permit=dp).exists() or IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists()
                 if has_arrival:
                     continue
 
+                # Filter by status if filter active (activated schedule belongs to 'pending' / 'all')
+                if status_filter and status_filter not in ['all', 'pending']:
+                    continue
+
+                # Filter by search_term if active
+                if search_term:
+                    st_lower = search_term.lower()
+                    if not (st_lower in ref_no.lower() or st_lower in permit_num.lower() or st_lower in str(getattr(dp, 'supplier_company_name', '')).lower()):
+                        continue
+
                 supplier_name = getattr(dp, 'supplier_company_name', 'N/A') if dp else 'N/A'
                 applicant_name = getattr(getattr(dp, 'applicant', None), 'full_name', str(getattr(dp, 'applicant', ''))) if dp else str(request.user)
-                dp_pdetails = getattr(dp, 'permit_wise_details', []) if dp else []
+
+                dp_pdetails = sched.permit_wise_details or []
+                if not dp_pdetails and dp and hasattr(dp, 'permit_wise_details'):
+                    all_pwd = getattr(dp, 'permit_wise_details', []) or []
+                    matched = [p for p in all_pwd if str(p.get('permit_number', '')).strip().lower() == permit_num.lower()]
+                    dp_pdetails = matched if matched else all_pwd
+
                 data.append({
                     'reference_no': ref_no,
                     'referenceNo': ref_no,
                     'applicationId': ref_no,
                     'distributor_permit': ref_no,
                     'distributor_permit_id': ref_no,
-                    'revalidated_permit_number': ref_no,
-                    'revalidatedPermitNumber': ref_no,
+                    'revalidated_permit_number': permit_num,
+                    'revalidatedPermitNumber': permit_num,
                     'applicant_name': applicant_name,
                     'applicantName': applicant_name,
                     'supplier_company_name': supplier_name,
@@ -2008,6 +2215,29 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                     'created_at': sched.activated_at or sched.updated_at,
                     'submitted_at': sched.activated_at or sched.updated_at,
                 })
+
+        if page_str is not None:
+            try:
+                page_num = max(1, int(page_str))
+                page_size = max(1, int(page_size_str or 10))
+            except (ValueError, TypeError):
+                page_num = 1
+                page_size = 10
+
+            total_count = len(data)
+            import math
+            total_pages = math.ceil(total_count / page_size) if total_count > 0 else 0
+            start_idx = (page_num - 1) * page_size
+            end_idx = start_idx + page_size
+            paged_data = data[start_idx:end_idx]
+
+            return Response({
+                'count': total_count,
+                'total_pages': total_pages,
+                'current_page': page_num,
+                'page_size': page_size,
+                'results': paged_data
+            })
 
         return Response(data)
 

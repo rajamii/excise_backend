@@ -216,6 +216,8 @@ class IMFLRevalidationActivationSchedule(models.Model):
         related_name='revalidation_activation_schedules'
     )
     distributor_permit_ref_no = models.CharField(max_length=50, db_index=True)
+    permit_number = models.CharField(max_length=100, blank=True, default='', db_index=True)
+    permit_wise_details = models.JSONField(default=list, blank=True)
     approval_date = models.DateTimeField()
     activation_due_at = models.DateTimeField(db_index=True)
     activated_at = models.DateTimeField(blank=True, null=True)
