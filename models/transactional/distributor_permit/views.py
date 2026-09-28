@@ -1739,10 +1739,51 @@ class DistributorPermitPerformActionView(APIView):
                     ).first()
                 if dp:
                     dp.status = 'Cancelled'
-                    dp.save(update_fields=['status', 'updated_at'])
+
+                    # Cancel the PENDING activation schedule for the specific cancelled permit only
+                    cancelled_pnum = str(application.cancelled_permit_number or '').strip()
+                    if cancelled_pnum:
+                        # Permit-specific schedule cancellation
+                        IMFLRevalidationActivationSchedule.objects.filter(
+                            distributor_permit=dp,
+                            permit_number=cancelled_pnum,
+                            status=IMFLRevalidationActivationSchedule.STATUS_PENDING
+                        ).update(status=IMFLRevalidationActivationSchedule.STATUS_CANCELLED)
+                        # Also cancel PROCESSED schedules (stops re-revalidation cycle)
+                        IMFLRevalidationActivationSchedule.objects.filter(
+                            distributor_permit=dp,
+                            permit_number=cancelled_pnum,
+                            status=IMFLRevalidationActivationSchedule.STATUS_PROCESSED
+                        ).update(status=IMFLRevalidationActivationSchedule.STATUS_CANCELLED)
+                        # Update permit_wise_details to mark this permit as cancelled
+                        import json as _json_can
+                        dp_pdetails = dp.permit_wise_details or []
+                        if isinstance(dp_pdetails, str):
+                            try:
+                                dp_pdetails = _json_can.loads(dp_pdetails)
+                            except Exception:
+                                dp_pdetails = []
+                        if isinstance(dp_pdetails, list):
+                            for p in dp_pdetails:
+                                if isinstance(p, dict):
+                                    p_num_str = str(p.get('permit_number') or p.get('permitNumber') or '').strip()
+                                    if p_num_str.lower() == cancelled_pnum.lower():
+                                        p['cancellation_status'] = 'cancelled'
+                                        p['cancellationStatus'] = 'cancelled'
+                                        p['cancelled_at'] = timezone.now().isoformat()
+                                        break
+                            dp.permit_wise_details = dp_pdetails
+                    else:
+                        # No specific permit number — cancel all schedules for this DP
+                        IMFLRevalidationActivationSchedule.objects.filter(
+                            distributor_permit=dp,
+                            status=IMFLRevalidationActivationSchedule.STATUS_PENDING
+                        ).update(status=IMFLRevalidationActivationSchedule.STATUS_CANCELLED)
+
+                    dp.save(update_fields=['status', 'permit_wise_details', 'updated_at'])
                     revert_holograms_for_requisition(dp, user=request.user, reason=f"Permit Cancelled via Approved Cancellation #{application.reference_no}")
-                    IMFLRevalidationActivationSchedule.objects.filter(distributor_permit=dp).delete()
-                    IMFLRevalidation.objects.filter(distributor_permit=dp).delete()
+                    if not cancelled_pnum:
+                        IMFLRevalidation.objects.filter(distributor_permit=dp).delete()
             elif isinstance(application, IMFLRevalidation) and (
                 target_transition.to_stage.id in (158, 161) or
                 getattr(target_transition.to_stage, 'is_final', False) or
@@ -3104,6 +3145,30 @@ class IMFLBrandWarehouseViewSet(viewsets.ModelViewSet):
                     permit_app.save(update_fields=['permit_wise_details', 'updated_at'])
                 except Exception:
                     permit_app.save()
+
+                # Cancel auto-revalidation schedules for permits that now have arrival recorded
+                # — action taken means no more revalidation cycle for these permits
+                try:
+                    from .models import IMFLRevalidationActivationSchedule as _SchedModel
+                    arrived_pnums = list({
+                        str(itm.get('permit_number') or permit_ref or '').strip()
+                        for itm in items
+                        if isinstance(itm, dict) and (str(itm.get('permit_number') or permit_ref or '').strip())
+                    })
+                    for ap_num in arrived_pnums:
+                        if ap_num:
+                            _SchedModel.objects.filter(
+                                distributor_permit=permit_app,
+                                permit_number=ap_num,
+                                status=_SchedModel.STATUS_PENDING
+                            ).update(status=_SchedModel.STATUS_CANCELLED)
+                            _SchedModel.objects.filter(
+                                distributor_permit=permit_app,
+                                permit_number=ap_num,
+                                status=_SchedModel.STATUS_PROCESSED
+                            ).update(status=_SchedModel.STATUS_CANCELLED)
+                except Exception as _sched_err:
+                    print(f"[WARN] Could not cancel revalidation schedules after brand arrival for {permit_ref}: {_sched_err}")
 
         serializer = IMFLBrandWarehouseSerializer(created_records, many=True)
         return Response({
