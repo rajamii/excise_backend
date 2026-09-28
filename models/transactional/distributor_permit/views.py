@@ -283,6 +283,12 @@ class DistributorPermitListCreateView(DistributorRoleRequiredMixin, APIView):
 
     def get(self, request):
         queryset = self.get_queryset(request)
+        role_name = str(getattr(getattr(request.user, 'role', None), 'name', '') or '').lower()
+        role_id = getattr(getattr(request.user, 'role', None), 'id', 0)
+        is_comm = 'commissioner' in role_name or role_id in (9, 10, 11, 12)
+        is_permit_sec = 'permit' in role_name or 'section' in role_name or role_id == 5
+        is_dist = 'distributor' in role_name or role_id == 14 or not (request.user.is_superuser or getattr(request.user, 'is_staff', False) or role_id in (1, 3, 5, 6, 7, 8, 9, 10, 11, 12))
+
         status_filter = str(request.query_params.get('status') or '').strip().lower()
         if status_filter and status_filter != 'all':
             if status_filter in ['approved', 'approv']:
@@ -295,42 +301,122 @@ class DistributorPermitListCreateView(DistributorRoleRequiredMixin, APIView):
             elif status_filter in ['rejected', 'reject']:
                 queryset = queryset.filter(
                     Q(status__icontains='reject') |
-                    Q(current_stage__name__icontains='reject')
-                )
-            elif status_filter in ['under_process', 'underprocess', 'processing']:
-                queryset = queryset.filter(
-                    Q(status__icontains='process') |
-                    Q(current_stage__name__icontains='process') |
-                    Q(status__icontains='awaiting') |
-                    Q(status__icontains='payslip') |
-                    Q(status__icontains='pending') |
-                    Q(current_stage__name__icontains='pending') |
-                    Q(status__icontains='submit') |
-                    Q(current_stage__name__icontains='submit') |
-                    Q(status__icontains='forward') |
-                    Q(current_stage__name__icontains='forward') |
-                    Q(current_stage_id__in=[147, 148, 149, 153, 154, 155, 156, 157, 160, 162, 163])
-                ).exclude(
-                    Q(status__iexact='Approved') |
-                    Q(current_stage_id=151) |
-                    Q(current_stage__is_final=True) |
-                    Q(status__icontains='reject') |
                     Q(current_stage__name__icontains='reject') |
                     Q(current_stage_id__in=[152, 166])
                 )
+            elif status_filter in ['under_process', 'underprocess', 'processing']:
+                if is_permit_sec:
+                    queryset = queryset.filter(
+                        Q(current_stage_id__in=[153, 154, 157, 160, 162, 163, 144]) |
+                        Q(status__icontains='commissioner') |
+                        Q(status__icontains='payment') |
+                        Q(current_stage__name__icontains='commissioner') |
+                        Q(current_stage__name__icontains='payment')
+                    ).exclude(
+                        Q(status__iexact='Approved') |
+                        Q(current_stage_id__in=[151, 152, 165, 166]) |
+                        Q(current_stage__is_final=True) |
+                        Q(status__icontains='reject')
+                    )
+                elif is_comm:
+                    queryset = queryset.filter(
+                        Q(current_stage_id__in=[147, 148, 149, 154, 155, 156, 144]) |
+                        Q(status__icontains='permit') |
+                        Q(status__icontains='payment') |
+                        Q(current_stage__name__icontains='permit') |
+                        Q(current_stage__name__icontains='payment')
+                    ).exclude(
+                        Q(status__iexact='Approved') |
+                        Q(current_stage_id__in=[151, 152, 165, 166]) |
+                        Q(current_stage__is_final=True) |
+                        Q(status__icontains='reject')
+                    )
+                elif is_dist:
+                    queryset = queryset.filter(
+                        Q(current_stage_id__in=[147, 148, 149, 153, 155, 156, 157, 160, 162, 163]) |
+                        Q(status__icontains='permit') |
+                        Q(status__icontains='commissioner') |
+                        Q(current_stage__name__icontains='permit') |
+                        Q(current_stage__name__icontains='commissioner')
+                    ).exclude(
+                        Q(status__iexact='Approved') |
+                        Q(current_stage_id__in=[151, 152, 165, 166]) |
+                        Q(current_stage__is_final=True) |
+                        Q(status__icontains='reject')
+                    )
+                else:
+                    queryset = queryset.filter(
+                        Q(status__icontains='process') |
+                        Q(current_stage__name__icontains='process') |
+                        Q(status__icontains='awaiting') |
+                        Q(status__icontains='forward') |
+                        Q(current_stage__name__icontains='forward')
+                    ).exclude(
+                        Q(status__iexact='Approved') |
+                        Q(current_stage_id__in=[151, 152, 165, 166]) |
+                        Q(current_stage__is_final=True) |
+                        Q(status__icontains='reject')
+                    )
             elif status_filter == 'pending':
-                queryset = queryset.filter(
-                    Q(status__icontains='pending') |
-                    Q(current_stage__name__icontains='pending') |
-                    Q(status__icontains='submit') |
-                    Q(current_stage__name__icontains='submit') |
-                    Q(current_stage_id__in=[147, 148, 153, 156, 157])
-                )
+                if is_permit_sec:
+                    queryset = queryset.filter(
+                        Q(current_stage_id__in=[147, 148, 149, 155, 156]) |
+                        Q(status__icontains='permit') |
+                        Q(status__icontains='oic') |
+                        Q(status__icontains='payslip permit') |
+                        Q(current_stage__name__icontains='permit') |
+                        Q(current_stage__name__icontains='oic') |
+                        (Q(status__icontains='pending') & ~Q(status__icontains='commissioner') & ~Q(status__icontains='payment'))
+                    ).exclude(
+                        Q(current_stage_id__in=[151, 152, 153, 154, 157, 160, 162, 163, 165, 166]) |
+                        Q(status__iexact='Approved') |
+                        Q(current_stage__is_final=True) |
+                        Q(status__icontains='reject')
+                    )
+                elif is_comm:
+                    queryset = queryset.filter(
+                        Q(current_stage_id__in=[153, 157, 160, 162, 163]) |
+                        (Q(status__icontains='commissioner') & ~Q(status__icontains='payslip permit')) |
+                        Q(current_stage__name__icontains='commissioner')
+                    ).exclude(
+                        Q(current_stage_id__in=[151, 152, 165, 166]) |
+                        Q(status__iexact='Approved') |
+                        Q(current_stage__is_final=True) |
+                        Q(status__icontains='reject')
+                    )
+                elif is_dist:
+                    queryset = queryset.filter(
+                        Q(current_stage_id__in=[144, 154]) |
+                        Q(status__icontains='payment') |
+                        Q(current_stage__name__icontains='payment')
+                    ).exclude(
+                        Q(current_stage_id__in=[151, 152, 165, 166]) |
+                        Q(status__iexact='Approved') |
+                        Q(current_stage__is_final=True) |
+                        Q(status__icontains='reject')
+                    )
+                else:
+                    queryset = queryset.filter(
+                        Q(status__icontains='pending') |
+                        Q(current_stage__name__icontains='pending') |
+                        Q(status__icontains='submit') |
+                        Q(current_stage__name__icontains='submit')
+                    ).exclude(
+                        Q(current_stage_id__in=[151, 152, 165, 166]) |
+                        Q(status__iexact='Approved') |
+                        Q(current_stage__is_final=True) |
+                        Q(status__icontains='reject')
+                    )
             elif status_filter in ['cancellation', 'cancelled', 'cancel']:
                 queryset = queryset.filter(
                     Q(status__icontains='cancel') |
                     Q(current_stage__name__icontains='cancel') |
                     Q(current_stage_id__in=[152, 166])
+                )
+            elif status_filter in ['objection', 'object']:
+                queryset = queryset.filter(
+                    Q(status__icontains='object') |
+                    Q(current_stage__name__icontains='object')
                 )
             else:
                 queryset = queryset.filter(
