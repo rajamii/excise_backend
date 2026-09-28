@@ -1749,37 +1749,71 @@ class DistributorPermitPerformActionView(APIView):
                 'approved' in str(getattr(target_transition.to_stage, 'name', '')).lower()
             ):
                 from datetime import timedelta
+                import json as _json
                 delay_seconds = _resolve_imfl_revalidation_activation_delay_seconds()
-                new_valid_until = timezone.now() + timedelta(seconds=delay_seconds)
+                now_ts = timezone.now()
+                new_valid_until = now_ts + timedelta(seconds=delay_seconds)
 
+                # Update the revalidation application's own valid_up_to
                 application.valid_up_to = new_valid_until
                 application.save(update_fields=['valid_up_to'])
 
                 if application.distributor_permit:
-                    application.distributor_permit.valid_up_to = new_valid_until
-                    application.distributor_permit.save(update_fields=['valid_up_to', 'updated_at'])
+                    dp = application.distributor_permit
 
-                    existing_pending = IMFLRevalidationActivationSchedule.objects.filter(
-                        distributor_permit=application.distributor_permit,
+                    # Identify the specific permit being revalidated
+                    target_pnum = str(application.revalidated_permit_number or '').strip()
+
+                    # Update only the specific permit's valid_up_to inside permit_wise_details
+                    # DO NOT update the parent dp.valid_up_to (that would make all permits appear valid)
+                    dp_pdetails = dp.permit_wise_details or []
+                    if isinstance(dp_pdetails, str):
+                        try:
+                            dp_pdetails = _json.loads(dp_pdetails)
+                        except Exception:
+                            dp_pdetails = []
+
+                    updated_permit_detail = None
+                    if target_pnum and isinstance(dp_pdetails, list):
+                        for p in dp_pdetails:
+                            if not isinstance(p, dict):
+                                continue
+                            p_num_str = str(p.get('permit_number') or p.get('permitNumber') or '').strip()
+                            if p_num_str.lower() == target_pnum.lower():
+                                p['valid_up_to'] = new_valid_until.isoformat()
+                                p['validUpTo'] = new_valid_until.isoformat()
+                                p['approved_at'] = now_ts.isoformat()
+                                p['approvedAt'] = now_ts.isoformat()
+                                p['is_revalidated'] = True
+                                p['isRevalidated'] = True
+                                updated_permit_detail = p
+                                break
+                        if dp_pdetails:
+                            dp.permit_wise_details = dp_pdetails
+                            dp.save(update_fields=['permit_wise_details', 'updated_at'])
+
+                    # Use target permit number for schedule (fallback to ref_no if no specific permit)
+                    schedule_permit_num = target_pnum if target_pnum else str(dp.reference_no)
+
+                    # Cancel any old PENDING schedule for this specific permit to avoid duplicates
+                    IMFLRevalidationActivationSchedule.objects.filter(
+                        distributor_permit=dp,
+                        permit_number=schedule_permit_num,
                         status=IMFLRevalidationActivationSchedule.STATUS_PENDING
-                    ).order_by('-id').first()
+                    ).update(status=IMFLRevalidationActivationSchedule.STATUS_CANCELLED)
 
-                    if existing_pending:
-                        existing_pending.approval_date = timezone.now()
-                        existing_pending.activation_due_at = new_valid_until
-                        existing_pending.activated_at = None
-                        existing_pending.notes = f"Revalidation cycle schedule for {application.reference_no}"
-                        existing_pending.save()
-                    else:
-                        IMFLRevalidationActivationSchedule.objects.create(
-                            distributor_permit=application.distributor_permit,
-                            distributor_permit_ref_no=str(application.distributor_permit.reference_no),
-                            approval_date=timezone.now(),
-                            activation_due_at=new_valid_until,
-                            activated_at=None,
-                            status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
-                            notes=f"Revalidation cycle schedule for {application.reference_no}"
-                        )
+                    # Create a fresh PENDING schedule for this specific permit with the new timer
+                    IMFLRevalidationActivationSchedule.objects.create(
+                        distributor_permit=dp,
+                        distributor_permit_ref_no=str(dp.reference_no),
+                        permit_number=schedule_permit_num,
+                        permit_wise_details=[updated_permit_detail] if updated_permit_detail else [],
+                        approval_date=now_ts,
+                        activation_due_at=new_valid_until,
+                        activated_at=None,
+                        status=IMFLRevalidationActivationSchedule.STATUS_PENDING,
+                        notes=f"Revalidation cycle schedule for permit {schedule_permit_num} via {application.reference_no}"
+                    )
 
         return Response({
             'status': 'success',
@@ -1876,7 +1910,7 @@ def _schedule_imfl_revalidation_activation(application, approved_at=None):
             has_approved_permit = True
             p_num = str(p.get('permit_number') or p.get('permitNumber') or f"{application.reference_no}-P{p.get('permit_index', idx + 1)}").strip()
 
-            # Parse or set permit approval time
+            # Calculate permit approval time and valid_up_to strictly using timer config delay_seconds
             p_app_at = None
             raw_p_app = p.get('approved_at') or p.get('approvedAt')
             if raw_p_app:
@@ -1889,18 +1923,9 @@ def _schedule_imfl_revalidation_activation(application, approved_at=None):
                 p['approved_at'] = p_app_at.isoformat()
                 p['approvedAt'] = p_app_at.isoformat()
 
-            # Parse or set permit valid_up_to
-            p_due_at = None
-            raw_p_due = p.get('valid_up_to') or p.get('validUpTo')
-            if raw_p_due:
-                if isinstance(raw_p_due, str):
-                    p_due_at = parse_datetime(raw_p_due)
-                elif isinstance(raw_p_due, datetime):
-                    p_due_at = raw_p_due
-            if not p_due_at:
-                p_due_at = p_app_at + timedelta(seconds=delay_seconds)
-                p['valid_up_to'] = p_due_at.isoformat()
-                p['validUpTo'] = p_due_at.isoformat()
+            p_due_at = p_app_at + timedelta(seconds=delay_seconds)
+            p['valid_up_to'] = p_due_at.isoformat()
+            p['validUpTo'] = p_due_at.isoformat()
 
             # Find or create schedule for this permit
             existing_pending = IMFLRevalidationActivationSchedule.objects.filter(
@@ -1910,9 +1935,10 @@ def _schedule_imfl_revalidation_activation(application, approved_at=None):
             ).order_by('-id').first()
 
             if existing_pending:
-                # Keep existing approval_date and activation_due_at to prevent resetting earlier timers
+                existing_pending.approval_date = p_app_at
+                existing_pending.activation_due_at = p_due_at
                 existing_pending.permit_wise_details = [p]
-                existing_pending.save(update_fields=['permit_wise_details', 'updated_at'])
+                existing_pending.save(update_fields=['approval_date', 'activation_due_at', 'permit_wise_details', 'updated_at'])
             else:
                 IMFLRevalidationActivationSchedule.objects.create(
                     distributor_permit=application,
