@@ -958,29 +958,31 @@ def dashboard_counts(request):
                 if permit_num.lower() in submitted_permit_numbers or ref_no.lower() in submitted_permit_numbers:
                     continue
 
-                has_cancellation = IMFLCancellation.objects.filter(
-                    Q(distributor_permit=dp) |
-                    Q(cancelled_permit_number__icontains=permit_num) |
-                    Q(permit_wise_details__icontains=permit_num)
-                ).exclude(status__icontains='reject').exclude(current_stage__name__icontains='reject').exists()
+                has_cancellation = False
+                if sched.permit_number:
+                    has_cancellation = IMFLCancellation.objects.filter(
+                        Q(cancelled_permit_number__icontains=permit_num) |
+                        Q(permit_wise_details__icontains=permit_num) |
+                        Q(distributor_permit=dp, cancelled_permit_number__iexact='ALL')
+                    ).exclude(status__icontains='reject').exclude(current_stage__name__icontains='reject').exists()
+                else:
+                    has_cancellation = IMFLCancellation.objects.filter(
+                        distributor_permit=dp
+                    ).exclude(status__icontains='reject').exclude(current_stage__name__icontains='reject').exists()
                 if has_cancellation:
                     continue
 
-                has_arrival = (
-                    IMFLArrival.objects.filter(permit_number__iexact=permit_num).exists() or
-                    IMFLBrandWarehouse.objects.filter(permit_number__iexact=permit_num).exists() or
-                    IMFLCasesProcessed.objects.filter(
-                        Q(permit_number__iexact=permit_num) |
-                        Q(distributor_permit__reference_no__iexact=permit_num) |
-                        Q(distributor_permit=dp)
-                    ).exclude(status__iexact='rejected').exists()
-                )
-                if not has_arrival and not sched.permit_number:
+                has_arrival = False
+                if sched.permit_number:
                     has_arrival = (
-                        IMFLArrival.objects.filter(distributor_permit=dp).exists() or
-                        IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists() or
-                        IMFLArrival.objects.filter(permit_number__icontains=str(dp.reference_no)).exists() or
-                        IMFLBrandWarehouse.objects.filter(permit_number__icontains=str(dp.reference_no)).exists() or
+                        IMFLArrival.objects.filter(permit_number__iexact=permit_num).exists() or
+                        IMFLBrandWarehouse.objects.filter(permit_number__iexact=permit_num).exists() or
+                        IMFLCasesProcessed.objects.filter(permit_number__iexact=permit_num).exclude(status__iexact='rejected').exists()
+                    )
+                else:
+                    has_arrival = (
+                        IMFLArrival.objects.filter(Q(distributor_permit=dp) | Q(permit_number__icontains=str(dp.reference_no))).exists() or
+                        IMFLBrandWarehouse.objects.filter(Q(distributor_permit=dp) | Q(permit_number__icontains=str(dp.reference_no))).exists() or
                         IMFLCasesProcessed.objects.filter(distributor_permit=dp).exclude(status__iexact='rejected').exists()
                     )
                 if has_arrival:
@@ -2078,11 +2080,17 @@ def _process_due_imfl_activation_schedules():
         permit_no = str(schedule.permit_number or dp.reference_no).strip()
 
         # Skip if permit has ANY cancellation request in progress or approved
-        has_cancellation = IMFLCancellation.objects.filter(
-            Q(distributor_permit=dp) |
-            Q(cancelled_permit_number__icontains=permit_no) |
-            Q(permit_wise_details__icontains=permit_no)
-        ).exclude(status__icontains='reject').exclude(current_stage__name__icontains='reject').exists()
+        has_cancellation = False
+        if schedule.permit_number:
+            has_cancellation = IMFLCancellation.objects.filter(
+                Q(cancelled_permit_number__icontains=permit_no) |
+                Q(permit_wise_details__icontains=permit_no) |
+                Q(distributor_permit=dp, cancelled_permit_number__iexact='ALL')
+            ).exclude(status__icontains='reject').exclude(current_stage__name__icontains='reject').exists()
+        else:
+            has_cancellation = IMFLCancellation.objects.filter(
+                distributor_permit=dp
+            ).exclude(status__icontains='reject').exclude(current_stage__name__icontains='reject').exists()
 
         if has_cancellation:
             schedule.status = 'cancelled'
@@ -2091,21 +2099,17 @@ def _process_due_imfl_activation_schedules():
             continue
 
         # Check if action has already been taken on the permit (e.g. brand arrival received / completed / under review)
-        has_arrival = (
-            IMFLArrival.objects.filter(permit_number__iexact=permit_no).exists() or
-            IMFLBrandWarehouse.objects.filter(permit_number__iexact=permit_no).exists() or
-            IMFLCasesProcessed.objects.filter(
-                Q(permit_number__iexact=permit_no) |
-                Q(distributor_permit__reference_no__iexact=permit_no) |
-                Q(distributor_permit=dp)
-            ).exclude(status__iexact='rejected').exists()
-        )
-        if not has_arrival and not schedule.permit_number:
+        has_arrival = False
+        if schedule.permit_number:
             has_arrival = (
-                IMFLArrival.objects.filter(distributor_permit=dp).exists() or
-                IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists() or
-                IMFLArrival.objects.filter(permit_number__icontains=str(dp.reference_no)).exists() or
-                IMFLBrandWarehouse.objects.filter(permit_number__icontains=str(dp.reference_no)).exists() or
+                IMFLArrival.objects.filter(permit_number__iexact=permit_no).exists() or
+                IMFLBrandWarehouse.objects.filter(permit_number__iexact=permit_no).exists() or
+                IMFLCasesProcessed.objects.filter(permit_number__iexact=permit_no).exclude(status__iexact='rejected').exists()
+            )
+        else:
+            has_arrival = (
+                IMFLArrival.objects.filter(Q(distributor_permit=dp) | Q(permit_number__icontains=str(dp.reference_no))).exists() or
+                IMFLBrandWarehouse.objects.filter(Q(distributor_permit=dp) | Q(permit_number__icontains=str(dp.reference_no))).exists() or
                 IMFLCasesProcessed.objects.filter(distributor_permit=dp).exclude(status__iexact='rejected').exists()
             )
 
@@ -2316,30 +2320,32 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                     continue
 
                 # Skip if cancellation is taken / applied / approved on this permit
-                has_cancellation = IMFLCancellation.objects.filter(
-                    Q(distributor_permit=dp) |
-                    Q(cancelled_permit_number__icontains=permit_num) |
-                    Q(permit_wise_details__icontains=permit_num)
-                ).exclude(status__icontains='reject').exclude(current_stage__name__icontains='reject').exists()
+                has_cancellation = False
+                if sched.permit_number:
+                    has_cancellation = IMFLCancellation.objects.filter(
+                        Q(cancelled_permit_number__icontains=permit_num) |
+                        Q(permit_wise_details__icontains=permit_num) |
+                        Q(distributor_permit=dp, cancelled_permit_number__iexact='ALL')
+                    ).exclude(status__icontains='reject').exclude(current_stage__name__icontains='reject').exists()
+                else:
+                    has_cancellation = IMFLCancellation.objects.filter(
+                        distributor_permit=dp
+                    ).exclude(status__icontains='reject').exclude(current_stage__name__icontains='reject').exists()
                 if has_cancellation:
                     continue
 
                 # Skip if action has already been taken on this permit (physical stock arrival recorded or submitted)
-                has_arrival = (
-                    IMFLArrival.objects.filter(permit_number__iexact=permit_num).exists() or
-                    IMFLBrandWarehouse.objects.filter(permit_number__iexact=permit_num).exists() or
-                    IMFLCasesProcessed.objects.filter(
-                        Q(permit_number__iexact=permit_num) |
-                        Q(distributor_permit__reference_no__iexact=permit_num) |
-                        Q(distributor_permit=dp)
-                    ).exclude(status__iexact='rejected').exists()
-                )
-                if not has_arrival and not sched.permit_number:
+                has_arrival = False
+                if sched.permit_number:
                     has_arrival = (
-                        IMFLArrival.objects.filter(distributor_permit=dp).exists() or
-                        IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists() or
-                        IMFLArrival.objects.filter(permit_number__icontains=str(dp.reference_no)).exists() or
-                        IMFLBrandWarehouse.objects.filter(permit_number__icontains=str(dp.reference_no)).exists() or
+                        IMFLArrival.objects.filter(permit_number__iexact=permit_num).exists() or
+                        IMFLBrandWarehouse.objects.filter(permit_number__iexact=permit_num).exists() or
+                        IMFLCasesProcessed.objects.filter(permit_number__iexact=permit_num).exclude(status__iexact='rejected').exists()
+                    )
+                else:
+                    has_arrival = (
+                        IMFLArrival.objects.filter(Q(distributor_permit=dp) | Q(permit_number__icontains=str(dp.reference_no))).exists() or
+                        IMFLBrandWarehouse.objects.filter(Q(distributor_permit=dp) | Q(permit_number__icontains=str(dp.reference_no))).exists() or
                         IMFLCasesProcessed.objects.filter(distributor_permit=dp).exclude(status__iexact='rejected').exists()
                     )
                 if has_arrival:
