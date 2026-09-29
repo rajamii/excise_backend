@@ -798,9 +798,7 @@ def dashboard_counts(request):
                         p_num = str(p.get('permit_number') or p.get('permitNumber') or '').strip()
                         total_permits += 1
                         if (
-                            p_num in arrived_permit_nos
-                            or p_num in brand_warehouse_permit_nos
-                            or any(str(an).lower() == p_num.lower() for an in arrived_permit_nos if an)
+                            p_num in brand_warehouse_permit_nos
                             or any(str(bn).lower() == p_num.lower() for bn in brand_warehouse_permit_nos if bn)
                         ):
                             approved_permits += 1
