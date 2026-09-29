@@ -957,12 +957,32 @@ def dashboard_counts(request):
                     continue
                 if permit_num.lower() in submitted_permit_numbers or ref_no.lower() in submitted_permit_numbers:
                     continue
+
+                has_cancellation = IMFLCancellation.objects.filter(
+                    Q(distributor_permit=dp) |
+                    Q(cancelled_permit_number__icontains=permit_num) |
+                    Q(permit_wise_details__icontains=permit_num)
+                ).exclude(status__icontains='reject').exclude(current_stage__name__icontains='reject').exists()
+                if has_cancellation:
+                    continue
+
                 has_arrival = (
                     IMFLArrival.objects.filter(permit_number__iexact=permit_num).exists() or
-                    IMFLBrandWarehouse.objects.filter(permit_number__iexact=permit_num).exists()
+                    IMFLBrandWarehouse.objects.filter(permit_number__iexact=permit_num).exists() or
+                    IMFLCasesProcessed.objects.filter(
+                        Q(permit_number__iexact=permit_num) |
+                        Q(distributor_permit__reference_no__iexact=permit_num) |
+                        Q(distributor_permit=dp)
+                    ).exclude(status__iexact='rejected').exists()
                 )
                 if not has_arrival and not sched.permit_number:
-                    has_arrival = IMFLArrival.objects.filter(distributor_permit=dp).exists() or IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists()
+                    has_arrival = (
+                        IMFLArrival.objects.filter(distributor_permit=dp).exists() or
+                        IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists() or
+                        IMFLArrival.objects.filter(permit_number__icontains=str(dp.reference_no)).exists() or
+                        IMFLBrandWarehouse.objects.filter(permit_number__icontains=str(dp.reference_no)).exists() or
+                        IMFLCasesProcessed.objects.filter(distributor_permit=dp).exclude(status__iexact='rejected').exists()
+                    )
                 if has_arrival:
                     continue
                 unsubmitted_activated_count += 1
@@ -2033,7 +2053,7 @@ def _schedule_imfl_revalidation_activation(application, approved_at=None):
 
 def _process_due_imfl_activation_schedules():
     from django.utils import timezone
-    from .models import IMFLRevalidationActivationSchedule, IMFLCancellation, IMFLArrival, IMFLBrandWarehouse
+    from .models import IMFLRevalidationActivationSchedule, IMFLCancellation, IMFLArrival, IMFLBrandWarehouse, IMFLCasesProcessed
 
     now = timezone.now()
     schedules = IMFLRevalidationActivationSchedule.objects.filter(
@@ -2057,33 +2077,41 @@ def _process_due_imfl_activation_schedules():
 
         permit_no = str(schedule.permit_number or dp.reference_no).strip()
 
-        # Skip if permit has approved cancellation
+        # Skip if permit has ANY cancellation request in progress or approved
         has_cancellation = IMFLCancellation.objects.filter(
             Q(distributor_permit=dp) |
-            Q(cancelled_permit_number__iexact=permit_no)
-        ).filter(status__icontains='approved').exists()
+            Q(cancelled_permit_number__icontains=permit_no) |
+            Q(permit_wise_details__icontains=permit_no)
+        ).exclude(status__icontains='reject').exclude(current_stage__name__icontains='reject').exists()
 
         if has_cancellation:
             schedule.status = 'cancelled'
-            schedule.save(update_fields=['status', 'updated_at'])
+            schedule.notes = f"Cancelled due to cancellation request applied on {permit_no}"
+            schedule.save(update_fields=['status', 'notes', 'updated_at'])
             continue
 
-        # Check if action has already been taken on the permit (e.g. brand arrival received / completed)
+        # Check if action has already been taken on the permit (e.g. brand arrival received / completed / under review)
         has_arrival = (
             IMFLArrival.objects.filter(permit_number__iexact=permit_no).exists() or
-            IMFLBrandWarehouse.objects.filter(permit_number__iexact=permit_no).exists()
+            IMFLBrandWarehouse.objects.filter(permit_number__iexact=permit_no).exists() or
+            IMFLCasesProcessed.objects.filter(
+                Q(permit_number__iexact=permit_no) |
+                Q(distributor_permit__reference_no__iexact=permit_no) |
+                Q(distributor_permit=dp)
+            ).exclude(status__iexact='rejected').exists()
         )
         if not has_arrival and not schedule.permit_number:
             has_arrival = (
                 IMFLArrival.objects.filter(distributor_permit=dp).exists() or
                 IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists() or
                 IMFLArrival.objects.filter(permit_number__icontains=str(dp.reference_no)).exists() or
-                IMFLBrandWarehouse.objects.filter(permit_number__icontains=str(dp.reference_no)).exists()
+                IMFLBrandWarehouse.objects.filter(permit_number__icontains=str(dp.reference_no)).exists() or
+                IMFLCasesProcessed.objects.filter(distributor_permit=dp).exclude(status__iexact='rejected').exists()
             )
 
         if has_arrival:
             schedule.status = 'cancelled'
-            schedule.notes = f"Cancelled due to physical stock arrival already recorded by OIC on {permit_no}"
+            schedule.notes = f"Cancelled due to physical stock arrival already recorded by OIC / Distributor on {permit_no}"
             schedule.save(update_fields=['status', 'notes', 'updated_at'])
             continue
 
@@ -2287,13 +2315,33 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                 if not sched.permit_number and ref_no.lower() in pending_requisition_refs:
                     continue
 
-                # Skip if action has already been taken on this permit (e.g. physical stock arrival recorded)
+                # Skip if cancellation is taken / applied / approved on this permit
+                has_cancellation = IMFLCancellation.objects.filter(
+                    Q(distributor_permit=dp) |
+                    Q(cancelled_permit_number__icontains=permit_num) |
+                    Q(permit_wise_details__icontains=permit_num)
+                ).exclude(status__icontains='reject').exclude(current_stage__name__icontains='reject').exists()
+                if has_cancellation:
+                    continue
+
+                # Skip if action has already been taken on this permit (physical stock arrival recorded or submitted)
                 has_arrival = (
                     IMFLArrival.objects.filter(permit_number__iexact=permit_num).exists() or
-                    IMFLBrandWarehouse.objects.filter(permit_number__iexact=permit_num).exists()
+                    IMFLBrandWarehouse.objects.filter(permit_number__iexact=permit_num).exists() or
+                    IMFLCasesProcessed.objects.filter(
+                        Q(permit_number__iexact=permit_num) |
+                        Q(distributor_permit__reference_no__iexact=permit_num) |
+                        Q(distributor_permit=dp)
+                    ).exclude(status__iexact='rejected').exists()
                 )
                 if not has_arrival and not sched.permit_number:
-                    has_arrival = IMFLArrival.objects.filter(distributor_permit=dp).exists() or IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists()
+                    has_arrival = (
+                        IMFLArrival.objects.filter(distributor_permit=dp).exists() or
+                        IMFLBrandWarehouse.objects.filter(distributor_permit=dp).exists() or
+                        IMFLArrival.objects.filter(permit_number__icontains=str(dp.reference_no)).exists() or
+                        IMFLBrandWarehouse.objects.filter(permit_number__icontains=str(dp.reference_no)).exists() or
+                        IMFLCasesProcessed.objects.filter(distributor_permit=dp).exclude(status__iexact='rejected').exists()
+                    )
                 if has_arrival:
                     continue
 
@@ -2610,6 +2658,20 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
             status=status_name
         )
 
+        # Cancel any pending or processed revalidation activation schedules for this permit/requisition
+        if distributor_permit and target_permit_no:
+            for p in str(target_permit_no).split(','):
+                p_trim = p.strip()
+                if p_trim:
+                    IMFLRevalidationActivationSchedule.objects.filter(
+                        distributor_permit=distributor_permit,
+                        permit_number=p_trim
+                    ).update(status=IMFLRevalidationActivationSchedule.STATUS_CANCELLED)
+        elif distributor_permit:
+            IMFLRevalidationActivationSchedule.objects.filter(
+                distributor_permit=distributor_permit
+            ).update(status=IMFLRevalidationActivationSchedule.STATUS_CANCELLED)
+
         try:
             total_import_fee = Decimal('0.00')
             total_add_ed = Decimal('0.00')
@@ -2881,6 +2943,18 @@ class IMFLCasesProcessedViewSet(viewsets.ModelViewSet):
             status='under_review',
             submitted_at=timezone.now()
         )
+
+        # Cancel any pending or processed revalidation activation schedule for this permit / distributor permit
+        target_pno = str(serializer.validated_data.get('permit_number') or self.request.data.get('permit_number') or '').strip()
+        if dp and target_pno:
+            IMFLRevalidationActivationSchedule.objects.filter(
+                distributor_permit=dp,
+                permit_number=target_pno
+            ).update(status=IMFLRevalidationActivationSchedule.STATUS_CANCELLED)
+        elif dp:
+            IMFLRevalidationActivationSchedule.objects.filter(
+                distributor_permit=dp
+            ).update(status=IMFLRevalidationActivationSchedule.STATUS_CANCELLED)
 
     @action(detail=True, methods=['post'], url_path='action')
     def action(self, request, pk=None):
