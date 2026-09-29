@@ -14,6 +14,7 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
     is_terminated = serializers.SerializerMethodField()
     rejection_reason = serializers.SerializerMethodField()
     status_group = serializers.SerializerMethodField()
+    transactions = serializers.SerializerMethodField()
 
     class Meta:
         model = LicenseApplication
@@ -39,7 +40,22 @@ class LicenseApplicationSerializer(serializers.ModelSerializer):
             "is_terminated",
             "rejection_reason",
             "status_group",
+            "transactions",
         ]
+
+    def get_transactions(self, obj):
+        try:
+            from django.contrib.contenttypes.models import ContentType
+            from auth.workflow.models import Transaction as WorkflowTransaction
+            from auth.workflow.serializers import WorkflowTransactionSerializer
+            ct = ContentType.objects.get_for_model(obj)
+            txs = WorkflowTransaction.objects.filter(
+                content_type=ct,
+                object_id=str(obj.pk)
+            ).order_by("timestamp")
+            return WorkflowTransactionSerializer(txs, many=True).data
+        except Exception:
+            return []
 
     def get_is_terminated(self, obj):
         stage = getattr(obj, "current_stage", None)
