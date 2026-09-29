@@ -222,22 +222,17 @@ def dashboard_counts(request):
     approved_stages = set(stage_sets['approved'])
 
     pending_count = all_qs.filter(current_stage__name__in=pending_stages).count()
+    acted_qs = all_qs.annotate(_acted_by_role=acted_by_role).filter(_acted_by_role=True)
     approved_count = (
-        all_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True))
-        .annotate(_acted_by_role=acted_by_role)
-        .filter(_acted_by_role=True)
+        acted_qs.exclude(current_stage__name__in=pending_stages | role_objection_stages | role_rejected_stages)
         .count()
     )
     rejected_count = (
-        all_qs.filter(current_stage__name__in=role_rejected_stages)
-        .annotate(_acted_by_role=acted_by_role)
-        .filter(_acted_by_role=True)
+        acted_qs.filter(current_stage__name__in=role_rejected_stages)
         .count()
     )
     objection_count = (
-        all_qs.filter(current_stage__name__in=role_objection_stages)
-        .annotate(_acted_by_role=acted_by_role)
-        .filter(_acted_by_role=True)
+        acted_qs.filter(current_stage__name__in=role_objection_stages)
         .count()
     )
 
@@ -291,12 +286,12 @@ def application_group(request):
         })
 
     if role in ['site_admin', 'site_administrator', 'single_window', 'secretary', 'super_admin']:
-        
         applied_stages = set(stage_sets['initial'])
         objection_stages = set(stage_sets['objection'])
         approved_stages = set(stage_sets['approved'])
         rejected_stages = set(stage_sets['rejected'])
-        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages
+        payment_stages = set(stage_sets.get('payment', []))
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
 
         return Response({
             "applied": CompanyRegistrationSerializer(
@@ -313,6 +308,9 @@ def application_group(request):
             ).data,
             "rejected": CompanyRegistrationSerializer(
                 all_qs.filter(current_stage__name__in=rejected_stages), many=True
+            ).data,
+            "awaiting_payment": CompanyRegistrationSerializer(
+                all_qs.filter(current_stage__name__in=payment_stages), many=True
             ).data
         })
 
@@ -336,27 +334,21 @@ def application_group(request):
         pending_stages = set(role_stage_names) - role_objection_stages
         role_rejected_stages = set(stage_sets['rejected'])
 
-        approved_stages = set(stage_sets['approved'])
-        approved_qs = (
-            all_qs.filter(Q(current_stage__name__in=approved_stages) | Q(is_approved=True))
-            .annotate(_acted_by_role=acted_by_role)
-            .filter(_acted_by_role=True)
-        )
-        rejected_qs = (
-            all_qs.filter(current_stage__name__in=role_rejected_stages)
-            .annotate(_acted_by_role=acted_by_role)
-            .filter(_acted_by_role=True)
-        )
-        objection_qs = (
-            all_qs.filter(current_stage__name__in=role_objection_stages)
-            .annotate(_acted_by_role=acted_by_role)
-            .filter(_acted_by_role=True)
-        )
+        pending_qs = all_qs.filter(current_stage__name__in=pending_stages)
+        acted_qs = all_qs.annotate(_acted_by_role=acted_by_role).filter(_acted_by_role=True)
+        approved_qs = acted_qs.exclude(current_stage__name__in=pending_stages | role_objection_stages | role_rejected_stages)
+        rejected_qs = acted_qs.filter(current_stage__name__in=role_rejected_stages)
+        objection_qs = acted_qs.filter(current_stage__name__in=role_objection_stages)
+
+        applied_pks = set(pending_qs.values_list('pk', flat=True)) | set(acted_qs.values_list('pk', flat=True))
+        applied_qs = all_qs.filter(pk__in=applied_pks)
 
         return Response({
-            "applied": [],
+            "applied": CompanyRegistrationSerializer(
+                applied_qs, many=True
+            ).data,
             "pending": CompanyRegistrationSerializer(
-                all_qs.filter(current_stage__name__in=pending_stages), many=True
+                pending_qs, many=True
             ).data,
             "objection": CompanyRegistrationSerializer(
                 objection_qs, many=True
