@@ -252,7 +252,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             'revalidation_date': now,
             'status': 'IMPORT PERMIT EXTENDS 45 DAYS INVALID',
             'status_code': 'RV_00',
-            'revalidation_br_amount': str(self.REVALIDATION_FEE_AMOUNT),
+            'revalidation_br_amount': str((self.REVALIDATION_FEE_AMOUNT * Decimal(max(1, eligible_count))).quantize(Decimal('0.01'))),
             'details_permits_number': eligible_permits,
             'distillery_name': requisition.lifted_from_distillery_name or requisition.lifted_from or '',
         }
@@ -475,14 +475,23 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
         from django.db.models import Q
 
         try:
-            amount = Decimal(
-                str(
-                    getattr(revalidation, 'revalidation_br_amount', None)
-                    or self.REVALIDATION_FEE_AMOUNT
-                )
-            )
+            eligible_count = int(getattr(revalidation, 'requisiton_number_of_permits', 1) or 1)
+            permits_str = str(getattr(revalidation, 'details_permits_number', '') or '').strip()
+            if permits_str:
+                parsed_tokens = [p.strip() for p in permits_str.split(',') if p.strip()]
+                if len(parsed_tokens) > 0:
+                    eligible_count = max(eligible_count, len(parsed_tokens))
+            expected_fee = (self.REVALIDATION_FEE_AMOUNT * Decimal(max(1, eligible_count))).quantize(Decimal('0.01'))
+
+            raw_amount = getattr(revalidation, 'revalidation_br_amount', None)
+            if raw_amount is not None:
+                amount = Decimal(str(raw_amount))
+                if amount < expected_fee:
+                    amount = expected_fee
+            else:
+                amount = expected_fee
         except Exception:
-            amount = self.REVALIDATION_FEE_AMOUNT
+            amount = (self.REVALIDATION_FEE_AMOUNT * Decimal(max(1, getattr(revalidation, 'requisiton_number_of_permits', 1) or 1))).quantize(Decimal('0.01'))
         if amount <= 0:
             return {'debited': False, 'reason': 'zero_amount'}
 
@@ -735,7 +744,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
                     revalidation_date=s.activation_due_at,
                     status='IMPORT PERMIT EXTENDS 45 DAYS ',
                     status_code='RV_00',
-                    revalidation_br_amount=self.REVALIDATION_FEE_AMOUNT,
+                    revalidation_br_amount=(self.REVALIDATION_FEE_AMOUNT * Decimal(max(1, eligible_count))).quantize(Decimal('0.01')),
                     details_permits_number=eligible_permits,
                     licensee_id=s.requisition.licensee_id,
                     distillery_name=s.requisition.lifted_from_distillery_name or s.requisition.lifted_from or '',
@@ -1006,7 +1015,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
             'revalidation_date': now,
             'status': 'IMPORT PERMIT EXTENDS 45 DAYS INVALID',
             'status_code': 'RV_00',
-            'revalidation_br_amount': str(self.REVALIDATION_FEE_AMOUNT),
+            'revalidation_br_amount': str((self.REVALIDATION_FEE_AMOUNT * Decimal(max(1, eligible_count))).quantize(Decimal('0.01'))),
             'details_permits_number': eligible_permits,
             'distillery_name': requisition.lifted_from_distillery_name or requisition.lifted_from or '',
         }
