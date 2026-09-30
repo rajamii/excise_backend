@@ -4353,9 +4353,9 @@ class IMFLHologramDetailsViewSet(viewsets.ModelViewSet):
         elif is_officer and user.username.lower().startswith('do'):
             is_dist_oic = True
 
-        if not (is_dist or is_dist_oic or is_admin):
+        if not (is_dist or is_dist_oic or is_admin or is_officer):
             return Response({
-                'error': 'Access restricted. This overview is only accessible to Distributor users and their mapped OIC officer.'
+                'error': 'Access restricted. This overview is only accessible to Distributor users, officers, and admin.'
             }, status=status.HTTP_403_FORBIDDEN)
 
         # Resolve Distributor & Mapped OIC Details

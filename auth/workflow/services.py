@@ -1081,6 +1081,7 @@ class WorkflowService:
             ("distributor_permit", "IMFLRevalidation", "reference_no"),
             ("distributor_permit", "IMFLCancellation", "reference_no"),
             ("distributor_permit", "IMFLHologramProcurement", "ref_no"),
+            ("hologram", "HologramProcurement", "ref_no"),
             ("ena_requisition_details", "EnaRequisitionDetail", "application_no"),
         ]
 
