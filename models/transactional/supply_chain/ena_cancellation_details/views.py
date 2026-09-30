@@ -62,7 +62,7 @@ class EnaCancellationDetailViewSet(viewsets.ModelViewSet):
     queryset = EnaCancellationDetail.objects.all().order_by('-created_at')
     serializer_class = EnaCancellationDetailSerializer
     permission_classes = [permissions.IsAuthenticated]
-    CANCELLATION_FEE_AMOUNT = Decimal('1000.00')
+    CANCELLATION_FEE_AMOUNT = Decimal('5000.00')
 
     def _is_licensee_user(self, user) -> bool:
         token = ''.join(ch for ch in str(getattr(getattr(user, 'role', None), 'name', '') or '').lower() if ch.isalnum())

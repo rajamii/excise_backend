@@ -99,7 +99,7 @@ class EnaRevalidationDetailViewSet(viewsets.ModelViewSet):
     serializer_class = EnaRevalidationDetailSerializer
     permission_classes = [IsAuthenticated]
 
-    REVALIDATION_FEE_AMOUNT = Decimal('1000.00')
+    REVALIDATION_FEE_AMOUNT = Decimal('5000.00')
 
     def get_object(self):
         lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
