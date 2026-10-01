@@ -5,9 +5,9 @@ import json
 import os
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-KEY_ID = "SSarkHgNtCqz"
-ENCRYPTION_KEY = "heSf1EoYL5f58vlhgTOWiEK9NqWhn0i2"
-SIGNING_KEY = "YXIpsQAfhNSJgm22Gcb3YVSkNFIVN9xz"
+# KEY_ID = "SSarkHgNtCqz"
+# ENCRYPTION_KEY = "heSf1EoYL5f58vlhgTOWiEK9NqWhn0i2"
+# SIGNING_KEY = "YXIpsQAfhNSJgm22Gcb3YVSkNFIVN9xz"
 
 
 def _base64url_encode(data: bytes) -> str:
@@ -22,11 +22,10 @@ def _base64url_decode(data: str) -> bytes:
 def generate_billdesk_nested_jose(
     client_id: str,
     payload_dict: dict,
-    encryption_key: str = ENCRYPTION_KEY,
-    signing_key: str = SIGNING_KEY,
-    key_id: str = KEY_ID,
+    encryption_key: str,
+    signing_key: str,
+    key_id: str,
 ) -> str:
-    """Step 1 & 2: Encrypt JSON to JWE (alg: dir, enc: A256GCM)[cite: 3]."""
     jwe_header = {
         "alg": "dir",
         "enc": "A256GCM",
@@ -51,7 +50,7 @@ def generate_billdesk_nested_jose(
     # JWE format: header.encrypted_key.iv.ciphertext.tag (encrypted_key is empty for "dir")
     jwe_token = f"{encoded_jwe_header}..{_base64url_encode(iv)}.{_base64url_encode(ciphertext)}.{_base64url_encode(tag)}"
 
-    # Step 3: Sign the JWE token to create JWS (alg: HS256)[cite: 1, 3]
+    # Sign the JWE token to create JWS (alg: HS256)
     jws_header = {
         "alg": "HS256",
         "kid": key_id,
@@ -74,10 +73,9 @@ def generate_billdesk_nested_jose(
 
 def decrypt_and_verify_billdesk_response(
     response_jwt: str,
-    encryption_key: str = ENCRYPTION_KEY,
-    signing_key: str = SIGNING_KEY,
+    encryption_key: str,
+    signing_key: str,
 ) -> dict:
-    """Verifies the outer JWS signature and decrypts the inner JWE payload[cite: 3]."""
     parts = response_jwt.strip().split(".")
 
     # Handle direct JWS (3 parts)
@@ -96,7 +94,7 @@ def decrypt_and_verify_billdesk_response(
 
         raw_payload = _base64url_decode(payload_b64).decode("utf-8")
 
-        # If the inner payload is JWE (5 parts)[cite: 3]
+        # If the inner payload is JWE (5 parts)
         if raw_payload.count(".") == 4:
             return _decrypt_jwe_string(raw_payload, encryption_key)
         return json.loads(raw_payload)

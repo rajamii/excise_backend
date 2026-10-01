@@ -99,13 +99,14 @@ INSTALLED_APPS = [
     'models.transactional.supply_chain.ena_requisition_details',  
     'models.transactional.supply_chain.ena_cancellation_details',
     'models.transactional.supply_chain.hologram',
+    'models.transactional.secretary',
     'models.transactional.supply_chain.brand_warehouse',
     'models.transactional.supply_chain.bulk_spirit_usage',
     # auth models 
     'auth.roles',
     'auth.user',
     'auth.workflow',
-    'models.transactional.secretary'
+    
 ]
 
 MIDDLEWARE = [
@@ -162,9 +163,9 @@ REST_FRAMEWORK = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'server_sems_db',       # Database name
+        'NAME': 'sems_db',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'sameer123',  # Your PostgreSQL password
+        'PASSWORD': 'postgres',  # Your PostgreSQL password
         'HOST': 'localhost',        
         'PORT': '5432',             # Default PostgreSQL port
         'CONN_MAX_AGE': 300,         # Don't reuse connections — avoids aborted transaction state
@@ -263,13 +264,18 @@ SIMPLE_JWT = {
 # Payment gateway (BillDesk) defaults for local/UAT.
 BILLDESK_GATEWAY_URL = os.getenv(
     "BILLDESK_GATEWAY_URL",
-    "https://uat1.billdesk.com/u2/payments/ve1_2/orders/create",
+    # "https://uat1.billdesk.com/u2/payments/ve1_2/orders/create",
+    "https://api.billdesk.com/payments/ve1_2/orders/create"
 ).strip()
+
+BILLDESK_KEY_ID = os.getenv("BILLDESK_KEY_ID", "SZ1EfdGfhanq").strip()
 
 BILLDESK_ENCRYPTION_KEY = os.getenv(
     "BILLDESK_ENCRYPTION_KEY",
-    "YXIpsQAfhNSJgm22Gcb3YVSkNFIVN9xz"
+    "x9BHUkz44CEsO5wGDCpMixXuhjRz06wV"
     ).strip()
+
+BILLDESK_SIGNING_KEY = os.getenv("BILLDESK_SIGNING_KEY", "dLupNFaP8j6EsRw0JiTjxDzDciVTp1El").strip()
 
 # Where Django redirects the user after BillDesk response is validated.
 PAYMENT_GATEWAY_FRONTEND_SUCCESS_URL = os.getenv(
