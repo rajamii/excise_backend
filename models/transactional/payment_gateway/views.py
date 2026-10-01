@@ -256,7 +256,9 @@ def _decode_jws_payload(jws_token: str) -> dict:
 def _create_billdesk_order(
     merchant_id,
     client_id,
-    secret_key,
+    encryption_key,
+    signing_key,
+    key_id,
     tx_id,
     amount_str,
     return_url,
@@ -318,7 +320,13 @@ def _create_billdesk_order(
       },
   }
 
-  nested_jose_token = generate_billdesk_nested_jose(client_id, payload)
+  nested_jose_token = generate_billdesk_nested_jose(
+        client_id=client_id, 
+        payload_dict=payload,
+        encryption_key=encryption_key,
+        signing_key=signing_key,
+        key_id=key_id
+    )
 
   headers = {
         "Content-Type": "application/jose",
@@ -332,31 +340,42 @@ def _create_billdesk_order(
   response = requests.post(api_url, data=nested_jose_token, headers=headers)
 
   if response.status_code == 200:
-    resp_data = decrypt_and_verify_billdesk_response(response.text)
-    bdorderid = resp_data.get("bdorderid")
-    auth_token = None
 
-    for link in resp_data.get("links", []):
-      if link.get("rel") == "redirect":
-        auth_token = link.get("headers", {}).get("authorization")
-        break
+        resp_data = decrypt_and_verify_billdesk_response(
+            response.text,
+            encryption_key=encryption_key,
+            signing_key=signing_key,
+        )
+        bdorderid = resp_data.get("bdorderid")
+        auth_token = None
 
-    return {
-        "success": True,
-        "bdorderid": bdorderid,
-        "rdata": auth_token,
-        "authorization": auth_token,
-        "merchant_id": merchant_id,
-        "request_string": nested_jose_token,
-    }
+        for link in resp_data.get("links", []):
+            if link.get("rel") == "redirect":
+                auth_token = link.get("headers", {}).get("authorization")
+                break
+
+        return {
+            "success": True,
+            "bdorderid": bdorderid,
+            "rdata": auth_token,
+            "authorization": auth_token,
+            "merchant_id": merchant_id,
+            "request_string": nested_jose_token,
+        }
+    
   else:
-    logger.error(f"BillDesk Create Order Failed: {response.text}")
-    error_details = response.text
-    try:
-      error_details = decrypt_and_verify_billdesk_response(response.text)
-    except Exception:
-      pass
-    return {"success": False, "error": error_details}
+        logger.error(f"BillDesk Create Order Failed: {response.text}")
+        error_details = response.text
+        try:
+            # Pass keys in the error branch as well:
+            error_details = decrypt_and_verify_billdesk_response(
+                response.text,
+                encryption_key=encryption_key,
+                signing_key=signing_key,
+            )
+        except Exception:
+            pass
+        return {"success": False, "error": error_details}
 
 def _build_full_name_from_user(user) -> str:
     if not user:
@@ -488,10 +507,15 @@ def billdesk_initiate_wallet_recharge(request):
 
     merchant_id = str(gateway.merchantid or "").strip()
     security_id = str(gateway.securityid or "").strip()
+
     encryption_key = str(getattr(settings, "BILLDESK_ENCRYPTION_KEY", "") or getattr(gateway, "encryption_key", "") or "").strip()
-    if not merchant_id or not security_id or not encryption_key:
+    signing_key = str(getattr(settings, "BILLDESK_SIGNING_KEY", "")).strip()
+    key_id = str(getattr(settings, "BILLDESK_KEY_ID", "")).strip()
+    
+    # Validate all required keys are present
+    if not merchant_id or not security_id or not encryption_key or not signing_key or not key_id:
         return Response(
-            {"detail": "Billdesk gateway config is missing merchantid/securityid/encryption_key."},
+            {"detail": "Billdesk gateway config is missing required fields."},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
@@ -512,7 +536,9 @@ def billdesk_initiate_wallet_recharge(request):
     api_result = _create_billdesk_order(
         merchant_id=merchant_id,
         client_id=client_id,
-        secret_key=encryption_key,
+        encryption_key=encryption_key,
+        signing_key=signing_key,
+        key_id=key_id,
         tx_id=transaction_id,
         amount_str=amount_str,
         return_url=return_url,
@@ -672,9 +698,13 @@ def billdesk_initiate_license_fee(request):
 
     merchant_id = str(gateway.merchantid or "").strip()
     security_id = str(gateway.securityid or "").strip()
+    
     encryption_key = str(getattr(settings, "BILLDESK_ENCRYPTION_KEY", "") or getattr(gateway, "encryption_key", "") or "").strip()
-    if not merchant_id or not security_id or not encryption_key:
-        return Response({"detail": "Billdesk gateway config is missing merchantid/securityid/encryption_key."}, status=500)
+    signing_key = str(getattr(settings, "BILLDESK_SIGNING_KEY", "")).strip()
+    key_id = str(getattr(settings, "BILLDESK_KEY_ID", "")).strip()
+    
+    if not merchant_id or not security_id or not encryption_key or not signing_key or not key_id:
+        return Response({"detail": "Billdesk gateway config is missing required fields."}, status=500)
 
     amount_str = f"{amount:.2f}"
     
@@ -691,7 +721,9 @@ def billdesk_initiate_license_fee(request):
     api_result = _create_billdesk_order(
         merchant_id=merchant_id,
         client_id=merchant_id.lower(),
-        secret_key=encryption_key,
+        encryption_key=encryption_key,
+        signing_key=signing_key,
+        key_id=key_id,
         tx_id=transaction_id,
         amount_str=amount_str,
         return_url=return_url,
@@ -868,9 +900,13 @@ def billdesk_initiate_security_deposit(request):
 
     merchant_id = str(gateway.merchantid or "").strip()
     security_id = str(gateway.securityid or "").strip()
+    
     encryption_key = str(getattr(settings, "BILLDESK_ENCRYPTION_KEY", "") or getattr(gateway, "encryption_key", "") or "").strip()
-    if not merchant_id or not security_id or not encryption_key:
-        return Response({"detail": "Billdesk gateway config is missing merchantid/securityid/encryption_key."}, status=500)
+    signing_key = str(getattr(settings, "BILLDESK_SIGNING_KEY", "")).strip()
+    key_id = str(getattr(settings, "BILLDESK_KEY_ID", "")).strip()
+    
+    if not merchant_id or not security_id or not encryption_key or not signing_key or not key_id:
+        return Response({"detail": "Billdesk gateway config is missing required fields."}, status=500)
 
     amount_str = f"{amount:.2f}"
     
@@ -887,7 +923,9 @@ def billdesk_initiate_security_deposit(request):
     api_result = _create_billdesk_order(
         merchant_id=merchant_id,
         client_id=merchant_id.lower(),
-        secret_key=encryption_key,
+        encryption_key=encryption_key,
+        signing_key=signing_key,
+        key_id=key_id,
         tx_id=transaction_id,
         amount_str=amount_str,
         return_url=return_url,
@@ -1071,10 +1109,14 @@ def billdesk_initiate_new_license_application_fee(request):
 
     merchant_id = str(gateway.merchantid or "").strip()
     security_id = str(gateway.securityid or "").strip()
+    
     encryption_key = str(getattr(settings, "BILLDESK_ENCRYPTION_KEY", "") or getattr(gateway, "encryption_key", "") or "").strip()
-    if not merchant_id or not security_id or not encryption_key:
+    signing_key = str(getattr(settings, "BILLDESK_SIGNING_KEY", "")).strip()
+    key_id = str(getattr(settings, "BILLDESK_KEY_ID", "")).strip()
+    
+    if not merchant_id or not security_id or not encryption_key or not signing_key or not key_id:
         return Response(
-            {"detail": "Billdesk gateway config is missing merchantid/securityid/encryption_key."},
+            {"detail": "Billdesk gateway config is missing required fields."},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
     amount_str = f"{amount:.2f}"
@@ -1092,7 +1134,9 @@ def billdesk_initiate_new_license_application_fee(request):
     api_result = _create_billdesk_order(
         merchant_id=merchant_id,
         client_id=merchant_id.lower(),
-        secret_key=encryption_key,
+        encryption_key=encryption_key,
+        signing_key=signing_key,
+        key_id=key_id,
         tx_id=transaction_id,
         amount_str=amount_str,
         return_url=return_url,
@@ -1244,9 +1288,17 @@ def _ensure_new_license_app_submitted(app, user=None, remarks="Application fee p
 
 
 def _process_billdesk_transaction(transaction_response: str) -> bool:
-    # 1. Decrypt and verify the incoming SYM-JOSE response
+
+    gateway = PaymentGatewayParameters.objects.filter(is_active=True, payment_gateway_name__iexact="Billdesk").order_by("sl_no").first()
+    encryption_key = str(getattr(settings, "BILLDESK_ENCRYPTION_KEY", "") or getattr(gateway, "encryption_key", "") or "").strip()
+    signing_key = str(getattr(settings, "BILLDESK_SIGNING_KEY", "")).strip()
+
     try:
-        resp_data = decrypt_and_verify_billdesk_response(transaction_response)
+        resp_data = decrypt_and_verify_billdesk_response(
+            transaction_response,
+            encryption_key=encryption_key,
+            signing_key=signing_key
+        )
         checksum_ok = True
     except Exception as e:
         logger.critical(f"SECURITY ALERT: BillDesk JWS/JWE Verification Failed: {e}")
