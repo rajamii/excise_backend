@@ -673,7 +673,44 @@ class CurrentUserAPI(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        user = request.user
+        # Load the user with all related objects in a single optimised query to
+        # avoid the N+1 problem that previously fired 7-9 separate DB round-trips
+        # on every /me/ call (which happens on every login and page refresh).
+        try:
+            user = (
+                CustomUser.objects
+                .select_related(
+                    'role',
+                    'district',
+                    'subdivision',
+                    'created_by__role',
+                    'licensee_profile',
+                    'oic_assignment',
+                )
+                .annotate(
+                    has_active_license_annotated=(
+                        Exists(
+                            NewLicenseApplication.objects.filter(
+                                applicant=OuterRef('pk'),
+                                current_stage__name='approved',
+                            )
+                        )
+                        | Exists(
+                            LicenseApplication.objects.filter(
+                                applicant=OuterRef('pk'),
+                                current_stage__name='approved',
+                            )
+                        )
+                    )
+                )
+                .get(pk=request.user.pk)
+            )
+        except CustomUser.DoesNotExist:
+            return Response(
+                {'detail': 'User not found.'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
         if not user.is_active:
             return Response(
                 {'detail': 'Your account is inactive. Contact administrator for login.'},
