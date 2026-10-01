@@ -2481,7 +2481,7 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
         )
         invalidate_dashboard_counts_cache()
 
-        # Debit Rs.1000 revalidation fee per permit from Excise wallet
+        # Debit Rs.5000 revalidation fee per permit from Excise wallet
         try:
             from decimal import Decimal
             permit_numbers_in_details = list({
@@ -2490,7 +2490,7 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                 if isinstance(p, dict) and p.get('permit_number')
             }) if p_details else []
             num_permits = len(permit_numbers_in_details) or 1
-            revalidation_fee = Decimal('1000.00') * num_permits
+            revalidation_fee = Decimal('5000.00') * num_permits
 
             user_obj = self.request.user
             dist_applicant = getattr(distributor_permit, 'applicant', None) or user_obj
@@ -2726,14 +2726,14 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
                     total_add_ed += (add_rate * cases)
                     total_edu_cess += (cess_rate * cases)
 
-            # Cancellation fee = Rs.1000 per permit being cancelled
+            # Cancellation fee = Rs.5000 per permit being cancelled
             permit_numbers_in_details = list({
                 str(p.get('permit_number', '')).strip()
                 for p in p_details
                 if isinstance(p, dict) and p.get('permit_number')
             }) if p_details else []
             num_permits = len(permit_numbers_in_details) or 1
-            cancellation_fee = Decimal('1000.00') * num_permits
+            cancellation_fee = Decimal('5000.00') * num_permits
 
             user_obj = self.request.user
             dist_applicant = getattr(distributor_permit, 'applicant', None) or user_obj
@@ -2757,7 +2757,7 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
             licensee_id = str(wb.licensee_id).strip() if (wb and wb.licensee_id) else raw_licensee_id
             from models.transactional.wallet.wallet_service import debit_wallet_balance, credit_wallet_balance
 
-            # 1. Debit Cancellation Processing Fee (Rs.1000 per permit) from Excise wallet
+            # 1. Debit Cancellation Processing Fee (Rs.5000 per permit) from Excise wallet
             debit_wallet_balance(
                 transaction_id=f"PAY-EXCISE-CAN-FEE-{ref_no}",
                 licensee_id=licensee_id,
