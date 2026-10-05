@@ -1149,7 +1149,7 @@ def secretary_revenue_overview(request):
     - search: search query string for entity, license, reference, etc.
     """
     from datetime import date
-    from models.transactional.wallet.models import WalletBalance, WalletTransaction
+    from models.transactional.wallet.models import WalletBalance, WalletTransaction, SecurityDepositRecord
     from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
     from django.db.models import Count, Max, Sum, Q
 
@@ -1270,7 +1270,7 @@ def secretary_revenue_overview(request):
             Q(payment_status__iexact='completed') |
             Q(payment_status__isnull=True)
         )
-        dr_filter = Q(entry_type__iexact='DR') | Q(transaction_type__iexact='debit') | Q(transaction_type__iexact='payment')
+        dr_filter = Q(entry_type__iexact='DR') | Q(transaction_type__iexact='debit') | Q(transaction_type__iexact='payment') | Q(transaction_type__iexact='utilization')
 
         tx_dr_qs = WalletTransaction.objects.filter(successful_wallet_payment, dr_filter)
         if fy_start and fy_end:
@@ -1308,14 +1308,13 @@ def secretary_revenue_overview(request):
                 Q(remarks__icontains=search_param)
             )
 
-        tx_debits = (
-            tx_dr_qs
-            .values('wallet_type_id')
-            .annotate(total_debit=Sum('amount'))
-        )
-        tx_debits_map = {str(row['wallet_type_id'] or '').lower().strip(): as_float(row['total_debit']) for row in tx_debits}
+        tx_debits_hoa = tx_dr_qs.values('head_of_account').annotate(total_debit=Sum('amount'))
+        tx_debits_hoa_map = {str(row['head_of_account'] or '').strip(): as_float(row['total_debit']) for row in tx_debits_hoa}
 
-        # 5. Wallet Balances aggregate per wallet_type_id
+        tx_debits_wtype = tx_dr_qs.values('wallet_type_id').annotate(total_debit=Sum('amount'))
+        tx_debits_wtype_map = {str(row['wallet_type_id'] or '').lower().strip(): as_float(row['total_debit']) for row in tx_debits_wtype}
+
+        # 5. Wallet Balances aggregate mapped by BOTH head_of_account AND wallet_type_id
         bal_qs = WalletBalance.objects.all()
         if category_param and category_param.lower() != 'all':
             c_low = category_param.lower()
@@ -1349,7 +1348,19 @@ def secretary_revenue_overview(request):
                 Q(user_id__icontains=search_param)
             )
 
-        balance_rows = (
+        balance_hoa_rows = (
+            bal_qs
+            .values('head_of_account')
+            .annotate(
+                total_credit=Sum('total_credit'),
+                total_debit=Sum('total_debit'),
+                current_balance=Sum('current_balance'),
+                accounts_count=Count('wallet_balance_id')
+            )
+        )
+        balance_hoa_map = {str(row['head_of_account'] or '').strip(): row for row in balance_hoa_rows}
+
+        balance_wtype_rows = (
             bal_qs
             .values('wallet_type_id')
             .annotate(
@@ -1359,9 +1370,37 @@ def secretary_revenue_overview(request):
                 accounts_count=Count('wallet_balance_id')
             )
         )
-        balance_map = {str(row['wallet_type_id'] or '').lower().strip(): row for row in balance_rows}
+        balance_wtype_map = {str(row['wallet_type_id'] or '').lower().strip(): row for row in balance_wtype_rows}
 
-        # 6. Standard 6 Revenue Heads Specification
+        # 6. Security Deposit (FD) Record Table with filters
+        sd_qs = SecurityDepositRecord.objects.all()
+        if fy_start and fy_end:
+            sd_qs = sd_qs.filter(
+                Q(payment_date__date__gte=fy_start, payment_date__date__lte=fy_end) |
+                Q(created_at__date__gte=fy_start, created_at__date__lte=fy_end)
+            )
+        if month_num is not None:
+            sd_qs = sd_qs.filter(
+                Q(payment_date__month=month_num) |
+                Q(created_at__month=month_num)
+            )
+        if search_param:
+            sd_qs = sd_qs.filter(
+                Q(applicant_name__icontains=search_param) |
+                Q(establishment_name__icontains=search_param) |
+                Q(username__icontains=search_param) |
+                Q(applicant_user_id__icontains=search_param) |
+                Q(license_id__icontains=search_param) |
+                Q(application_id__icontains=search_param) |
+                Q(reference_no__icontains=search_param) |
+                Q(transaction_id__icontains=search_param)
+            )
+
+        sd_total_amount = as_float(sd_qs.aggregate(total=Sum('amount'))['total'])
+        sd_active_balance = as_float(sd_qs.filter(status__in=['PAID', 'ACTIVE', 'PARTIALLY_REFUNDED']).aggregate(total=Sum('balance_amount'))['total']) or sd_total_amount
+        sd_count = sd_qs.count()
+
+        # 7. Standard 6 Revenue Heads Specification
         STANDARD_HEADS = [
             {
                 'key': 'excise',
@@ -1404,21 +1443,30 @@ def secretary_revenue_overview(request):
         final_revenue_heads = []
         for item in STANDARD_HEADS:
             k = item['key']
-            bal_info = balance_map.get(k, {})
+            hoa = item['head_of_account']
+
+            bal_info = balance_hoa_map.get(hoa) or balance_hoa_map.get('non' if k == 'security_deposit' else '') or balance_wtype_map.get(k, {})
             b_credit = as_float(bal_info.get('total_credit', 0))
             b_curr = as_float(bal_info.get('current_balance', 0))
+            b_debit_acc = as_float(bal_info.get('total_debit', 0))
             b_count = int(bal_info.get('accounts_count', 0))
 
-            tx_debit = tx_debits_map.get(k, 0.0)
+            tx_debit = tx_debits_hoa_map.get(hoa) or tx_debits_wtype_map.get(k, 0.0)
 
             if k == 'license_fee':
-                paid_amt = billdesk_license_fee_total or tx_debit
+                paid_amt = billdesk_license_fee_total or tx_debit or b_debit_acc
                 source = 'billdesk_success_and_wallet_transactions'
             elif k == 'security_deposit':
-                paid_amt = billdesk_security_deposit_total or tx_debit
-                source = 'billdesk_sikfdr_and_wallet_security'
+                if sd_count > 0:
+                    paid_amt = sd_total_amount
+                    b_curr = sd_active_balance or b_curr
+                    b_count = sd_count
+                    source = 'security_deposit_record_table'
+                else:
+                    paid_amt = billdesk_security_deposit_total or tx_debit or b_debit_acc
+                    source = 'billdesk_sikfdr_and_wallet_security'
             else:
-                paid_amt = tx_debit
+                paid_amt = tx_debit or b_debit_acc
                 source = 'wallet_transactions_dr'
 
             head_entry = {
@@ -1436,11 +1484,11 @@ def secretary_revenue_overview(request):
                 head_entry['billdesk_paid_total'] = round(billdesk_license_fee_total, 2)
             elif k == 'security_deposit':
                 head_entry['fd_saved_amount'] = round(paid_amt, 2)
-                head_entry['billdesk_paid_total'] = round(billdesk_security_deposit_total, 2)
+                head_entry['billdesk_paid_total'] = round(billdesk_security_deposit_total or sd_total_amount, 2)
 
             final_revenue_heads.append(head_entry)
 
-        # 7. Top Contributors (Big Accounts) with filters
+        # 8. Top Contributors (Big Accounts) with filters
         user_bal_qs = bal_qs
         user_rows = (
             user_bal_qs
@@ -1482,69 +1530,97 @@ def secretary_revenue_overview(request):
             item['rank'] = idx + 1
             item['tier_badge'] = 'Tier 1 Top Contributor' if idx < 3 else ('Tier 2 Contributor' if idx < 7 else 'Tier 3 Contributor')
 
-        # 8. Security Deposit FD Accounts with filters
-        wallet_security_rows = (
-            bal_qs
-            .filter(Q(wallet_type_id='security_deposit') | Q(wallet_type__name__icontains='security') | Q(wallet_type__name__icontains='fd'))
-            .values('licensee_id', 'user_id', 'licensee_name', 'manufacturing_unit')
-            .annotate(
-                fd_credit_amount=Sum('total_credit'),
-                fd_current_balance=Sum('current_balance'),
-                updated_at=Max('last_updated_at')
-            )
-            .order_by('-fd_credit_amount')[:20]
-        )
-        wallet_security_by_payer = {}
-        for row in wallet_security_rows:
-            payer_key = str(row.get('licensee_id') or row.get('user_id') or '').strip().lower()
-            if payer_key:
-                wallet_security_by_payer[payer_key] = row
-
-        billdesk_security_rows = (
-            billdesk_qs
-            .filter(Q(request_additionalinfo2__iexact='SIKFDR') | Q(request_additionalinfo3__iexact='SIKFDR'))
-            .values('payer_id', 'user_id', 'request_additionalinfo1', 'request_additionalinfo4')
-            .annotate(
-                fd_credit_amount=Sum('transaction_amount'),
-                updated_at=Max('transaction_date')
-            )
-            .order_by('-fd_credit_amount')[:20]
-        )
+        # 9. Security Deposit FD Accounts List
         security_deposits = []
-        source_rows = list(billdesk_security_rows)
-        if not source_rows:
-            source_rows = list(wallet_security_rows)
-
-        for row in source_rows:
-            payer_id = row.get('payer_id') or row.get('licensee_id') or row.get('user_id') or 'FD-REC-2026'
-            wallet_row = wallet_security_by_payer.get(str(payer_id or '').strip().lower(), {})
-            licensee_name = (
-                row.get('request_additionalinfo1') or row.get('request_additionalinfo4') or
-                row.get('licensee_name') or wallet_row.get('licensee_name') or row.get('user_id') or 'Unknown Entity'
+        if sd_count > 0:
+            for sd in sd_qs.order_by('-payment_date', '-id')[:50]:
+                unit_name = sd.establishment_name or sd.applicant_name or sd.username or 'Unknown Entity'
+                unit_lower = str(unit_name).lower()
+                category = 'Manufacturing' if any(w in unit_lower for w in ['distiller', 'brew', 'albrew', 'spirt']) else ('Distributor' if 'dist' in unit_lower else 'Retail')
+                sub_category = 'Distillery' if 'distiller' in unit_lower else ('Brewery' if 'brew' in unit_lower else ('Distributor' if 'dist' in unit_lower else 'Retailer'))
+                p_date = sd.payment_date or sd.created_at
+                
+                security_deposits.append({
+                    'id': sd.id,
+                    'licensee_id': sd.license_id or sd.application_id or sd.reference_no or sd.applicant_user_id or sd.username or f'SD-{sd.id}',
+                    'user_id': sd.applicant_user_id or sd.username or 'N/A',
+                    'licensee_name': sd.applicant_name or sd.establishment_name or 'N/A',
+                    'manufacturing_unit': unit_name,
+                    'category': category,
+                    'sub_category': sub_category,
+                    'fd_credit_amount': round(as_float(sd.amount), 2),
+                    'fd_current_balance': round(as_float(sd.balance_amount), 2),
+                    'refunded_amount': round(as_float(sd.refunded_amount), 2),
+                    'status': sd.status or 'Verified & Locked FD',
+                    'reference_no': sd.reference_no or sd.application_id or '',
+                    'transaction_id': sd.transaction_id or '',
+                    'from_date': sd.from_date.strftime('%Y-%m-%d') if sd.from_date else None,
+                    'to_date': sd.to_date.strftime('%Y-%m-%d') if sd.to_date else None,
+                    'updated_at': p_date.strftime('%Y-%m-%d') if p_date else '2026-09-27',
+                    'month': p_date.strftime('%m') if p_date else '09',
+                    'financial_year': fy_param or '2026-2027',
+                    'remarks': sd.remarks or ''
+                })
+        else:
+            wallet_security_rows = (
+                bal_qs
+                .filter(Q(wallet_type_id='security_deposit') | Q(wallet_type__name__icontains='security') | Q(wallet_type__name__icontains='fd'))
+                .values('licensee_id', 'user_id', 'licensee_name', 'manufacturing_unit')
+                .annotate(
+                    fd_credit_amount=Sum('total_credit'),
+                    fd_current_balance=Sum('current_balance'),
+                    updated_at=Max('last_updated_at')
+                )
+                .order_by('-fd_credit_amount')[:20]
             )
-            unit_name = wallet_row.get('manufacturing_unit') or row.get('manufacturing_unit') or licensee_name
-            unit_lower = str(unit_name).lower()
-            category = 'Manufacturing' if any(w in unit_lower for w in ['distiller', 'brew', 'albrew', 'spirt']) else ('Distributor' if 'dist' in unit_lower else 'Retail')
-            sub_category = 'Distillery' if 'distiller' in unit_lower else ('Brewery' if 'brew' in unit_lower else ('Distributor' if 'dist' in unit_lower else 'Retailer'))
-            updated_at = row.get('updated_at')
-            fd_paid_amount = as_float(row.get('fd_credit_amount'))
-            current_fd_balance = as_float(wallet_row.get('fd_current_balance')) or fd_paid_amount
-            security_deposits.append({
-                'licensee_id': payer_id,
-                'user_id': row.get('user_id') or wallet_row.get('user_id') or payer_id,
-                'licensee_name': licensee_name,
-                'manufacturing_unit': unit_name,
-                'category': category,
-                'sub_category': sub_category,
-                'fd_credit_amount': round(fd_paid_amount, 2),
-                'fd_current_balance': round(current_fd_balance, 2),
-                'status': 'Verified & Locked FD',
-                'updated_at': updated_at.strftime('%Y-%m-%d') if updated_at else '2026-08-01',
-                'month': updated_at.strftime('%m') if updated_at else '08',
-                'financial_year': fy_param or '2026-2027'
-            })
+            wallet_security_by_payer = {}
+            for row in wallet_security_rows:
+                payer_key = str(row.get('licensee_id') or row.get('user_id') or '').strip().lower()
+                if payer_key:
+                    wallet_security_by_payer[payer_key] = row
 
-        # 9. Summary KPIs
+            billdesk_security_rows = (
+                billdesk_qs
+                .filter(Q(request_additionalinfo2__iexact='SIKFDR') | Q(request_additionalinfo3__iexact='SIKFDR'))
+                .values('payer_id', 'user_id', 'request_additionalinfo1', 'request_additionalinfo4')
+                .annotate(
+                    fd_credit_amount=Sum('transaction_amount'),
+                    updated_at=Max('transaction_date')
+                )
+                .order_by('-fd_credit_amount')[:20]
+            )
+            source_rows = list(billdesk_security_rows) or list(wallet_security_rows)
+
+            for row in source_rows:
+                payer_id = row.get('payer_id') or row.get('licensee_id') or row.get('user_id') or 'FD-REC-2026'
+                wallet_row = wallet_security_by_payer.get(str(payer_id or '').strip().lower(), {})
+                licensee_name = (
+                    row.get('request_additionalinfo1') or row.get('request_additionalinfo4') or
+                    row.get('licensee_name') or wallet_row.get('licensee_name') or row.get('user_id') or 'Unknown Entity'
+                )
+                unit_name = wallet_row.get('manufacturing_unit') or row.get('manufacturing_unit') or licensee_name
+                unit_lower = str(unit_name).lower()
+                category = 'Manufacturing' if any(w in unit_lower for w in ['distiller', 'brew', 'albrew', 'spirt']) else ('Distributor' if 'dist' in unit_lower else 'Retail')
+                sub_category = 'Distillery' if 'distiller' in unit_lower else ('Brewery' if 'brew' in unit_lower else ('Distributor' if 'dist' in unit_lower else 'Retailer'))
+                updated_at = row.get('updated_at')
+                fd_paid_amount = as_float(row.get('fd_credit_amount'))
+                current_fd_balance = as_float(wallet_row.get('fd_current_balance')) or fd_paid_amount
+                security_deposits.append({
+                    'licensee_id': payer_id,
+                    'user_id': row.get('user_id') or wallet_row.get('user_id') or payer_id,
+                    'licensee_name': licensee_name,
+                    'manufacturing_unit': unit_name,
+                    'category': category,
+                    'sub_category': sub_category,
+                    'fd_credit_amount': round(fd_paid_amount, 2),
+                    'fd_current_balance': round(current_fd_balance, 2),
+                    'status': 'Verified & Locked FD',
+                    'updated_at': updated_at.strftime('%Y-%m-%d') if updated_at else '2026-08-01',
+                    'month': updated_at.strftime('%m') if updated_at else '08',
+                    'financial_year': fy_param or '2026-2027'
+                })
+
+        # 10. Summary KPIs
         net_excise_paid = sum(
             h.get('total_paid_to_excise', 0.0) for h in final_revenue_heads
             if 'security' not in h['head_name'].lower() and 'fd' not in h['head_name'].lower() and 'cess' not in h['head_name'].lower()
@@ -1566,7 +1642,7 @@ def secretary_revenue_overview(request):
             },
             'revenue_heads': final_revenue_heads,
             'top_contributors': sorted_contributors[:15],
-            'security_deposits': security_deposits[:20]
+            'security_deposits': security_deposits[:50]
         }))
 
     except Exception as e:
