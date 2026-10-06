@@ -9,6 +9,7 @@ from rest_framework.response import Response
 
 from .models import LicenseApplication
 from .serializers import LicenseApplicationSerializer
+from django.db import transaction
 from auth.workflow.models import Workflow
 from auth.workflow.services import WorkflowService
 from models.masters.license.models import License
@@ -91,113 +92,6 @@ def initiate_renewal(request, license_id):
         return Response({"detail": "You do not have permission to renew this license."}, status=status.HTTP_403_FORBIDDEN)
 
     now_dt = timezone.now()
-    reminder_days = _get_timer_days("LICENSE_RENEWAL_REMINDER_TIMER", 90)
-
-    # Best-effort: keep license status consistent once it crosses expiry.
-    if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to < now_dt and getattr(old_license, "is_active", True):
-        old_license.is_active = False
-        old_license.save(update_fields=["is_active"])
-
-    # Flip fee-paid flags on source application to False when renewal starts, so they must pay again.
-    src_app = _resolve_new_license_application_from_license(old_license)
-    if src_app is not None:
-        update_fields = ["is_license_fee_paid"]
-        
-        pachwai = request.data.get("pachwai")
-        if pachwai is not None:
-            src_app.pachwai = bool(pachwai)
-            update_fields.append("pachwai")
-            
-        draught_beer = request.data.get("draught_beer")
-        if draught_beer is not None:
-            src_app.draught_beer = bool(draught_beer)
-            update_fields.append("draught_beer")
-
-        mini_bar = request.data.get("mini_bar")
-        if mini_bar is not None:
-            src_app.mini_bar = bool(mini_bar)
-            update_fields.append("mini_bar")
-
-        mini_bar_quantity = request.data.get("mini_bar_quantity")
-        if mini_bar_quantity is not None:
-            try:
-                src_app.mini_bar_quantity = max(0, int(mini_bar_quantity))
-            except (TypeError, ValueError):
-                src_app.mini_bar_quantity = 0
-            update_fields.append("mini_bar_quantity")
-            
-        mode_of_operation = request.data.get("mode_of_operation")
-        if mode_of_operation is not None and mode_of_operation in ["Self", "Salesman", "Barman"]:
-            if mode_of_operation in ["Salesman", "Barman"]:
-                from models.transactional.salesman_barman.models import SalesmanBarmanModel
-                from django.db.models import Q
-                
-                has_sbm = SalesmanBarmanModel.objects.filter(
-                    Q(new_license_application=src_app) | Q(license=old_license) | Q(renewal_of=old_license),
-                    applicant=request.user,
-                    role__iexact=mode_of_operation
-                ).exists()
-                
-                if not has_sbm:
-                    return Response(
-                        {"detail": f"Please register/fill the {mode_of_operation.lower()} application first to opt for {mode_of_operation.lower()}."},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-
-            src_app.mode_of_operation = str(mode_of_operation)
-            update_fields.append("mode_of_operation")
-            
-            if mode_of_operation == "Self":
-                from models.transactional.salesman_barman.models import SalesmanBarmanModel
-                from auth.workflow.models import Transaction, Rejection
-                from django.contrib.contenttypes.models import ContentType
-                from django.db.models import Q
-                
-                # Query and terminate any active salesman/barman applications associated with this license
-                sbm_apps = SalesmanBarmanModel.objects.filter(
-                    Q(new_license_application=src_app) | Q(license=old_license) | Q(renewal_of=old_license),
-                    applicant=request.user
-                ).exclude(current_stage__name__iexact="rejected")
-                
-                for sbm_app in sbm_apps:
-                    rejected_stage = sbm_app.workflow.stages.filter(name__iexact="rejected").order_by("id").first()
-                    if rejected_stage:
-                        sbm_app.current_stage = rejected_stage
-                        sbm_app.is_approved = False
-                        sbm_app.save(update_fields=["current_stage", "is_approved"])
-                        
-                        # Deactivate the associated License record(s)
-                        License.objects.filter(
-                            source_type="salesman_barman",
-                            source_object_id=str(sbm_app.pk)
-                        ).update(is_active=False)
-                        
-                        if getattr(sbm_app, "renewal_of", None):
-                            License.objects.filter(
-                                license_id=sbm_app.renewal_of.license_id
-                            ).update(is_active=False)
-                        
-                        Rejection.objects.create(
-                            content_type=ContentType.objects.get_for_model(sbm_app),
-                            object_id=str(sbm_app.pk),
-                            remarks="Rejected by user of salesman barman registration",
-                            rejected_by=request.user,
-                            stage=rejected_stage,
-                        )
-                        
-                        Transaction.objects.create(
-                            content_type=ContentType.objects.get_for_model(sbm_app),
-                            object_id=str(sbm_app.pk),
-                            performed_by=request.user,
-                            forwarded_by=getattr(request.user, "role", None),
-                            forwarded_to=None,
-                            stage=rejected_stage,
-                            remarks="Rejected by user of salesman barman registration",
-                        )
-
-        src_app.is_license_fee_paid = False
-        src_app.save(update_fields=update_fields)
-
     # Enforce renewal window: block if the license is valid and the renewal period
     # has not yet opened (i.e. current date is more than reminder_days before valid_up_to).
     # This applies to all license types including company_registration.
@@ -214,12 +108,29 @@ def initiate_renewal(request, license_id):
                 ),
                 "renewal_window_starts_on": window_start.isoformat(),
                 "renewal_window_ends_on": window_end.isoformat(),
-                "license_valid_up_to": old_license.valid_up_to.isoformat(),
+                "license_valid_valid_up_to": old_license.valid_up_to.isoformat(),
                 "reminder_window_days": reminder_days,
                 "window_not_open": True,
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+    mode_of_operation = request.data.get("mode_of_operation")
+    if mode_of_operation is not None and mode_of_operation in ["Salesman", "Barman"]:
+        from models.transactional.salesman_barman.models import SalesmanBarmanModel
+        from django.db.models import Q
+        
+        has_sbm = SalesmanBarmanModel.objects.filter(
+            Q(new_license_application=src_app) | Q(license=old_license) | Q(renewal_of=old_license),
+            applicant=request.user,
+            role__iexact=mode_of_operation
+        ).exists()
+        
+        if not has_sbm:
+            return Response(
+                {"detail": f"Please register/fill the {mode_of_operation.lower()} application first to opt for {mode_of_operation.lower()}."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
     wf = _get_renewal_workflow()
     if not wf:
@@ -266,34 +177,123 @@ def initiate_renewal(request, license_id):
     else:
         prefix = f"{app_prefix}/{district_code}/{fin_year}"
 
-    last = (
-        LicenseApplication.objects.filter(application_id__startswith=prefix + "/")
-        .order_by("-application_id")
-        .first()
-    )
-    last_number = 0
-    if last and "/" in last.application_id:
-        try:
-            last_number = int(last.application_id.split("/")[-1])
-        except Exception:
-            last_number = 0
-    new_number = str(last_number + 1).zfill(4)
-    application_id = f"{prefix}/{new_number}"
+    with transaction.atomic():
+        # Best-effort: keep license status consistent once it crosses expiry.
+        if getattr(old_license, "valid_up_to", None) and old_license.valid_up_to < now_dt and getattr(old_license, "is_active", True):
+            old_license.is_active = False
+            old_license.save(update_fields=["is_active"])
 
-    app = LicenseApplication.objects.create(
-        application_id=application_id,
-        is_approved=False,
-        old_license_id=old_license.license_id,
-        source_content_type=old_license.source_content_type,
-        source_object_id=old_license.source_object_id,
-        applicant=request.user,
-        license_category=old_license.license_category,
-        license_sub_category=old_license.license_sub_category,
-        workflow=wf,
-        current_stage=initial_stage,
-    )
+        # Flip fee-paid flags on source application to False when renewal starts, so they must pay again.
+        if src_app is not None:
+            update_fields = ["is_license_fee_paid"]
+            
+            pachwai = request.data.get("pachwai")
+            if pachwai is not None:
+                src_app.pachwai = bool(pachwai)
+                update_fields.append("pachwai")
+                
+            draught_beer = request.data.get("draught_beer")
+            if draught_beer is not None:
+                src_app.draught_beer = bool(draught_beer)
+                update_fields.append("draught_beer")
 
-    WorkflowService.submit_application(application=app, user=request.user, remarks="Renewal application submitted")
+            mini_bar = request.data.get("mini_bar")
+            if mini_bar is not None:
+                src_app.mini_bar = bool(mini_bar)
+                update_fields.append("mini_bar")
+
+            mini_bar_quantity = request.data.get("mini_bar_quantity")
+            if mini_bar_quantity is not None:
+                try:
+                    src_app.mini_bar_quantity = max(0, int(mini_bar_quantity))
+                except (TypeError, ValueError):
+                    src_app.mini_bar_quantity = 0
+                update_fields.append("mini_bar_quantity")
+                
+            if mode_of_operation is not None and mode_of_operation in ["Self", "Salesman", "Barman"]:
+                src_app.mode_of_operation = str(mode_of_operation)
+                update_fields.append("mode_of_operation")
+                
+                if mode_of_operation == "Self":
+                    from models.transactional.salesman_barman.models import SalesmanBarmanModel
+                    from auth.workflow.models import Transaction, Rejection
+                    from django.contrib.contenttypes.models import ContentType
+                    from django.db.models import Q
+                    
+                    # Query and terminate any active salesman/barman applications associated with this license
+                    sbm_apps = SalesmanBarmanModel.objects.filter(
+                        Q(new_license_application=src_app) | Q(license=old_license) | Q(renewal_of=old_license),
+                        applicant=request.user
+                    ).exclude(current_stage__name__iexact="rejected")
+                    
+                    for sbm_app in sbm_apps:
+                        rejected_stage = sbm_app.workflow.stages.filter(name__iexact="rejected").order_by("id").first()
+                        if rejected_stage:
+                            sbm_app.current_stage = rejected_stage
+                            sbm_app.is_approved = False
+                            sbm_app.save(update_fields=["current_stage", "is_approved"])
+                            
+                            # Deactivate the associated License record(s)
+                            License.objects.filter(
+                                source_type="salesman_barman",
+                                source_object_id=str(sbm_app.pk)
+                            ).update(is_active=False)
+                            
+                            if getattr(sbm_app, "renewal_of", None):
+                                License.objects.filter(
+                                    license_id=sbm_app.renewal_of.license_id
+                                ).update(is_active=False)
+                            
+                            Rejection.objects.create(
+                                content_type=ContentType.objects.get_for_model(sbm_app),
+                                object_id=str(sbm_app.pk),
+                                remarks="Rejected by user of salesman barman registration",
+                                rejected_by=request.user,
+                                stage=rejected_stage,
+                            )
+                            
+                            Transaction.objects.create(
+                                content_type=ContentType.objects.get_for_model(sbm_app),
+                                object_id=str(sbm_app.pk),
+                                performed_by=request.user,
+                                forwarded_by=getattr(request.user, "role", None),
+                                forwarded_to=None,
+                                stage=rejected_stage,
+                                remarks="Rejected by user of salesman barman registration",
+                            )
+
+            src_app.is_license_fee_paid = False
+            src_app.save(update_fields=update_fields)
+
+        last = (
+            LicenseApplication.objects.filter(application_id__startswith=prefix + "/")
+            .select_for_update()
+            .order_by("-application_id")
+            .first()
+        )
+        last_number = 0
+        if last and "/" in last.application_id:
+            try:
+                last_number = int(last.application_id.split("/")[-1])
+            except Exception:
+                last_number = 0
+        new_number = str(last_number + 1).zfill(4)
+        application_id = f"{prefix}/{new_number}"
+
+        app = LicenseApplication.objects.create(
+            application_id=application_id,
+            is_approved=False,
+            old_license_id=old_license.license_id,
+            source_content_type=old_license.source_content_type,
+            source_object_id=old_license.source_object_id,
+            applicant=request.user,
+            license_category=old_license.license_category,
+            license_sub_category=old_license.license_sub_category,
+            workflow=wf,
+            current_stage=initial_stage,
+        )
+
+        WorkflowService.submit_application(application=app, user=request.user, remarks="Renewal application submitted")
 
     return Response(_serialize_renewal_application(app), status=status.HTTP_201_CREATED)
 
@@ -965,79 +965,81 @@ def pay_license_fee_wallet(request, application_id):
 
     if not txn_id:
         txn_id = secrets.token_hex(12).upper()
-    try:
-        debit_wallet_balance(
-            transaction_id=txn_id,
-            licensee_id=wallet_licensee_id,
-            wallet_type="license_fee",
-            head_of_account=license_fee_hoa,
-            amount=Decimal(str(amount)),
-            user_id=str(getattr(request.user, "username", "") or "").strip(),
-            remarks=f"Renewal license fee paid for {app.application_id}",
-            reference_no=app.application_id,
-        )
-    except Exception as exc:
-        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Mark fee as paid on the renewal tracking application itself
-    app.is_license_fee_paid = True
-    app.save(update_fields=["is_license_fee_paid"])
-
-    # Flip fee-paid flags on source application (if it was toggled to False after expiry).
-    if src_app is not None:
+    with transaction.atomic():
         try:
-            need_save = False
-            if not getattr(src_app, "is_license_fee_paid", False):
-                src_app.is_license_fee_paid = True
-                need_save = True
-            if not getattr(src_app, "is_security_fee_paid", False):
-                src_app.is_security_fee_paid = True
-                need_save = True
-            if need_save:
-                src_app.save(update_fields=["is_license_fee_paid", "is_security_fee_paid"])
-            
-            # Sync new license payment status so it updates is_approved to True on src_app and is_active on license
-            from models.transactional.new_license_application.payment_status import sync_new_license_payment_status
-            sync_new_license_payment_status(src_app)
-        except Exception:
-            pass
+            debit_wallet_balance(
+                transaction_id=txn_id,
+                licensee_id=wallet_licensee_id,
+                wallet_type="license_fee",
+                head_of_account=license_fee_hoa,
+                amount=Decimal(str(amount)),
+                user_id=str(getattr(request.user, "username", "") or "").strip(),
+                remarks=f"Renewal license fee paid for {app.application_id}",
+                reference_no=app.application_id,
+            )
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-    _extend_license_validity(old_license)
+        # Mark fee as paid on the renewal tracking application itself
+        app.is_license_fee_paid = True
+        app.save(update_fields=["is_license_fee_paid"])
 
-    # For company_registration renewals, the _sync helper may not fire correctly
-    # because there is no src_app (new_license_application). Explicitly activate.
-    if getattr(old_license, "source_type", None) == "company_registration":
-        try:
-            old_license.refresh_from_db()
-            old_license.is_active = True
-            old_license.save(update_fields=["is_active"])
-
-            # Also mark the source CompanyRegistration as approved/paid so the
-            # dashboard card no longer shows EXPIRED and disallows a second renewal.
-            cr_src = None
+        # Flip fee-paid flags on source application (if it was toggled to False after expiry).
+        if src_app is not None:
             try:
-                cr_src = old_license.source_application
+                need_save = False
+                if not getattr(src_app, "is_license_fee_paid", False):
+                    src_app.is_license_fee_paid = True
+                    need_save = True
+                if not getattr(src_app, "is_security_fee_paid", False):
+                    src_app.is_security_fee_paid = True
+                    need_save = True
+                if need_save:
+                    src_app.save(update_fields=["is_license_fee_paid", "is_security_fee_paid"])
+                
+                # Sync new license payment status so it updates is_approved to True on src_app and is_active on license
+                from models.transactional.new_license_application.payment_status import sync_new_license_payment_status
+                sync_new_license_payment_status(src_app)
             except Exception:
                 pass
-            if cr_src is not None:
+
+        _extend_license_validity(old_license)
+
+        # For company_registration renewals, the _sync helper may not fire correctly
+        # because there is no src_app (new_license_application). Explicitly activate.
+        if getattr(old_license, "source_type", None) == "company_registration":
+            try:
+                old_license.refresh_from_db()
+                old_license.is_active = True
+                old_license.save(update_fields=["is_active"])
+
+                # Also mark the source CompanyRegistration as approved/paid so the
+                # dashboard card no longer shows EXPIRED and disallows a second renewal.
+                cr_src = None
                 try:
-                    if not getattr(cr_src, "is_approved", False):
-                        cr_src.is_approved = True
-                        cr_src.save(update_fields=["is_approved"])
+                    cr_src = old_license.source_application
                 except Exception:
                     pass
-        except Exception:
-            pass
-    else:
-        try:
-            _sync_license_active_from_renewal_payment(old_license, app)
-        except Exception:
-            pass
+                if cr_src is not None:
+                    try:
+                        if not getattr(cr_src, "is_approved", False):
+                            cr_src.is_approved = True
+                            cr_src.save(update_fields=["is_approved"])
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        else:
+            try:
+                _sync_license_active_from_renewal_payment(old_license, app)
+            except Exception:
+                pass
 
-    try:
-        _sync_renewal_payment_status(app)
-    except Exception:
-        pass
+        try:
+            _sync_renewal_payment_status(app)
+        except Exception:
+            pass
 
     return Response({"success": True, "transaction_id": txn_id, "license_id": old_license.license_id})
 

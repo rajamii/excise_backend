@@ -1490,27 +1490,26 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                                     sb.role = app.mode_of_operation
                             with db_transaction.atomic():
                                 sb.save()
-
-                            sbm_application_id = str(getattr(sb, "application_id", "") or "").strip()
-
-                            sb.refresh_from_db()
-                            if getattr(getattr(sb, "current_stage", None), "is_initial", False):
-                                try:
-                                    from auth.workflow.services import WorkflowService
-                                    WorkflowService.submit_application(
-                                        application=sb,
-                                        user=user,
-                                        remarks="Auto-submitted with New License Application",
-                                    )
-                                    sbm_submitted = True
-                                except Exception as _submit_exc:
-                                    logger.exception(
-                                        "SB WorkflowService.submit_application failed for sb=%s NLI=%s: %s",
-                                        sbm_application_id,
-                                        getattr(app, "application_id", "?"),
-                                        _submit_exc,
-                                    )
-                                    sbm_submit_error = f"sbm_workflow_submit_failed: {_submit_exc}"
+                                sbm_application_id = str(getattr(sb, "application_id", "") or "").strip()
+                                sb.refresh_from_db()
+                                if getattr(getattr(sb, "current_stage", None), "is_initial", False):
+                                    try:
+                                        from auth.workflow.services import WorkflowService
+                                        WorkflowService.submit_application(
+                                            application=sb,
+                                            user=user,
+                                            remarks="Auto-submitted with New License Application",
+                                        )
+                                        sbm_submitted = True
+                                    except Exception as _submit_exc:
+                                        logger.exception(
+                                            "SB WorkflowService.submit_application failed for sb=%s NLI=%s: %s",
+                                            sbm_application_id,
+                                            getattr(app, "application_id", "?"),
+                                            _submit_exc,
+                                        )
+                                        sbm_submit_error = f"sbm_workflow_submit_failed: {_submit_exc}"
+                                        raise
 
                             logger.info(
                                 f"SB auto-submit complete. Submitted: {sbm_submitted}, "
@@ -1610,85 +1609,86 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                         credit_hoa = str(tx.request_additionalinfo1 or "").strip() or "non"
 
                     if credit_wallet_type and credit_licensee_id:
-                        credit_wallet_balance(
-                            transaction_id=str(txn_ref or tx.utr or "").strip(),
-                            licensee_id=credit_licensee_id,
-                            wallet_type=credit_wallet_type,
-                            head_of_account=credit_hoa,
-                            amount=parsed_amount or Decimal(str(tx.transaction_amount or 0)).quantize(Decimal("0.01")),
-                            user_id=str(tx.user_id or "").strip(),
-                            licensee_name=credit_name,
-                            source_module="wallet_recharge",
-                            transaction_type="recharge",
-                            remarks="BillDesk payment success",
-                        )
+                        with transaction.atomic():
+                            credit_wallet_balance(
+                                transaction_id=str(txn_ref or tx.utr or "").strip(),
+                                licensee_id=credit_licensee_id,
+                                wallet_type=credit_wallet_type,
+                                head_of_account=credit_hoa,
+                                amount=parsed_amount or Decimal(str(tx.transaction_amount or 0)).quantize(Decimal("0.01")),
+                                user_id=str(tx.user_id or "").strip(),
+                                licensee_name=credit_name,
+                                source_module="wallet_recharge",
+                                transaction_type="recharge",
+                                remarks="BillDesk payment success",
+                            )
 
-                        if credit_wallet_type == "security_deposit":
-                            try:
-                                from django.db.models import Q
-                                from models.masters.license.models import License
-                                from models.transactional.company_collaboration.models import CompanyCollaboration
-                                from models.transactional.new_license_application.models import NewLicenseApplication
-                                from models.transactional.new_license_application.payment_status import sync_new_license_payment_status
-                                from models.transactional.wallet.views import _wallet_license_candidates
+                            if credit_wallet_type == "security_deposit":
+                                try:
+                                    from django.db.models import Q
+                                    from models.masters.license.models import License
+                                    from models.transactional.company_collaboration.models import CompanyCollaboration
+                                    from models.transactional.new_license_application.models import NewLicenseApplication
+                                    from models.transactional.new_license_application.payment_status import sync_new_license_payment_status
+                                    from models.transactional.wallet.views import _wallet_license_candidates
 
-                                username = str(getattr(tx, "user_id", "") or "").strip()
-                                user = None
-                                if username:
-                                    user = CustomUser.objects.filter(username__iexact=username).first()
-                                if not user:
-                                    user = CustomUser.objects.filter(username__iexact=credit_licensee_id).first()
+                                    username = str(getattr(tx, "user_id", "") or "").strip()
+                                    user = None
+                                    if username:
+                                        user = CustomUser.objects.filter(username__iexact=username).first()
+                                    if not user:
+                                        user = CustomUser.objects.filter(username__iexact=credit_licensee_id).first()
 
-                                candidates = _wallet_license_candidates(credit_licensee_id)
-                                lic = License.objects.filter(license_id__in=candidates).order_by("-issue_date", "-license_id").first()
-                                application = None
-                                if lic and lic.source_type == "new_license_application":
-                                    application = NewLicenseApplication.objects.filter(application_id=lic.source_object_id).first()
+                                    candidates = _wallet_license_candidates(credit_licensee_id)
+                                    lic = License.objects.filter(license_id__in=candidates).order_by("-issue_date", "-license_id").first()
+                                    application = None
+                                    if lic and lic.source_type == "new_license_application":
+                                        application = NewLicenseApplication.objects.filter(application_id=lic.source_object_id).first()
 
-                                if not application or getattr(application, "is_approved", False) or getattr(application, "is_security_fee_paid", False):
-                                    if not user and lic:
-                                        user = getattr(lic, "applicant", None)
+                                    if not application or getattr(application, "is_approved", False) or getattr(application, "is_security_fee_paid", False):
+                                        if not user and lic:
+                                            user = getattr(lic, "applicant", None)
 
-                                    if user:
-                                        pending_app = NewLicenseApplication.objects.filter(
-                                            applicant=user,
-                                            is_approved=False,
-                                            is_security_fee_paid=False
-                                        ).filter(
-                                            Q(current_stage__name__icontains="payment") |
-                                            Q(current_stage__name__icontains="awaiting")
-                                        ).first()
-
-                                        if not pending_app:
+                                        if user:
                                             pending_app = NewLicenseApplication.objects.filter(
                                                 applicant=user,
                                                 is_approved=False,
                                                 is_security_fee_paid=False
+                                            ).filter(
+                                                Q(current_stage__name__icontains="payment") |
+                                                Q(current_stage__name__icontains="awaiting")
                                             ).first()
 
-                                        if pending_app:
-                                            application = pending_app
+                                            if not pending_app:
+                                                pending_app = NewLicenseApplication.objects.filter(
+                                                    applicant=user,
+                                                    is_approved=False,
+                                                    is_security_fee_paid=False
+                                                ).first()
 
-                                if application and not application.is_security_fee_paid:
-                                    application.is_security_fee_paid = True
-                                    application.save(update_fields=["is_security_fee_paid"])
+                                            if pending_app:
+                                                application = pending_app
 
-                                    try:
-                                        from models.transactional.wallet.wallet_service import create_or_update_security_deposit_record
-                                        create_or_update_security_deposit_record(
-                                            application=application,
-                                            user=user,
-                                            amount=parsed_amount or Decimal(str(tx.transaction_amount or 0)),
-                                            transaction_id=str(txn_ref or tx.utr or "").strip(),
-                                            reference_no=application.application_id,
-                                            remarks="BillDesk security deposit payment success",
-                                        )
-                                    except Exception as sd_err:
-                                        logger.warning("Failed to create security deposit record in Billdesk callback: %s", sd_err)
+                                    if application and not application.is_security_fee_paid:
+                                        application.is_security_fee_paid = True
+                                        application.save(update_fields=["is_security_fee_paid"])
 
-                                    sync_new_license_payment_status(application)
-                            except Exception as auto_pay_error:
-                                logger.error("Auto security fee payment in Billdesk callback failed: %s", str(auto_pay_error), exc_info=True)
+                                        try:
+                                            from models.transactional.wallet.wallet_service import create_or_update_security_deposit_record
+                                            create_or_update_security_deposit_record(
+                                                application=application,
+                                                user=user,
+                                                amount=parsed_amount or Decimal(str(tx.transaction_amount or 0)),
+                                                transaction_id=str(txn_ref or tx.utr or "").strip(),
+                                                reference_no=application.application_id,
+                                                remarks="BillDesk security deposit payment success",
+                                            )
+                                        except Exception as sd_err:
+                                            logger.warning("Failed to create security deposit record in Billdesk callback: %s", sd_err)
+
+                                        sync_new_license_payment_status(application)
+                                except Exception as auto_pay_error:
+                                    logger.error("Auto security fee payment in Billdesk callback failed: %s", str(auto_pay_error), exc_info=True)
                 except Exception as exc:
                     logger.exception("Failed to credit wallet for txn_ref=%s: %s", txn_ref, exc)
             elif status_code == "F":

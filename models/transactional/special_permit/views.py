@@ -1,6 +1,7 @@
 from decimal import Decimal
 import logging
 import secrets
+from django.db import transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -490,21 +491,22 @@ def create_special_permit_application(request):
     if not initial_stage:
         return Response({'detail': 'Special Permit workflow has no initial stage.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    application = serializer.save(
-        application_id=SpecialPermitApplication.generate_application_id(license_obj, financial_year),
-        license=license_obj,
-        applicant=request.user,
-        excise_district=license_obj.excise_district,
-        license_category=license_obj.license_category,
-        license_sub_category=_resolve_sub_category(license_obj),
-        workflow=workflow,
-        current_stage=initial_stage,
-    )
-    WorkflowService.submit_application(
-        application=application,
-        user=request.user,
-        remarks='Special Permit application submitted',
-    )
+    with transaction.atomic():
+        application = serializer.save(
+            application_id=SpecialPermitApplication.generate_application_id(license_obj, financial_year),
+            license=license_obj,
+            applicant=request.user,
+            excise_district=license_obj.excise_district,
+            license_category=license_obj.license_category,
+            license_sub_category=_resolve_sub_category(license_obj),
+            workflow=workflow,
+            current_stage=initial_stage,
+        )
+        WorkflowService.submit_application(
+            application=application,
+            user=request.user,
+            remarks='Special Permit application submitted',
+        )
     from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
     invalidate_dashboard_counts_cache()
     return Response(SpecialPermitApplicationSerializer(application).data, status=status.HTTP_201_CREATED)
@@ -754,25 +756,26 @@ def pay_special_permit_fee_wallet(request, application_id):
     if not txn_id:
         txn_id = secrets.token_hex(12).upper()
 
-    try:
-        from models.transactional.wallet.wallet_service import debit_wallet_balance
-        debit_wallet_balance(
-            transaction_id=txn_id,
-            licensee_id=wallet_licensee_id,
-            wallet_type="license_fee",
-            head_of_account=license_fee_hoa,
-            amount=Decimal(str(amount)),
-            user_id=str(getattr(request.user, "username", "") or "").strip(),
-            remarks=f"Special permit fee paid for {application.application_id}",
-            reference_no=application.application_id,
-        )
-    except Exception as exc:
-        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    with transaction.atomic():
+        try:
+            from models.transactional.wallet.wallet_service import debit_wallet_balance
+            debit_wallet_balance(
+                transaction_id=txn_id,
+                licensee_id=wallet_licensee_id,
+                wallet_type="license_fee",
+                head_of_account=license_fee_hoa,
+                amount=Decimal(str(amount)),
+                user_id=str(getattr(request.user, "username", "") or "").strip(),
+                remarks=f"Special permit fee paid for {application.application_id}",
+                reference_no=application.application_id,
+            )
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-    application.is_fee_paid = True
-    application.save(update_fields=["is_fee_paid"])
+        application.is_fee_paid = True
+        application.save(update_fields=["is_fee_paid"])
 
-    _sync_special_permit_payment_status(application, request.user)
+        _sync_special_permit_payment_status(application, request.user)
 
     return Response({
         "success": True,

@@ -3,6 +3,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework import status
 from auth.roles.permissions import HasAppPermission
+from django.db import transaction
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.core.exceptions import ValidationError, SuspiciousOperation
@@ -133,19 +134,20 @@ def level2_site_enquiry(request, application_id):
     
     serializer = SiteEnquiryReportSerializer(data=request.data)
     if serializer.is_valid():
-        report= serializer.save(application=application)
-        target_stage = WorkflowStage.objects.filter(workflow = application.workflow, name = 'awaiting_payment').first()
-        if target_stage:
-            try:
-                WorkflowService.advance_stage(
-                    application=application,
-                    user=request.user,
-                    target_stage=target_stage,
-                    context_data={"site_enquiry_done": True},
-                    skip_permission_check=False
-                )
-            except ValidationError as e:
-                 return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            with transaction.atomic():
+                report = serializer.save(application=application)
+                target_stage = WorkflowStage.objects.filter(workflow=application.workflow, name='awaiting_payment').first()
+                if target_stage:
+                    WorkflowService.advance_stage(
+                        application=application,
+                        user=request.user,
+                        target_stage=target_stage,
+                        context_data={"site_enquiry_done": True},
+                        skip_permission_check=False
+                    )
+        except ValidationError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(SiteEnquiryReportSerializer(report).data, status=status.HTTP_201_CREATED)
 
 
@@ -196,19 +198,20 @@ def site_enquiry_revert(request, application_id):
         return Response({"detail": "Workflow misconfigured: Site Enquiry Officer stage not found."}, status=400)
 
     try:
-        # Mark report as reverted + persist remarks for editing
-        report.is_reverted = True
-        report.reverted_remarks = remarks
-        report.reverted_at = timezone.now()
-        report.save(update_fields=["is_reverted", "reverted_remarks", "reverted_at", "updated_at"])
+        with transaction.atomic():
+            # Mark report as reverted + persist remarks for editing
+            report.is_reverted = True
+            report.reverted_remarks = remarks
+            report.reverted_at = timezone.now()
+            report.save(update_fields=["is_reverted", "reverted_remarks", "reverted_at", "updated_at"])
 
-        WorkflowService.advance_stage(
-            application=application,
-            user=request.user,
-            target_stage=target_stage,
-            context={"is_reverted": True},
-            remarks=remarks,
-        )
+            WorkflowService.advance_stage(
+                application=application,
+                user=request.user,
+                target_stage=target_stage,
+                context={"is_reverted": True},
+                remarks=remarks,
+            )
     except ValidationError as e:
         return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 

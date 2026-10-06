@@ -969,6 +969,20 @@ def final_license_detail(request, application_id):
     except Exception:
         pass
 
+    additional_items = []
+    if getattr(application, "mini_bar", False):
+        qty = getattr(application, "mini_bar_quantity", 0) or 0
+        if qty > 0:
+            additional_items.append(f"Mini Bar (Quantity: {qty})")
+        else:
+            additional_items.append("Mini Bar")
+    if getattr(application, "draught_beer", False):
+        additional_items.append("Draught Beer")
+    if getattr(application, "pachwai", False):
+        additional_items.append("Pachwai")
+
+    additional_details = ", ".join(additional_items) if additional_items else ""
+
     response = {
         "applicationId": application.application_id,
         "renewalApplicationId": renewal_application_id,
@@ -1001,6 +1015,11 @@ def final_license_detail(request, application_id):
         "validTo": fmt_dt(license_obj.valid_up_to) if license_obj else "",
         "generatedOn": fmt_dt(timezone.now().date()),
         "qrCodeDataUrl": make_qr_data_url(validation_url),
+        "miniBar": bool(getattr(application, "mini_bar", False)),
+        "miniBarQuantity": int(getattr(application, "mini_bar_quantity", 0) or 0),
+        "draughtBeer": bool(getattr(application, "draught_beer", False)),
+        "pachwai": bool(getattr(application, "pachwai", False)),
+        "additionalDetails": additional_details,
     }
 
     try:
@@ -1028,7 +1047,8 @@ def final_license_detail(request, application_id):
 
         from models.masters.core.models import LicenseTitle
         title_obj = LicenseTitle.objects.filter(name='new-license').first()
-        response["licenseSubTitle"] = title_obj.description if title_obj else "COUNTER FOIL"
+        raw_sub = str(getattr(title_obj, "description", "") or "").strip()
+        response["licenseSubTitle"] = "" if raw_sub.upper() == "COUNTER FOIL" else raw_sub
 
         qs = (
             MasterLicenseFormTerms.objects.filter(
@@ -1481,24 +1501,26 @@ def pay_license_fee_wallet(request, application_id):
 
     if not txn_id:
         txn_id = secrets.token_hex(12).upper()
-    try:
-        debit_wallet_balance(
-            transaction_id=txn_id,
-            licensee_id=str(lic.license_id),
-            wallet_type="license_fee",
-            head_of_account=license_fee_hoa,
-            amount=amount,
-            user_id=str(getattr(request.user, "username", "") or "").strip(),
-            remarks=f"License fee paid for {application.application_id}",
-            reference_no=application.application_id,
-        )
-    except Exception as exc:
-        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-    if not application.is_license_fee_paid:
-        application.is_license_fee_paid = True
-        application.save(update_fields=["is_license_fee_paid"])
-    sync_new_license_payment_status(application)
+    with transaction.atomic():
+        try:
+            debit_wallet_balance(
+                transaction_id=txn_id,
+                licensee_id=str(lic.license_id),
+                wallet_type="license_fee",
+                head_of_account=license_fee_hoa,
+                amount=amount,
+                user_id=str(getattr(request.user, "username", "") or "").strip(),
+                remarks=f"License fee paid for {application.application_id}",
+                reference_no=application.application_id,
+            )
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not application.is_license_fee_paid:
+            application.is_license_fee_paid = True
+            application.save(update_fields=["is_license_fee_paid"])
+        sync_new_license_payment_status(application)
 
     return Response({"success": True, "transaction_id": txn_id, "is_license_fee_paid": True})
 
@@ -1588,38 +1610,40 @@ def pay_security_fee_wallet(request, application_id):
 
     if not txn_id:
         txn_id = secrets.token_hex(12).upper()
-    try:
-        debit_wallet_balance(
-            transaction_id=txn_id,
-            licensee_id=str(lic.license_id),
-            wallet_type="security_deposit",
-            head_of_account=security_deposit_hoa,
-            amount=amount,
-            user_id=str(getattr(request.user, "username", "") or "").strip(),
-            remarks=f"Security fee paid for {application.application_id}",
-            reference_no=application.application_id,
-        )
-    except Exception as exc:
-        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-    if not application.is_security_fee_paid:
-        application.is_security_fee_paid = True
-        application.save(update_fields=["is_security_fee_paid"])
+    with transaction.atomic():
+        try:
+            debit_wallet_balance(
+                transaction_id=txn_id,
+                licensee_id=str(lic.license_id),
+                wallet_type="security_deposit",
+                head_of_account=security_deposit_hoa,
+                amount=amount,
+                user_id=str(getattr(request.user, "username", "") or "").strip(),
+                remarks=f"Security fee paid for {application.application_id}",
+                reference_no=application.application_id,
+            )
+        except Exception as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-    try:
-        from models.transactional.wallet.wallet_service import create_or_update_security_deposit_record
-        create_or_update_security_deposit_record(
-            application=application,
-            user=request.user,
-            amount=amount,
-            transaction_id=txn_id,
-            reference_no=application.application_id,
-            remarks=f"Security fee paid for {application.application_id}",
-        )
-    except Exception as sd_err:
-        logger.warning("Failed to create security deposit record: %s", sd_err)
+        if not application.is_security_fee_paid:
+            application.is_security_fee_paid = True
+            application.save(update_fields=["is_security_fee_paid"])
 
-    sync_new_license_payment_status(application)
+        try:
+            from models.transactional.wallet.wallet_service import create_or_update_security_deposit_record
+            create_or_update_security_deposit_record(
+                application=application,
+                user=request.user,
+                amount=amount,
+                transaction_id=txn_id,
+                reference_no=application.application_id,
+                remarks=f"Security fee paid for {application.application_id}",
+            )
+        except Exception as sd_err:
+            logger.warning("Failed to create security deposit record: %s", sd_err)
+
+        sync_new_license_payment_status(application)
 
     return Response({"success": True, "transaction_id": txn_id, "is_security_fee_paid": True})
 

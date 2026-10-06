@@ -774,27 +774,24 @@ def pay_collaboration_fee(request, application_id):
 
     remarks = f'Company Collaboration fee ({amount}) paid for {application.application_id}'
 
-    # Debit from license_fee wallet
+    # Debit from license_fee wallet and advance stage atomically
     wallet_licensee_id = str(getattr(request.user, 'username', '') or '').strip()
     license_fee_hoa = _resolve_hoa_code(module_type='other', wallet_type='license_fee')
     txn_id = secrets.token_hex(12).upper()
 
     try:
-        debit_wallet_balance(
-            transaction_id=txn_id,
-            licensee_id=wallet_licensee_id,
-            wallet_type='license_fee',
-            head_of_account=license_fee_hoa,
-            amount=amount,
-            user_id=wallet_licensee_id,
-            remarks=remarks,
-            reference_no=application.application_id,
-        )
-    except Exception as exc:
-        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
         with transaction.atomic():
+            debit_wallet_balance(
+                transaction_id=txn_id,
+                licensee_id=wallet_licensee_id,
+                wallet_type='license_fee',
+                head_of_account=license_fee_hoa,
+                amount=amount,
+                user_id=wallet_licensee_id,
+                remarks=remarks,
+                reference_no=application.application_id,
+            )
+
             application.is_license_fee_paid = True
 
             if application.is_paid:
@@ -813,8 +810,8 @@ def pay_collaboration_fee(request, application_id):
         return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as exc:
         return Response(
-            {'detail': f'Payment succeeded but workflow update failed: {str(exc)}'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            {'detail': f'Payment and workflow update failed: {str(exc)}'},
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     fresh = CompanyCollaboration.objects.get(pk=application.pk)

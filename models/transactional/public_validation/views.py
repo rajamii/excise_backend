@@ -196,6 +196,8 @@ def _build_pdf_lines(payload: dict) -> list[str]:
     lines.append(f"Name of the Licensee: {payload.get('licenseeName') or ''}")
     lines.append(f"Father/Husband Name: {payload.get('fatherOrHusbandName') or ''}")
     lines.append(f"Kind of Shop: {payload.get('kindOfShop') or ''}")
+    if payload.get('additionalDetails'):
+        lines.append(f"Additional Details: {payload.get('additionalDetails')}")
     lines.append(f"Address: {payload.get('addressOfBusiness') or ''}")
     lines.append(f"District: {payload.get('district') or ''}")
     lines.append(f"Mode of Operation: {payload.get('modeOfOperation') or ''}")
@@ -386,6 +388,19 @@ def _validate_license_pdf_from_code(request, code: str):
         scat_code = getattr(license_obj, 'license_sub_category_id', None) if license_obj else getattr(app, 'license_sub_category_id', None)
         license_title, terms = _fetch_title_terms(cat_code, scat_code)
 
+        additional_items = []
+        if getattr(app, "mini_bar", False):
+            qty = getattr(app, "mini_bar_quantity", 0) or 0
+            if qty > 0:
+                additional_items.append(f"Mini Bar (Quantity: {qty})")
+            else:
+                additional_items.append("Mini Bar")
+        if getattr(app, "draught_beer", False):
+            additional_items.append("Draught Beer")
+        if getattr(app, "pachwai", False):
+            additional_items.append("Pachwai")
+        additional_details = ", ".join(additional_items) if additional_items else ""
+
         response_payload = {
             'applicationId': app.application_id,
             'licenseNumber': license_number,
@@ -403,6 +418,11 @@ def _validate_license_pdf_from_code(request, code: str):
             'validationPdfUrl': validation_pdf_url,
             'validatedViaCode': False,
             'terms': terms,
+            'additionalDetails': additional_details,
+            'miniBar': bool(getattr(app, 'mini_bar', False)),
+            'miniBarQuantity': int(getattr(app, 'mini_bar_quantity', 0) or 0),
+            'draughtBeer': bool(getattr(app, 'draught_beer', False)),
+            'pachwai': bool(getattr(app, 'pachwai', False)),
         }
 
     elif source == 'license_application':
@@ -770,6 +790,7 @@ def _build_validation_page(result: dict) -> str:
         ('License Title', details.get('licenseTitle')),
         ('Licensee Name', details.get('licenseeName')),
         ('Kind of Shop', details.get('kindOfShop')),
+        ('Additional Details', details.get('additionalDetails')),
         ('Address', details.get('addressOfBusiness')),
         ('District', details.get('district')),
         ('Valid From', details.get('validFrom')),
@@ -951,6 +972,20 @@ def _resolve_validation_result(request, code: str) -> dict:
         cat_code = getattr(license_obj, 'license_category_id', None) if license_obj else getattr(app, 'license_category_id', None)
         scat_code = getattr(license_obj, 'license_sub_category_id', None) if license_obj else getattr(app, 'license_sub_category_id', None)
         license_title, _terms = _fetch_title_terms(cat_code, scat_code)
+
+        additional_items = []
+        if getattr(app, "mini_bar", False):
+            qty = getattr(app, "mini_bar_quantity", 0) or 0
+            if qty > 0:
+                additional_items.append(f"Mini Bar (Quantity: {qty})")
+            else:
+                additional_items.append("Mini Bar")
+        if getattr(app, "draught_beer", False):
+            additional_items.append("Draught Beer")
+        if getattr(app, "pachwai", False):
+            additional_items.append("Pachwai")
+        additional_details = ", ".join(additional_items) if additional_items else ""
+
         details.update(
             {
                 'licenseTitle': license_title,
@@ -961,6 +996,11 @@ def _resolve_validation_result(request, code: str) -> dict:
                 'district': app.site_district.district if getattr(app, 'site_district', None) else '',
                 'validFrom': _fmt_dt(license_obj.issue_date) if license_obj else _fmt_dt(getattr(app, 'created_at', None).date() if getattr(app, 'created_at', None) else None),
                 'validTo': _fmt_dt(license_obj.valid_up_to) if license_obj else '',
+                'additionalDetails': additional_details,
+                'miniBar': bool(getattr(app, 'mini_bar', False)),
+                'miniBarQuantity': int(getattr(app, 'mini_bar_quantity', 0) or 0),
+                'draughtBeer': bool(getattr(app, 'draught_beer', False)),
+                'pachwai': bool(getattr(app, 'pachwai', False)),
             }
         )
     elif source == 'license_application':

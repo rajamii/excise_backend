@@ -468,21 +468,22 @@ class LicenseeSignupSerializer(serializers.ModelSerializer):
                 "Licensee role not configured. Contact support."
             )
 
-        # Create the user
-        user = CustomUser.objects.create_user(
-            **validated_data,
-            role=licensee_role,
-            created_by=None  # Self-registered
-        )
+        with transaction.atomic():
+            # Create the user
+            user = CustomUser.objects.create_user(
+                **validated_data,
+                role=licensee_role,
+                created_by=None  # Self-registered
+            )
 
-        # Create the linked profile
-        LicenseeProfile.objects.create(
-            user=user,
-            created_by=None,
-            **profile_fields
-        )
+            # Create the linked profile
+            LicenseeProfile.objects.create(
+                user=user,
+                created_by=None,
+                **profile_fields
+            )
 
-        return user
+            return user
 
 
 class OICApprovedEstablishmentSerializer(serializers.Serializer):

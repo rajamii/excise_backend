@@ -126,9 +126,8 @@ class ProductionBatch(models.Model):
         logger = logging.getLogger(__name__)
         is_new = self.pk is None
         
-        if is_new:
-            # Use transaction to ensure atomicity
-            with transaction.atomic():
+        with transaction.atomic():
+            if is_new:
                 # For new production batches, update the brand warehouse stock
                 self.stock_before = self.brand_warehouse.current_stock
                 self.stock_after = self.stock_before + self.quantity_produced
@@ -146,8 +145,8 @@ class ProductionBatch(models.Model):
                 self.brand_warehouse.update_status()
                 
                 logger.info(f"✅ Brand warehouse stock updated successfully: {self.brand_warehouse.current_stock} units")
-        
-        super().save(*args, **kwargs)
+            
+            super().save(*args, **kwargs)
 
     @property
     def formatted_reference(self):

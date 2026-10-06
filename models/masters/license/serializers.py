@@ -108,6 +108,10 @@ class LicenseDetailSerializer(serializers.ModelSerializer):
                 "license_type": source.license_type.license_type,
                 "license_sub_category": source.license_sub_category.description,
                 "mode_of_operation": source.get_mode_of_operation_display(),
+                "mini_bar": getattr(source, "mini_bar", False),
+                "mini_bar_quantity": getattr(source, "mini_bar_quantity", 0) or 0,
+                "draught_beer": getattr(source, "draught_beer", False),
+                "pachwai": getattr(source, "pachwai", False),
             }
 
         # RENEWAL / EXISTING LICENSE (LA)

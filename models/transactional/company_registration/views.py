@@ -410,23 +410,21 @@ def pay_company_registration_fee(request, application_id):
     license_fee_hoa = _resolve_hoa_code(module_type="other", wallet_type="license_fee")
 
     txn_id = secrets.token_hex(12).upper()
-    try:
-        debit_wallet_balance(
-            transaction_id=txn_id,
-            licensee_id=wallet_licensee_id,
-            wallet_type="license_fee",
-            head_of_account=license_fee_hoa,
-            amount=amount,
-            user_id=wallet_licensee_id,
-            remarks=f"Company Registration fee paid for {application.application_id}",
-            reference_no=application.application_id,
-        )
-    except Exception as exc:
-        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Advance to Approved stage
+    # Advance to Approved stage with atomic wallet debit
     try:
         with transaction.atomic():
+            debit_wallet_balance(
+                transaction_id=txn_id,
+                licensee_id=wallet_licensee_id,
+                wallet_type="license_fee",
+                head_of_account=license_fee_hoa,
+                amount=amount,
+                user_id=wallet_licensee_id,
+                remarks=f"Company Registration fee paid for {application.application_id}",
+                reference_no=application.application_id,
+            )
+
             application.payment_amount = amount
             application.payment_remarks = f"Paid via license wallet. Trans ID: {txn_id}"
             application.is_approved = True
@@ -458,8 +456,10 @@ def pay_company_registration_fee(request, application_id):
                         lic.save(update_fields=["is_active"])
                 except Exception as lic_err:
                     pass
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as exc:
-        return Response({"detail": f"Payment succeeded but workflow advance failed: {str(exc)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({"detail": f"Payment and workflow advance failed: {str(exc)}"}, status=status.HTTP_400_BAD_REQUEST)
 
     return Response({"success": True, "transaction_id": txn_id})
 

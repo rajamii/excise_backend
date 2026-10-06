@@ -460,44 +460,43 @@ def pay_registration_fee_wallet(request, application_id):
 
     txn_id = secrets.token_hex(12).upper()
     try:
-        debit_wallet_balance(
-            transaction_id=txn_id,
-            licensee_id=wallet_licensee_id,
-            wallet_type="license_fee",
-            head_of_account=license_fee_hoa,
-            amount=amount,
-            user_id=str(getattr(request.user, "username", "") or "").strip(),
-            remarks=f"Salesman/Barman registration fee paid for {application.application_id}",
-            reference_no=application.application_id,
-        )
-    except Exception as exc:
-        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-    # Advance to final approved stage if configured.
-    try:
-        if not application.is_approved:
-            application.is_approved = True
-        if hasattr(application, "is_print_fee_paid") and not application.is_print_fee_paid:
-            application.is_print_fee_paid = True
-        application.save(update_fields=["is_approved", "is_print_fee_paid"])
-
-        approved_stage = (
-            application.workflow.stages.filter(name__iexact="approved").order_by("id").first()
-            if getattr(application, "workflow_id", None)
-            else None
-        )
-        if approved_stage:
-            WorkflowService.advance_stage(
-                application=application,
-                user=request.user,
-                target_stage=approved_stage,
-                context={"action": "PAY"},
-                remarks="Salesman/Barman registration fee paid via wallet",
+        with transaction.atomic():
+            debit_wallet_balance(
+                transaction_id=txn_id,
+                licensee_id=wallet_licensee_id,
+                wallet_type="license_fee",
+                head_of_account=license_fee_hoa,
+                amount=amount,
+                user_id=str(getattr(request.user, "username", "") or "").strip(),
+                remarks=f"Salesman/Barman registration fee paid for {application.application_id}",
+                reference_no=application.application_id,
             )
-            application.refresh_from_db()
-    except Exception:
-        # Payment succeeded; keep stage as-is if workflow advance fails.
-        pass
+
+            # Advance to final approved stage if configured.
+            if not application.is_approved:
+                application.is_approved = True
+            if hasattr(application, "is_print_fee_paid") and not application.is_print_fee_paid:
+                application.is_print_fee_paid = True
+            application.save(update_fields=["is_approved", "is_print_fee_paid"])
+
+            approved_stage = (
+                application.workflow.stages.filter(name__iexact="approved").order_by("id").first()
+                if getattr(application, "workflow_id", None)
+                else None
+            )
+            if approved_stage:
+                WorkflowService.advance_stage(
+                    application=application,
+                    user=request.user,
+                    target_stage=approved_stage,
+                    context={"action": "PAY"},
+                    remarks="Salesman/Barman registration fee paid via wallet",
+                )
+                application.refresh_from_db()
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as exc:
+        return Response({"detail": f"Payment and workflow advance failed: {str(exc)}"}, status=status.HTTP_400_BAD_REQUEST)
 
     return Response({"success": True, "transaction_id": txn_id})
 
@@ -685,12 +684,12 @@ def initiate_renewal(request, license_id):
             source_object_id=old_app.pk,
         )
 
-    # Log submission transaction
-    WorkflowService.submit_application(
-        application=new_application,
-        user=request.user,
-        remarks="Renewal application initiated and submitted successfully (Salesman/Barman)"
-    )
+        # Log submission transaction
+        WorkflowService.submit_application(
+            application=new_application,
+            user=request.user,
+            remarks="Renewal application initiated and submitted successfully (Salesman/Barman)"
+        )
 
     # Return serialized renewal application data
     from models.transactional.license_renewal_application.views import _serialize_renewal_application

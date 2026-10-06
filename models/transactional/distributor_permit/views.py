@@ -151,50 +151,51 @@ def revert_holograms_for_requisition(application, user=None, reason=None):
     actor_name = _get_user_display_name(user)
     rev_reason = str(reason or 'Requisition Cancelled / Rejected').strip()
 
-    # 1. Update IMFLHologramDetails.used_hologram_ranges
-    for holo in IMFLHologramDetails.objects.all():
-        used_list = list(holo.used_hologram_ranges or [])
-        changed = False
-        for entry in used_list:
-            if isinstance(entry, dict):
-                entry_ref = str(entry.get('requisition_ref_no') or entry.get('permit_application_ref') or '').strip()
-                entry_permit = str(entry.get('permit_number') or '').strip()
-                matches = False
-                if req_ref and entry_ref.lower() == req_ref.lower():
-                    matches = True
-                if permit_num and entry_permit.lower() == permit_num.lower():
-                    matches = True
-                if req_ref and entry_permit.lower() == req_ref.lower():
-                    matches = True
+    with transaction.atomic():
+        # 1. Update IMFLHologramDetails.used_hologram_ranges
+        for holo in IMFLHologramDetails.objects.all():
+            used_list = list(holo.used_hologram_ranges or [])
+            changed = False
+            for entry in used_list:
+                if isinstance(entry, dict):
+                    entry_ref = str(entry.get('requisition_ref_no') or entry.get('permit_application_ref') or '').strip()
+                    entry_permit = str(entry.get('permit_number') or '').strip()
+                    matches = False
+                    if req_ref and entry_ref.lower() == req_ref.lower():
+                        matches = True
+                    if permit_num and entry_permit.lower() == permit_num.lower():
+                        matches = True
+                    if req_ref and entry_permit.lower() == req_ref.lower():
+                        matches = True
 
-                if matches and str(entry.get('status', '')).upper() != 'REVERTED':
-                    entry['status'] = 'REVERTED'
-                    entry['reverted_at'] = now_iso
-                    entry['reverted_by'] = actor_name
-                    entry['reversion_reason'] = rev_reason
-                    entry['activity_type'] = 'REVERTED'
-                    entry['activity_label'] = 'Reverted to Stock (Cancelled/Rejected)'
-                    entry['notes'] = f"Allocated holograms ({entry.get('from')} → {entry.get('to')}) restored to stock: {rev_reason}"
-                    changed = True
+                    if matches and str(entry.get('status', '')).upper() != 'REVERTED':
+                        entry['status'] = 'REVERTED'
+                        entry['reverted_at'] = now_iso
+                        entry['reverted_by'] = actor_name
+                        entry['reversion_reason'] = rev_reason
+                        entry['activity_type'] = 'REVERTED'
+                        entry['activity_label'] = 'Reverted to Stock (Cancelled/Rejected)'
+                        entry['notes'] = f"Allocated holograms ({entry.get('from')} → {entry.get('to')}) restored to stock: {rev_reason}"
+                        changed = True
 
-        if changed:
-            holo.used_hologram_ranges = used_list
-            holo.save(update_fields=['used_hologram_ranges', 'updated_at'])
+            if changed:
+                holo.used_hologram_ranges = used_list
+                holo.save(update_fields=['used_hologram_ranges', 'updated_at'])
 
-    # 2. Update application.assigned_hologram_ranges
-    if isinstance(application, DistributorPermitApplication):
-        assigned = list(application.assigned_hologram_ranges or [])
-        assigned_changed = False
-        for a in assigned:
-            if isinstance(a, dict) and str(a.get('status', '')).upper() != 'REVERTED':
-                a['status'] = 'REVERTED'
-                a['reverted_at'] = now_iso
-                a['reverted_by'] = actor_name
-                a['reversion_reason'] = rev_reason
-                assigned_changed = True
-        if assigned_changed:
-            application.assigned_hologram_ranges = assigned
-            application.save(update_fields=['assigned_hologram_ranges'])
+        # 2. Update application.assigned_hologram_ranges
+        if isinstance(application, DistributorPermitApplication):
+            assigned = list(application.assigned_hologram_ranges or [])
+            assigned_changed = False
+            for a in assigned:
+                if isinstance(a, dict) and str(a.get('status', '')).upper() != 'REVERTED':
+                    a['status'] = 'REVERTED'
+                    a['reverted_at'] = now_iso
+                    a['reverted_by'] = actor_name
+                    a['reversion_reason'] = rev_reason
+                    assigned_changed = True
+            if assigned_changed:
+                application.assigned_hologram_ranges = assigned
+                application.save(update_fields=['assigned_hologram_ranges'])
 
 
 class DistributorRoleRequiredMixin:
@@ -2468,68 +2469,71 @@ class IMFLRevalidationViewSet(viewsets.ModelViewSet):
                 "Revalidation is not permitted for arrived permits. Please update arrival in the Arrival Register."
             )
 
-        serializer.save(
-            reference_no=ref_no,
-            applicant=self.request.user,
-            distributor_permit=distributor_permit,
-            submitted_at=timezone.now(),
-            workflow=workflow,
-            current_stage=initial_stage,
-            status=status_name,
-            revalidated_permit_number=target_permit_no or (distributor_permit.reference_no if distributor_permit else ''),
-            permit_wise_details=p_details
-        )
-        invalidate_dashboard_counts_cache()
-
-        # Debit Rs.5000 revalidation fee per permit from Excise wallet
-        try:
-            from decimal import Decimal
-            permit_numbers_in_details = list({
-                str(p.get('permit_number', '')).strip()
-                for p in p_details
-                if isinstance(p, dict) and p.get('permit_number')
-            }) if p_details else []
-            num_permits = len(permit_numbers_in_details) or 1
-            revalidation_fee = Decimal('5000.00') * num_permits
-
-            user_obj = self.request.user
-            dist_applicant = getattr(distributor_permit, 'applicant', None) or user_obj
-            username = str(getattr(user_obj, 'username', '') or getattr(dist_applicant, 'username', '') or '').strip()
-
-            raw_licensee_id = str(
-                getattr(distributor_permit, 'licensee_id', None) or
-                getattr(dist_applicant, 'licensee_id', None) or
-                getattr(dist_applicant, 'username', None) or
-                username
-            ).strip()
-
-            from django.db.models import Q
-            from models.transactional.wallet.models import WalletBalance
-            wb = WalletBalance.objects.filter(
-                Q(licensee_id__iexact=raw_licensee_id) |
-                Q(user_id__iexact=raw_licensee_id) |
-                Q(user_id__iexact=username)
-            ).first()
-
-            licensee_id = str(wb.licensee_id).strip() if (wb and wb.licensee_id) else raw_licensee_id
-            from models.transactional.wallet.wallet_service import debit_wallet_balance
-
-            debit_wallet_balance(
-                transaction_id=f'PAY-EXCISE-REVAL-FEE-{ref_no}',
-                licensee_id=licensee_id,
-                wallet_type='excise',
-                head_of_account='0039-00-105-45-01',
-                amount=revalidation_fee,
-                user_id=username,
-                source_module='imfl_permit_revalidation_fee',
+        with transaction.atomic():
+            serializer.save(
                 reference_no=ref_no,
-                remarks=f'IMFL Permit Revalidation Fee (Rs. {revalidation_fee} for {num_permits} permit(s)) for Ref #{ref_no}'
+                applicant=self.request.user,
+                distributor_permit=distributor_permit,
+                submitted_at=timezone.now(),
+                workflow=workflow,
+                current_stage=initial_stage,
+                status=status_name,
+                revalidated_permit_number=target_permit_no or (distributor_permit.reference_no if distributor_permit else ''),
+                permit_wise_details=p_details
             )
-        except Exception as err:
-            logging.getLogger(__name__).error(
-                "IMFL revalidation wallet fee FAILED for %s: %s\n%s",
-                ref_no, err, traceback.format_exc()
-            )
+            invalidate_dashboard_counts_cache()
+
+            # Debit Rs.5000 revalidation fee per permit from Excise wallet
+            try:
+                from decimal import Decimal
+                permit_numbers_in_details = list({
+                    str(p.get('permit_number', '')).strip()
+                    for p in p_details
+                    if isinstance(p, dict) and p.get('permit_number')
+                }) if p_details else []
+                num_permits = len(permit_numbers_in_details) or 1
+                revalidation_fee = Decimal('5000.00') * num_permits
+
+                user_obj = self.request.user
+                dist_applicant = getattr(distributor_permit, 'applicant', None) or user_obj
+                username = str(getattr(user_obj, 'username', '') or getattr(dist_applicant, 'username', '') or '').strip()
+
+                raw_licensee_id = str(
+                    getattr(distributor_permit, 'licensee_id', None) or
+                    getattr(dist_applicant, 'licensee_id', None) or
+                    getattr(dist_applicant, 'username', None) or
+                    username
+                ).strip()
+
+                from django.db.models import Q
+                from models.transactional.wallet.models import WalletBalance
+                wb = WalletBalance.objects.filter(
+                    Q(licensee_id__iexact=raw_licensee_id) |
+                    Q(user_id__iexact=raw_licensee_id) |
+                    Q(user_id__iexact=username)
+                ).first()
+
+                licensee_id = str(wb.licensee_id).strip() if (wb and wb.licensee_id) else raw_licensee_id
+                from models.transactional.wallet.wallet_service import debit_wallet_balance
+
+                debit_wallet_balance(
+                    transaction_id=f'PAY-EXCISE-REVAL-FEE-{ref_no}',
+                    licensee_id=licensee_id,
+                    wallet_type='excise',
+                    head_of_account='0039-00-105-45-01',
+                    amount=revalidation_fee,
+                    user_id=username,
+                    source_module='imfl_permit_revalidation_fee',
+                    reference_no=ref_no,
+                    remarks=f'IMFL Permit Revalidation Fee (Rs. {revalidation_fee} for {num_permits} permit(s)) for Ref #{ref_no}'
+                )
+            except Exception as err:
+                import traceback
+                logging.getLogger(__name__).error(
+                    "IMFL revalidation wallet fee FAILED for %s: %s\n%s",
+                    ref_no, err, traceback.format_exc()
+                )
+                raise
 
 
     @action(detail=True, methods=['post'], url_path='perform_action')
@@ -2653,174 +2657,176 @@ class IMFLCancellationViewSet(viewsets.ModelViewSet):
             else:
                 p_details = app_pdetails
 
-        cancellation_obj = serializer.save(
-            reference_no=ref_no,
-            applicant=self.request.user,
-            cancelled_permit_number=target_permit_no,
-            permit_wise_details=p_details,
-            submitted_at=timezone.now(),
-            workflow=workflow,
-            current_stage=initial_stage,
-            status=status_name
-        )
-
-        # Cancel any pending or processed revalidation activation schedules for this permit/requisition
-        if distributor_permit and target_permit_no:
-            for p in str(target_permit_no).split(','):
-                p_trim = p.strip()
-                if p_trim:
-                    IMFLRevalidationActivationSchedule.objects.filter(
-                        distributor_permit=distributor_permit,
-                        permit_number=p_trim
-                    ).update(status=IMFLRevalidationActivationSchedule.STATUS_CANCELLED)
-        elif distributor_permit:
-            IMFLRevalidationActivationSchedule.objects.filter(
-                distributor_permit=distributor_permit
-            ).update(status=IMFLRevalidationActivationSchedule.STATUS_CANCELLED)
-
-        try:
-            total_import_fee = Decimal('0.00')
-            total_add_ed = Decimal('0.00')
-            total_edu_cess = Decimal('0.00')
-
-            line_items = []
-            if distributor_permit:
-                app_line_items = list(getattr(distributor_permit, 'line_items', []).all() if hasattr(distributor_permit, 'line_items') else [])
-                if target_permit_no and app_line_items:
-                    matched = [item for item in app_line_items if str(getattr(item, 'permit_number', '')).lower() == str(target_permit_no).lower()]
-                    if matched:
-                        line_items = matched
-
-            if p_details:
-                for p in p_details:
-                    if isinstance(p, dict):
-                        p_cases = Decimal(str(p.get('total_cases', 0) or p.get('cases', 0) or 0))
-                        p_import = Decimal(str(p.get('total_import_fee', 0) or p.get('total_import', 0) or 0))
-                        p_add_ed = Decimal(str(p.get('total_additional_ed', 0) or 0))
-                        p_cess = Decimal(str(p.get('total_education_cess', 0) or 0))
-
-                        items = p.get('line_items') or p.get('items') or []
-                        if items:
-                            for item in items:
-                                if isinstance(item, dict):
-                                    cases = Decimal(str(item.get('cases', 0) or p_cases or 0))
-                                    imp_fee = Decimal(str(item.get('total_import') or item.get('totalImport') or (Decimal(str(item.get('import_pass_fee_per_case', 1400) or 1400)) * cases)))
-                                    add_ed = Decimal(str(item.get('total_additional_ed') or item.get('totalAddEd') or (Decimal(str(item.get('additional_ed_per_case', 350) or 350)) * cases)))
-                                    cess = Decimal(str(item.get('total_education_cess') or item.get('cess') or (Decimal(str(item.get('education_cess_per_case', 60) or 60)) * cases)))
-
-                                    total_import_fee += imp_fee
-                                    total_add_ed += add_ed
-                                    total_edu_cess += cess
-                        else:
-                            total_import_fee += p_import if p_import > 0 else (Decimal('1400.00') * p_cases)
-                            total_add_ed += p_add_ed
-                            total_edu_cess += p_cess if p_cess > 0 else (Decimal('60.00') * p_cases)
-
-            if total_import_fee == 0 and line_items:
-                for item in line_items:
-                    imp_rate = Decimal(str(getattr(item, 'import_pass_fee_per_case', 1400) or 1400))
-                    add_rate = Decimal(str(getattr(item, 'additional_ed_per_case', 350) or 350))
-                    cess_rate = Decimal(str(getattr(item, 'education_cess_per_case', 60) or 60))
-                    cases = Decimal('1.00')
-                    total_import_fee += (imp_rate * cases)
-                    total_add_ed += (add_rate * cases)
-                    total_edu_cess += (cess_rate * cases)
-
-            # Cancellation fee = Rs.5000 per permit being cancelled
-            permit_numbers_in_details = list({
-                str(p.get('permit_number', '')).strip()
-                for p in p_details
-                if isinstance(p, dict) and p.get('permit_number')
-            }) if p_details else []
-            num_permits = len(permit_numbers_in_details) or 1
-            cancellation_fee = Decimal('5000.00') * num_permits
-
-            user_obj = self.request.user
-            dist_applicant = getattr(distributor_permit, 'applicant', None) or user_obj
-            username = str(getattr(user_obj, 'username', '') or getattr(dist_applicant, 'username', '') or '').strip()
-
-            raw_licensee_id = str(
-                getattr(distributor_permit, 'licensee_id', None) or
-                getattr(dist_applicant, 'licensee_id', None) or
-                getattr(dist_applicant, 'username', None) or
-                username
-            ).strip()
-
-            from django.db.models import Q
-            from models.transactional.wallet.models import WalletBalance
-            wb = WalletBalance.objects.filter(
-                Q(licensee_id__iexact=raw_licensee_id) |
-                Q(user_id__iexact=raw_licensee_id) |
-                Q(user_id__iexact=username)
-            ).first()
-
-            licensee_id = str(wb.licensee_id).strip() if (wb and wb.licensee_id) else raw_licensee_id
-            from models.transactional.wallet.wallet_service import debit_wallet_balance, credit_wallet_balance
-
-            # 1. Debit Cancellation Processing Fee (Rs.5000 per permit) from Excise wallet
-            debit_wallet_balance(
-                transaction_id=f"PAY-EXCISE-CAN-FEE-{ref_no}",
-                licensee_id=licensee_id,
-                wallet_type="excise",
-                head_of_account="0039-00-105-45-01",
-                amount=cancellation_fee,
-                user_id=username,
-                source_module="imfl_permit_cancellation_fee",
+        with transaction.atomic():
+            cancellation_obj = serializer.save(
                 reference_no=ref_no,
-                remarks=f"IMFL Cancellation Processing Fee (Rs. {cancellation_fee} for {num_permits} permit(s)) for Ref #{ref_no}"
+                applicant=self.request.user,
+                cancelled_permit_number=target_permit_no,
+                permit_wise_details=p_details,
+                submitted_at=timezone.now(),
+                workflow=workflow,
+                current_stage=initial_stage,
+                status=status_name
             )
 
-            # 2. Credit Excise Duty Refund (Import Pass Fee) — Excise wallet
-            if total_import_fee > 0:
-                credit_wallet_balance(
-                    transaction_id=f"PAY-EXCISE-ED-REFUND-{ref_no}",
+            # Cancel any pending or processed revalidation activation schedules for this permit/requisition
+            if distributor_permit and target_permit_no:
+                for p in str(target_permit_no).split(','):
+                    p_trim = p.strip()
+                    if p_trim:
+                        IMFLRevalidationActivationSchedule.objects.filter(
+                            distributor_permit=distributor_permit,
+                            permit_number=p_trim
+                        ).update(status=IMFLRevalidationActivationSchedule.STATUS_CANCELLED)
+            elif distributor_permit:
+                IMFLRevalidationActivationSchedule.objects.filter(
+                    distributor_permit=distributor_permit
+                ).update(status=IMFLRevalidationActivationSchedule.STATUS_CANCELLED)
+
+            try:
+                total_import_fee = Decimal('0.00')
+                total_add_ed = Decimal('0.00')
+                total_edu_cess = Decimal('0.00')
+
+                line_items = []
+                if distributor_permit:
+                    app_line_items = list(getattr(distributor_permit, 'line_items', []).all() if hasattr(distributor_permit, 'line_items') else [])
+                    if target_permit_no and app_line_items:
+                        matched = [item for item in app_line_items if str(getattr(item, 'permit_number', '')).lower() == str(target_permit_no).lower()]
+                        if matched:
+                            line_items = matched
+
+                if p_details:
+                    for p in p_details:
+                        if isinstance(p, dict):
+                            p_cases = Decimal(str(p.get('total_cases', 0) or p.get('cases', 0) or 0))
+                            p_import = Decimal(str(p.get('total_import_fee', 0) or p.get('total_import', 0) or 0))
+                            p_add_ed = Decimal(str(p.get('total_additional_ed', 0) or 0))
+                            p_cess = Decimal(str(p.get('total_education_cess', 0) or 0))
+
+                            items = p.get('line_items') or p.get('items') or []
+                            if items:
+                                for item in items:
+                                    if isinstance(item, dict):
+                                        cases = Decimal(str(item.get('cases', 0) or p_cases or 0))
+                                        imp_fee = Decimal(str(item.get('total_import') or item.get('totalImport') or (Decimal(str(item.get('import_pass_fee_per_case', 1400) or 1400)) * cases)))
+                                        add_ed = Decimal(str(item.get('total_additional_ed') or item.get('totalAddEd') or (Decimal(str(item.get('additional_ed_per_case', 350) or 350)) * cases)))
+                                        cess = Decimal(str(item.get('total_education_cess') or item.get('cess') or (Decimal(str(item.get('education_cess_per_case', 60) or 60)) * cases)))
+
+                                        total_import_fee += imp_fee
+                                        total_add_ed += add_ed
+                                        total_edu_cess += cess
+                            else:
+                                total_import_fee += p_import if p_import > 0 else (Decimal('1400.00') * p_cases)
+                                total_add_ed += p_add_ed
+                                total_edu_cess += p_cess if p_cess > 0 else (Decimal('60.00') * p_cases)
+
+                if total_import_fee == 0 and line_items:
+                    for item in line_items:
+                        imp_rate = Decimal(str(getattr(item, 'import_pass_fee_per_case', 1400) or 1400))
+                        add_rate = Decimal(str(getattr(item, 'additional_ed_per_case', 350) or 350))
+                        cess_rate = Decimal(str(getattr(item, 'education_cess_per_case', 60) or 60))
+                        cases = Decimal('1.00')
+                        total_import_fee += (imp_rate * cases)
+                        total_add_ed += (add_rate * cases)
+                        total_edu_cess += (cess_rate * cases)
+
+                # Cancellation fee = Rs.5000 per permit being cancelled
+                permit_numbers_in_details = list({
+                    str(p.get('permit_number', '')).strip()
+                    for p in p_details
+                    if isinstance(p, dict) and p.get('permit_number')
+                }) if p_details else []
+                num_permits = len(permit_numbers_in_details) or 1
+                cancellation_fee = Decimal('5000.00') * num_permits
+
+                user_obj = self.request.user
+                dist_applicant = getattr(distributor_permit, 'applicant', None) or user_obj
+                username = str(getattr(user_obj, 'username', '') or getattr(dist_applicant, 'username', '') or '').strip()
+
+                raw_licensee_id = str(
+                    getattr(distributor_permit, 'licensee_id', None) or
+                    getattr(dist_applicant, 'licensee_id', None) or
+                    getattr(dist_applicant, 'username', None) or
+                    username
+                ).strip()
+
+                from django.db.models import Q
+                from models.transactional.wallet.models import WalletBalance
+                wb = WalletBalance.objects.filter(
+                    Q(licensee_id__iexact=raw_licensee_id) |
+                    Q(user_id__iexact=raw_licensee_id) |
+                    Q(user_id__iexact=username)
+                ).first()
+
+                licensee_id = str(wb.licensee_id).strip() if (wb and wb.licensee_id) else raw_licensee_id
+                from models.transactional.wallet.wallet_service import debit_wallet_balance, credit_wallet_balance
+
+                # 1. Debit Cancellation Processing Fee (Rs.5000 per permit) from Excise wallet
+                debit_wallet_balance(
+                    transaction_id=f"PAY-EXCISE-CAN-FEE-{ref_no}",
                     licensee_id=licensee_id,
                     wallet_type="excise",
                     head_of_account="0039-00-105-45-01",
-                    amount=total_import_fee,
+                    amount=cancellation_fee,
                     user_id=username,
-                    source_module="imfl_permit_cancellation_excise",
-                    transaction_type="refund",
+                    source_module="imfl_permit_cancellation_fee",
                     reference_no=ref_no,
-                    remarks=f"IMFL Cancellation Excise Duty Refund (Import Pass Fee Rs. {total_import_fee}) for Ref #{ref_no}"
+                    remarks=f"IMFL Cancellation Processing Fee (Rs. {cancellation_fee} for {num_permits} permit(s)) for Ref #{ref_no}"
                 )
 
-            # 3. Credit Additional Excise Duty Refund — stored as additional_excise (uses excise wallet balance row)
-            if total_add_ed > 0:
-                credit_wallet_balance(
-                    transaction_id=f"PAY-EXCISE-ADD-REFUND-{ref_no}",
-                    licensee_id=licensee_id,
-                    wallet_type="additional_excise",
-                    head_of_account="0039-00-105-45-01",
-                    amount=total_add_ed,
-                    user_id=username,
-                    source_module="imfl_permit_cancellation_additional_ed",
-                    transaction_type="refund",
-                    reference_no=ref_no,
-                    remarks=f"IMFL Cancellation Additional Excise Duty Refund (Add. ED Rs. {total_add_ed}) for Ref #{ref_no}"
-                )
+                # 2. Credit Excise Duty Refund (Import Pass Fee) — Excise wallet
+                if total_import_fee > 0:
+                    credit_wallet_balance(
+                        transaction_id=f"PAY-EXCISE-ED-REFUND-{ref_no}",
+                        licensee_id=licensee_id,
+                        wallet_type="excise",
+                        head_of_account="0039-00-105-45-01",
+                        amount=total_import_fee,
+                        user_id=username,
+                        source_module="imfl_permit_cancellation_excise",
+                        transaction_type="refund",
+                        reference_no=ref_no,
+                        remarks=f"IMFL Cancellation Excise Duty Refund (Import Pass Fee Rs. {total_import_fee}) for Ref #{ref_no}"
+                    )
 
-            # 4. Credit Education Cess Refund — Education Cess wallet
-            if total_edu_cess > 0:
-                credit_wallet_balance(
-                    transaction_id=f"PAY-CESS-REFUND-{ref_no}",
-                    licensee_id=licensee_id,
-                    wallet_type="education_cess",
-                    head_of_account="0045-00-112-45-03",
-                    amount=total_edu_cess,
-                    user_id=username,
-                    source_module="imfl_permit_cancellation_education_cess",
-                    transaction_type="refund",
-                    reference_no=ref_no,
-                    remarks=f"IMFL Cancellation Education Cess Refund (Rs. {total_edu_cess}) for Ref #{ref_no}"
+                # 3. Credit Additional Excise Duty Refund — stored as additional_excise (uses excise wallet balance row)
+                if total_add_ed > 0:
+                    credit_wallet_balance(
+                        transaction_id=f"PAY-EXCISE-ADD-REFUND-{ref_no}",
+                        licensee_id=licensee_id,
+                        wallet_type="additional_excise",
+                        head_of_account="0039-00-105-45-01",
+                        amount=total_add_ed,
+                        user_id=username,
+                        source_module="imfl_permit_cancellation_additional_ed",
+                        transaction_type="refund",
+                        reference_no=ref_no,
+                        remarks=f"IMFL Cancellation Additional Excise Duty Refund (Add. ED Rs. {total_add_ed}) for Ref #{ref_no}"
+                    )
+
+                # 4. Credit Education Cess Refund — Education Cess wallet
+                if total_edu_cess > 0:
+                    credit_wallet_balance(
+                        transaction_id=f"PAY-CESS-REFUND-{ref_no}",
+                        licensee_id=licensee_id,
+                        wallet_type="education_cess",
+                        head_of_account="0045-00-112-45-03",
+                        amount=total_edu_cess,
+                        user_id=username,
+                        source_module="imfl_permit_cancellation_education_cess",
+                        transaction_type="refund",
+                        reference_no=ref_no,
+                        remarks=f"IMFL Cancellation Education Cess Refund (Rs. {total_edu_cess}) for Ref #{ref_no}"
+                    )
+            except Exception as err:
+                import logging
+                import traceback
+                logging.getLogger(__name__).error(
+                    "IMFL cancellation wallet refund FAILED for %s: %s\n%s",
+                    ref_no, err, traceback.format_exc()
                 )
-        except Exception as err:
-            import logging
-            import traceback
-            logging.getLogger(__name__).error(
-                "IMFL cancellation wallet refund FAILED for %s: %s\n%s",
-                ref_no, err, traceback.format_exc()
-            )
+                raise
 
 
     @action(detail=True, methods=['post'], url_path='perform_action')
