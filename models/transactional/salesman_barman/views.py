@@ -1001,6 +1001,7 @@ def dashboard_counts(request):
     )
 
     return Response({
+        "applied": pending_count + approved_count + rejected_count + objection_count,
         "pending": pending_count,
         "approved": approved_count,
         "rejected": rejected_count,

@@ -586,12 +586,16 @@ def dashboard_counts(request):
         role_rejected_stages = set(stage_sets['rejected'])
 
         forward_stages = set(reachable_from_role) - role_pending_stages - role_rejected_stages
+        pending_count = qs.filter(current_stage__name__in=role_pending_stages).count()
+        approved_count = qs.filter(current_stage__name__in=forward_stages | approved_stages).count()
+        rejected_count = qs.filter(current_stage__name__in=role_rejected_stages).count()
+        objection_count = qs.filter(current_stage__name__in=role_objection_stages).count()
         return Response({
-            'applied': qs.filter(current_stage__name__in=applied_stages).count(),
-            'pending': qs.filter(current_stage__name__in=role_pending_stages).count(),
-            'approved': qs.filter(current_stage__name__in=forward_stages | approved_stages).count(),
-            'rejected': qs.filter(current_stage__name__in=role_rejected_stages).count(),
-            'objection': qs.filter(current_stage__name__in=role_objection_stages).count(),
+            'applied': pending_count + approved_count + rejected_count + objection_count,
+            'pending': pending_count,
+            'approved': approved_count,
+            'rejected': rejected_count,
+            'objection': objection_count,
             'awaiting_payment': 0,
         }, status=status.HTTP_200_OK)
 
