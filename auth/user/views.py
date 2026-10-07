@@ -1116,10 +1116,13 @@ def send_otp_api(request):
 
     try:
         otp_obj, raw_otp = get_new_otp(phone_number)
-        return Response({
+        response_data = {
             'otp_id': str(otp_obj.id),
-            'otp': raw_otp  # REMOVE IN PRODUCTION
-        })
+        }
+        # Only expose OTP in response for registration (Sign Up), keeping login OTP hidden
+        if purpose == 'register':
+            response_data['otp'] = raw_otp
+        return Response(response_data)
     except ValueError as e:
         return Response({'error': str(e)}, status=status.HTTP_429_TOO_MANY_REQUESTS)
 
