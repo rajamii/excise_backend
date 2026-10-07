@@ -13,7 +13,7 @@ def generate_redis_captcha():
     
     # Fallback to default if the file isn't there yet
     fonts = [linux_font_path] if os.path.exists(linux_font_path) else None
-    image_generator = ImageCaptcha(width=160, height=60, fonts=fonts)
+    image_generator = ImageCaptcha(width=200, height=65, fonts=fonts)
     captcha_text = get_random_string(length=5, allowed_chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789')
     hashkey = uuid.uuid4().hex
     
