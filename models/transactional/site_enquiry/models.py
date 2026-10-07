@@ -29,8 +29,7 @@ class SiteEnquiryReport(models.Model):
     traditional_place_name = models.CharField(max_length=1000, blank=True)
     traditional_place_nature = models.CharField(max_length=1000, blank=True)
     traditional_place_construction = models.CharField(
-        max_length=20,
-        choices=[('rcc', 'RCC'), ('wooden_structure', 'Wooden Structure'), ('temporary', 'Temporary')],
+        max_length=500,
         blank=True, null=True
     )
 
@@ -54,9 +53,10 @@ class SiteEnquiryReport(models.Model):
     is_interconnected_with_shops = models.BooleanField(default=False)
     interconnectivity_remarks = models.TextField(blank=True)
 
+    has_shop_construction = models.BooleanField(default=True)
     shop_construction_type = models.CharField(
-        max_length=20,
-        choices=[('rcc', 'RCC'), ('wooden_structure', 'Wooden Structure'), ('temporary', 'Temporary')],
+        max_length=500,
+        blank=True, default=''
     )
     has_excise_shops_nearby = models.BooleanField(default=False)
     nearby_excise_shop_count = models.IntegerField(default=0)
