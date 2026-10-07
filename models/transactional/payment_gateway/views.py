@@ -1771,21 +1771,37 @@ def billdesk_response(request):
 
     _process_billdesk_transaction(transaction_response)
 
+    gateway = PaymentGatewayParameters.objects.filter(
+        is_active=True, payment_gateway_name__iexact="Billdesk"
+    ).order_by("sl_no").first()
+    
+    encryption_key = str(getattr(settings, "BILLDESK_ENCRYPTION_KEY", "") or getattr(gateway, "encryption_key", "") or "").strip()
+    signing_key = str(getattr(settings, "BILLDESK_SIGNING_KEY", "")).strip()
+    
     try:
-        resp_data = _decode_jws_payload(transaction_response)
+        resp_data = decrypt_and_verify_billdesk_response(
+            transaction_response,
+            encryption_key=encryption_key,
+            signing_key=signing_key
+        )
         txn_ref = resp_data.get("orderid", "")
     except Exception:
-        txn_ref = ""
+        try:
+            resp_data = _decode_jws_payload(transaction_response)
+            txn_ref = resp_data.get("orderid", "")
+        except Exception:
+            txn_ref = ""
 
     tx = None
     if txn_ref:
         tx = PaymentBilldeskTransaction.objects.filter(utr=txn_ref).first() or \
              PaymentBilldeskTransaction.objects.filter(transaction_id_no_hoa=txn_ref).first()
-
-    gateway = PaymentGatewayParameters.objects.filter(
-        is_active=True, 
-        payment_gateway_name__iexact="Billdesk"
-    ).order_by("sl_no").first()
+             
+    if not gateway:
+        gateway = PaymentGatewayParameters.objects.filter(
+            is_active=True, 
+            payment_gateway_name__iexact="Billdesk"
+        ).order_by("sl_no").first()
     
     base_redirect_url = getattr(gateway, "frontend_success_url", "/") or "/"
 
@@ -1814,8 +1830,6 @@ def billdesk_response(request):
             "moduleCode": module_code_val,
             "payer_id": payer_id_val,
             "payerId": payer_id_val,
-            "application_id": payer_id_val,
-            "applicationId": payer_id_val,
             "createdAt": credit_time,
             "created_at": credit_time,
             "creditedAt": credit_time,
@@ -1824,13 +1838,16 @@ def billdesk_response(request):
             "txnDate": credit_time_iso,
         }
 
-        # Enrich params if this is a New License Application payment
         is_nla_payment = (
             module_code_val == DEFAULT_NEW_LICENSE_APPLICATION_MODULE_CODE
             or payer_id_val.upper().startswith("NLA")
             or payer_id_val.upper().startswith("APP")
         )
         if is_nla_payment:
+
+            params["application_id"] = payer_id_val
+            params["applicationId"] = payer_id_val
+            
             receipt_url = getattr(settings, "PAYMENT_GATEWAY_FRONTEND_NEW_LICENSE_RECEIPT_URL", "")
             if receipt_url:
                 base_redirect_url = receipt_url
