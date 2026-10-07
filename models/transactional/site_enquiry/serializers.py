@@ -9,6 +9,7 @@ class SiteEnquiryReportSerializer(serializers.ModelSerializer):
     # Backward-compatible aliases used by some frontend screens.
     site_enquiry_is_reverted = serializers.BooleanField(source='is_reverted', read_only=True)
     revertedRemarks = serializers.CharField(source='reverted_remarks', read_only=True)
+    revert_history = serializers.SerializerMethodField()
 
     class Meta:
         model = SiteEnquiryReport
@@ -24,14 +25,35 @@ class SiteEnquiryReportSerializer(serializers.ModelSerializer):
             'is_reverted',
             'reverted_remarks',
             'reverted_at',
+            'revert_history',
         ]
+
+    def get_revert_history(self, obj):
+        try:
+            from auth.workflow.models import Revert
+            reverts = Revert.objects.filter(
+                content_type=obj.content_type,
+                object_id=obj.object_id
+            ).order_by('-reverted_on')
+            return [
+                {
+                    "id": r.id,
+                    "remarks": r.remarks or "",
+                    "reverted_on": r.reverted_on.isoformat() if r.reverted_on else None,
+                    "reverted_by": getattr(r.reverted_by, "username", None) or "Joint Commissioner",
+                    "stage": getattr(r.stage, "name", None) or "Site Enquiry Officer"
+                }
+                for r in reverts
+            ]
+        except Exception:
+            return []
 
     def validate_shop_image_document(self, value):
         validate_uploaded_file(
             value,
-            allowed_extensions=['jpg', 'jpeg', 'png', 'webp', 'pdf'],
-            allowed_mime_types=['image/jpeg', 'image/png', 'image/webp', 'application/pdf'],
+            allowed_extensions=['pdf'],
+            allowed_mime_types=['application/pdf'],
             max_size_bytes=5 * 1024 * 1024,
-            field_label='Shop image document'
+            field_label='Shop image document (PDF)'
         )
         return value
