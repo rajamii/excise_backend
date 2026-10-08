@@ -941,6 +941,12 @@ class WorkflowService:
             metadata=context or {}
         )
 
+        try:
+            from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
+            invalidate_dashboard_counts_cache()
+        except Exception:
+            pass
+
     @staticmethod
     def _resolve_to_stage_recipients(application, target_stage, action="FORWARD", context=None, forwarded_to=None, user_for_txn=None):
         ctx = context or {}
@@ -1178,6 +1184,12 @@ class WorkflowService:
             remarks=remarks or "Objection raised",
             metadata={"objections": objections}
         )
+
+        try:
+            from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
+            invalidate_dashboard_counts_cache()
+        except Exception:
+            pass
 
 
     @staticmethod
@@ -1493,6 +1505,11 @@ class WorkflowService:
                 remarks=remarks or "Objections resolved",
                 metadata={"updated_fields": list((updated_fields or {}).keys())}
             )
+            try:
+                from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
+                invalidate_dashboard_counts_cache()
+            except Exception:
+                pass
             return
 
         def _is_payment_stage(stage):
@@ -1567,6 +1584,11 @@ class WorkflowService:
             remarks=remarks or "Objections resolved",
             metadata={"updated_fields": list((updated_fields or {}).keys())}
         )
+        try:
+            from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
+            invalidate_dashboard_counts_cache()
+        except Exception:
+            pass
 
     @staticmethod
     @transaction.atomic
@@ -1625,6 +1647,11 @@ class WorkflowService:
             status=f"Application Rejected at stage {getattr(target_stage, 'name', '')}",
             remarks=remarks
         )
+        try:
+            from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
+            invalidate_dashboard_counts_cache()
+        except Exception:
+            pass
 
     @staticmethod
     def record_transaction(application, user, action, remarks=None):

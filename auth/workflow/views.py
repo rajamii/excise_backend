@@ -394,6 +394,12 @@ def raise_objection(request, application_id):
                 remarks=remarks or "Objections raised"
             )
 
+        try:
+            from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
+            invalidate_dashboard_counts_cache()
+        except Exception:
+            pass
+
         return Response({
             "detail": "Objections raised successfully",
             "application_id": application.application_id,
@@ -475,6 +481,12 @@ def resolve_objections(request, application_id):
         logging.getLogger(__name__).exception("Unexpected error while resolving objections for %s", application_id)
         return Response({"detail": f"Failed to resolve objections: {str(e)}"}, status=500)
 
+    try:
+        from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
+        invalidate_dashboard_counts_cache()
+    except Exception:
+        pass
+
     return _serialize_application(application)
 
 
@@ -510,6 +522,13 @@ def reject_application(request, application_id):
                 target_stage=target_stage,
                 remarks=remarks,
             )
+
+        try:
+            from models.transactional.dashboard_cache import invalidate_dashboard_counts_cache
+            invalidate_dashboard_counts_cache()
+        except Exception:
+            pass
+
         return Response({
             "detail": "Application rejected successfully",
             "application_id": application.application_id,
