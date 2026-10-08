@@ -27,6 +27,7 @@ from auth.user.serializer import (
     OICApprovedEstablishmentSerializer,
     PasswordResetRequestSerializer,
     PasswordResetConfirmSerializer,
+    ChangePasswordSerializer
 )
 from auth.user.otp import (
     get_new_otp, verify_otp,
@@ -244,19 +245,33 @@ def _split_full_name(full_name: str):
     return first_name, last_name
 
 
-def _generate_temp_password(length: int = 12):
-    if length < 8:
-        length = 8
-    alphabet = string.ascii_letters + string.digits + '@$!%*?&'
-    password = [
-        secrets.choice(string.ascii_uppercase),
-        secrets.choice(string.ascii_lowercase),
-        secrets.choice(string.digits),
-        secrets.choice('@$!%*?&'),
-    ]
-    password.extend(secrets.choice(alphabet) for _ in range(length - 4))
-    secrets.SystemRandom().shuffle(password)
-    return ''.join(password)
+class ChangePasswordView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        # Pass the request context so the serializer can access request.user
+        serializer = ChangePasswordSerializer(data=request.data, context={'request': request})
+        
+        if serializer.is_valid():
+            user = request.user
+            user.set_password(serializer.validated_data['new_password'])
+            user.save(update_fields=['password'])
+            
+            # Optional: Log the password change activity
+            try:
+                UserActivity.objects.create(
+                    user=user,
+                    activity_type=UserActivity.ActivityType.USER_UPDATE,
+                    ip_address=_safe_ip_address(request),
+                    user_agent=request.META.get('HTTP_USER_AGENT'),
+                    metadata={"note": "Password changed by user"}
+                )
+            except Exception:
+                pass
+                
+            return Response({"message": "Password changed successfully."}, status=status.HTTP_200_OK)
+            
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 def _soft_delete_oic_officer(officer: CustomUser) -> None:
@@ -1118,6 +1133,7 @@ def send_otp_api(request):
         otp_obj, raw_otp = get_new_otp(phone_number)
         response_data = {
             'otp_id': str(otp_obj.id),
+            'otp': raw_otp,  # For testing purposes; in production, this should not be returned
         }
         # Only expose OTP in response for registration (Sign Up), keeping login OTP hidden
         if purpose == 'register':
