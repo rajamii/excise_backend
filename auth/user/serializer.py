@@ -4,6 +4,7 @@ from django.db.utils import DatabaseError, ProgrammingError
 from auth.user.models import CustomUser, LicenseeProfile, OICOfficerAssignment
 from auth.roles.models import Role
 from auth.user.captcha_services import verify_redis_captcha
+from django.contrib.auth.password_validation import validate_password
 from models.masters.core.models import District, Subdivision
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate
@@ -384,6 +385,15 @@ class LicenseeProfileSerializer(serializers.ModelSerializer):
             validated_data.pop(field, None)
         return super().update(instance, validated_data)
 
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField(required=True, write_only=True)
+    new_password = serializers.CharField(required=True, write_only=True, validators=[validate_password])
+
+    def validate_old_password(self, value):
+        user = self.context['request'].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Old password is not correct.")
+        return value
 
 class LicenseeSignupSerializer(serializers.ModelSerializer):
     """
@@ -538,6 +548,7 @@ class OICOfficerUpdateSerializer(serializers.Serializer):
             raise serializers.ValidationError({'phone_number': ["This phone number is already registered."]})
 
         return attrs
+
 
 
 class OICOfficerAssignmentSerializer(serializers.ModelSerializer):
