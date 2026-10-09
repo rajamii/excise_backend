@@ -95,8 +95,8 @@ class SiteEnquiryReport(models.Model):
     proposes_barman_or_salesman = models.BooleanField()
     worker_proposal_comments = models.TextField(blank=True)
 
-    worker_docs_valid = models.BooleanField()
-    worker_docs_comments = models.TextField(blank=True)
+    worker_docs_valid = models.BooleanField(null=True, blank=True, default=True)
+    worker_docs_comments = models.TextField(blank=True, default='')
 
     license_recommendation = models.BooleanField()
     recommendation_comments = models.TextField(blank=True)

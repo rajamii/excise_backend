@@ -10,6 +10,8 @@ class SiteEnquiryReportSerializer(serializers.ModelSerializer):
     site_enquiry_is_reverted = serializers.BooleanField(source='is_reverted', read_only=True)
     revertedRemarks = serializers.CharField(source='reverted_remarks', read_only=True)
     revert_history = serializers.SerializerMethodField()
+    worker_docs_valid = serializers.BooleanField(required=False, allow_null=True)
+    worker_docs_comments = serializers.CharField(required=False, allow_blank=True, allow_null=True)
 
     class Meta:
         model = SiteEnquiryReport
