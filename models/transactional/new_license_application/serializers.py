@@ -184,6 +184,7 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     commissioner_revert_remarks = serializers.SerializerMethodField()
     is_reverted_by_commissioner = serializers.SerializerMethodField()
     latest_revert = serializers.SerializerMethodField()
+    revert_history = serializers.SerializerMethodField()
 
     # Backward-compatible fee field used across multiple frontend screens.
     yearly_license_fee = serializers.SerializerMethodField()
@@ -488,6 +489,26 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
                 }
         except Exception:
             pass
+
+    def get_revert_history(self, obj) -> list:
+        try:
+            from auth.workflow.models import Revert
+            from django.contrib.contenttypes.models import ContentType
+            ct = ContentType.objects.get_for_model(obj)
+            reverts = Revert.objects.filter(content_type=ct, object_id=str(obj.pk)).select_related('reverted_by', 'reverted_by__role', 'stage').order_by('-reverted_on')
+            result = []
+            for r in reverts:
+                result.append({
+                    "id": r.id,
+                    "remarks": r.remarks or "",
+                    "reverted_by": f"{r.reverted_by.first_name} {r.reverted_by.last_name}".strip() if r.reverted_by else (getattr(r.reverted_by, "username", None) or "Unknown"),
+                    "reverted_by_role": r.reverted_by.role.name if (r.reverted_by and getattr(r.reverted_by, 'role', None)) else "Commissioner",
+                    "stage": r.stage.name if r.stage else None,
+                    "reverted_on": r.reverted_on.isoformat() if r.reverted_on else None
+                })
+            return result
+        except Exception:
+            return []
     def get_is_payment_timer_active(self, obj) -> bool:
         if getattr(obj, "is_approved", False):
             return False
