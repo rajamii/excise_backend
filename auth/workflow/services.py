@@ -178,6 +178,19 @@ class WorkflowService:
                 return json.dumps(value, cls=DjangoJSONEncoder, ensure_ascii=False)
         except Exception:
             pass
+
+        # Handle Django model instances (ForeignKey relations, etc.)
+        if hasattr(value, '_meta'):
+            for attr in (
+                'police_station', 'district', 'subdivision',
+                'license_category', 'license_subcategory', 'license_type',
+                'description', 'name', 'title', 'category_name'
+            ):
+                val = getattr(value, attr, None)
+                if val and isinstance(val, str) and val.strip():
+                    return val.strip()
+            return str(value)
+
         return str(value)
 
     @staticmethod
