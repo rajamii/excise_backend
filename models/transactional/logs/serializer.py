@@ -47,6 +47,7 @@ class AdminLogSerializer(serializers.ModelSerializer):
     forwarded_to_name = serializers.CharField(source='to_stage_full_name', read_only=True, allow_null=True)
     forwarded_to_username = serializers.CharField(source='to_stage_username', read_only=True, allow_null=True)
     forwarded_recipients = serializers.SerializerMethodField()
+    metadata = serializers.SerializerMethodField()
 
     class Meta:
         model = AdminLog
@@ -111,4 +112,95 @@ class AdminLogSerializer(serializers.ModelSerializer):
             user_id_str=obj.to_stage_user_id,
             full_name_str=obj.to_stage_full_name
         )
+
+    def get_metadata(self, obj):
+        meta = dict(obj.metadata or {}) if isinstance(obj.metadata, dict) else {}
+        action_upper = str(obj.action or '').strip().upper()
+        if action_upper == 'PAY' or action_upper.startswith('PAY_') or 'PAY' in action_upper:
+            has_valid_amount = False
+            for k in ['amount', 'fee_amount', 'paid_amount', 'total_amount', 'payment_amount']:
+                v = meta.get(k)
+                if v is not None:
+                    try:
+                        if float(v) > 0:
+                            has_valid_amount = True
+                            break
+                    except (ValueError, TypeError):
+                        pass
+
+            if not has_valid_amount:
+                resolved_amount = None
+                # 1. Match from WalletTransaction by application_id
+                if obj.application_id:
+                    try:
+                        from models.transactional.wallet.models import WalletTransaction
+                        tx = (
+                            WalletTransaction.objects.filter(
+                                reference_no=obj.application_id,
+                                entry_type__in=['DR', 'DEBIT', 'dr', 'debit']
+                            )
+                            .order_by('-created_at')
+                            .first()
+                        )
+                        if tx:
+                            resolved_amount = float(tx.amount)
+                            if tx.transaction_id:
+                                meta.setdefault('transaction_id', tx.transaction_id)
+                    except Exception:
+                        pass
+
+                # 2. Match from remarks if remarks contains amount
+                if resolved_amount is None and obj.remarks:
+                    import re
+                    m = re.search(r'(?:₹|rs\.?|inr)\s*([\d,]+(?:\.\d+)?)', str(obj.remarks), re.IGNORECASE)
+                    if m:
+                        try:
+                            resolved_amount = float(m.group(1).replace(',', ''))
+                        except Exception:
+                            pass
+                    if resolved_amount is None:
+                        m2 = re.search(r'\(([\d,]+(?:\.\d+)?)\)', str(obj.remarks))
+                        if m2:
+                            try:
+                                resolved_amount = float(m2.group(1).replace(',', ''))
+                            except Exception:
+                                pass
+
+                # 3. Match from linked application instance
+                if resolved_amount is None and obj.content_type and obj.object_id:
+                    try:
+                        model_class = obj.content_type.model_class()
+                        if model_class:
+                            app_inst = model_class.objects.filter(pk=obj.object_id).first()
+                            if app_inst:
+                                for attr in ['payment_amount', 'fee_amount', 'amount']:
+                                    val = getattr(app_inst, attr, None)
+                                    if val is not None:
+                                        try:
+                                            fval = float(val)
+                                            if fval > 0:
+                                                resolved_amount = fval
+                                                break
+                                        except Exception:
+                                            pass
+                                if resolved_amount is None:
+                                    fee_struct = getattr(app_inst, 'fee_structure', None)
+                                    if isinstance(fee_struct, dict):
+                                        c_fee = (
+                                            fee_struct.get('collaborationFee') or
+                                            fee_struct.get('collaboration_fee') or
+                                            fee_struct.get('companyRegistrationFee') or
+                                            fee_struct.get('registrationFee')
+                                        )
+                                        if c_fee:
+                                            resolved_amount = float(c_fee)
+                    except Exception:
+                        pass
+
+                if resolved_amount is not None and resolved_amount > 0:
+                    meta['amount'] = f"{resolved_amount:.2f}"
+                    meta['fee_amount'] = f"{resolved_amount:.2f}"
+
+        return meta
+
 

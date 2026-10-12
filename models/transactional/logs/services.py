@@ -450,6 +450,62 @@ class AdminLogService:
             if final_recipients:
                 meta_payload['forwarded_recipients'] = final_recipients
 
+            # Ensure payment amount is captured for PAY actions
+            if action_upper == 'PAY' or action_upper.startswith('PAY_') or 'PAY' in action_upper:
+                has_valid_amount = False
+                for k in ['amount', 'fee_amount', 'paid_amount', 'total_amount', 'payment_amount']:
+                    v = meta_payload.get(k)
+                    if v is not None:
+                        try:
+                            if float(v) > 0:
+                                has_valid_amount = True
+                                break
+                        except (ValueError, TypeError):
+                            pass
+                if not has_valid_amount:
+                    resolved_amt = None
+                    if res_app_id:
+                        try:
+                            from models.transactional.wallet.models import WalletTransaction
+                            wtx = WalletTransaction.objects.filter(
+                                reference_no=res_app_id,
+                                entry_type__in=['DR', 'DEBIT', 'dr', 'debit']
+                            ).order_by('-created_at').first()
+                            if wtx:
+                                resolved_amt = float(wtx.amount)
+                                if wtx.transaction_id:
+                                    meta_payload.setdefault('transaction_id', wtx.transaction_id)
+                        except Exception:
+                            pass
+                    if resolved_amt is None and application:
+                        for attr in ['payment_amount', 'fee_amount', 'amount']:
+                            val = getattr(application, attr, None)
+                            if val is not None:
+                                try:
+                                    fval = float(val)
+                                    if fval > 0:
+                                        resolved_amt = fval
+                                        break
+                                except Exception:
+                                    pass
+                        if resolved_amt is None:
+                            fee_struct = getattr(application, 'fee_structure', None)
+                            if isinstance(fee_struct, dict):
+                                c_fee = (
+                                    fee_struct.get('collaborationFee') or
+                                    fee_struct.get('collaboration_fee') or
+                                    fee_struct.get('companyRegistrationFee') or
+                                    fee_struct.get('registrationFee')
+                                )
+                                if c_fee:
+                                    try:
+                                        resolved_amt = float(c_fee)
+                                    except Exception:
+                                        pass
+                    if resolved_amt is not None and resolved_amt > 0:
+                        meta_payload['amount'] = f"{resolved_amt:.2f}"
+                        meta_payload['fee_amount'] = f"{resolved_amt:.2f}"
+
             # 6. Create AdminLog inside a savepoint so any logging failure never aborts outer transaction
             with transaction.atomic():
                 log_entry = AdminLog.objects.create(
