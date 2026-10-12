@@ -137,18 +137,46 @@ class CompanyRegistrationSerializer(serializers.ModelSerializer):
 
 
     def to_internal_value(self, data):
-        # Create a mutable copy if it's a QueryDict or dict
-        mutable_data = data.copy() if hasattr(data, 'copy') else dict(data)
+        # Avoid QueryDict.copy() because QueryDict.__deepcopy__ fails on TemporaryUploadedFile
+        # with "TypeError: cannot pickle 'BufferedRandom' instances"
+        if hasattr(data, 'dict'):
+            mutable_data = data.dict()
+        elif hasattr(data, 'copy'):
+            try:
+                mutable_data = data.copy()
+            except Exception:
+                mutable_data = dict(data)
+        else:
+            mutable_data = dict(data)
         
         # Map camelCase upload keys from frontend to snake_case backend fields
         mappings = {
             'exciseLicense': 'excise_license',
             'deedOfPartnership': 'deed_of_partnership',
             'memorandumOfAssociation': 'memorandum_of_association',
+            'brandType': 'brand_type',
+            'applicationYear': 'application_year',
+            'companyName': 'company_name',
+            'factoryAddress': 'factory_address',
+            'pinCode': 'pin_code',
+            'companyMobileNumber': 'company_mobile_number',
+            'companyEmailId': 'company_email_id',
+            'memberName': 'member_name',
+            'memberDesignation': 'member_designation',
+            'memberMobileNumber': 'member_mobile_number',
+            'memberEmailId': 'member_email_id',
+            'memberAddress': 'member_address',
         }
         for camel, snake in mappings.items():
             if camel in mutable_data and snake not in mutable_data:
                 mutable_data[snake] = mutable_data[camel]
+
+        if 'members' in mutable_data and isinstance(mutable_data['members'], str):
+            import json
+            try:
+                mutable_data['members'] = json.loads(mutable_data['members'])
+            except Exception:
+                pass
                 
         return super().to_internal_value(mutable_data)
 
