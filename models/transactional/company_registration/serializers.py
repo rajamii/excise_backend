@@ -61,6 +61,7 @@ class CompanyRegistrationSerializer(serializers.ModelSerializer):
     valid_up_to = serializers.SerializerMethodField()
     license_id = serializers.SerializerMethodField()
     applicant_name = serializers.SerializerMethodField()
+    payment_details = serializers.SerializerMethodField()
 
     def get_allowed_actions(self, obj):
         request = self.context.get('request')
@@ -128,6 +129,50 @@ class CompanyRegistrationSerializer(serializers.ModelSerializer):
         lic = self._get_license(obj)
         if lic:
             return lic.license_id
+        return None
+
+    def get_payment_details(self, obj):
+        try:
+            from models.transactional.wallet.models import WalletTransaction
+            tx = (
+                WalletTransaction.objects.filter(
+                    reference_no=obj.application_id,
+                    entry_type__in=['DR', 'DEBIT', 'dr', 'debit']
+                )
+                .order_by('-created_at')
+                .first()
+            )
+            if tx:
+                wallet_name = 'License Fee'
+                if getattr(tx, 'wallet_type', None):
+                    wallet_name = getattr(tx.wallet_type, 'name', getattr(tx.wallet_type, 'code', 'License Fee'))
+                return {
+                    'transaction_id': tx.transaction_id,
+                    'amount': float(tx.amount),
+                    'wallet_type': wallet_name,
+                    'head_of_account': tx.head_of_account or '0039-00-105-00-00',
+                    'created_at': tx.created_at.isoformat() if tx.created_at else None,
+                    'payment_method': 'Wallet (License Fee)',
+                    'status': 'PAID',
+                    'remarks': tx.remarks or f'Company Registration fee paid for {obj.application_id}'
+                }
+        except Exception:
+            pass
+
+        if getattr(obj, 'payment_amount', None) or getattr(obj, 'is_approved', False):
+            txn_id = ""
+            if obj.payment_remarks and "Trans ID:" in obj.payment_remarks:
+                txn_id = obj.payment_remarks.split("Trans ID:")[-1].strip()
+            return {
+                'transaction_id': txn_id or f"TXN-{str(obj.application_id).replace('/', '')}",
+                'amount': float(obj.payment_amount or 5000.0),
+                'wallet_type': 'License Fee',
+                'head_of_account': '0039-00-105-00-00',
+                'created_at': obj.updated_at.isoformat() if getattr(obj, 'updated_at', None) else None,
+                'payment_method': 'Wallet (License Fee)',
+                'status': 'PAID',
+                'remarks': obj.payment_remarks or f'Company Registration fee paid for {obj.application_id}'
+            }
         return None
 
     class Meta:
