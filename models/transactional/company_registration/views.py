@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.db.models import Q
 from django.forms import ValidationError
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, parser_classes, permission_classes
@@ -12,7 +13,7 @@ from auth.workflow.permissions import HasStagePermission
 from auth.workflow.models import Workflow, StagePermission, WorkflowStage
 from auth.workflow.services import WorkflowService
 from models.transactional.helpers import _get_stage_sets, _normalize_role, _get_role_stage_names, _collect_reachable_stage_names
-from models.transactional.dashboard_cache import dashboard_counts_cache
+from models.transactional.dashboard_cache import dashboard_counts_cache, invalidate_dashboard_counts_cache
 from .models import CompanyRegistration
 from .serializers import CompanyRegistrationSerializer
 from rest_framework.permissions import IsAuthenticated
@@ -84,6 +85,7 @@ def _create_application(request, workflow_name: str, serializer_cls):
         # 5. Return the *fresh* object (includes generic relations)
         fresh = CompanyRegistration.objects.get(pk=application.pk)
         fresh_serializer = serializer_cls(fresh)
+        invalidate_dashboard_counts_cache()
         return Response(fresh_serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -161,12 +163,15 @@ def dashboard_counts(request):
         payment_stages = set(stage_sets['payment'])
         pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
 
+        approved_count = base_qs.filter(
+            Q(current_stage__name__in=approved_stages) | Q(is_approved=True)
+        ).count()
+
         return Response({
-            # Licensee UX: application is considered "Pending" until application-fee payment succeeds.
-            "applied": base_qs.filter(current_stage__name__in=applied_stages).count(),
-            "pending": base_qs.filter(current_stage__name__in=pending_stages).count(),
+            "applied": base_qs.count(),
+            "pending": base_qs.filter(current_stage__name__in=pending_stages).exclude(is_approved=True).count(),
             "objection": base_qs.filter(current_stage__name__in=objection_stages).count(),
-            "approved": base_qs.filter(current_stage__name__in=approved_stages).count(),
+            "approved": approved_count,
             "rejected": base_qs.filter(current_stage__name__in=rejected_stages).count(),
             "awaiting_payment": base_qs.filter(current_stage__name__in=payment_stages).count(),
         })
@@ -250,6 +255,7 @@ def dashboard_counts(request):
 @parser_classes([JSONParser])
 @dashboard_counts_cache("company_registration:list")
 def application_group(request):
+    from django.db.models import Q, Exists, OuterRef
     role = _normalize_role(request.user.role.name if request.user.role else None)
     workflow_id = WORKFLOW_IDS['COMPANY_REGISTRATION']
     stage_sets = _get_stage_sets(workflow_id)
@@ -264,19 +270,18 @@ def application_group(request):
         payment_stages = set(stage_sets['payment'])
         pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
 
+        approved_qs = base_qs.filter(
+            Q(current_stage__name__in=approved_stages) | Q(is_approved=True)
+        )
+        pending_qs = base_qs.filter(current_stage__name__in=pending_stages).exclude(is_approved=True)
+
         return Response({
-            "applied": CompanyRegistrationSerializer(
-                base_qs.filter(current_stage__name__in=applied_stages), many=True
-            ).data,
-            "pending": CompanyRegistrationSerializer(
-                base_qs.filter(current_stage__name__in=pending_stages), many=True
-            ).data,
+            "applied": CompanyRegistrationSerializer(base_qs, many=True).data,
+            "pending": CompanyRegistrationSerializer(pending_qs, many=True).data,
             "objection": CompanyRegistrationSerializer(
                 base_qs.filter(current_stage__name__in=objection_stages), many=True
             ).data,
-            "approved": CompanyRegistrationSerializer(
-                base_qs.filter(current_stage__name__in=approved_stages), many=True
-            ).data,
+            "approved": CompanyRegistrationSerializer(approved_qs, many=True).data,
             "rejected": CompanyRegistrationSerializer(
                 base_qs.filter(current_stage__name__in=rejected_stages), many=True
             ).data,
@@ -461,6 +466,7 @@ def pay_company_registration_fee(request, application_id):
     except Exception as exc:
         return Response({"detail": f"Payment and workflow advance failed: {str(exc)}"}, status=status.HTTP_400_BAD_REQUEST)
 
+    invalidate_dashboard_counts_cache()
     return Response({"success": True, "transaction_id": txn_id})
 
 

@@ -920,7 +920,7 @@ def dashboard_counts(request):
         # The licensee UI does not surface an "Applied" tile; treat initial-stage apps as pending.
         pending_for_ui = pending_stages | applied_stages
         return Response({
-            "applied": base_qs.filter(current_stage__name__in=applied_stages).count(),
+            "applied": base_qs.count(),
             "pending": base_qs.filter(current_stage__name__in=pending_for_ui).count(),
             "objection": base_qs.filter(current_stage__name__in=objection_stages).count(),
             "approved": base_qs.filter(current_stage__name__in=stage_sets['approved']).count(),
