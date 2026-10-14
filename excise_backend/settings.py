@@ -142,6 +142,7 @@ WSGI_APPLICATION = 'excise_backend.wsgi.application'
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'auth.user.helpers.RedisBlacklistJWTAuthentication'
     ],
     'DEFAULT_RENDERER_CLASSES': (
         'djangorestframework_camel_case.render.CamelCaseJSONRenderer',
@@ -251,8 +252,8 @@ OTP_REQUEST_WINDOW_MINUTES = int(os.getenv('OTP_REQUEST_WINDOW_MINUTES', '15'))
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=1),       # default: 5 minutes
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),      # default: 1 day
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
     'ROTATE_REFRESH_TOKENS': False,
     'BLACKLIST_AFTER_ROTATION': True,
     'UPDATE_LAST_LOGIN': False,

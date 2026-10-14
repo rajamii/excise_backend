@@ -59,6 +59,27 @@ def validate_uploaded_file(
     if isinstance(file_size, int) and file_size > max_size_mb * 1024 * 1024:
         raise serializers.ValidationError({field_name: f"{label} must be smaller than {max_size_mb} MB."})
 
+    # Validate Magic Bytes (File Signatures)
+    if hasattr(uploaded_file, 'read'):
+        magic_bytes = uploaded_file.read(4)
+        uploaded_file.seek(0)  # Reset the file pointer after reading
+
+        # 1. Strictly block Windows executables (MZ header)
+        if magic_bytes.startswith(b'MZ'):
+            raise serializers.ValidationError({field_name: f"{label} contains prohibited executable content."})
+
+        # 2. Verify file signatures against declared extensions
+        is_valid_signature = False
+        if extension == '.pdf' and magic_bytes.startswith(b'%PDF'):
+            is_valid_signature = True
+        elif extension in {'.jpg', '.jpeg'} and magic_bytes.startswith(b'\xff\xd8'):
+            is_valid_signature = True
+        elif extension == '.png' and magic_bytes.startswith(b'\x89PNG'):
+            is_valid_signature = True
+            
+        if not is_valid_signature:
+             raise serializers.ValidationError({field_name: f"{label} content does not match its file extension."})
+
     if allowed_content_types:
         content_type = str(getattr(uploaded_file, "content_type", "") or "").strip().lower()
         if not content_type:

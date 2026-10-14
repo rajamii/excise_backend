@@ -79,6 +79,24 @@ class HasAppPermission(permissions.BasePermission):
                 "no_role"
             )
 
+        role_name = str(getattr(role, 'name', '')).strip().lower()
+
+        if role_name == 'licensee' and self.action in ['create', 'update', 'delete']:
+            # Allow licensees to only mutate their own applications/profiles
+            allowed_licensee_mutations = {
+                'new_license_application', 
+                'license_renewal_application',
+                'company_registration',
+                'salesman_barman',
+                'licenseeprofile',
+                'user'
+            }
+            if self._normalize_label(self.app_label) not in allowed_licensee_mutations:
+                self._raise_denied(
+                    f"Licensees are not authorized to {self.action} {self.app_label} records.",
+                    "unauthorized_licensee_mutation"
+                )
+
         # Action validation
         permission_field = self._permission_fields.get(self.action)
         if not permission_field:
@@ -96,19 +114,6 @@ class HasAppPermission(permissions.BasePermission):
         required_labels = self._label_aliases(self.app_label)
 
         if not (required_labels & normalized_allowed):
-           
-            # # Backward compatibility:
-            # # Some existing roles (e.g., Licensee) were configured with
-            # # company_registration in can_view but not in can_add.
-            # # Allow create for this one app when view permission exists.
-            # if self.action == 'create' and self._normalize_label(self.app_label) == 'company_registration':
-            #     view_labels = getattr(role, 'can_view', []) or []
-            #     normalized_view = set()
-            #     for label in view_labels:
-            #         normalized_view.update(self._label_aliases(label))
-            #     if required_labels & normalized_view:
-            #         return True
-
             self._raise_denied(
                 f"Cannot {self.action} {self.app_label}",
                 f"cannot_{self.action}"
@@ -116,8 +121,8 @@ class HasAppPermission(permissions.BasePermission):
 
         return True
 
-def make_permission(app_label: str, action: PermissionAction):
-    class CustomPermission(HasAppPermission):
-        def __init__(self):
-            super().__init__(app_label, action)
-    return CustomPermission
+    def make_permission(app_label: str, action: PermissionAction):
+        class CustomPermission(HasAppPermission):
+            def __init__(self):
+                super().__init__(app_label, action)
+        return CustomPermission

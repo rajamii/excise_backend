@@ -31,6 +31,16 @@ def generate_redis_captcha():
     }
 
 def verify_redis_captcha(hashkey: str, response: str) -> bool:
-    """Verifies the CAPTCHA against Redis and deletes it ONLY on match success."""
-    # Always return True for audit
+    # """Verifies the CAPTCHA against Redis and deletes it ONLY on match success.""" (Commented out for audit)
+    # if not hashkey or not response:
+    #     return False
+        
+    # cache_key = f"captcha_{hashkey}"
+    # stored_captcha = cache.get(cache_key)
+    
+    # if stored_captcha and stored_captcha.lower() == response.lower():
+    #     cache.delete(cache_key)
+    #     return True
+        
+    # return False
     return True

@@ -6,12 +6,25 @@ from rest_framework.renderers import JSONRenderer, BrowsableAPIRenderer
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
-
+from rest_framework.exceptions import PermissionDenied
 from auth.user.models import CustomUser
 from models.masters.license.models import License
 from models.transactional.new_license_application.models import NewLicenseApplication
 from models.transactional.license_renewal_application.models import LicenseApplication as RenewalApplication
 from models.transactional.salesman_barman.models import SalesmanBarmanModel
+
+
+def _enforce_licensee_record_access(request, record_owner_id):
+    """Prevents Licensees from viewing records that do not belong to them."""
+    role_name = getattr(request.user.role, 'name', '').strip().lower() if getattr(request.user, 'role', None) else ''
+    if role_name == 'licensee' and record_owner_id != request.user.id:
+        raise PermissionDenied("You do not have permission to view this record.")
+
+def _block_licensee_access(request):
+    """Blocks Licensees from accessing administrative single-window endpoints."""
+    role_name = getattr(request.user.role, 'name', '').strip().lower() if getattr(request.user, 'role', None) else ''
+    if role_name == 'licensee':
+        raise PermissionDenied("You do not have permission to access this administrative endpoint.")
 
 
 def get_current_run_start_time(content_type, object_id):
@@ -175,6 +188,7 @@ def serialize_payment_transactions(app_id):
 @renderer_classes([JSONRenderer, BrowsableAPIRenderer])
 @permission_classes([IsAuthenticated])
 def single_window_search(request):
+    _block_licensee_access(request)
     query = request.query_params.get("query", "").strip()
     if not query:
         return Response({"results": []})
@@ -1026,6 +1040,8 @@ def single_window_licensee_detail(request, user_id):
     else:
         u = get_object_or_404(CustomUser, username__iexact=user_id_str)
 
+    _enforce_licensee_record_access(request, u.id)
+
     user_data = {
         "id": u.id,
         "username": u.username,
@@ -1112,6 +1128,7 @@ def single_window_licensee_detail(request, user_id):
 @permission_classes([IsAuthenticated])
 def single_window_new_app_detail(request, application_id):
     app = get_object_or_404(NewLicenseApplication, application_id=application_id)
+    _enforce_licensee_record_access(request, getattr(app, 'applicant_id', None))
 
     # Pending stage/role info
     pending_at_role = "N/A"
@@ -1261,6 +1278,7 @@ def single_window_new_app_detail(request, application_id):
 @permission_classes([IsAuthenticated])
 def single_window_renewal_app_detail(request, application_id):
     app = get_object_or_404(RenewalApplication, application_id=application_id)
+    _enforce_licensee_record_access(request, getattr(app, 'applicant_id', None))
 
     data = {
         "application_id": app.application_id,
@@ -1287,6 +1305,7 @@ def single_window_renewal_app_detail(request, application_id):
 @permission_classes([IsAuthenticated])
 def single_window_license_detail(request, license_id):
     lic = get_object_or_404(License, license_id=license_id)
+    _enforce_licensee_record_access(request, getattr(lic, 'applicant_id', None))
 
     data = {
         "license_id": lic.license_id,
@@ -1309,6 +1328,7 @@ def single_window_license_detail(request, license_id):
 @permission_classes([IsAuthenticated])
 def single_window_salesman_barman_detail(request, application_id):
     app = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
+    _enforce_licensee_record_access(request, getattr(app, 'applicant_id', None))
 
     data = {
         "application_id": app.application_id,
@@ -1341,6 +1361,7 @@ def single_window_salesman_barman_detail(request, application_id):
 @renderer_classes([JSONRenderer, BrowsableAPIRenderer])
 @permission_classes([IsAuthenticated])
 def single_window_latest_created(request):
+    _block_licensee_access(request)
     try:
         users_count = CustomUser.objects.exclude(role__name='Licensee').count()
         records_count = NewLicenseApplication.objects.count()

@@ -1,4 +1,7 @@
 from .models import CustomUser  
+from rest_framework_simplejwt.authentication import JWTAuthentication
+from rest_framework_simplejwt.exceptions import InvalidToken
+from django.core.cache import cache
 
 def delete_user_by_username(username):
 
@@ -56,3 +59,14 @@ def update_user_details(
 
         print(f"Error updating user details: {e}")
         return False
+
+
+class RedisBlacklistJWTAuthentication(JWTAuthentication):
+    def get_validated_token(self, raw_token):
+        validated_token = super().get_validated_token(raw_token)
+        jti = validated_token.get('jti')
+        
+        if jti and cache.get(f"blacklisted_token_{jti}"):
+            raise InvalidToken("Token has been blacklisted")
+            
+        return validated_token

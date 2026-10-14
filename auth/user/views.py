@@ -4,13 +4,13 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.exceptions import PermissionDenied
-from rest_framework_simplejwt.tokens import RefreshToken, TokenError
+from rest_framework_simplejwt.tokens import RefreshToken, TokenError, AccessToken
 from rest_framework_simplejwt.views import TokenRefreshView
 from django.shortcuts import get_object_or_404
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
 from django.db.models import Prefetch, Exists, OuterRef
-from auth.roles.permissions import HasAppPermission, make_permission
+from auth.roles.permissions import HasAppPermission
 from auth.roles.models import Role
 from auth.user.models import CustomUser, LicenseeProfile, OICOfficerAssignment
 from auth.user.serializer import (
@@ -41,9 +41,9 @@ from auth.user.otp import (
 from django.conf import settings
 from captcha.helpers import captcha_image_url
 from captcha.models import CaptchaStore
+from django.core.cache import cache
 from rest_framework_simplejwt.views import TokenRefreshView
 from ..roles.permissions import HasAppPermission
-from auth.roles.models import Role
 from models.transactional.license_renewal_application.models import LicenseApplication
 from models.transactional.logs.models import UserActivity
 from models.transactional.logs.signals import get_client_ip
@@ -54,7 +54,8 @@ from typing import cast
 import secrets
 import string
 import re
-from django.utils import timezone
+import time
+from django.utils import cache, timezone
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
@@ -611,7 +612,7 @@ def licensee_signup(request):
 
 class UserListView(generics.ListAPIView):
     serializer_class = UserSerializer
-    permission_classes = [make_permission('user', 'view')]
+    permission_classes = [HasAppPermission.make_permission('user', 'view')]
 
     def get_queryset(self):
         # Create subqueries to check for approved applications
@@ -636,7 +637,7 @@ class UserListView(generics.ListAPIView):
 class UserDetailView(generics.RetrieveAPIView):
     queryset = CustomUser.objects.all()
     serializer_class = UserSerializer
-    permission_classes = [make_permission('user', 'view')]
+    permission_classes = [HasAppPermission.make_permission('user', 'view')]
 
 
 class CurrentUserAPI(APIView):
@@ -655,7 +656,7 @@ class CurrentUserAPI(APIView):
 class UserUpdateView(generics.UpdateAPIView):
     queryset = CustomUser.objects.all()
     serializer_class = UserUpdateSerializer
-    permission_classes = [make_permission('user', 'update')]
+    permission_classes = [HasAppPermission.make_permission('user', 'update')]
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -688,7 +689,7 @@ class UserUpdateView(generics.UpdateAPIView):
 class UserDeleteView(generics.DestroyAPIView):
     queryset = CustomUser.objects.all()
     serializer_class = UserSerializer
-    permission_classes = [make_permission('user', 'delete')]
+    permission_classes = [HasAppPermission.make_permission('user', 'delete')]
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -716,7 +717,7 @@ class UserToggleActiveView(generics.UpdateAPIView):
     """Toggle a user's is_active status (activate / deactivate)."""
     queryset = CustomUser.objects.all()
     serializer_class = UserSerializer
-    permission_classes = [make_permission('user', 'update')]
+    permission_classes = [HasAppPermission.make_permission('user', 'update')]
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -751,14 +752,14 @@ class LicenseeProfileListView(generics.ListAPIView):
     """List all licensee profiles. Requires 'licenseeprofile.view' permission."""
     queryset = LicenseeProfile.objects.select_related('user', 'created_by')
     serializer_class = LicenseeProfileSerializer
-    permission_classes = [make_permission('licenseeprofile', 'view')]
+    permission_classes = [HasAppPermission.make_permission('licenseeprofile', 'view')]
 
 
 class LicenseeProfileDetailView(generics.RetrieveAPIView):
     """Retrieve a single licensee profile by pk."""
     queryset = LicenseeProfile.objects.select_related('user', 'created_by')
     serializer_class = LicenseeProfileSerializer
-    permission_classes = [make_permission('licenseeprofile', 'view')]
+    permission_classes = [HasAppPermission.make_permission('licenseeprofile', 'view')]
 
 
 class LicenseeProfileUpdateView(generics.UpdateAPIView):
@@ -769,7 +770,7 @@ class LicenseeProfileUpdateView(generics.UpdateAPIView):
     """
     queryset = LicenseeProfile.objects.all()
     serializer_class = LicenseeProfileSerializer
-    permission_classes = [make_permission('licenseeprofile', 'update')]
+    permission_classes = [HasAppPermission.make_permission('licenseeprofile', 'update')]
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -783,7 +784,7 @@ class LicenseeProfileDeleteView(generics.DestroyAPIView):
     """Delete a licensee profile (and cascade-deletes the linked user)."""
     queryset = LicenseeProfile.objects.all()
     serializer_class = LicenseeProfileSerializer
-    permission_classes = [make_permission('licenseeprofile', 'delete')]
+    permission_classes = [HasAppPermission.make_permission('licenseeprofile', 'delete')]
 
     def destroy(self, request, *args, **kwargs):
         self.perform_destroy(self.get_object())
@@ -881,10 +882,10 @@ class LoginAPI(APIView):
     serializer_class = LoginSerializer
 
     def post(self, request):
-        # Handle fallback for CamelCase transformations automatically (Commented out for audit)
+        # (Commented out for audit)
         # hashkey = request.data.get('hashkey') or request.data.get('hash_key')
         # response_input = request.data.get('response')
-        # 
+
         # if not verify_redis_captcha(hashkey, response_input):
         #     return Response({
         #         'success': False,
@@ -930,6 +931,17 @@ class LMSDBLOGIN(APIView):
     serializer_class = LMSDBLOGINSerializer
 
     def post(self, request):
+        # (Commented out for audit)
+        # hashkey = request.data.get('hashkey') or request.data.get('hash_key')
+        # response_input = request.data.get('response')
+        
+        # if not verify_redis_captcha(hashkey, response_input):
+        #     return Response({
+        #         'success': False,
+        #         'status_code': status.HTTP_400_BAD_REQUEST,
+        #         'non_field_errors': ['Invalid or expired captcha.']
+        #     }, status=status.HTTP_400_BAD_REQUEST)
+        
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
         validated_data = serializer.validated_data
@@ -975,6 +987,21 @@ class LogoutAPI(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
             RefreshToken(refresh_token).blacklist()
+
+            # Extract and blacklist the access token in Redis
+            auth_header = request.META.get('HTTP_AUTHORIZATION')
+            if auth_header and auth_header.startswith('Bearer '):
+                try:
+                    access_token = AccessToken(auth_header.split(' ')[1])
+                    jti = access_token.get('jti')
+                    exp = access_token.get('exp')
+                    remaining_seconds = max(0, exp - int(time.time()))
+                    
+                    if jti and remaining_seconds > 0:
+                        cache.set(f"blacklisted_token_{jti}", "true", timeout=remaining_seconds)
+                except Exception:
+                    pass # Ignore malformed access tokens during logout
+                
             try:
                 # JWT logout does not trigger Django's `user_logged_out` signal.
                 UserActivity.objects.create(
@@ -982,15 +1009,12 @@ class LogoutAPI(APIView):
                     activity_type=UserActivity.ActivityType.LOGOUT,
                     ip_address=_safe_ip_address(request),
                     user_agent=request.META.get('HTTP_USER_AGENT'),
-                    metadata={
-                        "logout_method": "jwt_blacklist",
-                    },
+                    metadata={"logout_method": "jwt_blacklist"},
                 )
             except Exception:
                 pass
             return Response({"message": "User logged out successfully"})
         except TokenError:
-            # Token might already be blacklisted; still record logout attempt for auditing.
             try:
                 UserActivity.objects.create(
                     user=request.user,

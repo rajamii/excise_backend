@@ -5,7 +5,7 @@ from rest_framework.decorators import api_view, permission_classes, authenticati
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from auth.roles.permissions import HasAppPermission
-
+from .helper import enforce_admin_access
 from . import models as masters_model
 from .serializers.licensecategory_serializer import LicenseCategorySerializer
 from .serializers.licensetype_serializer import LicenseTypeSerializer
@@ -374,6 +374,7 @@ def district_detail(request, pk):
 @api_view(['PUT', 'PATCH'])
 def district_update(request, pk):
     """Update a district instance."""
+    enforce_admin_access(request)
     district = get_object_or_404(masters_model.District, pk=pk)
     serializer = DistrictSerializer(
         instance=district, data=request.data,
