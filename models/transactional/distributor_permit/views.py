@@ -262,7 +262,7 @@ def scope_permit_queryset(qs, user):
             Q(current_stage__name__iexact='Forwarded Permit Section ') |
             Q(current_stage__name__iexact='Forwarded Permit Section') |
             Q(current_stage__name__iexact='Forwarded To OIC') |
-            Q(current_stage__is_initial=True)
+            (Q(current_stage__is_initial=True) & ~Q(current_stage__name__icontains='commissioner') & ~Q(current_stage_id__in=[160, 162, 163]))
         )
 
     if is_permit_section or is_oic:
