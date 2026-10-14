@@ -249,7 +249,7 @@ def scope_by_profile_or_workflow(user, queryset, workflow_id, licensee_field='li
         if hasattr(user, 'oic_assignment'):
             assignments.append(getattr(user, 'oic_assignment'))
         try:
-            from models.masters.user.models import OICOfficerAssignment
+            from auth.user.models import OICOfficerAssignment
             assignments.extend(list(OICOfficerAssignment.objects.filter(officer=user)))
         except Exception:
             pass

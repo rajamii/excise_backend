@@ -398,6 +398,11 @@ class DailyHologramRegister(models.Model):
             )
             if resolved:
                 self.license_id = resolved
+        if not self.hologram_type:
+            resolved_type = (
+                str(getattr(getattr(self, 'hologram_request', None), 'hologram_type', '') or '').strip()
+            )
+            self.hologram_type = resolved_type or 'LOCAL'
         super().save(*args, **kwargs)
 
 

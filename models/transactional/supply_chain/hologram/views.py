@@ -47,7 +47,8 @@ def _is_unscoped_admin_or_officer(user):
     if getattr(user, 'is_superuser', False) or getattr(user, 'is_staff', False):
         return True
     role_id = _get_user_role_id(user)
-    if role_id is not None and role_id in {1, 3, 4, 6, 7, 8, 9, 10, 11, 12, 14}:
+    # Role 7 is Offcier-In-Charge who is strictly scoped to an assigned licensee/establishment
+    if role_id is not None and role_id in {1, 3, 4, 6, 8, 9, 10, 11, 12, 14}:
         return True
     role_name = _normalize_role_name(getattr(getattr(user, 'role', None), 'name', ''))
     if any(k in role_name for k in ('commissioner', 'itcell', 'it_cell', 'permit', 'admin', 'auditor', 'accountant', 'jointcommissioner', 'deputycommissioner')):
@@ -56,6 +57,10 @@ def _is_unscoped_admin_or_officer(user):
 
 def _is_scoped_officer_or_licensee(user_or_role_name):
     if hasattr(user_or_role_name, 'is_authenticated'):
+        role_id = _get_user_role_id(user_or_role_name)
+        role_name = _normalize_role_name(getattr(getattr(user_or_role_name, 'role', None), 'name', ''))
+        if role_id == 7 or any(k in role_name for k in ('officerincharge', 'offcierincharge', 'oic')):
+            return True
         return not _is_unscoped_admin_or_officer(user_or_role_name)
     role_token = _normalize_role_name(str(user_or_role_name or ''))
     if any(k in role_token for k in ('commissioner', 'itcell', 'permit', 'admin', 'auditor', 'accountant')):
@@ -2045,14 +2050,10 @@ class DailyHologramRegisterViewSet(viewsets.ModelViewSet):
                 models.Q(licensee__user=user)
             ).distinct()
                 
-        # IT Cell / Admin / OIC Access (View All)
-        if _get_user_role_id(user) and StagePermission.objects.filter(
-            role_id=_get_user_role_id(user),
-            can_process=True,
-            stage__workflow_id__in=[WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'], WORKFLOW_IDS['HOLOGRAM_REQUEST']]
-        ).exists():
-             return DailyHologramRegister.objects.all()
-             
+        # IT Cell / Admin / Commissioner Access (View All)
+        if _is_unscoped_admin_or_officer(user):
+            return DailyHologramRegister.objects.all()
+
         return DailyHologramRegister.objects.none()
 
     def perform_create(self, serializer):
@@ -3038,14 +3039,10 @@ class HologramRollsDetailsViewSet(viewsets.ReadOnlyModelViewSet):
                 models.Q(procurement__licensee__user=user)
             ).distinct()
                 
-        # IT Cell / Admin / Commissioner / OIC Access (View All)
-        if _get_user_role_id(user) and StagePermission.objects.filter(
-            role_id=_get_user_role_id(user),
-            can_process=True,
-            stage__workflow_id__in=[WORKFLOW_IDS['HOLOGRAM_PROCUREMENT'], WORKFLOW_IDS['HOLOGRAM_REQUEST']]
-        ).exists():
-             return HologramRollsDetails.objects.all()
-             
+        # IT Cell / Admin / Commissioner Access (View All)
+        if _is_unscoped_admin_or_officer(user):
+            return HologramRollsDetails.objects.all()
+
         return HologramRollsDetails.objects.none()
     
     def list(self, request, *args, **kwargs):
@@ -3615,9 +3612,12 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
         filters = Q(
             usage_date__year=year_num,
             usage_date__month=month_num,
-            hologram_type=hologram_type,
             approval_status='APPROVED'
         )
+        if hologram_type == 'LOCAL':
+            filters &= (Q(hologram_type='LOCAL') | Q(hologram_type='') | Q(hologram_type__isnull=True) | Q(hologram_request__hologram_type='LOCAL'))
+        else:
+            filters &= (Q(hologram_type=hologram_type) | Q(hologram_request__hologram_type=hologram_type))
         
         if licensee_id:
             normalized_license = str(licensee_id).strip()
@@ -3637,9 +3637,12 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
         prev_filters = Q(
             usage_date__year=prev_year,
             usage_date__month=prev_month,
-            hologram_type=hologram_type,
             approval_status='APPROVED'
         )
+        if hologram_type == 'LOCAL':
+            prev_filters &= (Q(hologram_type='LOCAL') | Q(hologram_type='') | Q(hologram_type__isnull=True) | Q(hologram_request__hologram_type='LOCAL'))
+        else:
+            prev_filters &= (Q(hologram_type=hologram_type) | Q(hologram_request__hologram_type=hologram_type))
         if licensee_id:
             normalized_license = str(licensee_id).strip()
             if any(ch.isalpha() for ch in normalized_license) or '/' in normalized_license:
@@ -3703,9 +3706,16 @@ class HologramMonthlyReportViewSet(viewsets.ViewSet):
             all_prev_usage = DailyHologramRegister.objects.filter(
                 Q(usage_date__year__lt=prev_year) |
                 Q(usage_date__year=prev_year, usage_date__month__lte=prev_month),
-                hologram_type=hologram_type,
                 approval_status='APPROVED'
             )
+            if hologram_type == 'LOCAL':
+                all_prev_usage = all_prev_usage.filter(
+                    Q(hologram_type='LOCAL') | Q(hologram_type='') | Q(hologram_type__isnull=True) | Q(hologram_request__hologram_type='LOCAL')
+                )
+            else:
+                all_prev_usage = all_prev_usage.filter(
+                    Q(hologram_type=hologram_type) | Q(hologram_request__hologram_type=hologram_type)
+                )
             if licensee_id:
                 normalized_license = str(licensee_id).strip()
                 if any(ch.isalpha() for ch in normalized_license) or '/' in normalized_license:
