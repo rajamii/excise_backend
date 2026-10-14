@@ -481,6 +481,7 @@ def _get_user_display_name(user) -> str:
 
 class DailyHologramRegisterSerializer(serializers.ModelSerializer):
     licensee_name = serializers.CharField(source='licensee.manufacturing_unit_name', read_only=True)
+    manufacturing_unit_name = serializers.CharField(source='licensee.manufacturing_unit_name', read_only=True)
     hologram_type = serializers.SerializerMethodField()
     approved_by_name = serializers.SerializerMethodField()
     approved_by_username = serializers.CharField(source='approved_by.username', read_only=True, allow_null=True)
@@ -556,6 +557,8 @@ class HologramRollsDetailsSerializer(serializers.ModelSerializer):
     updated_by_name = serializers.CharField(source='updated_by.username', read_only=True, allow_null=True)
     received_by_name = serializers.SerializerMethodField()
     received_by_username = serializers.CharField(source='received_by.username', read_only=True, allow_null=True)
+    manufacturing_unit_name = serializers.SerializerMethodField()
+    licensee_name = serializers.SerializerMethodField()
     
     class Meta:
         model = HologramRollsDetails
@@ -568,6 +571,17 @@ class HologramRollsDetailsSerializer(serializers.ModelSerializer):
             'received_by',
             'received_by_display_name',
         )
+
+    def get_manufacturing_unit_name(self, obj):
+        if obj.procurement:
+            if getattr(obj.procurement, 'manufacturing_unit', None):
+                return obj.procurement.manufacturing_unit
+            if getattr(obj.procurement, 'licensee', None) and getattr(obj.procurement.licensee, 'manufacturing_unit_name', None):
+                return obj.procurement.licensee.manufacturing_unit_name
+        return None
+
+    def get_licensee_name(self, obj):
+        return self.get_manufacturing_unit_name(obj)
 
     def get_received_by_name(self, obj):
         stored = str(getattr(obj, 'received_by_display_name', '') or '').strip()
