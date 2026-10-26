@@ -1086,6 +1086,7 @@ def send_otp_api(request):
         otp_obj, raw_otp = get_new_otp(phone_number)
         sms_sent, sms_message = send_otp_via_sms_gateway(phone_number, raw_otp)
         if not sms_sent:
+            otp_obj.delete()
             return Response(
                 {'error': sms_message or 'Failed to send OTP SMS. Please try again.'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -1093,11 +1094,12 @@ def send_otp_api(request):
 
         response_data = {
             'otp_id': str(otp_obj.id),
-            'message': 'OTP sent successfully to your registered mobile number.',
+            'message': 'OTP accepted by the SMS gateway for your registered mobile number.',
             'gateway_message': sms_message,
         }
 
         if getattr(settings, 'DEBUG', False):
+            logger.info("DEBUG: Generated OTP for %s is %s", phone_number, raw_otp)
             masked = str(phone_number or "")
             if len(masked) >= 4:
                 masked = ("*" * (len(masked) - 4)) + masked[-4:]
@@ -1114,7 +1116,7 @@ def send_otp_api(request):
                 pass
 
         if getattr(settings, 'OTP_EXPOSE_IN_RESPONSE', False):
-            response_data['otp'] = otp_obj.otp
+            response_data['otp'] = raw_otp
 
         return Response(response_data, status=status.HTTP_200_OK)
     except ValueError as e:

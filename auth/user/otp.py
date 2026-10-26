@@ -10,7 +10,7 @@ import logging
 import requests
 import re
 import os
-from urllib.parse import quote, urlencode, unquote
+from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
 
@@ -256,23 +256,24 @@ def send_otp_via_sms_gateway(phone_number: str, otp_value: str) -> tuple[bool, s
     message = _normalize_message_for_gateway(_render_otp_message(message_template, otp_value))
     mnumber = _format_gateway_mobile_number(phone_number)
 
+    if len(mnumber) != 12 or not mnumber.startswith("91"):
+        logger.error("OTP SMS recipient has an invalid Indian mobile number: %s", _mask_phone(phone_number))
+        return False, "A valid 10-digit Indian mobile number is required"
+
+    is_httplink = "httplink" in str(base_url or "").lower()
+
     params = {
         "username": username,
         "pin": pin,
         "message": message,
-        "mnumber": mnumber,
         "signature": signature,
+        "mnumber": mnumber,
         "dlt_entity_id": entity_id,
         "dlt_template_id": template_id,
     }
+
     if len(message) > 160:
         params["concat"] = "1"
-
-    query = urlencode(
-        params,
-        quote_via=quote,
-    )
-    url = f"{base_url}?{query}"
 
     try:
         # Support custom CA bundle for environments where default trust store is incomplete
@@ -287,7 +288,15 @@ def send_otp_via_sms_gateway(phone_number: str, otp_value: str) -> tuple[bool, s
                 # ignore invalid paths and fall back to boolean verify
                 pass
 
-        response = requests.get(url, timeout=timeout_seconds, verify=verify_arg)
+        if is_httplink:
+            response = requests.post(base_url, params=params, timeout=timeout_seconds, verify=verify_arg)
+            if response.status_code == 405:
+                response = requests.get(base_url, params=params, timeout=timeout_seconds, verify=verify_arg)
+        else:
+            response = requests.get(base_url, params=params, timeout=timeout_seconds, verify=verify_arg)
+            if response.status_code == 405:
+                response = requests.post(base_url, params=params, timeout=timeout_seconds, verify=verify_arg)
+
         response.raise_for_status()
         response_text = (response.text or "").strip()
         request_id, code = _parse_gateway_ack(response_text)
@@ -305,7 +314,7 @@ def send_otp_via_sms_gateway(phone_number: str, otp_value: str) -> tuple[bool, s
             return False, "OTP SMS gateway rejected the request"
 
         logger.info(
-            "OTP SMS sent successfully to %s. Gateway response: %s",
+            "OTP SMS accepted by gateway for %s. Gateway response: %s",
             _mask_phone(phone_number),
             response_text[:300],
         )

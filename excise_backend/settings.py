@@ -161,9 +161,9 @@ REST_FRAMEWORK = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'eAbkari_db',       # Database name
+        'NAME': 'sems_audits',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'postgres',     # Your PostgreSQL password
+        'PASSWORD': 'sameer123',     # Your PostgreSQL password
         'HOST': 'localhost',        
         'PORT': '5433',             # Default PostgreSQL port
         'CONN_MAX_AGE': 300,        # Don't reuse connections — avoids aborted transaction state
@@ -229,12 +229,12 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOW_CREDENTIALS = True
 
 # OTP SMS gateway configuration (environment-driven)
-OTP_SMS_BASE_URL = os.getenv('OTP_SMS_BASE_URL', 'https://smsgw.sms.gov.in/failsafe/MLink')
-# Keep sensitive values empty by default; prefer DB-backed SMSServiceConfig.
-OTP_SMS_USERNAME = os.getenv('OTP_SMS_USERNAME', '')
-OTP_SMS_PIN = os.getenv('OTP_SMS_PIN', '')
-OTP_SMS_SIGNATURE = os.getenv('OTP_SMS_SIGNATURE', '')
-OTP_SMS_ENTITY_ID = os.getenv('OTP_SMS_ENTITY_ID', '')
+OTP_SMS_BASE_URL = os.getenv('OTP_SMS_BASE_URL', 'https://api2.sms.gov.in/failsafe/HTTPLink')
+# Fallback gateway credentials when SMSServiceConfig is not present in DB
+OTP_SMS_USERNAME = os.getenv('OTP_SMS_USERNAME', 'eabkari.sms')
+OTP_SMS_PIN = os.getenv('OTP_SMS_PIN', 'Fgv#$575')
+OTP_SMS_SIGNATURE = os.getenv('OTP_SMS_SIGNATURE', 'SIKEXC')
+OTP_SMS_ENTITY_ID = os.getenv('OTP_SMS_ENTITY_ID', '1001599213647119039')
 OTP_SMS_TEMPLATE_ID = os.getenv('OTP_SMS_TEMPLATE_ID', '1007722920127309405')
 OTP_SMS_MESSAGE_TEMPLATE = os.getenv(
     'OTP_SMS_MESSAGE_TEMPLATE',

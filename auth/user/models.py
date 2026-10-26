@@ -250,7 +250,7 @@ class SMSServiceConfig(models.Model):
     signature = models.CharField(max_length=50)
     dlt_entity_id = models.CharField(max_length=50)
     dlt_template_id = models.CharField(max_length=50, default="1007722920127309405")
-    base_url = models.URLField(default="https://smsgw.sms.gov.in/failsafe/MLink")
+    base_url = models.URLField(default="https://api2.sms.gov.in/failsafe/HTTPLink")
     message_template = models.TextField(
         default="From eAbkari, GoSK :\nYour OTP is {otp}\n Thanks"
     )
