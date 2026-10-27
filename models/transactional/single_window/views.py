@@ -176,9 +176,19 @@ def serialize_payment_transactions(app_id):
 @renderer_classes([JSONRenderer, BrowsableAPIRenderer])
 @permission_classes([IsAuthenticated])
 def single_window_search(request):
-    query = request.query_params.get("query", "").strip()
-    if not query:
+    raw_query = request.query_params.get("query", "").strip()
+    if not raw_query:
         return Response({"results": []})
+
+    import re
+    # Strip emojis and pictographs (e.g. 📋, 📦, 🍺, 🏭, 🔍, etc.)
+    clean_query = re.sub(r'[\U00010000-\U0010ffff\u2000-\u32ff\ufe00-\ufeff\u2600-\u27bf]', '', raw_query).strip()
+    # Strip leading/trailing brackets, braces, parentheses, quotes, punctuation
+    clean_query = re.sub(r'^[{\[\("“\'`\s]+|[}\]\)"”\'`\?\.\,\!\s]+$', '', clean_query).strip()
+    # Strip common label prefixes like "Ref:", "License:", "Lic:", "Application:", "App:", "No:"
+    clean_query = re.sub(r'^(?:ref(?:\s*no)?|license(?:\s*no)?|lic(?:\s*no)?|application(?:\s*no)?|app(?:\s*no)?|no)[\s:\-]+', '', clean_query, flags=re.IGNORECASE).strip()
+
+    query = clean_query if clean_query else raw_query
 
     search_type = request.query_params.get("search_type", "registry").strip().lower()
 
@@ -594,6 +604,22 @@ def single_window_search(request):
                     matched_sbm_ids.add(ref)
                 else:
                     matched_licensee_ids.add(ref)
+
+        try:
+            from models.masters.supply_chain.profile.models import UserManufacturingUnit
+            umu_matches = UserManufacturingUnit.objects.filter(
+                Q(licensee_id__icontains=query) |
+                Q(manufacturing_unit_name__icontains=query)
+            )[:15]
+            for umu in umu_matches:
+                if umu.licensee_id:
+                    matched_licensee_ids.add(umu.licensee_id)
+                    matched_nla_ids.add(umu.licensee_id)
+                if umu.user_id:
+                    matched_licensee_ids.add(str(umu.user_id))
+                    matched_licensee_ids.add(umu.user_id)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -681,23 +707,29 @@ def single_window_search(request):
             search_new_apps = False
             search_sbm = False
         elif matched_prefix in ['NLA', 'NLI', 'NA']:
-            search_users = False
+            search_users = True
             search_renewals = False
             search_sbm = False
             search_licenses = True
 
     # 1. Search Users (Licensees)
     if search_users:
-        users = CustomUser.objects.annotate(
-            full_name=Concat(Coalesce('first_name', Value('')), Value(' '), Coalesce('last_name', Value('')))
-        ).filter(
-            Q(id__in=matched_licensee_ids) |
-            Q(username__in=matched_licensee_ids) |
+        numeric_user_ids = [int(x) for x in matched_licensee_ids if str(x).isdigit()]
+        text_usernames = [str(x) for x in matched_licensee_ids if not str(x).isdigit()]
+        user_q = (
             Q(username__icontains=query) |
             Q(email__icontains=query) |
             Q(phone_number__icontains=query) |
             Q(full_name__icontains=query)
         )
+        if numeric_user_ids:
+            user_q |= Q(id__in=numeric_user_ids)
+        if text_usernames:
+            user_q |= Q(username__in=text_usernames)
+
+        users = CustomUser.objects.annotate(
+            full_name=Concat(Coalesce('first_name', Value('')), Value(' '), Coalesce('last_name', Value('')))
+        ).filter(user_q)
         users = apply_date_filters(users, "date_joined")
         users = apply_role_filter(users, "role__name")
         users = users[:15]
