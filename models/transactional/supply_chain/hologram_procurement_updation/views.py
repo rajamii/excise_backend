@@ -204,7 +204,7 @@ def manual_hologram_entry(request):
         )
 
     data = request.data or {}
-    licensee_val = data.get('licensee_id')
+    licensee_val = data.get('licensee_id') if 'licensee_id' in data else data.get('licenseeId')
     if licensee_val is None:
         return Response({'error': 'licensee_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -240,7 +240,7 @@ def manual_hologram_entry(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        raw_carton_num = str(carton.get('carton_number') or '').strip()
+        raw_carton_num = str(carton.get('carton_number') or carton.get('cartonNumber') or carton.get('box_number') or carton.get('boxNumber') or '').strip()
         if not raw_carton_num:
             return Response(
                 {'error': f"Carton at index {c_idx} is missing 'carton_number'."},
@@ -271,8 +271,8 @@ def manual_hologram_entry(request):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            from_s = roll.get('from_serial')
-            to_s = roll.get('to_serial')
+            from_s = roll.get('from_serial') if 'from_serial' in roll else (roll.get('fromSerial') if 'fromSerial' in roll else roll.get('from'))
+            to_s = roll.get('to_serial') if 'to_serial' in roll else (roll.get('toSerial') if 'toSerial' in roll else roll.get('to'))
             if from_s is None or to_s is None or str(from_s).strip() == '' or str(to_s).strip() == '':
                 return Response(
                     {'error': f"Carton '{raw_carton_num}' roll #{r_idx + 1} must contain valid 'from_serial' and 'to_serial'."},
@@ -613,26 +613,42 @@ def list_manual_entries(request):
                 'notes': roll.notes,
             })
 
+        est_name = p.manufacturing_unit or (p.licensee.manufacturing_unit_name if p.licensee else None) or '---'
+        lic_no = p.license_id if p.license else (p.licensee.licensee_id if p.licensee else '')
+        effective_holograms = p_total_count if p_total_count > 0 else int(float((p.local_qty or 0) + (p.export_qty or 0) + (p.defence_qty or 0)))
+        carton_type = 'LOCAL'
+        if p.carton_details and len(p.carton_details) > 0:
+            carton_type = p.carton_details[0].get('type') or 'LOCAL'
+
         entries.append({
             'id': p.id,
             'ref_no': p.ref_no,
+            'reference_no': p.ref_no,
             'licensee_id': p.licensee_id,
-            'manufacturing_unit': p.manufacturing_unit,
-            'licensee_name': p.licensee.manufacturing_unit_name if p.licensee else p.manufacturing_unit,
-            'license_number': p.license_id if p.license else (p.licensee.licensee_id if p.licensee else None),
+            'manufacturing_unit': est_name,
+            'licensee_name': est_name,
+            'establishment': est_name,
+            'establishment_name': est_name,
+            'license_number': lic_no,
             'date': p.date.isoformat() if p.date else None,
+            'created_at': p.date.isoformat() if p.date else None,
+            'type': carton_type,
             'local_qty': float(p.local_qty or 0),
             'export_qty': float(p.export_qty or 0),
             'defence_qty': float(p.defence_qty or 0),
             'total_qty': float((p.local_qty or 0) + (p.export_qty or 0) + (p.defence_qty or 0)),
+            'total_holograms': effective_holograms,
+            'quantity': effective_holograms,
             'status': p.current_stage.name if p.current_stage else 'Cartoon Assigned',
             'current_stage_id': p.current_stage_id,
             'carton_details': p.carton_details or [],
+            'cartons_count': len(p.carton_details or []) or 1,
+            'total_rolls': len(p_rolls),
             'rolls_count': len(p_rolls),
             'rolls_summary': {
                 'total_rolls': len(p_rolls),
-                'total_holograms': p_total_count,
-                'available': p_available,
+                'total_holograms': effective_holograms,
+                'available': p_available or effective_holograms,
                 'used': p_used,
                 'damaged': p_damaged,
             },
