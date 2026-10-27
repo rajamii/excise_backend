@@ -8,6 +8,7 @@ urlpatterns = [
     path('transit-permits/', include('models.transactional.supply_chain.ena_transit_permit_details.urls')),
     path('brand-warehouse/', include('models.transactional.supply_chain.brand_warehouse.urls')),
     path('bulk-spirit-usage/', include('models.transactional.supply_chain.bulk_spirit_usage.urls')),
+    path('hologram-procurement-updation/', include('models.transactional.supply_chain.hologram_procurement_updation.urls')),
     # Add other supply chain URLs here
 ]
 
