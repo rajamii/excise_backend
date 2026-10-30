@@ -775,10 +775,11 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
             rep['display_stage'] = stage_name or rep.get('status') or 'Pending'
 
         try:
-            from models.transactional.salesman_barman.models import SalesmanBarmanModel
-            sbm = SalesmanBarmanModel.objects.filter(applicant=instance.applicant, application_id__istartswith="SBM/").order_by("-created_at").first()
-            if sbm:
-                rep['sbm_application_id'] = sbm.application_id
+            if getattr(instance, 'mode_of_operation', None) in {'Salesman', 'Barman'}:
+                from models.transactional.salesman_barman.models import SalesmanBarmanModel
+                sbm = getattr(instance, 'salesman_barman_details', None) or SalesmanBarmanModel.objects.filter(new_license_application=instance, application_id__istartswith="SBM/").order_by("-created_at").first()
+                if sbm and getattr(sbm, 'application_id', None):
+                    rep['sbm_application_id'] = sbm.application_id
         except Exception:
             pass
 
