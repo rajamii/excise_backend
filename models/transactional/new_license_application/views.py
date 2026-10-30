@@ -411,6 +411,103 @@ def force_submit_new_license_application(request, application_id):
         mm = MasterPaymentModule.objects.filter(module_code="001", visibility_status=True).first()
         if mm and mm.license_fee is not None:
             module_fee = Decimal(str(mm.license_fee)).quantize(Decimal("0.01"))
+    except Exception as exc:
+        logger.warning("Force-submit: failed to resolve module_fee: %s", exc)
+
+    desired_status = str(request.data.get("status") or request.query_params.get("status") or "S").strip().upper()
+    if desired_status in ("FAIL", "FAILED", "F"):
+        desired_status = "F"
+    elif desired_status in ("PENDING", "P"):
+        desired_status = "P"
+    else:
+        desired_status = "S"
+
+    if desired_status == "F":
+        utr = f"FORCE-FAIL-{secrets.token_hex(8).upper()}"
+        try:
+            from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+            PaymentBilldeskTransaction.objects.create(
+                utr=utr,
+                transaction_id_no_hoa=utr,
+                payer_id=str(app.application_id),
+                payment_module_code="001",
+                transaction_amount=module_fee,
+                payment_status="F",
+                response_errordescription="Simulated payment failure (localhost testing)",
+                user_id=str(getattr(request.user, "username", "") or "").strip()[:50] or None,
+            )
+        except Exception as exc:
+            logger.warning("Force-submit (failed): transaction record failed for %s: %s", app.application_id, exc)
+
+        try:
+            if getattr(app, "is_application_fee_paid", False):
+                app.is_application_fee_paid = False
+                app.save(update_fields=["is_application_fee_paid"])
+        except Exception:
+            pass
+
+        try:
+            if getattr(app, "workflow", None):
+                initial = app.workflow.stages.filter(is_initial=True).order_by("id").first()
+                if initial and getattr(app, "current_stage_id", None) != getattr(initial, "id", None):
+                    app.current_stage = initial
+                    app.save(update_fields=["current_stage"])
+        except Exception:
+            pass
+
+        return Response({
+            "application_id": app.application_id,
+            "status": "failed",
+            "payment_status": "F",
+            "transaction_id": utr,
+            "amount": float(module_fee),
+            "detail": "Simulated failed application fee payment (localhost testing)",
+        })
+
+    if desired_status == "P":
+        utr = f"FORCE-PEND-{secrets.token_hex(8).upper()}"
+        try:
+            from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+            PaymentBilldeskTransaction.objects.create(
+                utr=utr,
+                transaction_id_no_hoa=utr,
+                payer_id=str(app.application_id),
+                payment_module_code="001",
+                transaction_amount=module_fee,
+                payment_status="P",
+                response_errordescription="Simulated payment pending (localhost testing)",
+                user_id=str(getattr(request.user, "username", "") or "").strip()[:50] or None,
+            )
+        except Exception as exc:
+            logger.warning("Force-submit (pending): transaction record failed for %s: %s", app.application_id, exc)
+
+        try:
+            if getattr(app, "is_application_fee_paid", False):
+                app.is_application_fee_paid = False
+                app.save(update_fields=["is_application_fee_paid"])
+        except Exception:
+            pass
+
+        try:
+            if getattr(app, "workflow", None):
+                initial = app.workflow.stages.filter(is_initial=True).order_by("id").first()
+                if initial and getattr(app, "current_stage_id", None) != getattr(initial, "id", None):
+                    app.current_stage = initial
+                    app.save(update_fields=["current_stage"])
+        except Exception:
+            pass
+
+        return Response({
+            "application_id": app.application_id,
+            "status": "pending",
+            "payment_status": "P",
+            "transaction_id": utr,
+            "amount": float(module_fee),
+            "detail": "Simulated pending application fee payment (localhost testing)",
+        })
+
+    try:
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
 
         # Create a synthetic successful payment transaction so annotation queries can show status.
         utr = f"FORCE-NLI-{secrets.token_hex(8).upper()}"
@@ -794,7 +891,7 @@ def license_application_detail(request, pk):
 
     # Attach latest application-fee payment info for details view too.
     application = _with_application_fee_payment_annotations(NewLicenseApplication.objects.filter(pk=application.pk)).first() or application
-    serializer = NewLicenseApplicationSerializer(application)
+    serializer = NewLicenseApplicationSerializer(application, context={'request': request})
     return Response(serializer.data)
 
 
@@ -2137,7 +2234,7 @@ def application_group(request):
             offset = (page - 1) * page_size
             items = target_qs[offset : offset + page_size]
 
-            serializer = NewLicenseApplicationSerializer(items, many=True)
+            serializer = NewLicenseApplicationSerializer(items, many=True, context={'request': request})
             return Response({
                 'count': total_count,
                 'page': page,
@@ -2148,21 +2245,22 @@ def application_group(request):
 
         # Legacy unpaginated fallback
         base_qs = _with_site_enquiry_revert_annotations(_with_application_fee_payment_annotations(base_qs))
+        ctx = {'request': request}
         return Response({
             "applied": NewLicenseApplicationSerializer(
-                paid_qs.filter(current_stage__name__in=applied_stages).exclude(is_negative_stage), many=True
+                paid_qs.filter(current_stage__name__in=applied_stages).exclude(is_negative_stage), many=True, context=ctx
             ).data,
             "pending": NewLicenseApplicationSerializer(
-                pending_qs, many=True
+                pending_qs, many=True, context=ctx
             ).data,
             "objection": NewLicenseApplicationSerializer(
-                objection_qs, many=True
+                objection_qs, many=True, context=ctx
             ).data,
             "approved": NewLicenseApplicationSerializer(
-                approved_qs, many=True
+                approved_qs, many=True, context=ctx
             ).data,
             "rejected": NewLicenseApplicationSerializer(
-                rejected_qs, many=True
+                rejected_qs, many=True, context=ctx
             ).data
         })
 

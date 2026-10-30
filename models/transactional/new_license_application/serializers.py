@@ -175,6 +175,7 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     application_fee_transaction_id = serializers.CharField(read_only=True, allow_blank=True, allow_null=True)
     application_fee_payment_date = serializers.DateTimeField(read_only=True, allow_null=True)
     application_fee_error = serializers.CharField(read_only=True, allow_blank=True, allow_null=True)
+    display_stage = serializers.CharField(read_only=True, allow_blank=True, allow_null=True)
 
     # Site enquiry revert badge (annotated in views).
     site_enquiry_is_reverted = serializers.BooleanField(read_only=True, default=False)
@@ -711,19 +712,67 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
             rep['isDistributorUser'] = getattr(cat, 'is_distributor_user', False)
             rep['is_distributor_user'] = getattr(cat, 'is_distributor_user', False)
 
-        if not rep.get('application_fee_transaction_id') and getattr(instance, 'is_application_fee_paid', False):
-            try:
-                from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
-                tx = PaymentBilldeskTransaction.objects.filter(
-                    payer_id__iexact=str(instance.application_id),
-                    payment_module_code="001",
-                ).order_by("-transaction_date", "-utr").first()
-                if tx:
-                    rep['application_fee_transaction_id'] = tx.utr
-                    rep['application_fee_payment_status'] = tx.payment_status
-                    rep['application_fee_payment_date'] = tx.transaction_date.isoformat() if tx.transaction_date else None
-            except Exception:
-                pass
+        # Always resolve application fee transactions (both latest and all history for multiple slips)
+        try:
+            from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+            tx_qs = PaymentBilldeskTransaction.objects.filter(
+                payer_id__iexact=str(instance.application_id),
+                payment_module_code="001",
+            ).order_by("-transaction_date", "-utr")
+
+            tx_list = []
+            for t in tx_qs[:10]:
+                tx_list.append({
+                    "utr": t.utr,
+                    "transaction_id": t.utr,
+                    "payment_status": t.payment_status,
+                    "status_label": "Successful" if t.payment_status == "S" else ("Pending" if t.payment_status == "P" else "Failed"),
+                    "amount": float(t.transaction_amount or 500.00),
+                    "transaction_date": t.transaction_date.isoformat() if t.transaction_date else None,
+                    "error_description": t.response_errordescription or "",
+                    "bank_ref_no": t.response_bankreferenceno or "",
+                })
+            rep['application_fee_transactions'] = tx_list
+
+            latest_tx = tx_qs.first()
+            if latest_tx:
+                rep['application_fee_transaction_id'] = rep.get('application_fee_transaction_id') or latest_tx.utr
+                rep['application_fee_payment_status'] = rep.get('application_fee_payment_status') or latest_tx.payment_status
+                rep['application_fee_payment_date'] = rep.get('application_fee_payment_date') or (latest_tx.transaction_date.isoformat() if latest_tx.transaction_date else None)
+                if not rep.get('application_fee_error') and latest_tx.response_errordescription:
+                    rep['application_fee_error'] = latest_tx.response_errordescription
+        except Exception:
+            pass
+
+        # Compute display stage for initial Stage 1 ("Applied") when fee is unpaid
+        is_fee_paid = bool(getattr(instance, 'is_application_fee_paid', False) or rep.get('application_fee_payment_status') == 'S')
+        stage_obj = getattr(instance, 'current_stage', None)
+        is_initial_stage = bool(getattr(stage_obj, 'is_initial', False) or stage_lower == 'applied' or getattr(stage_obj, 'id', None) == 1)
+
+        request = self.context.get('request')
+        user_role = str(getattr(getattr(request, 'user', None), 'role', None) and getattr(request.user.role, 'name', '') or '').strip().lower()
+
+        if is_initial_stage and not is_fee_paid:
+            fee_status = str(rep.get('application_fee_payment_status') or '').strip().upper()
+            if fee_status == 'F':
+                rep['display_stage'] = 'Application Not Submitted (Payment Failed)'
+            elif fee_status == 'P':
+                rep['display_stage'] = 'Application Not Submitted (Payment Pending - Awaiting response from BillDesk)'
+            else:
+                rep['display_stage'] = 'Application Not Submitted'
+        elif user_role in ('licensee', 'applicant') and is_fee_paid:
+            if getattr(instance, 'is_approved', False) or 'approv' in stage_lower:
+                rep['display_stage'] = 'Approved'
+            elif 'reject' in stage_lower or 'terminat' in stage_lower or 'forfeit' in stage_lower:
+                rep['display_stage'] = 'Rejected'
+            elif 'objection' in stage_lower or 'query' in stage_lower:
+                rep['display_stage'] = 'Objection Raised'
+            elif 'payment' in stage_lower or 'license fee' in stage_lower or getattr(stage_obj, 'id', None) == 23:
+                rep['display_stage'] = 'Awaiting Payment'
+            else:
+                rep['display_stage'] = 'Pending'
+        else:
+            rep['display_stage'] = stage_name or rep.get('status') or 'Pending'
 
         try:
             from models.transactional.salesman_barman.models import SalesmanBarmanModel

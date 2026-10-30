@@ -1530,13 +1530,45 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
                 try:
                     application_id = str(getattr(tx, "payer_id", "") or "").strip()
                     app = (
-                        NewLicenseApplication.objects.only("application_id", "is_application_fee_paid")
+                        NewLicenseApplication.objects.select_related("workflow", "current_stage", "applicant")
                         .filter(application_id__iexact=application_id)
                         .first()
                     )
-                    if app and getattr(app, "is_application_fee_paid", False):
-                        app.is_application_fee_paid = False
-                        app.save(update_fields=["is_application_fee_paid"])
+                    if app:
+                        if getattr(app, "is_application_fee_paid", False):
+                            app.is_application_fee_paid = False
+                            app.save(update_fields=["is_application_fee_paid"])
+
+                        # Log failed payment attempt in admin_log
+                        try:
+                            from models.transactional.logs.services import log_admin_action
+                            username = str(getattr(tx, "user_id", "") or "").strip()
+                            user = None
+                            if username:
+                                user = CustomUser.objects.filter(username__iexact=username).first()
+                            if not user:
+                                user = getattr(app, "applicant", None)
+                            fee_amt = parsed_amount or Decimal(str(tx.transaction_amount or 500)).quantize(Decimal("0.01"))
+                            log_admin_action(
+                                action="PAY_APPLICATION_FEE",
+                                user=user,
+                                application=app,
+                                module_name="New License Application",
+                                application_id=application_id,
+                                status="FAILED",
+                                remarks=f"Application Fee payment of ₹{fee_amt:,.2f} failed via BillDesk (Txn ID: {txn_ref}). Error: {error_desc or 'Payment failed'}",
+                                metadata={
+                                    "fee_type": "application_fee",
+                                    "amount": str(fee_amt),
+                                    "transaction_id": txn_ref,
+                                    "bank_reference_no": bank_ref or "",
+                                    "payment_status": "FAILED",
+                                    "error_code": error_status or "",
+                                    "error_desc": error_desc or "",
+                                }
+                            )
+                        except Exception as log_exc:
+                            logger.warning("Failed to log failed PAY_APPLICATION_FEE in admin_log: %s", log_exc)
                 except Exception as exc:
                     logger.exception(
                         "Failed to preserve unpaid new license application state for txn_ref=%s: %s",
