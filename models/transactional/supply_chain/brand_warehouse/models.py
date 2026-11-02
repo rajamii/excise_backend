@@ -344,12 +344,26 @@ class BrandWarehouse(models.Model):
         return self.current_stock
 
     def save(self, *args, **kwargs):
-        # Resolve factory using license_id if factory is null
-        if not self.factory_id and self.license_id:
-            from models.masters.supply_chain.liquor_data.models import MasterFactoryList
-            factory_obj = MasterFactoryList.objects.filter(source_object_id=self.license_id).first()
-            if factory_obj:
-                self.factory = factory_obj
+        # Automatically keep factory in sync with license_id
+        if self.license_id:
+            needs_factory_update = False
+            if not self.factory_id:
+                needs_factory_update = True
+            elif self.pk:
+                orig = BrandWarehouse.objects.filter(pk=self.pk).values('license_id', 'factory_id').first()
+                if orig and orig.get('license_id') != self.license_id:
+                    needs_factory_update = True
+
+            if needs_factory_update:
+                from models.transactional.supply_chain.brand_warehouse.services import BrandWarehouseStockService
+                factory_obj = BrandWarehouseStockService.resolve_factory_for_license(self.license_id)
+                if factory_obj:
+                    self.factory = factory_obj
+                    if 'update_fields' in kwargs and kwargs['update_fields'] is not None:
+                        fields = set(kwargs['update_fields'])
+                        fields.add('factory')
+                        kwargs['update_fields'] = list(fields)
+
         super().save(*args, **kwargs)
 
     def soft_delete(self, deleted_by=None):

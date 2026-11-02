@@ -122,6 +122,77 @@ class BrandWarehouseStockService:
         return aliases
 
     @staticmethod
+    def resolve_factory_for_license(license_id: str, factory_name_hint: Optional[str] = None) -> Optional[MasterFactoryList]:
+        """
+        Automatically resolve or create the MasterFactoryList entry matching a license_id.
+        """
+        normalized_license = str(license_id or '').strip()
+        if not normalized_license:
+            return None
+
+        from models.masters.license.models import License
+        from models.masters.supply_chain.profile.models import UserManufacturingUnit
+        from models.transactional.new_license_application.models import NewLicenseApplication
+
+        aliases = BrandWarehouseStockService._license_aliases(normalized_license)
+
+        # 1. Match directly by source_object_id in MasterFactoryList
+        fac = MasterFactoryList.objects.filter(source_object_id__in=aliases).first()
+        if fac:
+            return fac
+
+        candidate_name = str(factory_name_hint or '').strip()
+
+        # 2. Check UserManufacturingUnit
+        if not candidate_name:
+            unit = UserManufacturingUnit.objects.filter(licensee_id__in=aliases).exclude(manufacturing_unit_name__isnull=True).exclude(manufacturing_unit_name='').first()
+            if unit:
+                candidate_name = unit.manufacturing_unit_name.strip()
+
+        # 3. Check License / NewLicenseApplication
+        if not candidate_name:
+            lic_obj = License.objects.filter(license_id__in=aliases).first()
+            if lic_obj and getattr(lic_obj, 'source_application', None):
+                app_est = getattr(lic_obj.source_application, 'establishment_name', None)
+                if app_est:
+                    candidate_name = str(app_est).strip()
+            if not candidate_name and lic_obj and lic_obj.source_object_id:
+                app = NewLicenseApplication.objects.filter(application_id=lic_obj.source_object_id).first()
+                if app and app.establishment_name:
+                    candidate_name = str(app.establishment_name).strip()
+
+        if not candidate_name:
+            app = NewLicenseApplication.objects.filter(application_id__in=aliases).first()
+            if app and app.establishment_name:
+                candidate_name = str(app.establishment_name).strip()
+
+        # 4. Resolve MasterFactoryList by candidate establishment name
+        if candidate_name:
+            fac = MasterFactoryList.objects.filter(factory_name__iexact=candidate_name).first()
+            if not fac:
+                fac = MasterFactoryList.objects.filter(factory_name__icontains=candidate_name).first()
+            if not fac:
+                for f in MasterFactoryList.objects.all():
+                    if f.factory_name.lower() in candidate_name.lower() or candidate_name.lower() in f.factory_name.lower():
+                        fac = f
+                        break
+
+            if fac:
+                if not fac.source_object_id or fac.source_object_id in aliases:
+                    fac.source_object_id = normalized_license
+                    fac.save(update_fields=['source_object_id', 'updated_at'])
+                return fac
+
+            # Auto-create if not exists
+            fac = MasterFactoryList.objects.create(
+                factory_name=candidate_name,
+                source_object_id=normalized_license
+            )
+            return fac
+
+        return None
+
+    @staticmethod
     def _normalize_text(value: str) -> str:
         return re.sub(r'[^a-z0-9]+', ' ', str(value or '').lower()).strip()
 

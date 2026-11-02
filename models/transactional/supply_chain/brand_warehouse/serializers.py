@@ -322,13 +322,21 @@ class BrandWarehouseSerializer(serializers.ModelSerializer):
             return data
 
         if capacity_size_ml is None:
-            return data
-
-        if int(capacity_size_ml) < 0:
+            pass
+        elif int(capacity_size_ml) < 0:
             raise serializers.ValidationError("Capacity size cannot be negative")
+        else:
+            category, _ = MasterLiquorCapacity.objects.get_or_create(size_ml=int(capacity_size_ml))
+            data['capacity_size'] = category
 
-        category, _ = MasterLiquorCapacity.objects.get_or_create(size_ml=int(capacity_size_ml))
-        data['capacity_size'] = category
+        # Automatically resolve and update factory when license_id is provided
+        license_id = data.get('license_id')
+        if license_id:
+            hint = self.initial_data.get('factory_name') or self.initial_data.get('distillery_name')
+            factory_obj = BrandWarehouseStockService.resolve_factory_for_license(license_id, factory_name_hint=hint)
+            if factory_obj:
+                data['factory'] = factory_obj
+
         return data
 
 
