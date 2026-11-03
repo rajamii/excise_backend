@@ -644,6 +644,283 @@ def force_submit_new_license_application(request, application_id):
     )
 
 
+@api_view(["POST", "GET"])
+@permission_classes([IsAuthenticated])
+def check_new_license_payment_status(request, application_id):
+    """
+    Query or reconcile the BillDesk transaction status for a pending New License Application fee.
+    If BillDesk confirms Success ('S'):
+        - auto-submit application and advance workflow to District User
+        - mark is_application_fee_paid = True
+        - return status: 'S'
+    If BillDesk confirms Failed ('F'):
+        - mark transaction as 'F'
+        - ensure is_application_fee_paid = False
+        - return status: 'F' (enabling licensee to retry payment cleanly via 'Pay Now')
+    If BillDesk confirms Still Pending ('P'):
+        - return status: 'P'
+    In dev/localhost (DEBUG=True or BILLDESK_USE_MOCK=True), supports simulated_status='S'|'F'|'P'.
+    """
+    try:
+        import requests
+    except ImportError:
+        requests = None
+
+    app_id = str(application_id or "").strip()
+    app = (
+        NewLicenseApplication.objects.select_related("workflow", "current_stage", "applicant")
+        .filter(application_id__iexact=app_id)
+        .first()
+    )
+    if not app:
+        return Response({"detail": "Application not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Permission check: applicant or staff/admin
+    user = request.user
+    role = _normalize_role(user.role.name if getattr(user, "role", None) else None)
+    if role == "licensee" and getattr(app, "applicant_id", None) != getattr(user, "id", None):
+        return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+
+    from models.transactional.payment_gateway.models import (
+        PaymentBilldeskTransaction,
+        PaymentGatewayParameters,
+        MasterPaymentModule,
+    )
+    from models.transactional.payment_gateway.views import (
+        _ensure_new_license_app_submitted,
+        _process_billdesk_transaction,
+    )
+
+    # 1. If already marked paid and submitted, return Success immediately
+    if getattr(app, "is_application_fee_paid", False):
+        return Response({
+            "application_id": app.application_id,
+            "status": "S",
+            "payment_status": "S",
+            "status_label": "Successful",
+            "is_application_fee_paid": True,
+            "detail": "Application fee has already been verified and paid successfully.",
+        })
+
+    # 2. Look for the latest BillDesk transaction for this application
+    tx = (
+        PaymentBilldeskTransaction.objects.filter(
+            payer_id__iexact=app.application_id,
+            payment_module_code="001",
+        )
+        .order_by("-transaction_date", "-opr_date")
+        .first()
+    )
+
+    # Resolve module fee from master payment module (001)
+    module_fee = Decimal("500.00")
+    try:
+        mm = MasterPaymentModule.objects.filter(module_code="001", visibility_status=True).first()
+        if mm and mm.license_fee is not None:
+            module_fee = Decimal(str(mm.license_fee)).quantize(Decimal("0.01"))
+    except Exception as exc:
+        logger.warning("check_payment_status: failed to resolve module_fee: %s", exc)
+
+    # 3. Check for dev simulation if allowed
+    allow_simulation = bool(getattr(settings, "DEBUG", False) or getattr(settings, "BILLDESK_USE_MOCK", False))
+    simulated_status = str(request.data.get("simulated_status") or request.query_params.get("simulated_status") or "").strip().upper()
+
+    if allow_simulation and simulated_status:
+        if simulated_status in ("FAIL", "FAILED", "F"):
+            simulated_status = "F"
+        elif simulated_status in ("PENDING", "P"):
+            simulated_status = "P"
+        else:
+            simulated_status = "S"
+
+        if simulated_status == "S":
+            utr = getattr(tx, "utr", None) or f"SIM-S-{secrets.token_hex(6).upper()}"
+            if tx:
+                tx.payment_status = "S"
+                tx.response_authstatus = "0300"
+                tx.opr_date = timezone.now()
+                tx.save(update_fields=["payment_status", "response_authstatus", "opr_date"])
+            else:
+                tx = PaymentBilldeskTransaction.objects.create(
+                    utr=utr,
+                    transaction_id_no_hoa=utr,
+                    payer_id=str(app.application_id),
+                    payment_module_code="001",
+                    transaction_amount=module_fee,
+                    payment_status="S",
+                    response_authstatus="0300",
+                    user_id=str(getattr(user, "username", "") or "").strip()[:50] or None,
+                )
+            _ensure_new_license_app_submitted(app, user)
+            return Response({
+                "application_id": app.application_id,
+                "status": "S",
+                "payment_status": "S",
+                "status_label": "Successful",
+                "transaction_id": getattr(tx, "utr", utr),
+                "detail": "BillDesk confirmed payment was successful. Application submitted to District User.",
+            })
+
+        elif simulated_status == "F":
+            utr = getattr(tx, "utr", None) or f"SIM-F-{secrets.token_hex(6).upper()}"
+            err_desc = request.data.get("error_desc") or "Transaction declined or cancelled by bank (BillDesk response)"
+            if tx:
+                tx.payment_status = "F"
+                tx.response_authstatus = "0399"
+                tx.response_errordescription = err_desc
+                tx.opr_date = timezone.now()
+                tx.save(update_fields=["payment_status", "response_authstatus", "response_errordescription", "opr_date"])
+            else:
+                tx = PaymentBilldeskTransaction.objects.create(
+                    utr=utr,
+                    transaction_id_no_hoa=utr,
+                    payer_id=str(app.application_id),
+                    payment_module_code="001",
+                    transaction_amount=module_fee,
+                    payment_status="F",
+                    response_authstatus="0399",
+                    response_errordescription=err_desc,
+                    user_id=str(getattr(user, "username", "") or "").strip()[:50] or None,
+                )
+            if getattr(app, "is_application_fee_paid", False):
+                app.is_application_fee_paid = False
+                app.save(update_fields=["is_application_fee_paid"])
+
+            return Response({
+                "application_id": app.application_id,
+                "status": "F",
+                "payment_status": "F",
+                "status_label": "Failed",
+                "transaction_id": getattr(tx, "utr", utr),
+                "detail": "BillDesk confirmed payment failed. You can now retry paying the application fee.",
+            })
+
+        elif simulated_status == "P":
+            return Response({
+                "application_id": app.application_id,
+                "status": "P",
+                "payment_status": "P",
+                "status_label": "Pending",
+                "transaction_id": getattr(tx, "utr", ""),
+                "detail": "Payment is still awaiting clearance from BillDesk / bank. Please wait or check again later.",
+            })
+
+    # 4. If transaction already exists and is already S:
+    if tx and str(getattr(tx, "payment_status", "")).upper() == "S":
+        _ensure_new_license_app_submitted(app, user)
+        return Response({
+            "application_id": app.application_id,
+            "status": "S",
+            "payment_status": "S",
+            "status_label": "Successful",
+            "transaction_id": getattr(tx, "utr", ""),
+            "detail": "Payment confirmed as successful. Application submitted to District User.",
+        })
+
+    # 5. Live query BillDesk gateway for this transaction
+    if tx and getattr(tx, "utr", None):
+        txn_ref = str(tx.utr).strip()
+        # If it's a dev simulated transaction (FORCE-PEND) and live query was invoked without simulation:
+        if txn_ref.startswith("FORCE-") or txn_ref.startswith("SIM-"):
+            return Response({
+                "application_id": app.application_id,
+                "status": "P",
+                "payment_status": "P",
+                "status_label": "Pending",
+                "transaction_id": txn_ref,
+                "detail": "Simulated transaction is still pending. Use Dev Simulation controls to simulate Success or Failed outcome.",
+            })
+
+        # Real BillDesk order status inquiry:
+        try:
+            gateway = (
+                PaymentGatewayParameters.objects.filter(is_active=True, payment_gateway_name__iexact="Billdesk")
+                .order_by("sl_no")
+                .first()
+            )
+            merchant_id = str(gateway.merchantid or "").strip() if gateway else ""
+            encryption_key = str(getattr(settings, "BILLDESK_ENCRYPTION_KEY", "") or getattr(gateway, "encryption_key", "") or "").strip()
+            signing_key = str(getattr(settings, "BILLDESK_SIGNING_KEY", "")).strip()
+            key_id = str(getattr(settings, "BILLDESK_KEY_ID", "")).strip()
+            base_url = str(getattr(settings, "BILLDESK_GATEWAY_URL", "")).strip()
+
+            if merchant_id and encryption_key and signing_key and key_id and base_url and requests:
+                from models.transactional.payment_gateway.billdesk_utils import generate_billdesk_nested_jose
+                query_url = base_url.replace("/orders/create", "/transactions/get")
+                query_payload = {
+                    "mercid": merchant_id,
+                    "orderid": txn_ref,
+                }
+                nested_token = generate_billdesk_nested_jose(
+                    client_id=merchant_id.lower(),
+                    payload_dict=query_payload,
+                    encryption_key=encryption_key,
+                    signing_key=signing_key,
+                    key_id=key_id,
+                )
+                headers = {
+                    "Content-Type": "application/jose",
+                    "Accept": "application/jose",
+                    "BD-Traceid": f"QRY-{secrets.token_hex(8).upper()}",
+                    "BD-Timestamp": str(int(timezone.now().timestamp() * 1000)),
+                }
+                resp = requests.post(query_url, data=nested_token, headers=headers, timeout=15)
+                if resp.status_code == 200:
+                    _process_billdesk_transaction(resp.text)
+                    tx.refresh_from_db()
+                    current_st = str(getattr(tx, "payment_status", "")).upper()
+                    if current_st == "S":
+                        return Response({
+                            "application_id": app.application_id,
+                            "status": "S",
+                            "payment_status": "S",
+                            "status_label": "Successful",
+                            "transaction_id": tx.utr,
+                            "detail": "BillDesk confirmed payment was successful. Application submitted to District User.",
+                        })
+                    elif current_st == "F":
+                        return Response({
+                            "application_id": app.application_id,
+                            "status": "F",
+                            "payment_status": "F",
+                            "status_label": "Failed",
+                            "transaction_id": tx.utr,
+                            "detail": "BillDesk confirmed payment failed. You can now retry paying the application fee.",
+                        })
+                    else:
+                        return Response({
+                            "application_id": app.application_id,
+                            "status": "P",
+                            "payment_status": "P",
+                            "status_label": "Pending",
+                            "transaction_id": tx.utr,
+                            "detail": "BillDesk reports transaction is still awaiting bank clearance.",
+                        })
+        except Exception as qry_exc:
+            logger.warning("BillDesk live query exception for %s: %s", app.application_id, qry_exc)
+
+    # Fallback response when transaction is still pending in local DB:
+    curr_status = str(getattr(tx, "payment_status", "P") or "P").upper()
+    if curr_status == "F":
+        return Response({
+            "application_id": app.application_id,
+            "status": "F",
+            "payment_status": "F",
+            "status_label": "Failed",
+            "transaction_id": getattr(tx, "utr", ""),
+            "detail": "Payment failed. You can now retry paying the application fee.",
+        })
+
+    return Response({
+        "application_id": app.application_id,
+        "status": "P",
+        "payment_status": "P",
+        "status_label": "Pending",
+        "transaction_id": getattr(tx, "utr", "") if tx else "",
+        "detail": "Payment is currently pending confirmation from BillDesk. Please try again in a few moments.",
+    })
+
+
 @api_view(['POST'])
 @permission_classes([HasStagePermission])
 def initiate_renewal(request, license_id):
