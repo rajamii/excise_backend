@@ -288,6 +288,19 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
                 total_per_case = excise_per_case + education_per_case + additional_per_case + bottling_per_case
                 if total_per_case > 0:
                     data['total_amount'] = str(total_per_case * cases)
+
+            if not str(data.get('district') or '').strip():
+                depot = str(data.get('depot_address') or getattr(instance, 'depot_address', '') or '').strip()
+                if depot:
+                    data['district'] = depot
+                elif licensee_id:
+                    try:
+                        from models.masters.license.models import License
+                        lic = License.objects.select_related('excise_district').filter(license_id__iexact=licensee_id).first()
+                        if lic and lic.excise_district:
+                            data['district'] = str(lic.excise_district.name or '').strip()
+                    except Exception:
+                        pass
         except Exception:
             # Never break API responses due to enrichment.
             return
