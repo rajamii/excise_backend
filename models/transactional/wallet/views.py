@@ -1,8 +1,11 @@
 import secrets
 from decimal import Decimal
+import logging
 
 from django.db import transaction
 from django.db.models import Q
+
+logger = logging.getLogger(__name__)
 from django.utils import timezone
 from rest_framework import status, serializers
 from rest_framework.decorators import api_view, permission_classes
@@ -306,7 +309,90 @@ def wallet_recharge_list(request, licensee_id):
     limit = _safe_limit(request.query_params.get("limit"), default=200)
     qs = qs[:limit]
 
-    return Response({"licensee_id": effective_id, "count": len(qs), "results": WalletTransactionSerializer(qs, many=True).data})
+    results = list(WalletTransactionSerializer(qs, many=True).data)
+
+    # Include initiated pending and failed BillDesk transactions for this wallet
+    try:
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+        existing_refs = {
+            str(r.get("reference_no") or r.get("wallet_transaction_id") or r.get("transaction_id") or "").strip().lower()
+            for r in results
+        }
+
+        # Candidates for licensee identification
+        user_candidates = list(candidates)
+        if request_user and not getattr(request.user, "is_staff", False):
+            user_candidates.append(request_user)
+
+        bd_filter = Q(payer_id__in=user_candidates) | Q(user_id__in=user_candidates)
+
+        bd_qs = PaymentBilldeskTransaction.objects.filter(
+            bd_filter,
+            payment_module_code__in=["999", "002"]
+        ).order_by("-transaction_date", "-opr_date")
+
+        for tx in bd_qs[:50]:
+            utr = str(tx.utr or tx.transaction_id_no_hoa or "").strip()
+            if not utr or utr.lower() in existing_refs:
+                continue
+
+            hoa = str(tx.request_additionalinfo1 or "").strip()
+            w_type = str(tx.request_additionalinfo3 or "").strip().lower()
+            if hoa in ["0039-00-800-45-02", "0099-00-999-99-99"]:
+                w_type = "license_fee"
+            elif hoa in ["non", "0088-00-888-88-88"]:
+                w_type = "security_deposit"
+            elif hoa == "0045-00-112-45-03":
+                w_type = "education_cess"
+            elif hoa in ["0039-00-800-45-01", "0039-00-105-45-04", "0039-80-800-45-01"]:
+                w_type = "hologram"
+            elif not w_type or w_type in ["sikpay", "sikfdr"]:
+                if str(tx.payment_module_code) == "002":
+                    w_type = "security_deposit"
+                else:
+                    w_type = "excise"
+
+            if scope == "license" and w_type not in ["license_fee", "security_deposit"]:
+                continue
+            if scope == "wallets" and w_type in ["license_fee", "security_deposit"]:
+                continue
+            if scope in {"excise", "education_cess", "hologram"} and w_type != scope:
+                continue
+            if wallet_type and w_type != wallet_type.lower():
+                continue
+
+            tx_st = str(getattr(tx, "payment_status", "P") or "P").upper()
+            status_str = "Successful" if tx_st == "S" else ("Failed" if tx_st == "F" else "Pending")
+            created_dt = tx.transaction_date or tx.opr_date
+
+            results.append({
+                "wallet_transaction_id": utr,
+                "transaction_id": utr,
+                "reference_no": utr,
+                "licensee_id": tx.payer_id,
+                "wallet_type": w_type,
+                "head_of_account": str(tx.request_additionalinfo1 or "-"),
+                "amount": float(tx.transaction_amount or 0),
+                "created_at": created_dt.isoformat() if created_dt else None,
+                "transaction_type": "recharge",
+                "payment_status": status_str,
+                "status": status_str,
+                "raw_status": tx_st,
+            })
+    except Exception as exc:
+        logger.warning("wallet_recharge_list: failed to load PaymentBilldeskTransaction records: %s", exc)
+
+    def _parse_created_at(item):
+        val = item.get("created_at")
+        if not val:
+            return ""
+        return str(val)
+
+    results.sort(key=_parse_created_at, reverse=True)
+    if limit:
+        results = results[:limit]
+
+    return Response({"licensee_id": effective_id, "count": len(results), "results": results})
 
 
 @api_view(["GET"])

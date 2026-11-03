@@ -2221,3 +2221,314 @@ def revenue_receipts_chart_data(request):
             })
         
     return Response(chart_data)
+
+
+@api_view(["POST", "GET"])
+@permission_classes([IsAuthenticated])
+def billdesk_check_wallet_payment_status(request, transaction_id):
+    """
+    Query or reconcile the BillDesk transaction status for a wallet recharge.
+    If BillDesk confirms Success ('S'):
+        - credits wallet balance (if not already credited)
+        - marks transaction as 'S'
+        - returns status 'S'
+    If BillDesk confirms Failed ('F'):
+        - marks transaction as 'F'
+        - returns status 'F'
+    If BillDesk confirms Pending ('P'):
+        - returns status 'P'
+    In dev/localhost (DEBUG=True or BILLDESK_USE_MOCK=True), supports simulated_status='S'|'F'|'P'.
+    """
+    from models.transactional.helpers import _normalize_role
+    from django.db.models import Q
+
+    txn_id = str(transaction_id or "").strip()
+    if not txn_id:
+        return Response({"detail": "Transaction ID is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    tx = (
+        PaymentBilldeskTransaction.objects.filter(
+            Q(utr__iexact=txn_id) | Q(transaction_id_no_hoa__iexact=txn_id)
+        )
+        .order_by("-transaction_date", "-opr_date")
+        .first()
+    )
+
+    if not tx:
+        return Response({"detail": f"Transaction {txn_id} not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    user = request.user
+    role = _normalize_role(user.role.name if getattr(user, "role", None) else None)
+    if role == "licensee":
+        username = str(getattr(user, "username", "") or "").strip().lower()
+        payer = str(getattr(tx, "payer_id", "") or "").strip().lower()
+        tx_user = str(getattr(tx, "user_id", "") or "").strip().lower()
+        if username not in (payer, tx_user) and str(getattr(user, "id", "")) != payer:
+            try:
+                from models.transactional.wallet.views import _wallet_candidates_for_request
+                candidates = [c.lower() for c in _wallet_candidates_for_request(request, payer)]
+                if payer not in candidates and username not in candidates:
+                    return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+            except Exception:
+                pass
+
+    allow_simulation = bool(getattr(settings, "DEBUG", False) or getattr(settings, "BILLDESK_USE_MOCK", False))
+    simulated_status = str(request.data.get("simulated_status") or request.query_params.get("simulated_status") or "").strip().upper()
+
+    def _ensure_wallet_credited(tx_record, amount=None):
+        """Credit wallet if not already credited for this transaction_id."""
+        from models.transactional.wallet.models import WalletTransaction
+        existing = WalletTransaction.objects.filter(reference_no__iexact=tx_record.utr, transaction_type__iexact="recharge").first()
+        if existing:
+            return existing
+
+        w_type = str(tx_record.request_additionalinfo3 or "excise").strip() or "excise"
+        w_hoa = str(tx_record.request_additionalinfo1 or "").strip() or "non"
+        amt = amount or tx_record.transaction_amount or Decimal("0.00")
+        lic_id = str(tx_record.payer_id or getattr(user, "username", "")).strip()
+
+        with transaction.atomic():
+            return credit_wallet_balance(
+                transaction_id=str(tx_record.utr).strip(),
+                licensee_id=lic_id,
+                wallet_type=w_type,
+                head_of_account=w_hoa,
+                amount=Decimal(str(amt)).quantize(Decimal("0.01")),
+                user_id=str(getattr(tx_record, "user_id", "") or getattr(user, "username", "")).strip(),
+                licensee_name=str(tx_record.request_additionalinfo1 or "").strip() if w_type == "security_deposit" else "",
+                source_module="wallet_recharge",
+                transaction_type="recharge",
+                remarks="BillDesk wallet recharge reconciled",
+            )
+
+    # 1. Dev Simulation
+    if allow_simulation and simulated_status:
+        if simulated_status in ("FAIL", "FAILED", "F"):
+            simulated_status = "F"
+        elif simulated_status in ("PENDING", "P"):
+            simulated_status = "P"
+        else:
+            simulated_status = "S"
+
+        if simulated_status == "S":
+            tx.payment_status = "S"
+            tx.response_authstatus = "0300"
+            tx.opr_date = timezone.now()
+            tx.save(update_fields=["payment_status", "response_authstatus", "opr_date"])
+            _ensure_wallet_credited(tx)
+            return Response({
+                "transaction_id": tx.utr,
+                "status": "S",
+                "payment_status": "S",
+                "status_label": "Successful",
+                "amount": float(tx.transaction_amount or 0),
+                "detail": "BillDesk confirmed wallet recharge was successful. Amount credited to wallet.",
+            })
+        elif simulated_status == "F":
+            tx.payment_status = "F"
+            tx.response_authstatus = "0399"
+            tx.response_errordescription = request.data.get("error_desc") or "Transaction declined by bank (BillDesk response)"
+            tx.opr_date = timezone.now()
+            tx.save(update_fields=["payment_status", "response_authstatus", "response_errordescription", "opr_date"])
+            return Response({
+                "transaction_id": tx.utr,
+                "status": "F",
+                "payment_status": "F",
+                "status_label": "Failed",
+                "detail": "BillDesk confirmed wallet recharge transaction failed.",
+            })
+        elif simulated_status == "P":
+            return Response({
+                "transaction_id": tx.utr,
+                "status": "P",
+                "payment_status": "P",
+                "status_label": "Pending",
+                "detail": "Payment is still awaiting clearance from BillDesk / bank.",
+            })
+
+    # 2. Already S:
+    if str(getattr(tx, "payment_status", "")).upper() == "S":
+        _ensure_wallet_credited(tx)
+        return Response({
+            "transaction_id": tx.utr,
+            "status": "S",
+            "payment_status": "S",
+            "status_label": "Successful",
+            "amount": float(tx.transaction_amount or 0),
+            "detail": "Wallet recharge is already confirmed and credited.",
+        })
+
+    # 3. Live query against BillDesk gateway
+    if tx.utr and not (tx.utr.startswith("FORCE-") or tx.utr.startswith("SIM-")):
+        try:
+            gateway = (
+                PaymentGatewayParameters.objects.filter(is_active=True, payment_gateway_name__iexact="Billdesk")
+                .order_by("sl_no")
+                .first()
+            )
+            merchant_id = str(gateway.merchantid or "").strip() if gateway else ""
+            encryption_key = str(getattr(settings, "BILLDESK_ENCRYPTION_KEY", "") or getattr(gateway, "encryption_key", "") or "").strip()
+            signing_key = str(getattr(settings, "BILLDESK_SIGNING_KEY", "")).strip()
+            key_id = str(getattr(settings, "BILLDESK_KEY_ID", "")).strip()
+            base_url = str(getattr(settings, "BILLDESK_GATEWAY_URL", "")).strip()
+
+            if merchant_id and encryption_key and signing_key and key_id and base_url and requests:
+                from models.transactional.payment_gateway.billdesk_utils import generate_billdesk_nested_jose
+                if "/orders/create" in base_url:
+                    query_url = base_url.replace("/orders/create", "/transactions/get")
+                elif "uat1.billdesk.com" in base_url:
+                    query_url = "https://uat1.billdesk.com/u2/payments/ve1_2/transactions/get"
+                else:
+                    query_url = "https://api.billdesk.com/payments/ve1_2/transactions/get"
+
+                query_payload = {
+                    "mercid": merchant_id,
+                    "orderid": tx.utr,
+                }
+                nested_token = generate_billdesk_nested_jose(
+                    client_id=merchant_id.lower(),
+                    payload_dict=query_payload,
+                    encryption_key=encryption_key,
+                    signing_key=signing_key,
+                    key_id=key_id,
+                )
+                headers = {
+                    "Content-Type": "application/jose",
+                    "Accept": "application/jose",
+                    "BD-Traceid": f"WLTQRY-{secrets.token_hex(6).upper()}",
+                    "BD-Timestamp": str(int(timezone.now().timestamp() * 1000)),
+                }
+                resp = requests.post(query_url, data=nested_token, headers=headers, timeout=15)
+                if resp.status_code == 200:
+                    _process_billdesk_transaction(resp.text)
+                    tx.refresh_from_db()
+                    cur_st = str(getattr(tx, "payment_status", "")).upper()
+                    if cur_st == "S":
+                        _ensure_wallet_credited(tx)
+                        return Response({
+                            "transaction_id": tx.utr,
+                            "status": "S",
+                            "payment_status": "S",
+                            "status_label": "Successful",
+                            "amount": float(tx.transaction_amount or 0),
+                            "detail": "BillDesk confirmed payment was successful. Wallet credited.",
+                        })
+                    elif cur_st == "F":
+                        return Response({
+                            "transaction_id": tx.utr,
+                            "status": "F",
+                            "payment_status": "F",
+                            "status_label": "Failed",
+                            "detail": "BillDesk confirmed transaction failed.",
+                        })
+                    else:
+                        return Response({
+                            "transaction_id": tx.utr,
+                            "status": "P",
+                            "payment_status": "P",
+                            "status_label": "Pending",
+                            "detail": "BillDesk reports transaction is still clearing at bank.",
+                        })
+        except Exception as q_exc:
+            logger.warning("BillDesk live query exception for wallet tx=%s: %s", tx.utr, q_exc)
+
+    cur_st = str(getattr(tx, "payment_status", "P") or "P").upper()
+    return Response({
+        "transaction_id": tx.utr,
+        "status": cur_st,
+        "payment_status": cur_st,
+        "status_label": "Successful" if cur_st == "S" else ("Failed" if cur_st == "F" else "Pending"),
+        "detail": "Transaction is currently awaiting clearance.",
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def billdesk_simulate_wallet_recharge(request):
+    """
+    DEV/LOCALHOST ONLY: Simulate a wallet recharge directly from the Add Money modal.
+    Supports status: 'S' (Success), 'F' (Failed), 'P' (Pending).
+    """
+    allow = bool(getattr(settings, "DEBUG", False) or getattr(settings, "BILLDESK_USE_MOCK", False))
+    if not allow:
+        return Response({"detail": "Simulation is disabled in this environment."}, status=status.HTTP_403_FORBIDDEN)
+
+    user = request.user
+    licensee_id = str(request.data.get("licensee_id") or getattr(user, "username", "")).strip()
+    wallet_type = str(request.data.get("wallet_type") or "excise").strip().lower()
+    raw_amount = request.data.get("amount", 0)
+    try:
+        amount = Decimal(str(raw_amount)).quantize(Decimal("0.01"))
+        if amount <= 0:
+            raise ValueError("Amount must be greater than 0.")
+    except Exception as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    status_kind = str(request.data.get("status") or "S").strip().upper()
+    if status_kind in ("FAIL", "FAILED", "F"):
+        status_kind = "F"
+    elif status_kind in ("PENDING", "P"):
+        status_kind = "P"
+    else:
+        status_kind = "S"
+
+    tx_id = str(request.data.get("transaction_id") or f"BILLDESKWLT{secrets.token_hex(8).upper()}").strip()
+    hoa = str(request.data.get("head_of_account") or "0039-00-105-45-01").strip()
+
+    tx, _ = PaymentBilldeskTransaction.objects.update_or_create(
+        utr=tx_id,
+        defaults={
+            "transaction_date": timezone.now(),
+            "transaction_id_no_hoa": tx_id,
+            "payer_id": licensee_id,
+            "payment_module_code": "999",
+            "transaction_amount": amount,
+            "request_additionalinfo1": hoa,
+            "request_additionalinfo3": wallet_type,
+            "payment_status": status_kind,
+            "response_authstatus": "0300" if status_kind == "S" else ("0399" if status_kind == "F" else "0002"),
+            "response_errordescription": "Simulated payment failure (localhost testing)" if status_kind == "F" else None,
+            "user_id": str(getattr(user, "username", "") or "").strip()[:50] or None,
+            "opr_date": timezone.now(),
+        }
+    )
+
+    if status_kind == "S":
+        with transaction.atomic():
+            credit_wallet_balance(
+                transaction_id=tx_id,
+                licensee_id=licensee_id,
+                wallet_type=wallet_type,
+                head_of_account=hoa,
+                amount=amount,
+                user_id=str(getattr(user, "username", "")).strip(),
+                source_module="wallet_recharge",
+                transaction_type="recharge",
+                remarks="Dev simulated wallet recharge (localhost)",
+            )
+        return Response({
+            "status": "S",
+            "payment_status": "S",
+            "status_label": "Successful",
+            "transaction_id": tx_id,
+            "amount": float(amount),
+            "detail": f"Simulated recharge of ₹{amount:,.2f} successful. Wallet balance credited.",
+        })
+    elif status_kind == "F":
+        return Response({
+            "status": "F",
+            "payment_status": "F",
+            "status_label": "Failed",
+            "transaction_id": tx_id,
+            "amount": float(amount),
+            "detail": "Simulated recharge failed.",
+        })
+    else:
+        return Response({
+            "status": "P",
+            "payment_status": "P",
+            "status_label": "Pending",
+            "transaction_id": tx_id,
+            "amount": float(amount),
+            "detail": "Simulated recharge recorded as Pending (awaiting response).",
+        })
