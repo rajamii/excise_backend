@@ -846,7 +846,12 @@ def check_new_license_payment_status(request, application_id):
 
             if merchant_id and encryption_key and signing_key and key_id and base_url and requests:
                 from models.transactional.payment_gateway.billdesk_utils import generate_billdesk_nested_jose
-                query_url = base_url.replace("/orders/create", "/transactions/get")
+                if "/orders/create" in base_url:
+                    query_url = base_url.replace("/orders/create", "/transactions/get")
+                elif "uat1.billdesk.com" in base_url:
+                    query_url = "https://uat1.billdesk.com/u2/payments/ve1_2/transactions/get"
+                else:
+                    query_url = "https://api.billdesk.com/payments/ve1_2/transactions/get"
                 query_payload = {
                     "mercid": merchant_id,
                     "orderid": txn_ref,

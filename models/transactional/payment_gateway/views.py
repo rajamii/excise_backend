@@ -1335,7 +1335,12 @@ def _process_billdesk_transaction(transaction_response: str) -> bool:
     if tx is None and txn_ref:
         tx = PaymentBilldeskTransaction.objects.filter(transaction_id_no_hoa=txn_ref).first()
 
-    status_code = "S" if (auth_status == "0300" and checksum_ok) else "F"
+    if auth_status == "0300" and checksum_ok:
+        status_code = "S"
+    elif auth_status == "0002":
+        status_code = "P"
+    else:
+        status_code = "F"
 
     if tx:
         try:
