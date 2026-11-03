@@ -17,6 +17,7 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
     approved_by_display = serializers.SerializerMethodField()
     cancelled_by_display = serializers.SerializerMethodField()
     cancelled_reason_display = serializers.SerializerMethodField()
+    wallet_transactions = serializers.SerializerMethodField()
 
     def get_approved_by_display(self, obj):
         """Return the OIC name who approved this permit (from utilization record)."""
@@ -74,6 +75,22 @@ class EnaTransitPermitDetailSerializer(serializers.ModelSerializer):
         except Exception:
             pass
         return ''
+
+    def get_wallet_transactions(self, obj):
+        try:
+            from models.transactional.wallet.models import WalletTransaction
+            from models.transactional.wallet.serializers import WalletTransactionSerializer
+            bill_no = str(getattr(obj, 'bill_no', '') or '').strip()
+            if not bill_no:
+                return []
+            txns = WalletTransaction.objects.filter(
+                reference_no=bill_no,
+                source_module='transit_permit',
+                entry_type='DR'
+            ).order_by('created_at')
+            return WalletTransactionSerializer(txns, many=True).data
+        except Exception:
+            return []
 
     class Meta:
         model = EnaTransitPermitDetail
