@@ -446,6 +446,7 @@ class PublicTransitPermitDetailSerializer(serializers.ModelSerializer):
     status_code = serializers.CharField(read_only=True)
     current_stage_name = serializers.SerializerMethodField()
     current_stage_description = serializers.SerializerMethodField()
+    wallet_transactions = serializers.SerializerMethodField()
 
     class Meta:
         model = EnaTransitPermitDetail
@@ -474,12 +475,29 @@ class PublicTransitPermitDetailSerializer(serializers.ModelSerializer):
             'total_bottling_fee',
             'bottling_fee_rs_per_case',
             'total_amount',
+            'wallet_transactions',
             'driver_name',
             'driver_license_no',
             'transporter_name',
             'created_at',
             'updated_at',
         )
+
+    def get_wallet_transactions(self, obj):
+        try:
+            from models.transactional.wallet.models import WalletTransaction
+            from models.transactional.wallet.serializers import WalletTransactionSerializer
+            bill_no = str(getattr(obj, 'bill_no', '') or '').strip()
+            if not bill_no:
+                return []
+            txns = WalletTransaction.objects.filter(
+                reference_no__iexact=bill_no,
+                source_module='transit_permit',
+                entry_type='DR'
+            ).order_by('created_at')
+            return WalletTransactionSerializer(txns, many=True).data
+        except Exception:
+            return []
 
     def get_size_ml(self, obj) -> int:
         try:

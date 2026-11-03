@@ -433,6 +433,10 @@ def wallet_history_list(request, licensee_id):
     if entry_type:
         qs = qs.filter(entry_type__iexact=entry_type)
 
+    reference_no = request.query_params.get("reference_no") or request.query_params.get("reference")
+    if reference_no:
+        qs = qs.filter(reference_no__iexact=str(reference_no).strip())
+
     limit = _safe_limit(request.query_params.get("limit"), default=500)
     qs = qs[:limit]
 
