@@ -99,11 +99,21 @@ def verify_otp_for_registration(request):
     otp_input = request.data.get('otp')
     otp_id = request.data.get('otp_id')
 
-    if not (phone_number and otp_input and otp_id):
-        return Response(
-            {'success': False, 'error': 'Missing required fields'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+    allow_default_otp = getattr(settings, 'ALLOW_DEFAULT_OTP', settings.DEBUG)
+    default_otp_value = str(getattr(settings, 'DEFAULT_OTP_VALUE', '1212')).strip()
+
+    if allow_default_otp and str(otp_input or "").strip() == default_otp_value:
+        if not phone_number:
+            return Response(
+                {'success': False, 'error': 'Phone number is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    else:
+        if not (phone_number and otp_input and otp_id):
+            return Response(
+                {'success': False, 'error': 'Missing required fields'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
     success, message = verify_otp(otp_id, phone_number, otp_input)
 
@@ -1147,12 +1157,23 @@ def send_otp_api(request):
     try:
         otp_obj, raw_otp = get_new_otp(phone_number)
         sms_sent, sms_message = send_otp_via_sms_gateway(phone_number, raw_otp)
+
+        allow_default_otp = getattr(settings, 'ALLOW_DEFAULT_OTP', settings.DEBUG)
+        default_otp_value = str(getattr(settings, 'DEFAULT_OTP_VALUE', '1212')).strip()
+
         if not sms_sent:
-            otp_obj.delete()
-            return Response(
-                {'error': sms_message or 'Failed to send OTP SMS. Please try again.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            if getattr(settings, 'DEBUG', False) or allow_default_otp:
+                logger.warning(
+                    "SMS gateway dispatch failed (%s), proceeding in localhost/DEBUG mode with default OTP %s (generated: %s)",
+                    sms_message, default_otp_value, raw_otp
+                )
+                sms_message = f"SMS gateway unavailable. Localhost test mode active (Default OTP: {default_otp_value})."
+            else:
+                otp_obj.delete()
+                return Response(
+                    {'error': sms_message or 'Failed to send OTP SMS. Please try again.'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
 
         response_data = {
             'otp_id': str(otp_obj.id),
@@ -1160,12 +1181,13 @@ def send_otp_api(request):
             'gateway_message': sms_message,
         }
 
-        if getattr(settings, 'DEBUG', False):
-            logger.info("DEBUG: Generated OTP for %s is %s", phone_number, raw_otp)
+        if getattr(settings, 'DEBUG', False) or allow_default_otp:
+            logger.info("DEBUG: Generated OTP for %s is %s (Default test OTP: %s)", phone_number, raw_otp, default_otp_value)
             masked = str(phone_number or "")
             if len(masked) >= 4:
                 masked = ("*" * (len(masked) - 4)) + masked[-4:]
             response_data['sent_to'] = masked
+            response_data['default_otp'] = default_otp_value
 
             try:
                 match_code = re.search(r"code\s*=\s*([A-Za-z0-9_]+)", str(sms_message or ""), flags=re.IGNORECASE)
@@ -1191,11 +1213,21 @@ def verify_otp_api(request):
     otp_input = request.data.get('otp')
     otp_id = request.data.get('otp_id')
 
-    if not (phone_number and otp_input and otp_id):
-        return Response(
-            {'error': 'Phone number, OTP, and otp_id are required'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+    allow_default_otp = getattr(settings, 'ALLOW_DEFAULT_OTP', settings.DEBUG)
+    default_otp_value = str(getattr(settings, 'DEFAULT_OTP_VALUE', '1212')).strip()
+
+    if allow_default_otp and str(otp_input or "").strip() == default_otp_value:
+        if not phone_number:
+            return Response(
+                {'error': 'Phone number is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    else:
+        if not (phone_number and otp_input and otp_id):
+            return Response(
+                {'error': 'Phone number, OTP, and otp_id are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
     success, message = verify_otp(otp_id, phone_number, otp_input)
 

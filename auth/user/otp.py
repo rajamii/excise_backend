@@ -145,6 +145,24 @@ def get_new_otp(phone_number):
 @transaction.atomic
 def verify_otp(otp_id, phone_number, otp_input):
     cleaned_input = str(otp_input or "").strip()
+    allow_default_otp = getattr(settings, 'ALLOW_DEFAULT_OTP', settings.DEBUG)
+    default_otp_value = str(getattr(settings, 'DEFAULT_OTP_VALUE', '1212')).strip()
+
+    # In localhost / development mode, accept default test OTP '1212'
+    if allow_default_otp and cleaned_input == default_otp_value:
+        logger.info(
+            "Default test OTP %s accepted for %s in localhost/DEBUG mode.",
+            default_otp_value, phone_number
+        )
+        try:
+            if otp_id:
+                OTP.objects.filter(id=otp_id, phone_number=phone_number).delete()
+            else:
+                OTP.objects.filter(phone_number=phone_number, used=False).delete()
+        except Exception:
+            pass
+        return True, "OTP verified."
+
     try:
         otp_obj = OTP.objects.get(id=otp_id, phone_number=phone_number, used=False)
         if otp_obj.is_expired():
@@ -165,15 +183,25 @@ def verify_otp(otp_id, phone_number, otp_input):
 
 def mark_phone_as_verified(phone_number: str):
     """Mark this phone as verified for 10 minutes"""
-    cache.set(f"phone_verified_{phone_number}", True, timeout=600)  # 10 minutes
+    try:
+        cache.set(f"phone_verified_{phone_number}", True, timeout=600)  # 10 minutes
+    except Exception as e:
+        logger.warning("Could not set phone_verified cache in Redis (%s). Using fallback.", e)
 
 
 def is_phone_verified(phone_number: str) -> bool:
-    return cache.get(f"phone_verified_{phone_number}") is True
+    try:
+        return cache.get(f"phone_verified_{phone_number}") is True
+    except Exception as e:
+        logger.warning("Could not read phone_verified cache from Redis (%s).", e)
+        return getattr(settings, 'DEBUG', False)
 
 
 def clear_phone_verified(phone_number: str):
-    cache.delete(f"phone_verified_{phone_number}")
+    try:
+        cache.delete(f"phone_verified_{phone_number}")
+    except Exception as e:
+        logger.warning("Could not delete phone_verified cache from Redis (%s).", e)
 
 
 def _get_sms_config_from_db() -> dict | None:
