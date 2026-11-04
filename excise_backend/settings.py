@@ -167,7 +167,7 @@ DATABASES = {
         'USER': 'postgres',         # Your PostgreSQL username
         'PASSWORD': 'sameer123',  # Your PostgreSQL password
         'HOST': 'localhost',        
-        'PORT': '5432',             # Default PostgreSQL port
+        'PORT': '5433',             # Default PostgreSQL port
         'CONN_MAX_AGE': 300,         # Don't reuse connections — avoids aborted transaction state
     }
 }
@@ -302,3 +302,31 @@ CAPTCHA_FILTER_FUNCTIONS = ()
 CAPTCHA_LETTER_COLOR_FUNCT = "auth.user.captcha_helpers.random_letter_color_dark"
 CAPTCHA_FOREGROUND_COLOR = "#2b2b2b"
 CAPTCHA_BACKGROUND_COLOR = "#ffffff"
+
+# OTP Configuration
+OTP_EXPIRY_SECONDS = 600  # 10 minutes
+OTP_REQUEST_LIMIT = int(os.getenv('OTP_REQUEST_LIMIT', '15'))
+OTP_REQUEST_WINDOW_MINUTES = int(os.getenv('OTP_REQUEST_WINDOW_MINUTES', '15'))
+
+# OTP SMS gateway configuration (environment-driven)
+OTP_SMS_BASE_URL = os.getenv('OTP_SMS_BASE_URL', 'https://api2.sms.gov.in/failsafe/HTTPLink')
+# Fallback gateway credentials when SMSServiceConfig is not present in DB
+OTP_SMS_USERNAME = os.getenv('OTP_SMS_USERNAME', 'eabkari.sms')
+OTP_SMS_PIN = os.getenv('OTP_SMS_PIN', 'Fgv#$575')
+OTP_SMS_SIGNATURE = os.getenv('OTP_SMS_SIGNATURE', 'SIKEXC')
+OTP_SMS_ENTITY_ID = os.getenv('OTP_SMS_ENTITY_ID', '1001599213647119039')
+OTP_SMS_TEMPLATE_ID = os.getenv('OTP_SMS_TEMPLATE_ID', '1007722920127309405')
+OTP_SMS_MESSAGE_TEMPLATE = os.getenv(
+    'OTP_SMS_MESSAGE_TEMPLATE',
+    'From eAbkari, GoSK :\nYour OTP is {otp}\n Thanks'
+)
+OTP_SMS_VERIFY_SSL = os.getenv('OTP_SMS_VERIFY_SSL', 'false').strip().lower() == 'true'
+OTP_SMS_CA_BUNDLE = os.getenv('OTP_SMS_CA_BUNDLE', '').strip()
+OTP_SMS_TIMEOUT_SECONDS = int(os.getenv('OTP_SMS_TIMEOUT_SECONDS', '10'))
+OTP_SMS_FORCE_SEND_IN_DEBUG = os.getenv('OTP_SMS_FORCE_SEND_IN_DEBUG', 'true').strip().lower() == 'true'
+OTP_EXPOSE_IN_RESPONSE = os.getenv('OTP_EXPOSE_IN_RESPONSE', 'true' if DEBUG else 'false').strip().lower() == 'true'
+
+# Default test OTP for localhost / development testing
+ALLOW_DEFAULT_OTP = os.getenv('ALLOW_DEFAULT_OTP', 'true' if DEBUG else 'false').strip().lower() == 'true'
+DEFAULT_OTP_VALUE = os.getenv('DEFAULT_OTP_VALUE', '1212')
+
