@@ -1064,6 +1064,9 @@ def initiate_renewal(request, license_id):
         'sikkim_certificate': old_app.sikkim_certificate,
         'dob_proof': old_app.dob_proof,
         'noc_landlord': old_app.noc_landlord,
+        'parcha': getattr(old_app, 'parcha', None),
+        'noc': getattr(old_app, 'noc', None),
+        'trade_license': getattr(old_app, 'trade_license', None),
     }
 
     # Manual creation
