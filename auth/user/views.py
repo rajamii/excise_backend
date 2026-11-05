@@ -1175,31 +1175,21 @@ def send_otp_api(request):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
 
-        response_data = {
-            'otp_id': str(otp_obj.id),
-            'message': 'OTP sent successfully to your registered mobile number.',
-            'gateway_message': sms_message,
-        }
+        masked = str(phone_number or "")
+        if len(masked) >= 4:
+            masked = ("*" * (len(masked) - 4)) + masked[-4:]
 
         if getattr(settings, 'DEBUG', False) or allow_default_otp:
             logger.info("DEBUG: Generated OTP for %s is %s (Default test OTP: %s)", phone_number, raw_otp, default_otp_value)
-            masked = str(phone_number or "")
-            if len(masked) >= 4:
-                masked = ("*" * (len(masked) - 4)) + masked[-4:]
-            response_data['sent_to'] = masked
-            response_data['default_otp'] = default_otp_value
 
-            try:
-                match_code = re.search(r"code\s*=\s*([A-Za-z0-9_]+)", str(sms_message or ""), flags=re.IGNORECASE)
-                match_req = re.search(r"request_id\s*=\s*([^\s,)]+)", str(sms_message or ""), flags=re.IGNORECASE)
-                if match_code:
-                    response_data['gateway_code'] = match_code.group(1).strip()
-                if match_req:
-                    response_data['gateway_request_id'] = match_req.group(1).strip()
-            except re.error:
-                pass
+        response_data = {
+            'otp_id': str(otp_obj.id),
+            'message': 'OTP sent successfully to your registered mobile number.',
+            'sent_to': masked,
+        }
 
-        if getattr(settings, 'OTP_EXPOSE_IN_RESPONSE', False):
+        # For sign up (registration) only, expose OTP in response for console testing
+        if purpose == 'register' or getattr(settings, 'OTP_EXPOSE_IN_RESPONSE', False):
             response_data['otp'] = raw_otp
 
         return Response(response_data, status=status.HTTP_200_OK)
