@@ -632,11 +632,11 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         # Auto-generate batch reference if not provided
         if not data.get('batch_reference'):
             today = timezone.now().date()
-            existing_count = ProductionBatch.objects.filter(
-                brand_warehouse=brand_warehouse,
-                production_date=today
-            ).count()
-            data['batch_reference'] = f"PROD-{today.strftime('%Y%m%d')}-{brand_warehouse.id:03d}-{existing_count + 1:03d}"
+            base_prefix = f"PROD-{today.strftime('%Y%m%d')}-{brand_warehouse.id:03d}"
+            seq = ProductionBatch.objects.filter(batch_reference__startswith=base_prefix).count() + 1
+            while ProductionBatch.objects.filter(batch_reference=f"{base_prefix}-{seq:03d}").exists():
+                seq += 1
+            data['batch_reference'] = f"{base_prefix}-{seq:03d}"
         
         # Create serializer
         serializer = CreateProductionBatchSerializer(data=data)
@@ -769,6 +769,12 @@ class BrandWarehouseViewSet(viewsets.ModelViewSet):
         Scoped users are constrained to their active mapped license_id.
         """
         try:
+            # Auto-heal any unsynced fixed daily register entries
+            try:
+                BrandWarehouseStockService.sync_unupdated_daily_register_entries()
+            except Exception as sync_err:
+                logger.warning(f"Failed auto-syncing unupdated daily register entries: {sync_err}")
+
             if _should_scope_to_unit(request.user):
                 active_license_id = _get_active_license_id(request.user)
                 if not active_license_id:

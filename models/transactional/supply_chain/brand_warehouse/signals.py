@@ -38,36 +38,12 @@ def update_brand_warehouse_stock_on_save(sender, instance, created, **kwargs):
             logger.info(f"Skipping non-Sikkim Distilleries Ltd company: {distillery_name}")
             return
         
-        # Check if there's already a ProductionBatch for this production
-        # to avoid double-counting stock updates
-        from django.apps import apps
-        ProductionBatch = apps.get_model('brand_warehouse', 'ProductionBatch')
-        
-        # Look for production batches on the same date with similar quantity
-        existing_production = ProductionBatch.objects.filter(
-            production_date=instance.usage_date,
-            quantity_produced=instance.issued_qty,
-            brand_warehouse__brand__brand_name__icontains=instance.brand_details,
-            brand_warehouse__capacity_size__size_ml=BrandWarehouseStockService._parse_bottle_size(instance.bottle_size)
-        ).exists()
-        
-        if existing_production:
-            logger.info(f"⚠️ Skipping stock update for {instance.reference_no} - ProductionBatch already exists")
-            logger.info(f"   This prevents double-counting of production stock")
-            return
-        
-        # Check for duplicate entries with same reference number and brand
-        duplicate_entries = DailyHologramRegister.objects.filter(
-            reference_no=instance.reference_no,
-            brand_details=instance.brand_details,
-            bottle_size=instance.bottle_size,
-            issued_qty=instance.issued_qty,
-            stock_updated=True
-        ).exclude(id=instance.id)
-        
-        if duplicate_entries.exists():
-            logger.info(f"⚠️ Skipping stock update for {instance.reference_no} - duplicate entry already processed")
-            logger.info(f"   Found {duplicate_entries.count()} duplicate entries with stock already updated")
+        # Check if an arrival has already been recorded specifically for this register entry
+        from models.transactional.supply_chain.brand_warehouse.models import BrandWarehouseArrival
+        entry_tag = f"[register_id:{instance.id}]"
+        if BrandWarehouseArrival.objects.filter(reference_no=instance.reference_no, notes__contains=entry_tag).exists():
+            logger.info(f"⚠️ Stock already recorded in arrival for entry #{instance.id} ({instance.reference_no})")
+            DailyHologramRegister.objects.filter(id=instance.id).update(stock_updated=True)
             return
         
         logger.info(f"🔄 Processing Brand Warehouse stock update for Monthly Statement: {instance.reference_no}")

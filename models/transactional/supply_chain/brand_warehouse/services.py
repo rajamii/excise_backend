@@ -504,17 +504,22 @@ class BrandWarehouseStockService:
                     logger.error(f"Could not find/create brand warehouse for {distillery_name} - {brand_name} ({capacity_ml}ml)")
                     return False
                 
-                # CRITICAL: Check if arrival record already exists to prevent duplicates
+                # Check if stock has already been updated for this register entry
+                if bool(getattr(daily_register_entry, 'stock_updated', False)):
+                    logger.info(f"⚠️ Stock already marked as updated for Daily Register entry #{daily_register_entry.id}")
+                    return True
+
+                # Check if arrival record already exists specifically for this register entry
+                entry_tag = f"[register_id:{daily_register_entry.id}]"
                 existing_arrival = BrandWarehouseArrival.objects.filter(
                     brand_warehouse=brand_warehouse,
                     reference_no=reference_no,
-                    quantity_added=issued_qty
+                    notes__contains=entry_tag
                 ).first()
                 
                 if existing_arrival:
-                    logger.warning(f"⚠️ Arrival record already exists for {reference_no} - skipping duplicate stock update")
-                    logger.warning(f"   Existing arrival ID: {existing_arrival.id}, Quantity: {existing_arrival.quantity_added}")
-                    return True  # Return True since the stock was already updated correctly
+                    logger.warning(f"⚠️ Arrival record already exists for register entry #{daily_register_entry.id} ({reference_no}) - skipping duplicate stock update")
+                    return True
                 
                 # Update current_stock by adding the issued quantity
                 previous_stock = brand_warehouse.current_stock
@@ -534,19 +539,24 @@ class BrandWarehouseStockService:
                     previous_stock=previous_stock,
                     new_stock=brand_warehouse.current_stock,
                     arrival_date=timezone.now(),
-                    notes=f"Monthly Statement: {brand_name} ({bottle_size}) - {daily_register_entry.usage_date}"
+                    notes=f"Monthly Statement: {brand_name} ({bottle_size}) - {daily_register_entry.usage_date} [register_id:{daily_register_entry.id}]"
                 )
                 
                 # Also create a production batch record for production tracking
                 # Note: We create this AFTER updating stock to avoid double-counting
                 from .production_models import ProductionBatch
-                import datetime
+                from django.db import IntegrityError
+                import uuid
                 
-                # Generate batch reference
+                # Generate unique batch reference (collision-safe)
                 today = timezone.now().date()
-                batch_ref = f"PROD-{today.strftime('%Y%m%d')}-{brand_warehouse.id}-{ProductionBatch.objects.filter(production_date=today).count() + 1:03d}"
+                base_prefix = f"PROD-{today.strftime('%Y%m%d')}-{brand_warehouse.id:03d}"
+                seq = ProductionBatch.objects.filter(batch_reference__startswith=base_prefix).count() + 1
+                while ProductionBatch.objects.filter(batch_reference=f"{base_prefix}-{seq:03d}").exists():
+                    seq += 1
+                batch_ref = f"{base_prefix}-{seq:03d}"
                 
-                # Create production batch with stock already updated (set pk to bypass save logic)
+                # Create production batch with stock already updated (bypass save logic)
                 production_batch = ProductionBatch(
                     brand_warehouse=brand_warehouse,
                     batch_reference=batch_ref,
@@ -558,21 +568,60 @@ class BrandWarehouseStockService:
                     stock_after=brand_warehouse.current_stock,
                     production_manager='System',
                     status='COMPLETED',
-                    notes=f"Auto-generated from hologram utilization: {reference_no}"
+                    notes=f"Auto-generated from hologram utilization: {reference_no} [register_id:{daily_register_entry.id}]"
                 )
+                
                 # Save without triggering stock update (stock already updated above)
-                super(ProductionBatch, production_batch).save()
+                saved = False
+                for _ in range(5):
+                    try:
+                        super(ProductionBatch, production_batch).save()
+                        saved = True
+                        break
+                    except IntegrityError:
+                        seq += 1
+                        batch_ref = f"{base_prefix}-{seq:03d}"
+                        production_batch.batch_reference = batch_ref
+
+                if not saved:
+                    production_batch.batch_reference = f"{base_prefix}-{seq:03d}-{uuid.uuid4().hex[:6]}"
+                    super(ProductionBatch, production_batch).save()
                 
                 logger.info(f"✅ Updated Brand Warehouse stock: {distillery_name} - {brand_name} ({bottle_size})")
                 logger.info(f"   Previous stock: {previous_stock}, Added: {issued_qty}, New stock: {brand_warehouse.current_stock}")
                 logger.info(f"   Reference: {reference_no}, Status: {brand_warehouse.status}")
-                logger.info(f"   Production batch created: {batch_ref}")
+                logger.info(f"   Production batch created: {production_batch.batch_reference}")
                 
                 return True
                 
         except Exception as e:
             logger.error(f"❌ Error updating brand warehouse stock for {reference_no}: {str(e)}")
             return False
+
+    @staticmethod
+    def sync_unupdated_daily_register_entries():
+        """
+        Scan and sync any fixed DailyHologramRegister entries with issued_qty > 0
+        that have not yet been updated in BrandWarehouse stock.
+        """
+        from models.transactional.supply_chain.hologram.models import DailyHologramRegister
+        unupdated = DailyHologramRegister.objects.filter(
+            is_fixed=True,
+            stock_updated=False,
+            issued_qty__gt=0
+        ).order_by('id')
+
+        synced_count = 0
+        for entry in unupdated:
+            try:
+                success = BrandWarehouseStockService.update_stock_from_hologram_register(entry)
+                if success:
+                    DailyHologramRegister.objects.filter(id=entry.id).update(stock_updated=True)
+                    synced_count += 1
+                    logger.info("Successfully synced unupdated register entry #%s (%s)", entry.id, entry.reference_no)
+            except Exception as e:
+                logger.exception("Failed to sync unupdated register entry #%s: %s", entry.id, str(e))
+        return synced_count
     
     @staticmethod
     def check_if_brand_is_new(brand_warehouse, days=7):
