@@ -14,6 +14,7 @@ class UserActivitySerializer(serializers.ModelSerializer):
     target_user_id = serializers.IntegerField(source='target_user.id', read_only=True)
     target_username = serializers.CharField(source='target_user.username', read_only=True)
     target_email = serializers.EmailField(source='target_user.email', read_only=True)
+    session_duration = serializers.SerializerMethodField()
 
     class Meta:
         model = UserActivity
@@ -33,9 +34,48 @@ class UserActivitySerializer(serializers.ModelSerializer):
             'device_id',
             'location',
             'timestamp',
-            'metadata'
+            'metadata',
+            'session_duration'
         ]
         read_only_fields = fields
+
+    def get_session_duration(self, obj):
+        act = (obj.activity_type or '').upper()
+        if act not in ('LOGIN', 'LOGOUT') or not obj.user_id or not obj.timestamp:
+            return None
+        from datetime import timedelta
+        window = timedelta(hours=24)
+        if act == 'LOGOUT':
+            prev_login = UserActivity.objects.filter(
+                user_id=obj.user_id,
+                activity_type='LOGIN',
+                timestamp__lte=obj.timestamp,
+                timestamp__gte=obj.timestamp - window
+            ).order_by('-timestamp').values_list('timestamp', flat=True).first()
+            if prev_login:
+                diff_sec = int(abs((obj.timestamp - prev_login).total_seconds()))
+                return self._format_duration(diff_sec)
+        elif act == 'LOGIN':
+            next_logout = UserActivity.objects.filter(
+                user_id=obj.user_id,
+                activity_type='LOGOUT',
+                timestamp__gte=obj.timestamp,
+                timestamp__lte=obj.timestamp + window
+            ).order_by('timestamp').values_list('timestamp', flat=True).first()
+            if next_logout:
+                diff_sec = int(abs((next_logout - obj.timestamp).total_seconds()))
+                return self._format_duration(diff_sec)
+        return None
+
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        mins = seconds // 60
+        if mins < 1:
+            return '< 1 min'
+        h = mins // 60
+        m = mins % 60
+        return f"{h}h {m}m" if h > 0 else f"{m}m"
+
 
 
 from .models import AdminLog

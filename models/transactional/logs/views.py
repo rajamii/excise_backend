@@ -32,7 +32,7 @@ def user_activity_list(request):
         except Exception:
             return False
     
-    queryset = UserActivity.objects.all()
+    queryset = UserActivity.objects.select_related('user', 'user__role', 'target_user')
     if not _has_logs_view_permission():
         # Non-admin users can only view their own activity (including actions performed on them).
         queryset = queryset.filter(Q(user=request.user) | Q(target_user=request.user))
@@ -75,9 +75,9 @@ def user_activity_list(request):
         page = None
         page_size = None
 
-    if page is not None and page_size is not None:
-        page = max(1, page)
-        page_size = max(1, min(page_size, 200))
+    if page is not None or page_size is not None:
+        page = max(1, page or 1)
+        page_size = max(1, min(page_size or 10, 200))
         total_count = queryset.count()
         offset = (page - 1) * page_size
         items = queryset[offset: offset + page_size]
@@ -86,7 +86,7 @@ def user_activity_list(request):
             'count': total_count,
             'page': page,
             'page_size': page_size,
-            'total_pages': (total_count + page_size - 1) // page_size,
+            'total_pages': max(1, (total_count + page_size - 1) // page_size),
             'results': serializer.data,
         })
 
@@ -275,7 +275,7 @@ def admin_log_list(request):
         except Exception:
             pass
 
-    queryset = queryset.order_by('-timestamp')
+    queryset = queryset.select_related('content_type', 'user').order_by('-timestamp')
 
     # Pagination
     try:
@@ -285,9 +285,9 @@ def admin_log_list(request):
         page = None
         page_size = None
 
-    if page is not None and page_size is not None:
-        page = max(1, page)
-        page_size = max(1, min(page_size, 200))
+    if page is not None or page_size is not None:
+        page = max(1, page or 1)
+        page_size = max(1, min(page_size or 10, 200))
         total_count = queryset.count()
         offset = (page - 1) * page_size
         items = queryset[offset: offset + page_size]
@@ -296,7 +296,7 @@ def admin_log_list(request):
             'count': total_count,
             'page': page,
             'page_size': page_size,
-            'total_pages': (total_count + page_size - 1) // page_size,
+            'total_pages': max(1, (total_count + page_size - 1) // page_size),
             'results': serializer.data,
         })
 
