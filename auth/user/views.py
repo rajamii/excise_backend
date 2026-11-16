@@ -1188,8 +1188,7 @@ def send_otp_api(request):
             'sent_to': masked,
         }
 
-        # For sign up (registration) only, expose OTP in response for console testing
-        if purpose == 'register' or getattr(settings, 'OTP_EXPOSE_IN_RESPONSE', False):
+        if getattr(settings, 'OTP_EXPOSE_IN_RESPONSE', False):
             response_data['otp'] = raw_otp
 
         return Response(response_data, status=status.HTTP_200_OK)
