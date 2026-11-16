@@ -149,7 +149,7 @@ class CustomUser(AbstractBaseUser):
         on_delete=models.CASCADE,
         db_column='subdivision'
     )
-    address = models.CharField(max_length=70, blank=True, null=True)
+    address = models.CharField(max_length=100, blank=True, null=True)
     role = models.ForeignKey(
         Role,
         on_delete=models.SET_NULL,
