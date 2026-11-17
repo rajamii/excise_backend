@@ -182,9 +182,10 @@ def verify_otp(otp_id, phone_number, otp_input):
 
 
 def mark_phone_as_verified(phone_number: str):
-    """Mark this phone as verified for 10 minutes"""
+    """Mark this phone as verified for 15 minutes"""
+    timeout = int(getattr(settings, 'PHONE_VERIFICATION_EXPIRY_SECONDS', 900))
     try:
-        cache.set(f"phone_verified_{phone_number}", True, timeout=600)  # 10 minutes
+        cache.set(f"phone_verified_{phone_number}", True, timeout=timeout)  # 15 minutes
     except Exception as e:
         logger.warning("Could not set phone_verified cache in Redis (%s). Using fallback.", e)
 

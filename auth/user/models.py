@@ -198,7 +198,7 @@ class OTP(models.Model):
 
     @property
     def _expiry_seconds(self):
-        return getattr(settings, 'OTP_EXPIRY_SECONDS', 600)
+        return getattr(settings, 'OTP_EXPIRY_SECONDS', 900)
 
     def is_expired(self):
         return (timezone.now() - self.created_at).total_seconds() > self._expiry_seconds
@@ -206,7 +206,7 @@ class OTP(models.Model):
     @classmethod
     def clean_expired_otps(cls):
 
-        expiry_seconds = getattr(settings, 'OTP_EXPIRY_SECONDS', 600)
+        expiry_seconds = getattr(settings, 'OTP_EXPIRY_SECONDS', 900)
         expiration_threshold = timezone.now() - timezone.timedelta(seconds=expiry_seconds)
         
         cls.objects.filter(
