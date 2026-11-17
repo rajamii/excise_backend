@@ -18,6 +18,7 @@ from .views import (
     verify_otp_for_registration,
     verify_otp_api,
     check_username,
+    check_email,
     # LicenseeProfile views (moved from core)
     LicenseeProfileListView,
     LicenseeProfileDetailView,
@@ -57,6 +58,7 @@ urlpatterns = [
     path('logout/',        LogoutAPI.as_view(),     name='user-logout'),
     path('token/refresh/', TokenRefreshAPI.as_view(), name='token-refresh'),
     path('check-username/', check_username,          name='check-username'),
+    path('check-email/',    check_email,             name='check-email'),
 
     # OTP endpoints
     path('otp/',        send_otp_api,                name='send-otp'),

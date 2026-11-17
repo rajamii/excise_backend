@@ -971,6 +971,23 @@ def check_username(request):
     return Response({'exists': True, 'active': True}, status=status.HTTP_200_OK)
 
 
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def check_email(request):
+    """
+    Lightweight endpoint to check if an email already exists in registration.
+    """
+    email = str(request.data.get('email') or '').strip().lower()
+    if not email:
+        return Response({'error': 'Email is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    exists = CustomUser.objects.filter(email__iexact=email).exists()
+    return Response({
+        'exists': exists,
+        'error': 'This email is already registered.' if exists else None
+    }, status=status.HTTP_200_OK)
+
+
 class LoginAPI(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]

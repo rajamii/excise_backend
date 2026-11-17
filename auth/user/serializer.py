@@ -1,3 +1,4 @@
+import re
 from rest_framework import serializers
 from django.utils import timezone
 from django.db.utils import DatabaseError, ProgrammingError
@@ -435,14 +436,30 @@ class LicenseeSignupSerializer(serializers.ModelSerializer):
     # ── Field-level validation ────────────────────────────────────
 
     def validate_phone_number(self, value):
-        if CustomUser.objects.filter(phone_number=value).exists():
+        cleaned = str(value or '').strip()
+        if CustomUser.objects.filter(phone_number=cleaned).exists():
             raise serializers.ValidationError("This phone number is already registered.")
-        return value
+        return cleaned
 
     def validate_email(self, value):
-        if CustomUser.objects.filter(email=value).exists():
+        cleaned = str(value or '').strip().lower()
+        if CustomUser.objects.filter(email__iexact=cleaned).exists():
             raise serializers.ValidationError("This email is already registered.")
-        return value
+        return cleaned
+
+    def validate_address(self, value):
+        cleaned = str(value or '').strip()
+        if len(cleaned) > 100:
+            raise serializers.ValidationError("Address cannot exceed 100 characters.")
+        return cleaned
+
+    def validate_pan_number(self, value):
+        cleaned = str(value or '').strip().upper()
+        if not re.match(r'^[A-Z]{5}[0-9]{4}[A-Z]{1}$', cleaned):
+            raise serializers.ValidationError("Enter a valid 10-character PAN (e.g. ABCDE1234F).")
+        if LicenseeProfile.objects.filter(pan_number__iexact=cleaned).exists():
+            raise serializers.ValidationError("This PAN number is already registered.")
+        return cleaned
 
     def validate_dob(self, value):
         if value is not None and value >= timezone.now().date():
