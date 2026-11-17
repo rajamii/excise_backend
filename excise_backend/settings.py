@@ -151,11 +151,11 @@ REST_FRAMEWORK = {
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'sems_db',       # Database name
+        'NAME': 'server_sems_db_two',       # Database name
         'USER': 'postgres',         # Your PostgreSQL username
-        'PASSWORD': 'postgres',  # Your PostgreSQL password
+        'PASSWORD': 'sameer123',  # Your PostgreSQL password
         'HOST': 'localhost',        
-        'PORT': '5432',             # Default PostgreSQL port
+        'PORT': '5433',             # Default PostgreSQL port
         'CONN_MAX_AGE': 300,         # Don't reuse connections — avoids aborted transaction state
     }
 }
@@ -183,7 +183,8 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 20971520
 FILE_UPLOAD_MAX_MEMORY_SIZE = 2621440
 
 # OTP Configuration
-OTP_EXPIRY_SECONDS = 600  # 10 minutes
+OTP_EXPIRY_SECONDS = 900  # 15 minutes
+PHONE_VERIFICATION_EXPIRY_SECONDS = 900  # 15 minutes
 
 # Redis cache configuration for CAPTCHA storage
 CACHES = {
@@ -292,7 +293,8 @@ CAPTCHA_FOREGROUND_COLOR = "#2b2b2b"
 CAPTCHA_BACKGROUND_COLOR = "#ffffff"
 
 # OTP Configuration
-OTP_EXPIRY_SECONDS = 600  # 10 minutes
+OTP_EXPIRY_SECONDS = int(os.getenv('OTP_EXPIRY_SECONDS', '900'))  # 15 minutes
+PHONE_VERIFICATION_EXPIRY_SECONDS = int(os.getenv('PHONE_VERIFICATION_EXPIRY_SECONDS', '900'))  # 15 minutes
 OTP_REQUEST_LIMIT = int(os.getenv('OTP_REQUEST_LIMIT', '15'))
 OTP_REQUEST_WINDOW_MINUTES = int(os.getenv('OTP_REQUEST_WINDOW_MINUTES', '15'))
 
