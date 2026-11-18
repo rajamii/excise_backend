@@ -106,8 +106,9 @@ def serialize_payment_transactions(app_id):
         # 1. Query Billdesk Transactions
         bd_txs = PaymentBilldeskTransaction.objects.filter(payer_id__iexact=app_id).order_by("-transaction_date")
         for tx in bd_txs:
+            p_status = (tx.payment_status or "").strip().upper()
             status_map = {"S": "Success", "F": "Failed", "P": "Pending"}
-            status = status_map.get(tx.payment_status, "Pending")
+            status = status_map.get(p_status, "Pending")
             
             purpose = "Application Fee"
             if tx.payment_module_code == "002":
@@ -115,11 +116,23 @@ def serialize_payment_transactions(app_id):
             elif tx.payment_module_code == "999":
                 purpose = "Wallet Recharge"
             
-            desc = tx.response_errordescription or f"BillDesk payment for {purpose}"
-            if tx.response_errorstatus:
-                desc = f"BillDesk payment for {purpose} - Failed (Error: {tx.response_errordescription or tx.response_errorstatus})"
-            elif status == "Success":
+            # Format remarks nicely and unambiguously for S, F, and P
+            if p_status == "S":
                 desc = f"BillDesk payment for {purpose} - Successful"
+            elif p_status == "P":
+                desc = f"BillDesk payment for {purpose} - Pending (Awaiting bank confirmation)"
+            elif p_status == "F":
+                # Check for genuine error explanation
+                err_text = (tx.response_errordescription or tx.response_errorstatus or "").strip()
+                # Ignore non-error texts such as 'Transaction Successful' or success codes
+                if err_text and err_text.lower() not in (
+                    "transaction successful", "success", "trs0000", "0300", "na", "none", "null"
+                ):
+                    desc = f"BillDesk payment for {purpose} - Failed ({err_text})"
+                else:
+                    desc = f"BillDesk payment for {purpose} - Failed (Payment declined / cancelled)"
+            else:
+                desc = f"BillDesk payment for {purpose} - {status}"
                 
             payments.append({
                 "transaction_id": tx.utr or tx.transaction_id_no_hoa or "N/A",

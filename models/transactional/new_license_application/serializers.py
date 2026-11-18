@@ -739,8 +739,12 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
                 rep['application_fee_transaction_id'] = rep.get('application_fee_transaction_id') or latest_tx.utr
                 rep['application_fee_payment_status'] = rep.get('application_fee_payment_status') or latest_tx.payment_status
                 rep['application_fee_payment_date'] = rep.get('application_fee_payment_date') or (latest_tx.transaction_date.isoformat() if latest_tx.transaction_date else None)
-                if not rep.get('application_fee_error') and latest_tx.response_errordescription:
-                    rep['application_fee_error'] = latest_tx.response_errordescription
+                if (rep.get('application_fee_payment_status') or latest_tx.payment_status) == 'S':
+                    rep['application_fee_error'] = None
+                elif not rep.get('application_fee_error') and latest_tx.response_errordescription:
+                    err = str(latest_tx.response_errordescription).strip()
+                    if err.lower() not in ("transaction successful", "success"):
+                        rep['application_fee_error'] = err
         except Exception:
             pass
 
