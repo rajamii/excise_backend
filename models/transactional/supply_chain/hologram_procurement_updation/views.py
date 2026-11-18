@@ -15,6 +15,13 @@ from models.transactional.supply_chain.hologram.models import (
 )
 from models.masters.supply_chain.profile.models import UserManufacturingUnit
 from models.masters.license.models import License
+from models.transactional.wallet.models import (
+    WalletBalance,
+    WalletTransaction,
+    MasterWalletType,
+)
+from models.transactional.wallet.wallet_service import credit_wallet_balance
+from models.transactional.wallet.wallet_initializer import initialize_wallet_balances_for_license
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +171,11 @@ def list_establishments(request):
             total_rolls = rolls_qs.count()
             available_holograms = rolls_qs.aggregate(total=models.Sum('available'))['total'] or 0
 
+            # Fetch wallet summary for this unit
+            wb_qs = WalletBalance.objects.filter(licensee_id__iexact=lid)
+            total_wb = wb_qs.aggregate(total=models.Sum('current_balance'))['total'] or Decimal('0.00')
+            wallets_cnt = wb_qs.count()
+
             seen_licensee_ids[lid] = {
                 'id': u.id,
                 'name': name,
@@ -181,6 +193,8 @@ def list_establishments(request):
                 'unit_type': resolved_type,
                 'total_rolls': total_rolls,
                 'available_holograms': available_holograms,
+                'total_wallet_balance': float(total_wb),
+                'wallets_count': wallets_cnt,
                 'user_username': u.user.username if u.user else None,
                 'address': u.address or '',
             }
@@ -672,3 +686,491 @@ def list_manual_entries(request):
         'entries': entries,
         'results': entries,
     }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_establishment_wallets(request):
+    """
+    Get all 5 wallets (excise, education_cess, hologram, security_deposit, license_fee)
+    for a given establishment (distillery/brewery).
+    Auto-initializes any missing wallets for the establishment.
+    """
+    if not _has_manual_entry_permission(request.user):
+        return Response(
+            {'error': 'Permission denied. Role must be Site Admin (role_id=1) or Single Window (role_id=3).'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    licensee_val = request.query_params.get('licensee_id') or request.query_params.get('id')
+    if not licensee_val:
+        return Response({'error': 'licensee_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    licensee_val = str(licensee_val).strip()
+
+    # Resolve UserManufacturingUnit and License
+    licensee = None
+    if licensee_val.isdigit():
+        licensee = UserManufacturingUnit.objects.filter(id=int(licensee_val)).first()
+    if not licensee:
+        licensee = UserManufacturingUnit.objects.filter(licensee_id=licensee_val).first()
+
+    lid = licensee.licensee_id if licensee else licensee_val
+
+    # Ensure License exists
+    license_obj = License.objects.filter(license_id__iexact=lid).first()
+
+    # The 5 primary wallet codes for Distilleries and Breweries
+    TARGET_WALLETS = [
+        {'code': 'excise', 'name': 'Excise / Additional Duty', 'icon': '🍷', 'default_hoa': '0039-00-105-45-01'},
+        {'code': 'education_cess', 'name': 'Education Cess', 'icon': '🎓', 'default_hoa': '0045-00-112-45-03'},
+        {'code': 'hologram', 'name': 'Hologram Fee', 'icon': '🏷️', 'default_hoa': '0039-00-800-45-01'},
+        {'code': 'security_deposit', 'name': 'Security Deposit', 'icon': '🔒', 'default_hoa': 'non'},
+        {'code': 'license_fee', 'name': 'License Fees', 'icon': '📄', 'default_hoa': '0039-00-800-45-02'},
+    ]
+
+    # Check existing wallets
+    existing_wallets = list(WalletBalance.objects.filter(licensee_id__iexact=lid).select_related('wallet_type'))
+
+    # If missing any of the 5 wallets, auto-heal/initialize
+    existing_codes = {str(getattr(w.wallet_type, 'code', w.wallet_type_id) or '').lower() for w in existing_wallets}
+    target_codes = {tw['code'] for tw in TARGET_WALLETS}
+
+    if not target_codes.issubset(existing_codes) and license_obj:
+        try:
+            initialize_wallet_balances_for_license(license_obj)
+            existing_wallets = list(WalletBalance.objects.filter(licensee_id__iexact=lid).select_related('wallet_type'))
+        except Exception as init_err:
+            logger.warning("Auto-initialization of missing wallets failed: %s", init_err)
+
+    # Format the 5 wallets
+    wallets_by_code = {}
+    for w in existing_wallets:
+        c = str(getattr(w.wallet_type, 'code', w.wallet_type_id) or '').lower()
+        wallets_by_code[c] = w
+
+    wallets_list = []
+    total_balance = Decimal('0.00')
+
+    for tw in TARGET_WALLETS:
+        code = tw['code']
+        w = wallets_by_code.get(code)
+
+        # If still missing in DB, create on demand with zero balance
+        if not w:
+            try:
+                master_type = MasterWalletType.objects.filter(code=code).first()
+                if master_type:
+                    w = WalletBalance.objects.create(
+                        licensee_id=lid,
+                        licensee_name=licensee.manufacturing_unit_name if licensee else (getattr(license_obj, 'establishment_name', '') or ''),
+                        manufacturing_unit=licensee.manufacturing_unit_name if licensee else '',
+                        user_id=licensee.user.username if licensee and licensee.user else '',
+                        module_type='distillery' if 'distill' in str(getattr(licensee, 'manufacturing_unit_name', '')).lower() else 'brewery',
+                        wallet_type=master_type,
+                        head_of_account=tw['default_hoa'],
+                        opening_balance=Decimal('0.00'),
+                        total_credit=Decimal('0.00'),
+                        total_debit=Decimal('0.00'),
+                        current_balance=Decimal('0.00'),
+                    )
+                    wallets_by_code[code] = w
+            except Exception as cr_err:
+                logger.error("Failed to create missing wallet %s: %s", code, cr_err)
+
+        if w:
+            bal = Decimal(str(w.current_balance or 0))
+            total_balance += bal
+            w_name = getattr(w.wallet_type, 'name', None) or tw['name']
+            hoa_val = w.head_of_account or tw['default_hoa']
+            wallets_list.append({
+                'wallet_balance_id': w.wallet_balance_id,
+                'walletBalanceId': w.wallet_balance_id,
+                'wallet_type': code,
+                'walletType': code,
+                'wallet_name': w_name,
+                'walletName': w_name,
+                'name': w_name,
+                'icon': tw['icon'],
+                'head_of_account': hoa_val,
+                'headOfAccount': hoa_val,
+                'current_balance': float(bal),
+                'currentBalance': float(bal),
+                'opening_balance': float(w.opening_balance or 0),
+                'openingBalance': float(w.opening_balance or 0),
+                'total_credit': float(w.total_credit or 0),
+                'totalCredit': float(w.total_credit or 0),
+                'total_debit': float(w.total_debit or 0),
+                'totalDebit': float(w.total_debit or 0),
+                'last_updated_at': w.last_updated_at.isoformat() if w.last_updated_at else None,
+                'lastUpdatedAt': w.last_updated_at.isoformat() if w.last_updated_at else None,
+            })
+        else:
+            wallets_list.append({
+                'wallet_balance_id': None,
+                'walletBalanceId': None,
+                'wallet_type': code,
+                'walletType': code,
+                'wallet_name': tw['name'],
+                'walletName': tw['name'],
+                'name': tw['name'],
+                'icon': tw['icon'],
+                'head_of_account': tw['default_hoa'],
+                'headOfAccount': tw['default_hoa'],
+                'current_balance': 0.0,
+                'currentBalance': 0.0,
+                'opening_balance': 0.0,
+                'openingBalance': 0.0,
+                'total_credit': 0.0,
+                'totalCredit': 0.0,
+                'total_debit': 0.0,
+                'totalDebit': 0.0,
+                'last_updated_at': None,
+                'lastUpdatedAt': None,
+            })
+
+    # Recent transactions for this establishment
+    recent_txs = list(
+        WalletTransaction.objects.filter(licensee_id__iexact=lid)
+        .order_by('-created_at')[:60]
+    )
+
+    transactions_data = []
+    sw_transactions = []
+    for tx in recent_txs:
+        txn_id = str(tx.transaction_id or '')
+        ref_no = str(tx.reference_no or '')
+        source_mod = str(tx.source_module or '').lower()
+        remarks_str = str(tx.remarks or '')
+        is_sw = (
+            'admin_' in txn_id.lower() or
+            'single_window' in txn_id.lower() or
+            'admin_' in ref_no.lower() or
+            'single_window' in ref_no.lower() or
+            source_mod in ('single_window', 'admin') or
+            'admin' in remarks_str.lower() or
+            'single window' in remarks_str.lower()
+        )
+        w_code = str(getattr(tx.wallet_type, 'code', tx.wallet_type_id) or '').lower()
+        w_name = getattr(tx.wallet_type, 'name', w_code.replace('_', ' ').title())
+
+        tx_item = {
+            'wallet_transaction_id': tx.wallet_transaction_id,
+            'walletTransactionId': tx.wallet_transaction_id,
+            'transaction_id': txn_id or ref_no or f"TXN-{tx.wallet_transaction_id}",
+            'transactionId': txn_id or ref_no or f"TXN-{tx.wallet_transaction_id}",
+            'is_single_window': is_sw,
+            'isSingleWindow': is_sw,
+            'wallet_type': w_code,
+            'walletType': w_code,
+            'wallet_name': w_name,
+            'walletName': w_name,
+            'head_of_account': tx.head_of_account or '0039-00-800',
+            'headOfAccount': tx.head_of_account or '0039-00-800',
+            'entry_type': str(tx.entry_type or 'CR').upper(),
+            'entryType': str(tx.entry_type or 'CR').upper(),
+            'transaction_type': tx.transaction_type or ('recharge' if is_sw else 'debit'),
+            'transactionType': tx.transaction_type or ('recharge' if is_sw else 'debit'),
+            'amount': float(tx.amount or 0),
+            'balance_before': float(tx.balance_before or 0),
+            'balanceBefore': float(tx.balance_before or 0),
+            'balance_after': float(tx.balance_after or 0),
+            'balanceAfter': float(tx.balance_after or 0),
+            'reference_no': ref_no or txn_id,
+            'referenceNo': ref_no or txn_id,
+            'source_module': tx.source_module or '',
+            'sourceModule': tx.source_module or '',
+            'payment_status': tx.payment_status or 'success',
+            'paymentStatus': tx.payment_status or 'success',
+            'remarks': remarks_str or ('Single Window credit' if is_sw else 'Wallet transaction'),
+            'created_at': tx.created_at.isoformat() if tx.created_at else None,
+            'createdAt': tx.created_at.isoformat() if tx.created_at else None,
+        }
+        transactions_data.append(tx_item)
+        if is_sw:
+            sw_transactions.append(tx_item)
+
+    # Determine whether to return only Single Window recharges or all transactions
+    # Default: Show Single Window transactions only so table is empty until Single Window credits funds
+    show_all = str(request.query_params.get('all', '')).lower() in ('true', '1')
+    effective_transactions = transactions_data if show_all else sw_transactions
+
+    est_name = licensee.manufacturing_unit_name if licensee else (getattr(license_obj, 'establishment_name', '') or lid)
+
+    return Response({
+        'establishment': {
+            'id': licensee.id if licensee else None,
+            'licensee_id': lid,
+            'licenseeId': lid,
+            'name': est_name,
+            'license_type': getattr(licensee, 'license_type', 'Distillery'),
+            'licenseType': getattr(licensee, 'license_type', 'Distillery'),
+        },
+        'total_wallet_balance': float(total_balance),
+        'totalWalletBalance': float(total_balance),
+        'wallets_count': len(wallets_list),
+        'walletsCount': len(wallets_list),
+        'wallets': wallets_list,
+        'transactions': effective_transactions,
+        'single_window_transactions': sw_transactions,
+        'singleWindowTransactions': sw_transactions,
+        'all_transactions': transactions_data,
+        'allTransactions': transactions_data,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def credit_establishment_wallet(request):
+    """
+    Credit amount to an establishment's wallet directly via Single Window.
+    Generates a transaction_id starting with 'single_window_...'.
+    Requires authentication and role_id in [1, 3] (Site Admin or Single Window).
+    """
+    if not _has_manual_entry_permission(request.user):
+        return Response(
+            {'error': 'Permission denied. Role must be Site Admin (role_id=1) or Single Window (role_id=3).'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    data = request.data or {}
+    licensee_val = data.get('licensee_id') or data.get('licenseeId')
+    if not licensee_val:
+        return Response({'error': 'licensee_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    raw_w_type = data.get('wallet_type') or data.get('walletType') or ''
+    wallet_type = str(raw_w_type).strip().lower()
+    if not wallet_type or wallet_type in ('undefined', 'null', 'none'):
+        return Response({'error': 'Please select a valid wallet type to credit.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Normalize wallet codes
+    if wallet_type in ('education', 'educationcess', 'education-cess'):
+        wallet_type = 'education_cess'
+
+    matching_codes = [wallet_type]
+    if wallet_type in ('excise', 'additional_excise', 'additional_ed'):
+        matching_codes = ['excise', 'additional_excise', 'additional_ed']
+
+    raw_amount = data.get('amount')
+    if raw_amount is None:
+        return Response({'error': 'amount is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        amount = Decimal(str(raw_amount)).quantize(Decimal('0.01'))
+    except (ValueError, TypeError):
+        return Response({'error': 'amount must be a valid positive number.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if amount <= Decimal('0.00'):
+        return Response({'error': 'amount must be greater than zero.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user_remarks = str(data.get('remarks') or '').strip()
+
+    # Resolve UserManufacturingUnit
+    licensee = None
+    licensee_val_str = str(licensee_val).strip()
+    if licensee_val_str.isdigit():
+        licensee = UserManufacturingUnit.objects.filter(id=int(licensee_val_str)).first()
+    if not licensee:
+        licensee = UserManufacturingUnit.objects.filter(licensee_id=licensee_val_str).first()
+
+    lid = licensee.licensee_id if licensee else licensee_val_str
+
+    # Find target wallet balance
+    wallet_balance = WalletBalance.objects.filter(
+        Q(licensee_id__iexact=lid) | Q(licensee_id__iexact=licensee.licensee_id if licensee else lid),
+        wallet_type__code__in=matching_codes
+    ).select_related('wallet_type').first()
+
+    if not wallet_balance:
+        # If wallet doesn't exist yet, auto-initialize
+        license_obj = License.objects.filter(Q(license_id__iexact=lid) | Q(source_object_id__iexact=lid)).first()
+        if license_obj:
+            try:
+                initialize_wallet_balances_for_license(license_obj)
+            except Exception as init_err:
+                logger.warning("Failed to auto-init wallet balances: %s", init_err)
+            wallet_balance = WalletBalance.objects.filter(
+                Q(licensee_id__iexact=lid) | Q(licensee_id__iexact=licensee.licensee_id if licensee else lid),
+                wallet_type__code__in=matching_codes
+            ).select_related('wallet_type').first()
+
+    if not wallet_balance:
+        # Create missing wallet on demand
+        master_type = MasterWalletType.objects.filter(code__in=matching_codes).first()
+        if not master_type:
+            master_type = MasterWalletType.objects.filter(code=wallet_type).first()
+        if master_type:
+            DEFAULT_HOAS = {
+                'excise': '0039-00-105-45-01',
+                'education_cess': '0045-00-112-45-03',
+                'hologram': '0039-00-800-45-01',
+                'security_deposit': 'non',
+                'license_fee': '0039-00-800-45-02',
+            }
+            wallet_balance = WalletBalance.objects.create(
+                licensee_id=lid,
+                licensee_name=licensee.manufacturing_unit_name if licensee else '',
+                manufacturing_unit=licensee.manufacturing_unit_name if licensee else '',
+                user_id=licensee.user.username if licensee and licensee.user else '',
+                module_type='distillery' if 'distill' in str(getattr(licensee, 'manufacturing_unit_name', '')).lower() else 'brewery',
+                wallet_type=master_type,
+                head_of_account=DEFAULT_HOAS.get(master_type.code, 'non'),
+                opening_balance=Decimal('0.00'),
+                total_credit=Decimal('0.00'),
+                total_debit=Decimal('0.00'),
+                current_balance=Decimal('0.00'),
+            )
+
+    if not wallet_balance:
+        return Response(
+            {'error': f"Wallet '{wallet_type}' not found for licensee '{lid}'."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    head_of_account = wallet_balance.head_of_account or 'non'
+
+    # Generate transaction_id starting with 'admin_' + timestamp + random digits
+    import random
+    timestamp_str = timezone.now().strftime('%Y%m%d%H%M%S')
+    rand_suffix = f"{random.randint(100, 999)}"
+    transaction_id = f"admin_{timestamp_str}_{rand_suffix}"
+
+    user_display = _get_user_display_name(request.user)
+    effective_remarks = f"Single Window recharge by {user_display or request.user.username}"
+    if user_remarks:
+        effective_remarks += f": {user_remarks}"
+
+    try:
+        wallet_txn, updated_balance, _ = credit_wallet_balance(
+            transaction_id=transaction_id,
+            licensee_id=lid,
+            wallet_type=wallet_type,
+            head_of_account=head_of_account,
+            amount=amount,
+            entry_type="CR",
+            transaction_type="recharge",
+            user_id=request.user.username if request.user else "",
+            licensee_name=licensee.manufacturing_unit_name if licensee else getattr(wallet_balance, 'licensee_name', ''),
+            source_module="single_window",
+            payment_status="success",
+            remarks=effective_remarks,
+            reference_no=transaction_id,
+            module_name="Single Window",
+            actor_user=request.user,
+        )
+    except Exception as exc:
+        logger.error("Failed to credit wallet: %s", exc, exc_info=True)
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    w_name = getattr(wallet_balance.wallet_type, 'name', wallet_type.replace('_', ' ').title())
+    new_bal = float(getattr(updated_balance, 'current_balance', 0) if updated_balance else getattr(wallet_balance, 'current_balance', 0))
+
+    return Response({
+        'success': True,
+        'message': f"₹{amount:,.2f} successfully credited to {w_name}.",
+        'transaction_id': transaction_id,
+        'wallet_type': wallet_type,
+        'wallet_name': w_name,
+        'amount': float(amount),
+        'new_balance': new_bal,
+        'licensee_id': lid,
+        'remarks': effective_remarks,
+    }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_establishment_wallet_history(request):
+    """
+    Get wallet transaction history for an establishment.
+    """
+    if not _has_manual_entry_permission(request.user):
+        return Response(
+            {'error': 'Permission denied. Role must be Site Admin (role_id=1) or Single Window (role_id=3).'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    licensee_val = request.query_params.get('licensee_id') or request.query_params.get('id')
+    if not licensee_val:
+        return Response({'error': 'licensee_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    licensee_val = str(licensee_val).strip()
+    licensee = None
+    if licensee_val.isdigit():
+        licensee = UserManufacturingUnit.objects.filter(id=int(licensee_val)).first()
+    if not licensee:
+        licensee = UserManufacturingUnit.objects.filter(licensee_id=licensee_val).first()
+
+    lid = licensee.licensee_id if licensee else licensee_val
+
+    tx_qs = WalletTransaction.objects.filter(licensee_id__iexact=lid).order_by('-created_at')[:100]
+
+    transactions = []
+    sw_transactions = []
+    for tx in tx_qs:
+        txn_id = str(tx.transaction_id or '')
+        ref_no = str(tx.reference_no or '')
+        source_mod = str(tx.source_module or '').lower()
+        remarks_str = str(tx.remarks or '')
+        is_sw = (
+            'admin_' in txn_id.lower() or
+            'single_window' in txn_id.lower() or
+            'admin_' in ref_no.lower() or
+            'single_window' in ref_no.lower() or
+            source_mod in ('single_window', 'admin') or
+            'admin' in remarks_str.lower() or
+            'single window' in remarks_str.lower()
+        )
+        w_code = str(getattr(tx.wallet_type, 'code', tx.wallet_type_id) or '').lower()
+        w_name = getattr(tx.wallet_type, 'name', w_code.replace('_', ' ').title())
+
+        tx_item = {
+            'wallet_transaction_id': tx.wallet_transaction_id,
+            'walletTransactionId': tx.wallet_transaction_id,
+            'transaction_id': txn_id or ref_no or f"TXN-{tx.wallet_transaction_id}",
+            'transactionId': txn_id or ref_no or f"TXN-{tx.wallet_transaction_id}",
+            'is_single_window': is_sw,
+            'isSingleWindow': is_sw,
+            'wallet_type': w_code,
+            'walletType': w_code,
+            'wallet_name': w_name,
+            'walletName': w_name,
+            'head_of_account': tx.head_of_account or '0039-00-800',
+            'headOfAccount': tx.head_of_account or '0039-00-800',
+            'entry_type': str(tx.entry_type or 'CR').upper(),
+            'entryType': str(tx.entry_type or 'CR').upper(),
+            'transaction_type': tx.transaction_type or ('recharge' if is_sw else 'debit'),
+            'transactionType': tx.transaction_type or ('recharge' if is_sw else 'debit'),
+            'amount': float(tx.amount or 0),
+            'balance_before': float(tx.balance_before or 0),
+            'balanceBefore': float(tx.balance_before or 0),
+            'balance_after': float(tx.balance_after or 0),
+            'balanceAfter': float(tx.balance_after or 0),
+            'reference_no': ref_no or txn_id,
+            'referenceNo': ref_no or txn_id,
+            'source_module': tx.source_module or '',
+            'sourceModule': tx.source_module or '',
+            'payment_status': tx.payment_status or 'success',
+            'paymentStatus': tx.payment_status or 'success',
+            'remarks': remarks_str or ('Single Window credit' if is_sw else 'Wallet transaction'),
+            'created_at': tx.created_at.isoformat() if tx.created_at else None,
+            'createdAt': tx.created_at.isoformat() if tx.created_at else None,
+        }
+        transactions.append(tx_item)
+        if is_sw:
+            sw_transactions.append(tx_item)
+
+    show_all = str(request.query_params.get('all', '')).lower() in ('true', '1')
+    effective_txs = transactions if show_all else sw_transactions
+
+    return Response({
+        'licensee_id': lid,
+        'licenseeId': lid,
+        'count': len(effective_txs),
+        'results': effective_txs,
+        'single_window_transactions': sw_transactions,
+        'singleWindowTransactions': sw_transactions,
+        'all_transactions': transactions,
+        'allTransactions': transactions,
+    }, status=status.HTTP_200_OK)
+
