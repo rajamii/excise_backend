@@ -486,6 +486,7 @@ class DailyHologramRegisterSerializer(serializers.ModelSerializer):
     approved_by_name = serializers.SerializerMethodField()
     approved_by_username = serializers.CharField(source='approved_by.username', read_only=True, allow_null=True)
     rolls_used_details = serializers.SerializerMethodField()
+    rolls_assigned = serializers.SerializerMethodField()
     
     # CRITICAL: Accept allocated range fields from frontend for "Not In Use" entries
     # These are write_only because they're not database fields, just used for processing
@@ -546,6 +547,36 @@ class DailyHologramRegisterSerializer(serializers.ModelSerializer):
             'to_serial': roll.to_serial,
             'available': roll.available
         } for roll in rolls]
+
+    def get_rolls_assigned(self, obj):
+        """Get all assigned rolls from the associated hologram request or roll_range"""
+        if obj.hologram_request and obj.hologram_request.rolls_assigned:
+            return obj.hologram_request.rolls_assigned
+        if obj.hologram_request and obj.hologram_request.issued_assets:
+            return obj.hologram_request.issued_assets
+        if obj.roll_range:
+            import re
+            m = re.match(r'^(.*?)\s*-\s*([A-Za-z]*\d+)\s*-\s*([A-Za-z]*\d+)$', str(obj.roll_range).strip())
+            if m:
+                roll_name = m.group(1).strip()
+                from_s = m.group(2).strip()
+                to_s = m.group(3).strip()
+                try:
+                    from_no = int(re.sub(r'\D', '', from_s))
+                    to_no = int(re.sub(r'\D', '', to_s))
+                    qty = (to_no - from_no + 1) if to_no >= from_no else 0
+                except (ValueError, TypeError):
+                    qty = 0
+                return [{
+                    'cartoon_number': roll_name,
+                    'roll_number': roll_name,
+                    'from_serial': from_s,
+                    'to_serial': to_s,
+                    'quantity': qty,
+                    'count': qty,
+                    'range': f"{from_s} - {to_s}"
+                }]
+        return []
 
 from .models import HologramRollsDetails, HologramSerialRange, HologramUsageHistory
  
