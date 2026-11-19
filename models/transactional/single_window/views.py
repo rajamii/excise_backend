@@ -1685,7 +1685,18 @@ def single_window_renewal_app_detail(request, application_id):
         r_pending = "Completed"
     else:
         r_stage = r_stage_name
-        r_pending = _resolve_pending_at(app)
+    issued_license = None
+    if app.old_license_id:
+        old_lic = License.objects.filter(license_id=app.old_license_id).first()
+        if old_lic:
+            issued_license = {
+                "license_id": old_lic.license_id,
+                "license_category": old_lic.license_category.license_category if old_lic.license_category else "N/A",
+                "license_sub_category": old_lic.license_sub_category.description if old_lic.license_sub_category else "N/A",
+                "issue_date": old_lic.issue_date.strftime("%Y-%m-%d") if old_lic.issue_date else "N/A",
+                "valid_up_to": old_lic.valid_up_to.strftime("%Y-%m-%d") if old_lic.valid_up_to else "N/A",
+                "is_active": old_lic.is_active,
+            }
 
     data = {
         "application_id": app.application_id,
@@ -1701,6 +1712,7 @@ def single_window_renewal_app_detail(request, application_id):
         "is_security_fee_paid": app.is_security_fee_paid,
         "created_at": app.created_at.strftime("%Y-%m-%d %H:%M:%S") if app.created_at else "N/A",
         "updated_at": app.updated_at.strftime("%Y-%m-%d %H:%M:%S") if app.updated_at else "N/A",
+        "issued_license": issued_license,
         "history": serialize_workflow_history(app),
         "objections": serialize_objections(app),
         "payments": serialize_payment_transactions(app.application_id)
