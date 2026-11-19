@@ -30,14 +30,66 @@ def get_current_run_start_time(content_type, object_id):
         return None
 
 
+def normalize_workflow_role_title(name):
+    if not name or name == "N/A":
+        return "N/A"
+    clean = str(name).strip()
+    lower = clean.lower()
+    if "inquiry" in lower or "enquiry" in lower:
+        return "Site Enquiry Officer"
+    if "joint commissioner" in lower:
+        return "Joint Commissioner"
+    if "district" in lower:
+        return "District User"
+    if "licensee" in lower or "applicant" in lower:
+        return "Applicant (Licensee)"
+    return clean
+
+
 def serialize_workflow_history(obj):
     hist = []
     try:
         from django.contrib.contenttypes.models import ContentType
         from auth.workflow.models import Transaction
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+        
         ct = ContentType.objects.get_for_model(obj)
         txs = list(Transaction.objects.filter(content_type=ct, object_id=str(obj.pk)).order_by("timestamp"))
         
+        # Check payment info for the application
+        app_payment_info = None
+        try:
+            app_id_val = getattr(obj, "application_id", str(obj.pk))
+            bd_tx = PaymentBilldeskTransaction.objects.filter(
+                payer_id__iexact=app_id_val,
+                payment_status="S"
+            ).order_by("-transaction_date").first()
+            if not bd_tx:
+                bd_tx = PaymentBilldeskTransaction.objects.filter(
+                    payer_id__iexact=str(obj.pk)
+                ).order_by("-transaction_date").first()
+            if bd_tx:
+                status_label = "Successful" if bd_tx.payment_status == "S" else ("Pending" if bd_tx.payment_status == "P" else "Failed")
+                app_payment_info = {
+                    "status": status_label,
+                    "is_success": bd_tx.payment_status == "S",
+                    "amount": str(bd_tx.transaction_amount or "500.00"),
+                    "utr": bd_tx.utr or bd_tx.transaction_id_no_hoa or "N/A",
+                    "date": bd_tx.transaction_date.strftime("%Y-%m-%d %H:%M:%S") if bd_tx.transaction_date else "",
+                    "gateway": "BillDesk Gateway"
+                }
+            elif getattr(obj, "is_application_fee_paid", False):
+                app_payment_info = {
+                    "status": "Successful",
+                    "is_success": True,
+                    "amount": "500.00",
+                    "utr": getattr(obj, "application_fee_transaction_id", "") or "VERIFIED",
+                    "date": getattr(obj, "created_at", None).strftime("%Y-%m-%d %H:%M:%S") if getattr(obj, "created_at", None) else "",
+                    "gateway": "BillDesk Gateway"
+                }
+        except Exception:
+            pass
+
         # Find index of latest Applied transaction to show only current run's flow
         start_idx = 0
         for i, tx in enumerate(txs):
@@ -47,19 +99,62 @@ def serialize_workflow_history(obj):
                 start_idx = i
         
         txs = txs[start_idx:]
-        for tx in txs:
+        for i, tx in enumerate(txs):
             stage_name = tx.stage.name if tx.stage else "N/A"
             performed_by = tx.performed_by
             actor_username = performed_by.username if performed_by else "System"
             actor_name = f"{performed_by.first_name} {performed_by.last_name}".strip() if performed_by else "System"
-            forwarded_to_name = tx.forwarded_to.name if tx.forwarded_to else "N/A"
+            
+            # Extract from_role and to_role
+            if i == 0 or (tx.stage and "applied" in tx.stage.name.lower()):
+                raw_from = "Applicant (Licensee)"
+            else:
+                raw_from = tx.forwarded_by.name if tx.forwarded_by else (txs[i-1].forwarded_to.name if (i > 0 and txs[i-1].forwarded_to) else "District User")
+            
+            raw_to = tx.forwarded_to.name if tx.forwarded_to else stage_name
+            
+            from_role = normalize_workflow_role_title(raw_from)
+            to_role = normalize_workflow_role_title(raw_to)
+            
+            remarks_str = (tx.remarks or "").strip()
+            rem_lower = remarks_str.lower()
+            stage_lower = stage_name.lower()
+            
+            # Action classification
+            is_reverted = "revert" in rem_lower or "revert" in stage_lower
+            is_applied = (i == 0) or ("applied" in stage_lower) or ("fee paid" in rem_lower)
+            
+            if is_reverted:
+                action_type = "REVERTED"
+            elif is_applied:
+                action_type = "APPLIED"
+            elif "approv" in rem_lower:
+                action_type = "APPROVED"
+            elif "reject" in rem_lower or "reject" in stage_lower:
+                action_type = "REJECTED"
+            elif "verification" in rem_lower or "site" in rem_lower:
+                action_type = "VERIFICATION REQUESTED"
+            elif "forward" in rem_lower or "review" in rem_lower:
+                action_type = "FORWARDED"
+            else:
+                action_type = "FORWARDED"
+            
+            step_payment = app_payment_info if is_applied else None
+            
             hist.append({
+                "step_number": i + 1,
                 "stage": stage_name,
-                "forwarded_to": forwarded_to_name,
+                "from_role": from_role,
+                "to_role": to_role,
+                "forwarded_to": to_role,
+                "action_type": action_type,
+                "is_reverted": is_reverted,
+                "is_applied": is_applied,
                 "action_by": actor_username,
                 "action_by_name": actor_name,
-                "remarks": tx.remarks or "No remarks provided.",
-                "created_at": tx.timestamp.strftime("%Y-%m-%d %H:%M:%S") if tx.timestamp else "N/A"
+                "remarks": remarks_str or "No remarks provided.",
+                "created_at": tx.timestamp.strftime("%Y-%m-%d %H:%M:%S") if tx.timestamp else "N/A",
+                "payment_info": step_payment
             })
     except Exception as e:
         pass
@@ -1468,6 +1563,9 @@ def single_window_new_app_detail(request, application_id):
         "current_stage": pending_at_stage,
         "pending_at_role": pending_at_role,
         "is_approved": app.is_approved,
+        "is_application_fee_paid": bool(app.is_application_fee_paid or (
+            __import__('models.transactional.payment_gateway.models', fromlist=['PaymentBilldeskTransaction']).PaymentBilldeskTransaction.objects.filter(payer_id__iexact=app.application_id, payment_status="S").exists()
+        )),
         "is_license_fee_paid": app.is_license_fee_paid,
         "is_security_fee_paid": app.is_security_fee_paid,
         "created_at": app.created_at.strftime("%Y-%m-%d %H:%M:%S") if app.created_at else "N/A",
