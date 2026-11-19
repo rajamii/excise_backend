@@ -66,29 +66,94 @@ def serialize_workflow_history(obj):
             ).order_by("-transaction_date").first()
             if not bd_tx:
                 bd_tx = PaymentBilldeskTransaction.objects.filter(
+                    payer_id__iexact=app_id_val
+                ).order_by("-transaction_date").first()
+            if not bd_tx:
+                bd_tx = PaymentBilldeskTransaction.objects.filter(
                     payer_id__iexact=str(obj.pk)
                 ).order_by("-transaction_date").first()
             if bd_tx:
-                status_label = "Successful" if bd_tx.payment_status == "S" else ("Pending" if bd_tx.payment_status == "P" else "Failed")
+                p_code = (bd_tx.payment_status or "").strip().upper()
+                status_label = "Successful" if p_code == "S" else ("Pending" if p_code == "P" else "Failed")
                 app_payment_info = {
                     "status": status_label,
-                    "is_success": bd_tx.payment_status == "S",
+                    "status_code": p_code,
+                    "is_success": p_code == "S",
+                    "is_pending": p_code == "P",
+                    "is_failed": p_code == "F",
                     "amount": str(bd_tx.transaction_amount or "500.00"),
                     "utr": bd_tx.utr or bd_tx.transaction_id_no_hoa or "N/A",
                     "date": bd_tx.transaction_date.strftime("%Y-%m-%d %H:%M:%S") if bd_tx.transaction_date else "",
-                    "gateway": "BillDesk Gateway"
+                    "gateway": "BillDesk Gateway",
+                    "error_description": bd_tx.response_errordescription or ""
                 }
             elif getattr(obj, "is_application_fee_paid", False):
                 app_payment_info = {
                     "status": "Successful",
+                    "status_code": "S",
                     "is_success": True,
+                    "is_pending": False,
+                    "is_failed": False,
                     "amount": "500.00",
                     "utr": getattr(obj, "application_fee_transaction_id", "") or "VERIFIED",
                     "date": getattr(obj, "created_at", None).strftime("%Y-%m-%d %H:%M:%S") if getattr(obj, "created_at", None) else "",
-                    "gateway": "BillDesk Gateway"
+                    "gateway": "BillDesk Gateway",
+                    "error_description": ""
                 }
         except Exception:
             pass
+
+        # If no department workflow transactions exist, synthesize the step strictly at the Licensee stage
+        if not txs:
+            applicant = getattr(obj, "applicant", None)
+            applicant_username = applicant.username if applicant else "Licensee"
+            applicant_name = f"{applicant.first_name} {applicant.last_name}".strip() if applicant else "Applicant"
+            if not applicant_name:
+                applicant_name = applicant_username
+
+            current_st = getattr(obj, "current_stage", None)
+            stage_name = current_st.name if current_st else "License Approval: Applied"
+
+            if app_payment_info and app_payment_info.get("is_success"):
+                remarks_str = (
+                    f"Application is currently at the Licensee stage. Application fee payment of Rs. {app_payment_info.get('amount', '500.00')} "
+                    f"has been completed and verified via BillDesk (UTR: {app_payment_info.get('utr', 'N/A')}). "
+                    f"The application has not yet been forwarded to the next department stage (District Office)."
+                )
+            elif app_payment_info and app_payment_info.get("is_pending"):
+                remarks_str = (
+                    f"Application is currently at the Licensee stage. Application fee payment of Rs. {app_payment_info.get('amount', '500.00')} "
+                    f"via BillDesk is pending confirmation from the bank (UTR: {app_payment_info.get('utr', 'N/A')}). "
+                    f"The application has not moved to the next stage."
+                )
+            elif app_payment_info and app_payment_info.get("is_failed"):
+                remarks_str = (
+                    f"Application is currently at the Licensee stage. Application fee payment attempt via BillDesk failed. "
+                    f"The application has not moved to the next stage."
+                )
+            else:
+                remarks_str = "Application is currently at the Licensee stage awaiting fee payment and submission."
+
+            created_time_str = getattr(obj, "created_at", None)
+            created_time_str = created_time_str.strftime("%Y-%m-%d %H:%M:%S") if created_time_str else "N/A"
+
+            hist.append({
+                "step_number": 1,
+                "stage": stage_name,
+                "from_role": "Applicant (Licensee)",
+                "to_role": "Applicant (Licensee)",
+                "forwarded_to": "Applicant (Licensee)",
+                "action_type": "AT_LICENSEE",
+                "is_reverted": False,
+                "is_applied": True,
+                "has_gone_to_next_stage": False,
+                "action_by": applicant_username,
+                "action_by_name": applicant_name,
+                "remarks": remarks_str,
+                "created_at": created_time_str,
+                "payment_info": app_payment_info
+            })
+            return hist
 
         # Find index of latest Applied transaction to show only current run's flow
         start_idx = 0
@@ -150,6 +215,7 @@ def serialize_workflow_history(obj):
                 "action_type": action_type,
                 "is_reverted": is_reverted,
                 "is_applied": is_applied,
+                "has_gone_to_next_stage": True,
                 "action_by": actor_username,
                 "action_by_name": actor_name,
                 "remarks": remarks_str or "No remarks provided.",
@@ -754,9 +820,14 @@ def single_window_search(request):
             from auth.workflow.models import StagePermission
             perm = StagePermission.objects.filter(stage=stage, can_process=True).first()
             if perm and perm.role:
-                return perm.role.name
+                resolved_role = perm.role.name
+                if "applied" in stage_lower or resolved_role.lower() in ("licensee", "applicant"):
+                    return "Licensee"
+                return resolved_role
         except Exception:
             pass
+        if "applied" in stage_lower:
+            return "Licensee"
         return stage_name
 
     # Helper function to get linked NLA ID for different objects
@@ -1429,6 +1500,8 @@ def single_window_new_app_detail(request, application_id):
                     pending_at_role = perm.role.name
             except Exception:
                 pass
+        if "applied" in stage_lower or pending_at_role.lower() in ("licensee", "applicant"):
+            pending_at_role = "Licensee"
 
     # Find issued license directly linked to this application (Main License)
     issued_license = None
