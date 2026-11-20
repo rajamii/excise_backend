@@ -21,15 +21,8 @@ from models.masters.supply_chain.bulk_spirit.models import BulkSpiritType
 
 
 def _expand_license_aliases(value: str) -> list[str]:
-    token = str(value or '').strip()
-    if not token:
-        return []
-    aliases = [token]
-    if token.startswith('NLI/'):
-        aliases.append(f'NA/{token[4:]}')
-    elif token.startswith('NA/'):
-        aliases.append(f'NLI/{token[3:]}')
-    return aliases
+    from models.transactional.supply_chain.access_control import _expand_license_aliases as _safe_expand
+    return _safe_expand(value)
 
 
 def _resolve_user_licensee_candidates(user) -> list[str]:

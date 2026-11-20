@@ -60,12 +60,28 @@ def _expand_license_aliases(license_id: str):
     if not normalized:
         return []
 
-    aliases = [normalized]
-    if normalized.startswith('NLI/'):
-        aliases.append(f"NA/{normalized[4:]}")
-    elif normalized.startswith('NA/'):
-        aliases.append(f"NLI/{normalized[3:]}")
-    return aliases
+    aliases = {normalized}
+    try:
+        from models.masters.license.models import License
+        if normalized.startswith('NLI/'):
+            lic = License.objects.filter(source_object_id__iexact=normalized).first()
+            if lic and lic.license_id:
+                aliases.add(str(lic.license_id).strip())
+            else:
+                cand = f"NA/{normalized[4:]}"
+                if not License.objects.filter(license_id__iexact=cand).exists():
+                    aliases.add(cand)
+        elif normalized.startswith(('NA/', 'SB/')):
+            lic = License.objects.filter(license_id__iexact=normalized).first()
+            if lic and lic.source_object_id:
+                aliases.add(str(lic.source_object_id).strip())
+            elif normalized.startswith('NA/'):
+                cand = f"NLI/{normalized[3:]}"
+                if not License.objects.filter(source_object_id__iexact=cand).exclude(license_id__iexact=normalized).exists():
+                    aliases.add(cand)
+    except Exception:
+        pass
+    return list(aliases)
 
 
 def _collect_user_license_ids(user):
@@ -95,7 +111,7 @@ def _collect_user_license_ids(user):
             scoped_ids.append(normalized)
 
     assignment = _get_oic_assignment(user)
-    _append(getattr(getattr(assignment, 'approved_application', None), 'application_id', ''))
+    _append_raw(getattr(getattr(assignment, 'approved_application', None), 'application_id', ''))
     _append(getattr(getattr(assignment, 'license', None), 'license_id', ''))
     _append(getattr(assignment, 'licensee_id', '') or getattr(assignment, 'license_id', ''))
 

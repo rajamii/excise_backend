@@ -13,12 +13,28 @@ def _expand_license_aliases(value: str) -> list[str]:
     normalized = str(value or "").strip()
     if not normalized:
         return []
-    aliases = [normalized]
-    if normalized.startswith("NLI/"):
-        aliases.append(f"NA/{normalized[4:]}")
-    elif normalized.startswith("NA/"):
-        aliases.append(f"NLI/{normalized[3:]}")
-    return aliases
+    aliases = {normalized}
+    try:
+        from models.masters.license.models import License
+        if normalized.startswith("NLI/"):
+            lic = License.objects.filter(source_object_id__iexact=normalized).first()
+            if lic and lic.license_id:
+                aliases.add(str(lic.license_id).strip())
+            else:
+                cand = f"NA/{normalized[4:]}"
+                if not License.objects.filter(license_id__iexact=cand).exists():
+                    aliases.add(cand)
+        elif normalized.startswith(("NA/", "SB/")):
+            lic = License.objects.filter(license_id__iexact=normalized).first()
+            if lic and lic.source_object_id:
+                aliases.add(str(lic.source_object_id).strip())
+            elif normalized.startswith("NA/"):
+                cand = f"NLI/{normalized[3:]}"
+                if not License.objects.filter(source_object_id__iexact=cand).exclude(license_id__iexact=normalized).exists():
+                    aliases.add(cand)
+    except Exception:
+        pass
+    return list(aliases)
 
 
 def is_licensee_or_oic_user(user) -> bool:
