@@ -455,8 +455,12 @@ def application_group(request):
     })
 
 
+from django.views.decorators.clickjacking import xframe_options_exempt
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@xframe_options_exempt
 def download_label_document(request, application_id, document_field):
     """
     Downloads or streams an uploaded label registration document by field name.
@@ -524,4 +528,7 @@ def download_label_document(request, application_id, document_field):
 
     response = FileResponse(io.BytesIO(content), content_type=mime_type or 'application/octet-stream')
     response['Content-Disposition'] = f'inline; filename="{safe_filename}"'
+    response['Content-Length'] = len(content)
+    response['Accept-Ranges'] = 'bytes'
+    response['Access-Control-Allow-Origin'] = '*'
     return response

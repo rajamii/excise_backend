@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from urllib.parse import unquote
 from django.http import FileResponse, Http404
+from django.views.decorators.clickjacking import xframe_options_exempt
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from utils.dms_service import dms_client
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+@xframe_options_exempt
 def download_universal_dms_document(request, application_id, document_field):
     """
     Universal document viewer/downloader for ANY module in SEMS.
@@ -85,4 +87,7 @@ def download_universal_dms_document(request, application_id, document_field):
 
     response = FileResponse(io.BytesIO(content), content_type=mime_type or 'application/octet-stream')
     response['Content-Disposition'] = f'inline; filename="{safe_filename}"'
+    response['Content-Length'] = len(content)
+    response['Accept-Ranges'] = 'bytes'
+    response['Access-Control-Allow-Origin'] = '*'
     return response
