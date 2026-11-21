@@ -204,8 +204,12 @@ class DMSService:
         fs = self._get_gridfs()
         if fs is not None:
             try:
-                grid_id = fs.put(
+                grid_id = ObjectId()
+                mrn_str = str(grid_id)
+                fs.put(
                     file_bytes,
+                    _id=grid_id,
+                    mrn=mrn_str,
                     filename=filename,
                     application_id=str(application_id),
                     document_field=document_field,
@@ -216,12 +220,13 @@ class DMSService:
                     transaction_signature=signature or None,
                     is_signed=bool(signature)
                 )
-                logger.info("Uploaded %s to MongoDB GridFS (ID: %s, signed: %s) for appln %s",
-                            document_field, grid_id, bool(signature), application_id)
+                logger.info("Uploaded %s to MongoDB GridFS (MRN: %s, signed: %s) for appln %s",
+                            document_field, mrn_str, bool(signature), application_id)
                 return {
                     "success": True,
                     "storage_type": "DMS_MONGODB",
-                    "dms_reference": str(grid_id),
+                    "mrn": mrn_str,
+                    "dms_reference": mrn_str,
                     "dms_arn": application_id,
                     "original_filename": filename,
                     "file_size": len(file_bytes),
@@ -229,12 +234,13 @@ class DMSService:
                     "is_signed": bool(signature),
                     "signature": signature,
                     "details": {
-                        "mongodb_id": str(grid_id),
+                        "mrn": mrn_str,
+                        "mongodb_id": mrn_str,
                         "database": self.mongo_db_name,
                         "collection": "fs.files",
                         "dms_registration_no": self.registration_no,
                         "signed": bool(signature),
-                        "msg": "Stored directly in MongoDB GridFS with DMS registration and signature"
+                        "msg": "Stored directly in MongoDB GridFS with DMS registration, MRN, and signature"
                     }
                 }
             except Exception as exc:
