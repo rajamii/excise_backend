@@ -1,4 +1,5 @@
 from django.shortcuts import get_object_or_404
+from pathlib import Path
 from django.views.decorators.cache import never_cache
 from datetime import date, timedelta
 from django.db import transaction
@@ -15,7 +16,9 @@ from auth.workflow.services import WorkflowService
 from auth.workflow.models import Workflow
 from auth.workflow.models import Transaction as WorkflowTransaction
 from auth.workflow.constants import WORKFLOW_IDS
-from .models import NewLicenseApplication
+from .models import NewLicenseApplication, NewLicenseDMSDocument
+from utils.dms_service import dms_client
+from utils.file_validation import validate_uploaded_file
 from models.masters.license.models import License, LicenseValidationToken
 from .serializers import NewLicenseApplicationSerializer
 from auth.workflow.models import WorkflowStage
@@ -259,6 +262,76 @@ def _create_salesman_barman_record(application, user):
         # Do not re-raise — SB failure must never block the NLI response.
 
 
+def _process_dms_uploads(application, request_files, user):
+    """
+    Forwards applicant details & site details uploaded documents to DMS (MongoDB GridFS / FileServerApp)
+    and saves tracking references in NewLicenseDMSDocument.
+    """
+    target_fields = [
+        'pass_photo',
+        'pan_card',
+        'sikkim_certificate',
+        'dob_proof',
+        'parcha',
+        'noc',
+        'trade_license',
+    ]
+    user_identifier = getattr(user, 'username', str(getattr(user, 'id', 'system')))
+    mobile_number = getattr(application, 'mobile_number', '')
+
+    for field_name in target_fields:
+        file_obj = request_files.get(field_name)
+        if not file_obj:
+            file_obj = getattr(application, field_name, None)
+
+        if not file_obj or not getattr(file_obj, 'size', 0):
+            continue
+
+        try:
+            validate_uploaded_file(file_obj, max_size_bytes=10 * 1024 * 1024, field_label=field_name)
+
+            upload_result = dms_client.upload_document(
+                file_obj=file_obj,
+                document_field=field_name,
+                application_id=str(application.application_id),
+                user_id=user_identifier,
+                mobile=mobile_number,
+                doc_type_name=getattr(file_obj, 'name', field_name)
+            )
+
+            if upload_result.get('success'):
+                sig = upload_result.get('signature') or ''
+                reg_no = upload_result.get('details', {}).get('dms_registration_no', 'DMS20260006')
+                NewLicenseDMSDocument.objects.update_or_create(
+                    application=application,
+                    document_field=field_name,
+                    defaults={
+                        'dms_reference': upload_result.get('dms_reference'),
+                        'dms_arn': upload_result.get('dms_arn') or str(application.application_id),
+                        'original_filename': upload_result.get('original_filename', getattr(file_obj, 'name', '')),
+                        'file_size': upload_result.get('file_size', getattr(file_obj, 'size', 0)),
+                        'mime_type': upload_result.get('mime_type', ''),
+                        'storage_type': upload_result.get('storage_type', 'DMS_MONGODB'),
+                        'dms_registration_no': reg_no,
+                        'transaction_signature': sig,
+                    }
+                )
+                print(f"\n=======================================================")
+                print(f"[DMS UPLOAD SIGNED]")
+                print(f"  Field: {field_name}")
+                print(f"  File: {upload_result.get('original_filename')}")
+                print(f"  ARN: {application.application_id}")
+                print(f"  DMS Registration No: {reg_no}")
+                print(f"  transactionSignature: {sig}")
+                print(f"  MongoDB GridFS ID: {upload_result.get('dms_reference')}")
+                print(f"=======================================================\n")
+                logger.info("Successfully tracked DMS upload for %s on application %s", field_name, application.application_id)
+            else:
+                logger.warning("DMS upload reported failure for %s: %s", field_name, upload_result.get('error'))
+        except Exception as exc:
+            logger.error("Error processing DMS upload for %s on application %s: %s", field_name, application.application_id, exc)
+
+
 def _create_application(request, workflow_id: int, serializer_cls, *, auto_submit: bool = True):
 
     serializer = serializer_cls(data=request.data, context={"request": request})
@@ -308,8 +381,8 @@ def _create_application(request, workflow_id: int, serializer_cls, *, auto_submi
         # Record in AdminLog for applicant/licensee audit tracking
         try:
             from models.transactional.logs.services import log_admin_action
-            lic_cat = str(getattr(application.license_category, 'name', '') or '')
-            lic_subcat = str(getattr(application.license_subcategory, 'name', '') or '')
+            lic_cat = str(getattr(getattr(application, 'license_category', None), 'license_category', getattr(getattr(application, 'license_category', None), 'name', '')) or '')
+            lic_subcat = str(getattr(getattr(application, 'license_sub_category', None), 'description', getattr(getattr(application, 'license_sub_category', None), 'name', '')) or '')
             lic_dist = str(getattr(application.site_district, 'name', '') or '')
             applicant_full_name = f"{getattr(application, 'first_name', '')} {getattr(application, 'last_name', '')}".strip() or getattr(request.user, 'username', '')
             log_admin_action(
@@ -338,6 +411,12 @@ def _create_application(request, workflow_id: int, serializer_cls, *, auto_submi
         # committed and in its own separate transaction. This avoids nested atomic()
         # calls inside generate_application_id() aborting the outer NLI transaction.
         _create_salesman_barman_record(application, request.user)
+
+        # Process and forward Applicant Details & Site Details uploads to DMS / MongoDB
+        try:
+            _process_dms_uploads(application, request.FILES, request.user)
+        except Exception as dms_exc:
+            logger.error("DMS upload processing encountered an error: %s", dms_exc)
 
         fresh_serializer = serializer_cls(application)
         return Response(fresh_serializer.data, status=status.HTTP_201_CREATED)
@@ -2787,3 +2866,68 @@ def trigger_timer_expiration(request, application_id):
         "is_approved": app.is_approved,
         "rejection_reason": "No action taken within configured timer limit." if is_rejected else None
     })
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def download_new_license_dms_document(request, application_id, document_field):
+    """
+    Streams a document uploaded to DMS (MongoDB GridFS / FileServerApp)
+    or local fallback for New License Application.
+    """
+    app = get_object_or_404(NewLicenseApplication, application_id__iexact=str(application_id).strip())
+    field = str(document_field).strip()
+
+    doc_record = NewLicenseDMSDocument.objects.filter(application=app, document_field=field).first()
+    content = None
+    filename = ""
+    mime_type = ""
+
+    if doc_record:
+        content, filename, mime_type = dms_client.download_document(
+            dms_reference=doc_record.dms_reference,
+            storage_type=doc_record.storage_type,
+            application_id=app.application_id
+        )
+
+    if not content:
+        # Fallback to direct FileField on application
+        field_file = getattr(app, field, None)
+        if field_file:
+            try:
+                with field_file.open("rb") as f:
+                    content = f.read()
+                filename = Path(field_file.name).name
+                mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            except Exception:
+                pass
+
+    if not content:
+        return Response(
+            {"detail": f"Document '{field}' not found for application '{application_id}'."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    # Ensure clean extension
+    ext = Path(filename).suffix.lower()
+    if not ext:
+        if "png" in (mime_type or ""):
+            ext = ".png"
+        elif "jpeg" in (mime_type or "") or "jpg" in (mime_type or ""):
+            ext = ".jpg"
+        elif "pdf" in (mime_type or ""):
+            ext = ".pdf"
+        else:
+            ext = ".bin"
+
+    safe_filename = f"{field}{ext}"
+    as_download = str(request.query_params.get("download", "0")).lower() in ("1", "true", "yes")
+
+    response = FileResponse(
+        BytesIO(content),
+        content_type=mime_type or "application/octet-stream",
+        as_attachment=as_download,
+        filename=safe_filename
+    )
+    return response
+

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import NewLicenseApplication, Transaction, Objection
+from .models import NewLicenseApplication, Transaction, Objection, NewLicenseDMSDocument
 from auth.user.models import CustomUser
 from auth.roles.models import Role
 from auth.workflow.serializers import WorkflowTransactionSerializer, WorkflowObjectionSerializer
@@ -208,6 +208,8 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     # Rejection Reason & Note Fields
     rejection_reason = serializers.SerializerMethodField()
     is_auto_rejected = serializers.SerializerMethodField()
+    # DMS / MongoDB Documents
+    dms_documents = serializers.SerializerMethodField()
 
     class Meta:
         model = NewLicenseApplication
@@ -691,6 +693,27 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
         if stage_id in (166, 180) or ('reject' in stage_lower and ('no action' in stage_lower or 'payment' in stage_lower or 'objection' in stage_lower)):
             return True
         return False
+
+    def get_dms_documents(self, obj):
+        try:
+            docs = NewLicenseDMSDocument.objects.filter(application=obj)
+            return [
+                {
+                    "document_field": doc.document_field,
+                    "dms_reference": doc.dms_reference,
+                    "original_filename": doc.original_filename,
+                    "file_size": doc.file_size,
+                    "mime_type": doc.mime_type,
+                    "storage_type": doc.storage_type,
+                    "dms_registration_no": doc.dms_registration_no,
+                    "transaction_signature": doc.transaction_signature,
+                    "uploaded_at": doc.created_at.isoformat() if doc.created_at else None,
+                    "download_url": f"/transactional/new_license_application/{obj.application_id}/document/{doc.document_field}/"
+                }
+                for doc in docs
+            ]
+        except Exception:
+            return []
 
     def to_representation(self, instance):
         rep = super().to_representation(instance)

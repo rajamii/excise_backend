@@ -320,3 +320,15 @@ OTP_EXPOSE_IN_RESPONSE = os.getenv('OTP_EXPOSE_IN_RESPONSE', 'false').strip().lo
 ALLOW_DEFAULT_OTP = os.getenv('ALLOW_DEFAULT_OTP', 'true' if DEBUG else 'false').strip().lower() == 'true'
 DEFAULT_OTP_VALUE = os.getenv('DEFAULT_OTP_VALUE', '1212')
 
+# DMS / MongoDB GridFS Document Storage Settings
+MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/').strip()
+MONGO_DB_NAME = os.getenv('MONGO_DB_NAME', 'excise_dms').strip()
+DMS_BASE_URL = os.getenv('DMS_BASE_URL', 'http://127.0.0.1:8000/api/documents').rstrip('/')
+DMS_FILESERVER_URL = os.getenv('DMS_FILESERVER_URL', 'http://192.168.56.62:3543/DocumentManagementSystem/service').rstrip('/')
+DMS_REGISTRATION_NO = os.getenv('DMS_REGISTRATION_NO', 'DMS20260006')
+DMS_AES_KEY = os.getenv('DMS_AES_KEY', 'SmpYMm44VVM0VHVld0t3OTl3Q1JlRHQxbXMzeTFWank=').strip()
+DMS_AES_KEY_PATH = os.getenv('DMS_AES_KEY_PATH', str(BASE_DIR / 'keys' / f'{DMS_REGISTRATION_NO}.key')).strip()
+DMS_TIMEOUT_SECONDS = int(os.getenv('DMS_TIMEOUT_SECONDS', '10'))
+DMS_FALLBACK_LOCAL = os.getenv('DMS_FALLBACK_LOCAL', 'true').strip().lower() in ('1', 'true', 'yes')
+
+
