@@ -1,22 +1,148 @@
 import json
+import logging
+import io
+import re
 from datetime import date
+from pathlib import Path
+from urllib.parse import unquote
 
 from django.db import transaction
-from django.http import Http404
+from django.db.models import Q
+from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes, permission_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from auth.workflow.models import Workflow
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
 from models.transactional.dashboard_cache import dashboard_counts_cache
+from utils.dms_service import dms_client
+from utils.file_validation import validate_uploaded_file
 from .models import LabelRegistration, LabelRegistrationDocument
 from .serializers import LabelRegistrationSerializer
+
+logger = logging.getLogger(__name__)
+
+LABEL_REGISTRATION_DMS_FIELDS = [
+    'renewed_licence_copy',
+    'registered_partnership_deed',
+    'article_of_association',
+    'memorandum_of_association',
+    'trade_mark_registration',
+    'certificate_of_registration',
+    'cost_chart',
+    'undertaking',
+    'product_photo',
+]
+
+
+def _process_label_registration_dms_uploads(application, request_files, user=None, upload_details=None):
+    """
+    Uploads all label registration documents to MongoDB GridFS / DMS,
+    signs them with AES-256 / HMAC-SHA256, and tracks them in DMSDocumentLabel (dms_document_label).
+    """
+    user_identifier = getattr(user, 'username', str(getattr(user, 'id', 'system')))
+    mobile_number = ""
+    lic_details = getattr(application, 'licensee_details', {}) or {}
+    if isinstance(lic_details, dict):
+        mobile_number = str(lic_details.get('mobileNumber') or lic_details.get('mobile_number') or '')
+
+    alias_map = {
+        'renewedLicenceCopy': 'renewed_licence_copy',
+        'registeredPartnershipDeed': 'registered_partnership_deed',
+        'articleOfAssociation': 'article_of_association',
+        'memorandumOfAssociation': 'memorandum_of_association',
+        'tradeMarkRegistration': 'trade_mark_registration',
+        'certificateOfRegistration': 'certificate_of_registration',
+        'costChart': 'cost_chart',
+        'undertaking': 'undertaking',
+        'productPhoto': 'product_photo',
+    }
+
+    processed_fields = set()
+
+    for raw_key, file_obj in request_files.items():
+        if not file_obj or not getattr(file_obj, 'size', 0):
+            continue
+        canonical_field = alias_map.get(raw_key, raw_key)
+        processed_fields.add(canonical_field)
+        try:
+            validate_uploaded_file(file_obj, max_size_bytes=10 * 1024 * 1024, field_label=canonical_field)
+            doc_title = _document_name(upload_details, canonical_field) if upload_details else getattr(file_obj, 'name', canonical_field)
+            upload_result = dms_client.upload_document(
+                file_obj=file_obj,
+                document_field=canonical_field,
+                application_id=str(application.application_id),
+                user_id=user_identifier,
+                mobile=mobile_number,
+                doc_type_name=doc_title
+            )
+
+            if upload_result.get('success'):
+                dms_client.record_document(
+                    application_type='label_registration',
+                    application_id=str(application.application_id),
+                    document_field=canonical_field,
+                    upload_result=upload_result,
+                    original_filename=getattr(file_obj, 'name', ''),
+                    file_size=getattr(file_obj, 'size', 0),
+                    mime_type=upload_result.get('mime_type', '')
+                )
+                logger.info("DMS Upload: %s (%s) saved to MongoDB GridFS %s in dms_document_label",
+                            canonical_field, application.application_id, upload_result.get('dms_reference'))
+            else:
+                logger.warning("DMS upload failed for %s: %s", canonical_field, upload_result.get('error'))
+        except Exception as exc:
+            logger.error("Error processing DMS upload for %s on label application %s: %s",
+                         canonical_field, application.application_id, exc)
+
+    for target_field in LABEL_REGISTRATION_DMS_FIELDS:
+        if target_field in processed_fields:
+            continue
+        file_obj = request_files.get(target_field)
+        if not file_obj:
+            for camel, snake in alias_map.items():
+                if snake == target_field:
+                    file_obj = request_files.get(camel)
+                    if file_obj:
+                        break
+        if not file_obj or not getattr(file_obj, 'size', 0):
+            continue
+
+        try:
+            validate_uploaded_file(file_obj, max_size_bytes=10 * 1024 * 1024, field_label=target_field)
+            doc_title = _document_name(upload_details, target_field) if upload_details else getattr(file_obj, 'name', target_field)
+            upload_result = dms_client.upload_document(
+                file_obj=file_obj,
+                document_field=target_field,
+                application_id=str(application.application_id),
+                user_id=user_identifier,
+                mobile=mobile_number,
+                doc_type_name=doc_title
+            )
+
+            if upload_result.get('success'):
+                dms_client.record_document(
+                    application_type='label_registration',
+                    application_id=str(application.application_id),
+                    document_field=target_field,
+                    upload_result=upload_result,
+                    original_filename=getattr(file_obj, 'name', ''),
+                    file_size=getattr(file_obj, 'size', 0),
+                    mime_type=upload_result.get('mime_type', '')
+                )
+                logger.info("DMS Upload: %s (%s) saved to MongoDB GridFS %s in dms_document_label",
+                            target_field, application.application_id, upload_result.get('dms_reference'))
+            else:
+                logger.warning("DMS upload failed for %s: %s", target_field, upload_result.get('error'))
+        except Exception as exc:
+            logger.error("Error processing DMS upload for %s on label application %s: %s",
+                         target_field, application.application_id, exc)
 
 
 STAGE_APPLICANT_APPLIED = 'applicant_applied'
@@ -220,6 +346,12 @@ def apply_label_registration(request):
                 user=request.user,
                 remarks='Label registration application submitted',
             )
+
+            # Process DMS uploads to MongoDB GridFS & record into dms_document_label
+            try:
+                _process_label_registration_dms_uploads(application, request.FILES, user=request.user, upload_details=upload_details)
+            except Exception as dms_err:
+                logger.warning("DMS upload failed during label registration creation: %s", dms_err)
     except Http404 as exc:
         return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as exc:
@@ -321,3 +453,75 @@ def application_group(request):
         'approved': _serialize(base_qs.filter(current_stage__name=STAGE_APPROVED)),
         'rejected': _serialize(base_qs.filter(current_stage__name=STAGE_REJECTED)),
     })
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def download_label_document(request, application_id, document_field):
+    """
+    Downloads or streams an uploaded label registration document by field name.
+    Retrieves from MongoDB GridFS or local storage.
+    """
+    clean_app_id = unquote(application_id).strip().rstrip('/')
+    clean_field = str(document_field).strip().lower()
+
+    app = LabelRegistration.objects.filter(
+        Q(application_id=clean_app_id) |
+        Q(application_id=unquote(clean_app_id)) |
+        Q(application_id=clean_app_id.replace('/', '_'))
+    ).first()
+
+    if not app:
+        raise Http404(f"Label registration application '{clean_app_id}' not found.")
+
+    from models.transactional.dms_documents.models import DMSDocumentLabel
+    raw_field = str(document_field).strip()
+    candidates = [
+        raw_field,
+        clean_field,
+        clean_field.replace('_', ''),
+        re.sub(r'(?<!^)(?=[A-Z])', '_', raw_field).lower(),
+        re.sub(r'_([a-z])', lambda m: m.group(1).upper(), clean_field)
+    ]
+
+    doc_record = DMSDocumentLabel.objects.filter(
+        application_id=app.application_id,
+        document_field__in=candidates
+    ).first()
+
+    if not doc_record:
+        # Fallback to LabelRegistrationDocument if exists
+        lbl_doc = LabelRegistrationDocument.objects.filter(
+            application=app,
+            document_key__in=candidates
+        ).first()
+        if lbl_doc and lbl_doc.file and hasattr(lbl_doc.file, 'path') and Path(lbl_doc.file.path).is_file():
+            import mimetypes
+            guessed_mime = mimetypes.guess_type(lbl_doc.file.name)[0] or 'application/octet-stream'
+            return FileResponse(open(lbl_doc.file.path, 'rb'), content_type=guessed_mime, filename=Path(lbl_doc.file.name).name)
+        raise Http404(f"Document '{clean_field}' not found for application {clean_app_id}.")
+
+    content, filename, mime_type = dms_client.download_document(
+        doc_record.dms_reference,
+        doc_record.storage_type,
+        app.application_id
+    )
+
+    if not content:
+        raise Http404(f"Could not retrieve document bytes for '{clean_field}'.")
+
+    ext = Path(doc_record.original_filename or filename).suffix
+    if not ext:
+        if 'pdf' in (mime_type or ''):
+            ext = '.pdf'
+        elif 'png' in (mime_type or ''):
+            ext = '.png'
+        elif 'jpeg' in (mime_type or '') or 'jpg' in (mime_type or ''):
+            ext = '.jpg'
+        else:
+            ext = '.bin'
+    safe_filename = f"{clean_field}{ext}"
+
+    response = FileResponse(io.BytesIO(content), content_type=mime_type or 'application/octet-stream')
+    response['Content-Disposition'] = f'inline; filename="{safe_filename}"'
+    return response

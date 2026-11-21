@@ -15,7 +15,9 @@ class EverythingConverter:
         return value
 
 
-register_converter(EverythingConverter, 'everything')
+from django.urls.converters import get_converters
+if 'everything' not in get_converters():
+    register_converter(EverythingConverter, 'everything')
 
 app_name = 'label_registration'
 
@@ -25,6 +27,8 @@ urlpatterns = [
     path('detail/<everything:application_id>/', views.label_registration_detail, name='detail'),
     path('dashboard-counts/', views.dashboard_counts, name='dashboard-counts'),
     path('list-by-status/', views.application_group, name='applications-by-status'),
+    path('<everything:application_id>/document/<str:document_field>/', views.download_label_document, name='download_label_document'),
+    path('document/<everything:application_id>/<str:document_field>/', views.download_label_document, name='download_label_document_alt'),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

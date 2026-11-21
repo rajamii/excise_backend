@@ -364,6 +364,13 @@ class DMSService:
                     document_field=str(document_field),
                     defaults=defaults
                 )
+            elif app_type in ('label_registration', 'label', 'label_application'):
+                from models.transactional.dms_documents.models import DMSDocumentLabel
+                doc, _ = DMSDocumentLabel.objects.update_or_create(
+                    application_id=str(application_id),
+                    document_field=str(document_field),
+                    defaults=defaults
+                )
             else:
                 from models.transactional.dms_documents.models import DMSUploadedDocument
                 doc, _ = DMSUploadedDocument.objects.update_or_create(
