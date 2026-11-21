@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import NewLicenseApplication, Transaction, Objection, NewLicenseDMSDocument
+from .models import NewLicenseApplication, Transaction, Objection
 from auth.user.models import CustomUser
 from auth.roles.models import Role
 from auth.workflow.serializers import WorkflowTransactionSerializer, WorkflowObjectionSerializer
@@ -696,7 +696,8 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
 
     def get_dms_documents(self, obj):
         try:
-            docs = NewLicenseDMSDocument.objects.filter(application=obj)
+            from models.transactional.dms_documents.models import DMSUploadedDocument
+            docs = list(DMSUploadedDocument.objects.filter(application_id=obj.application_id))
             return [
                 {
                     "document_field": doc.document_field,

@@ -13,12 +13,99 @@ from auth.workflow.models import Workflow, WorkflowStage
 from auth.workflow.permissions import HasStagePermission
 from auth.workflow.services import WorkflowService
 from auth.workflow.models import Transaction as WorkflowTransaction
-from django.db.models import OuterRef, Exists
+from django.db.models import OuterRef, Exists, Q
 from django.contrib.contenttypes.models import ContentType
+from django.http import FileResponse, Http404
+from rest_framework.permissions import AllowAny
 from models.transactional.dashboard_cache import dashboard_counts_cache
+from urllib.parse import unquote
+from pathlib import Path
+import io
+import logging
+from utils.dms_service import dms_client
+from utils.file_validation import validate_uploaded_file
 
 from .models import CompanyCollaboration
 from .serializers import CompanyCollaborationSerializer
+
+logger = logging.getLogger(__name__)
+
+
+def _process_company_collaboration_dms_uploads(application, request_files, user=None, reg_app=None):
+    """
+    Uploads all company collaboration documents to MongoDB GridFS / DMS,
+    signs them with AES-256 / HMAC-SHA256, and tracks them in DMSDocumentCompany (dms_document_company).
+    """
+    target_fields = [
+        'excise_license',
+        'deed_of_partnership',
+        'memorandum_of_association',
+        'undertaking',
+    ]
+    user_identifier = getattr(user, 'username', str(getattr(user, 'id', 'system')))
+    mobile_number = str(getattr(application, 'brand_owner_mobile', '') or '')
+
+    for field_name in target_fields:
+        file_obj = request_files.get(field_name)
+        if not file_obj:
+            camel_map = {
+                'excise_license': 'exciseLicense',
+                'deed_of_partnership': 'deedOfPartnership',
+                'memorandum_of_association': 'memorandumOfAssociation',
+                'undertaking': 'undertaking',
+            }
+            camel_key = camel_map.get(field_name)
+            if camel_key:
+                file_obj = request_files.get(camel_key)
+
+        if not file_obj:
+            file_obj = getattr(application, field_name, None)
+
+        if not file_obj or not getattr(file_obj, 'size', 0):
+            continue
+
+        try:
+            validate_uploaded_file(file_obj, max_size_bytes=10 * 1024 * 1024, field_label=field_name)
+
+            upload_result = dms_client.upload_document(
+                file_obj=file_obj,
+                document_field=field_name,
+                application_id=str(application.application_id),
+                user_id=user_identifier,
+                mobile=mobile_number,
+                doc_type_name=getattr(file_obj, 'name', field_name)
+            )
+
+            if upload_result.get('success'):
+                # 1. Record for Company Collaboration (dms_document_company)
+                dms_client.record_document(
+                    application_type='company_collaboration',
+                    application_id=str(application.application_id),
+                    document_field=field_name,
+                    upload_result=upload_result,
+                    original_filename=getattr(file_obj, 'name', ''),
+                    file_size=getattr(file_obj, 'size', 0),
+                    mime_type=upload_result.get('mime_type', '')
+                )
+                logger.info("DMS Upload: %s (%s) saved to MongoDB GridFS %s in dms_document_company",
+                            field_name, application.application_id, upload_result.get('dms_reference'))
+
+                # 2. Also record for linked Company Registration if present
+                if reg_app:
+                    dms_client.record_document(
+                        application_type='company_registration',
+                        application_id=str(reg_app.application_id),
+                        document_field=field_name,
+                        upload_result=upload_result,
+                        original_filename=getattr(file_obj, 'name', ''),
+                        file_size=getattr(file_obj, 'size', 0),
+                        mime_type=upload_result.get('mime_type', '')
+                    )
+            else:
+                logger.warning("DMS upload reported failure for %s: %s", field_name, upload_result.get('error'))
+        except Exception as exc:
+            logger.error("Error processing DMS upload for %s on company collaboration application %s: %s",
+                         field_name, application.application_id, exc)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -367,7 +454,13 @@ def _create_application(request) -> Response:
             
         except Exception as e:
             print("Error creating auto company registration:", e)
-            raise e
+            reg_app = None
+
+        # Process DMS Document Uploads to MongoDB GridFS & apply DMS20260006 signing
+        try:
+            _process_company_collaboration_dms_uploads(application, request.FILES, user=request.user, reg_app=reg_app)
+        except Exception as dms_err:
+            logger.warning("DMS upload failed during company collaboration creation: %s", dms_err)
 
     fresh = CompanyCollaboration.objects.get(pk=application.pk)
     return Response(CompanyCollaborationSerializer(fresh).data, status=status.HTTP_201_CREATED)
@@ -1157,4 +1250,74 @@ def _make_collab_qr_data_url(payload: str) -> str:
     buf = BytesIO()
     img.save(buf, format='PNG')
     return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def download_collaboration_document(request, application_id, document_field):
+    """
+    Downloads or streams an uploaded company collaboration document by field name.
+    Retrieves from MongoDB GridFS or local storage.
+    """
+    clean_app_id = unquote(application_id).strip().rstrip('/')
+    clean_field = str(document_field).strip().lower()
+
+    app = CompanyCollaboration.objects.filter(
+        Q(application_id=clean_app_id) |
+        Q(application_id=unquote(clean_app_id)) |
+        Q(application_id=clean_app_id.replace('/', '_'))
+    ).first()
+
+    if not app:
+        raise Http404(f"Company collaboration application '{clean_app_id}' not found.")
+
+    from models.transactional.dms_documents.models import DMSDocumentCompany
+    candidates = [clean_field]
+    if 'license' in clean_field:
+        candidates.extend(['excise_license', 'exciselicense'])
+    elif 'partner' in clean_field or 'deed' in clean_field:
+        candidates.extend(['deed_of_partnership', 'deedofpartnership'])
+    elif 'memorandum' in clean_field or 'moa' in clean_field:
+        candidates.extend(['memorandum_of_association', 'memorandumofassociation'])
+    elif 'undertaking' in clean_field:
+        candidates.append('undertaking')
+
+    doc_record = DMSDocumentCompany.objects.filter(
+        application_id=app.application_id,
+        document_field__in=candidates
+    ).first()
+
+    if not doc_record:
+        # Fallback to direct model field (e.g. undertaking)
+        model_file = getattr(app, clean_field, None)
+        if model_file and hasattr(model_file, 'path') and Path(model_file.path).is_file():
+            import mimetypes
+            guessed_mime = mimetypes.guess_type(model_file.name)[0] or 'application/octet-stream'
+            return FileResponse(open(model_file.path, 'rb'), content_type=guessed_mime, filename=Path(model_file.name).name)
+        raise Http404(f"Document '{clean_field}' not found for application {clean_app_id}.")
+
+    content, filename, mime_type = dms_client.download_document(
+        doc_record.dms_reference,
+        doc_record.storage_type,
+        app.application_id
+    )
+
+    if not content:
+        raise Http404(f"Could not retrieve document bytes for '{clean_field}'.")
+
+    ext = Path(doc_record.original_filename or filename).suffix
+    if not ext:
+        if 'pdf' in (mime_type or ''):
+            ext = '.pdf'
+        elif 'png' in (mime_type or ''):
+            ext = '.png'
+        elif 'jpeg' in (mime_type or '') or 'jpg' in (mime_type or ''):
+            ext = '.jpg'
+        else:
+            ext = '.bin'
+    safe_filename = f"{clean_field}{ext}"
+
+    response = FileResponse(io.BytesIO(content), content_type=mime_type or 'application/octet-stream')
+    response['Content-Disposition'] = f'inline; filename="{safe_filename}"'
+    return response
 

@@ -70,6 +70,7 @@ INSTALLED_APPS = [
 
     # transcational models
     'models.transactional',
+    'models.transactional.dms_documents',
     'models.transactional.company_registration',
     'models.transactional.company_collaboration',
     'models.transactional.license_renewal_application',

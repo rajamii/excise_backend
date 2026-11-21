@@ -27,6 +27,8 @@ urlpatterns = [
     path('dashboard-counts/', views.dashboard_counts, name='sb-dashboard-counts'),
     path('list-by-status/', views.application_group, name='applications-by-status'),
     path('<everything:application_id>/pay-license-fee/', views.pay_registration_fee_wallet, name='pay-registration-fee-wallet'),
+    path('<everything:application_id>/document/<str:document_field>/', views.download_salesman_barman_document, name='download_salesman_barman_document'),
+    path('document/<everything:application_id>/<str:document_field>/', views.download_salesman_barman_document, name='download_salesman_barman_document_alt'),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

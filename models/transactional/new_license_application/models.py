@@ -345,35 +345,3 @@ class NewLicenseApplication(models.Model):
             models.Index(fields=['applicant']),
         ]
 
-
-class NewLicenseDMSDocument(models.Model):
-    """
-    Tracks documents uploaded to DMS (MongoDB GridFS / FileServerApp)
-    for New License Applications.
-    """
-    application = models.ForeignKey(
-        NewLicenseApplication,
-        on_delete=models.CASCADE,
-        related_name='dms_documents'
-    )
-    document_field = models.CharField(max_length=50)  # e.g. pass_photo, pan_card, sikkim_certificate, dob_proof, parcha, noc, trade_license
-    dms_reference = models.CharField(max_length=255, blank=True, null=True)
-    dms_arn = models.CharField(max_length=255, blank=True, null=True)
-    original_filename = models.CharField(max_length=255)
-    file_size = models.BigIntegerField(default=0)
-    mime_type = models.CharField(max_length=100, blank=True, null=True)
-    storage_type = models.CharField(max_length=50, default='DMS_MONGODB')  # 'DMS_MONGODB' or 'LOCAL_FALLBACK'
-    dms_registration_no = models.CharField(max_length=50, default='DMS20260006', blank=True, null=True)
-    transaction_signature = models.TextField(blank=True, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = 'new_license_dms_document'
-        indexes = [
-            models.Index(fields=['application', 'document_field']),
-        ]
-
-    def __str__(self):
-        return f"{self.application_id} - {self.document_field} ({self.storage_type})"
-

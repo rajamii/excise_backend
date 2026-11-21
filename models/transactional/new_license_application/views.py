@@ -16,7 +16,7 @@ from auth.workflow.services import WorkflowService
 from auth.workflow.models import Workflow
 from auth.workflow.models import Transaction as WorkflowTransaction
 from auth.workflow.constants import WORKFLOW_IDS
-from .models import NewLicenseApplication, NewLicenseDMSDocument
+from .models import NewLicenseApplication
 from utils.dms_service import dms_client
 from utils.file_validation import validate_uploaded_file
 from models.masters.license.models import License, LicenseValidationToken
@@ -265,7 +265,7 @@ def _create_salesman_barman_record(application, user):
 def _process_dms_uploads(application, request_files, user):
     """
     Forwards applicant details & site details uploaded documents to DMS (MongoDB GridFS / FileServerApp)
-    and saves tracking references in NewLicenseDMSDocument.
+    and saves tracking references in DMSUploadedDocument.
     """
     target_fields = [
         'pass_photo',
@@ -300,32 +300,17 @@ def _process_dms_uploads(application, request_files, user):
             )
 
             if upload_result.get('success'):
-                sig = upload_result.get('signature') or ''
-                reg_no = upload_result.get('details', {}).get('dms_registration_no', 'DMS20260006')
-                NewLicenseDMSDocument.objects.update_or_create(
-                    application=application,
+                # Save into unified dms_uploaded_document table
+                dms_client.record_document(
+                    application_type='new_license',
+                    application_id=str(application.application_id),
                     document_field=field_name,
-                    defaults={
-                        'dms_reference': upload_result.get('dms_reference'),
-                        'dms_arn': upload_result.get('dms_arn') or str(application.application_id),
-                        'original_filename': upload_result.get('original_filename', getattr(file_obj, 'name', '')),
-                        'file_size': upload_result.get('file_size', getattr(file_obj, 'size', 0)),
-                        'mime_type': upload_result.get('mime_type', ''),
-                        'storage_type': upload_result.get('storage_type', 'DMS_MONGODB'),
-                        'dms_registration_no': reg_no,
-                        'transaction_signature': sig,
-                    }
+                    upload_result=upload_result,
+                    original_filename=getattr(file_obj, 'name', ''),
+                    file_size=getattr(file_obj, 'size', 0),
+                    mime_type=upload_result.get('mime_type', '')
                 )
-                print(f"\n=======================================================")
-                print(f"[DMS UPLOAD SIGNED]")
-                print(f"  Field: {field_name}")
-                print(f"  File: {upload_result.get('original_filename')}")
-                print(f"  ARN: {application.application_id}")
-                print(f"  DMS Registration No: {reg_no}")
-                print(f"  transactionSignature: {sig}")
-                print(f"  MongoDB GridFS ID: {upload_result.get('dms_reference')}")
-                print(f"=======================================================\n")
-                logger.info("Successfully tracked DMS upload for %s on application %s", field_name, application.application_id)
+                logger.info("DMS Upload: %s (%s) saved to MongoDB GridFS %s", field_name, application.application_id, upload_result.get('dms_reference'))
             else:
                 logger.warning("DMS upload reported failure for %s: %s", field_name, upload_result.get('error'))
         except Exception as exc:
@@ -2878,7 +2863,9 @@ def download_new_license_dms_document(request, application_id, document_field):
     app = get_object_or_404(NewLicenseApplication, application_id__iexact=str(application_id).strip())
     field = str(document_field).strip()
 
-    doc_record = NewLicenseDMSDocument.objects.filter(application=app, document_field=field).first()
+    from models.transactional.dms_documents.models import DMSUploadedDocument
+    doc_record = DMSUploadedDocument.objects.filter(application_id=app.application_id, document_field=field).first()
+
     content = None
     filename = ""
     mime_type = ""

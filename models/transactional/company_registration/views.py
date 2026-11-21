@@ -14,6 +14,14 @@ from auth.workflow.models import Workflow, StagePermission, WorkflowStage
 from auth.workflow.services import WorkflowService
 from models.transactional.helpers import _get_stage_sets, _normalize_role, _get_role_stage_names, _collect_reachable_stage_names
 from models.transactional.dashboard_cache import dashboard_counts_cache, invalidate_dashboard_counts_cache
+import io
+import logging
+from pathlib import Path
+from urllib.parse import unquote
+from django.http import FileResponse, Http404
+from rest_framework.permissions import AllowAny
+from utils.dms_service import dms_client
+from utils.file_validation import validate_uploaded_file
 from .models import CompanyRegistration
 from .serializers import CompanyRegistrationSerializer
 from rest_framework.permissions import IsAuthenticated
@@ -23,6 +31,59 @@ from models.transactional.wallet.wallet_service import debit_wallet_balance
 from models.transactional.wallet.wallet_initializer import _resolve_hoa_code
 from models.transactional.payment_gateway.models import MasterPaymentModule
 
+logger = logging.getLogger(__name__)
+
+
+def _process_company_registration_dms_uploads(application, request_files, user=None):
+    """
+    Uploads all company registration documents to MongoDB GridFS / DMS,
+    signs them with AES-256 / HMAC-SHA256, and tracks them in DMSUploadedDocument.
+    """
+    target_fields = [
+        'excise_license',
+        'deed_of_partnership',
+        'memorandum_of_association',
+        'undertaking',
+    ]
+    user_identifier = getattr(user, 'username', str(getattr(user, 'id', 'system')))
+    mobile_number = str(getattr(application, 'company_mobile_number', '') or getattr(application, 'member_mobile_number', ''))
+
+    for field_name in target_fields:
+        file_obj = request_files.get(field_name)
+        if not file_obj:
+            file_obj = getattr(application, field_name, None)
+
+        if not file_obj or not getattr(file_obj, 'size', 0):
+            continue
+
+        try:
+            validate_uploaded_file(file_obj, max_size_bytes=10 * 1024 * 1024, field_label=field_name)
+
+            upload_result = dms_client.upload_document(
+                file_obj=file_obj,
+                document_field=field_name,
+                application_id=str(application.application_id),
+                user_id=user_identifier,
+                mobile=mobile_number,
+                doc_type_name=getattr(file_obj, 'name', field_name)
+            )
+
+            if upload_result.get('success'):
+                # Save into unified dms_uploaded_document table
+                dms_client.record_document(
+                    application_type='company_registration',
+                    application_id=str(application.application_id),
+                    document_field=field_name,
+                    upload_result=upload_result,
+                    original_filename=getattr(file_obj, 'name', ''),
+                    file_size=getattr(file_obj, 'size', 0),
+                    mime_type=upload_result.get('mime_type', '')
+                )
+                logger.info("DMS Upload: %s (%s) saved to MongoDB GridFS %s", field_name, application.application_id, upload_result.get('dms_reference'))
+            else:
+                logger.warning("DMS upload reported failure for %s: %s", field_name, upload_result.get('error'))
+        except Exception as exc:
+            logger.error("Error processing DMS upload for %s on company application %s: %s", field_name, application.application_id, exc)
 
 
 def _create_application(request, workflow_name: str, serializer_cls):
@@ -60,6 +121,12 @@ def _create_application(request, workflow_name: str, serializer_cls):
             application_id=new_application_id,
             applicant=request.user
         )
+
+        # Process DMS Document Uploads to MongoDB GridFS & apply DMS20260006 signing
+        try:
+            _process_company_registration_dms_uploads(application, request.FILES, user=request.user)
+        except Exception as dms_err:
+            logger.warning("DMS upload failed during company registration creation: %s", dms_err)
 
         
         # 3. Who receives the first task?
@@ -620,5 +687,63 @@ def _make_qr_data_url(payload: str) -> str:
     buf = BytesIO()
     img.save(buf, format="PNG")
     return f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def download_company_registration_dms_document(request, application_id, document_field):
+    """
+    Streams a Company Registration document stored in MongoDB GridFS or local fallback.
+    Returns HTTP 200 with inline Content-Disposition so browsers view PDF/images directly.
+    """
+    clean_app_id = unquote(application_id).strip().rstrip('/')
+    clean_field = str(document_field).strip().lower()
+
+    app = CompanyRegistration.objects.filter(
+        Q(application_id=clean_app_id) |
+        Q(application_id=unquote(clean_app_id)) |
+        Q(application_id=clean_app_id.replace('/', '_'))
+    ).first()
+
+    if not app:
+        raise Http404(f"Company registration application '{clean_app_id}' not found.")
+
+    from models.transactional.dms_documents.models import DMSDocumentCompany
+    doc_record = DMSDocumentCompany.objects.filter(application_id=app.application_id, document_field=clean_field).first()
+
+    if not doc_record:
+        # Fallback to direct model field if present
+        model_file = getattr(app, clean_field, None)
+        if model_file and hasattr(model_file, 'path') and Path(model_file.path).is_file():
+            import mimetypes
+            guessed_mime = mimetypes.guess_type(model_file.name)[0] or 'application/octet-stream'
+            return FileResponse(open(model_file.path, 'rb'), content_type=guessed_mime, filename=Path(model_file.name).name)
+        raise Http404(f"Document '{clean_field}' not found for application {clean_app_id}.")
+
+    content, filename, mime_type = dms_client.download_document(
+        doc_record.dms_reference,
+        doc_record.storage_type,
+        app.application_id
+    )
+
+    if not content:
+        raise Http404(f"Could not retrieve document bytes for '{clean_field}'.")
+
+    # Determine safe filename with proper extension
+    ext = Path(doc_record.original_filename or filename).suffix
+    if not ext:
+        if 'pdf' in (mime_type or ''):
+            ext = '.pdf'
+        elif 'png' in (mime_type or ''):
+            ext = '.png'
+        elif 'jpeg' in (mime_type or '') or 'jpg' in (mime_type or ''):
+            ext = '.jpg'
+        else:
+            ext = '.bin'
+    safe_filename = f"{clean_field}{ext}"
+
+    response = FileResponse(io.BytesIO(content), content_type=mime_type or 'application/octet-stream')
+    response['Content-Disposition'] = f'inline; filename="{safe_filename}"'
+    return response
 
 

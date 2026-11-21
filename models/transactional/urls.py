@@ -4,6 +4,7 @@ from django.urls import path, include
 urlpatterns = [
     path('validate/', include(('models.transactional.public_validation.urls', 'public_validation'), namespace='public_validation')),
     path('logs/', include(('models.transactional.logs.urls', 'logs'), namespace='logs')),
+    path('dms/', include(('models.transactional.dms_documents.urls', 'dms_documents'), namespace='dms_documents')),
     path('company-registration/', include(('models.transactional.company_registration.urls', 'company_registration'), namespace='company_registration')),
     path('company-collaboration/', include(('models.transactional.company_collaboration.urls', 'company_collaboration'), namespace='company_collaboration')),
     path('license_renewal_application/', include(('models.transactional.license_renewal_application.urls', 'license_renewal_application'), namespace='license_renewal_application')),
@@ -11,6 +12,7 @@ urlpatterns = [
     path('distributor-permit/', include(('models.transactional.distributor_permit.urls', 'distributor_permit'), namespace='distributor_permit')),
     path('distributor_permit/', include(('models.transactional.distributor_permit.urls', 'distributor_permit_alt'), namespace='distributor_permit_alt')),
     path('salesman_barman/', include(('models.transactional.salesman_barman.urls', 'salesman_barman'), namespace='salesman_barman')),
+    path('salesman-barman/', include(('models.transactional.salesman_barman.urls', 'salesman_barman_hyphen'), namespace='salesman_barman_hyphen')),
     path('payment/', include(('models.transactional.wallet.urls', 'payment'), namespace='payment')),
     path('payment-gateway/', include(('models.transactional.payment_gateway.urls', 'payment_gateway'), namespace='payment_gateway')),
     path('label-registration/', include(('models.transactional.label_registration.urls', 'label_registration'), namespace='label_registration')),

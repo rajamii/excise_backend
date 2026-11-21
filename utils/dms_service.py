@@ -45,8 +45,11 @@ class DMSService:
         self.mongo_db_name = getattr(settings, "MONGO_DB_NAME", os.getenv("MONGO_DB_NAME", "excise_dms")).strip()
         self.dms_base_url = getattr(settings, "DMS_BASE_URL", os.getenv("DMS_BASE_URL", "http://127.0.0.1:8000/api/documents")).rstrip("/")
         self.fileserver_url = getattr(settings, "DMS_FILESERVER_URL", os.getenv("DMS_FILESERVER_URL", "http://192.168.56.62:3543/DocumentManagementSystem/service")).rstrip("/")
-        self.timeout = int(getattr(settings, "DMS_TIMEOUT_SECONDS", os.getenv("DMS_TIMEOUT_SECONDS", "10")))
-        self.allow_local_fallback = getattr(settings, "DMS_FALLBACK_LOCAL", os.getenv("DMS_FALLBACK_LOCAL", "true").strip().lower() in ("1", "true", "yes"))
+        submit_val = getattr(settings, "DMS_TEMP_UPLOAD_SUBMIT_ENABLED", os.getenv("DMS_TEMP_UPLOAD_SUBMIT_ENABLED", False))
+        self.submit_to_fileserver_enabled = submit_val if isinstance(submit_val, bool) else str(submit_val).strip().lower() in ("1", "true", "yes", "on")
+        self.timeout = int(getattr(settings, "DMS_TIMEOUT_SECONDS", os.getenv("DMS_TIMEOUT_SECONDS", "3")))
+        fallback_val = getattr(settings, "DMS_FALLBACK_LOCAL", os.getenv("DMS_FALLBACK_LOCAL", True))
+        self.allow_local_fallback = fallback_val if isinstance(fallback_val, bool) else str(fallback_val).strip().lower() in ("1", "true", "yes")
         self.registration_no = getattr(settings, "DMS_REGISTRATION_NO", os.getenv("DMS_REGISTRATION_NO", "DMS20260006")).strip()
 
         self._mongo_client = None
@@ -66,17 +69,19 @@ class DMSService:
 
     def _get_gridfs(self):
         if not HAS_PYMONGO:
+            print("[DMS WARNING] pymongo is not installed in the active Python environment! Run: pip install pymongo")
+            logger.warning("pymongo is not installed in the active Python environment.")
             return None
         if self._grid_fs is not None:
             return self._grid_fs
         try:
-            self._mongo_client = MongoClient(self.mongo_uri, serverSelectionTimeoutMS=2000)
+            self._mongo_client = MongoClient(self.mongo_uri, serverSelectionTimeoutMS=1000)
             self._mongo_client.admin.command('ping')
             db = self._mongo_client[self.mongo_db_name]
             self._grid_fs = gridfs.GridFS(db)
-            logger.info("Connected to MongoDB GridFS at %s, db: %s", self.mongo_uri, self.mongo_db_name)
             return self._grid_fs
         except Exception as exc:
+            print(f"[DMS WARNING] MongoDB connection failed: {exc}")
             logger.warning("MongoDB connection failed or unavailable (%s)", exc)
             return None
 
@@ -233,10 +238,10 @@ class DMSService:
                     }
                 }
             except Exception as exc:
-                logger.warning("MongoDB GridFS upload failed (%s). Trying DMS HTTP API...", exc)
+                logger.warning("MongoDB GridFS upload failed (%s).", exc)
 
-        # 2. Try Government FileServerApp or local DMS HTTP endpoint
-        if encrypted_data and signature:
+        # 2. Try Government FileServerApp ONLY IF explicitly enabled
+        if self.submit_to_fileserver_enabled and encrypted_data and signature:
             fs_result = self.submit_to_fileserver(encrypted_data, signature, "onChangeFileSubmit")
             if fs_result.get("success"):
                 return {
@@ -251,40 +256,6 @@ class DMSService:
                     "signature": signature,
                     "details": fs_result.get("response", {})
                 }
-
-        endpoint_url = f"{self.dms_base_url}/upload/"
-        payload_data = {
-            "fileNo": document_field,
-            "applnno": application_id,
-            "userId": clean_user_id,
-        }
-        files = {
-            "file": (filename, file_bytes, mime)
-        }
-
-        try:
-            response = requests.post(
-                endpoint_url,
-                data=payload_data,
-                files=files,
-                timeout=self.timeout
-            )
-            if response.status_code == 200:
-                resp_json = response.json()
-                return {
-                    "success": True,
-                    "storage_type": "DMS_MONGODB",
-                    "dms_reference": str(resp_json.get("documentId") or document_field),
-                    "dms_arn": application_id,
-                    "original_filename": filename,
-                    "file_size": len(file_bytes),
-                    "mime_type": mime,
-                    "is_signed": bool(signature),
-                    "signature": signature,
-                    "details": resp_json
-                }
-        except Exception:
-            pass
 
         # 3. Local Fallback Mode
         logger.info("Using local fallback storage for %s (app: %s)", document_field, application_id)
@@ -352,6 +323,58 @@ class DMSService:
             except Exception:
                 pass
         return True
+
+    def record_document(
+        self,
+        application_type: str,
+        application_id: str,
+        document_field: str,
+        upload_result: dict,
+        original_filename: str = "",
+        file_size: int = 0,
+        mime_type: str = ""
+    ):
+        """
+        Saves or updates tracking record into:
+        - dms_document_company (if application_type == 'company_registration')
+        - dms_uploaded_document_new (for 'new_license', 'salesman_barman', etc.)
+        """
+        try:
+            reg_no = upload_result.get('details', {}).get('dms_registration_no', self.registration_no)
+            sig = upload_result.get('signature') or ''
+            app_type = str(application_type).strip().lower()
+
+            defaults = {
+                'application_type': str(application_type),
+                'dms_reference': upload_result.get('dms_reference'),
+                'dms_arn': upload_result.get('dms_arn') or str(application_id),
+                'original_filename': upload_result.get('original_filename') or original_filename,
+                'file_size': upload_result.get('file_size') or file_size,
+                'mime_type': upload_result.get('mime_type') or mime_type,
+                'storage_type': upload_result.get('storage_type', 'DMS_MONGODB'),
+                'dms_registration_no': reg_no,
+                'transaction_signature': sig,
+                'is_signed': bool(sig),
+            }
+
+            if app_type in ('company_registration', 'company_collaboration'):
+                from models.transactional.dms_documents.models import DMSDocumentCompany
+                doc, _ = DMSDocumentCompany.objects.update_or_create(
+                    application_id=str(application_id),
+                    document_field=str(document_field),
+                    defaults=defaults
+                )
+            else:
+                from models.transactional.dms_documents.models import DMSUploadedDocument
+                doc, _ = DMSUploadedDocument.objects.update_or_create(
+                    application_id=str(application_id),
+                    document_field=str(document_field),
+                    defaults=defaults
+                )
+            return doc
+        except Exception as exc:
+            logger.error("Failed to record document (%s, %s): %s", application_type, application_id, exc)
+            return None
 
 
 dms_client = DMSService()

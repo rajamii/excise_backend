@@ -22,6 +22,7 @@ class CompanyCollaborationSerializer(serializers.ModelSerializer):
     valid_up_to        = serializers.SerializerMethodField()
     issued_license_id  = serializers.SerializerMethodField()
     payment_details    = serializers.SerializerMethodField()
+    dms_documents      = serializers.SerializerMethodField()
 
     # ── Nested audit trails (read-only) ──────────────────────────────────
     transactions = WorkflowTransactionSerializer(many=True, read_only=True)
@@ -84,6 +85,7 @@ class CompanyCollaborationSerializer(serializers.ModelSerializer):
             'valid_up_to',
             'issued_license_id',
             'payment_details',
+            'dms_documents',
             # year
             'financial_year',
             'application_year',
@@ -229,3 +231,52 @@ class CompanyCollaborationSerializer(serializers.ModelSerializer):
                 'remarks': f'Company Collaboration fee paid for {obj.application_id}'
             }
         return None
+
+    def get_dms_documents(self, obj):
+        try:
+            from models.transactional.dms_documents.models import DMSDocumentCompany
+            docs = list(DMSDocumentCompany.objects.filter(application_id=obj.application_id))
+            return [
+                {
+                    "document_field": doc.document_field,
+                    "dms_reference": doc.dms_reference,
+                    "original_filename": doc.original_filename,
+                    "file_size": doc.file_size,
+                    "mime_type": doc.mime_type,
+                    "storage_type": doc.storage_type,
+                    "dms_registration_no": doc.dms_registration_no,
+                    "transaction_signature": doc.transaction_signature,
+                    "uploaded_at": doc.created_at.isoformat() if doc.created_at else None,
+                    "download_url": f"/transactional/company-collaboration/{obj.application_id}/document/{doc.document_field}/"
+                }
+                for doc in docs
+            ]
+        except Exception:
+            return []
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        try:
+            from models.transactional.dms_documents.models import DMSDocumentCompany
+            docs = list(DMSDocumentCompany.objects.filter(application_id=instance.application_id))
+            dms_map = {
+                d.document_field: f"/transactional/company-collaboration/{instance.application_id}/document/{d.document_field}/"
+                for d in docs
+            }
+            for field, dms_url in dms_map.items():
+                rep[field] = dms_url
+                if field == 'excise_license':
+                    rep['exciseLicense'] = dms_url
+                elif field == 'exciseLicense':
+                    rep['excise_license'] = dms_url
+                elif field == 'deed_of_partnership':
+                    rep['deedOfPartnership'] = dms_url
+                elif field == 'deedOfPartnership':
+                    rep['deed_of_partnership'] = dms_url
+                elif field == 'memorandum_of_association':
+                    rep['memorandumOfAssociation'] = dms_url
+                elif field == 'memorandumOfAssociation':
+                    rep['memorandum_of_association'] = dms_url
+        except Exception:
+            pass
+        return rep

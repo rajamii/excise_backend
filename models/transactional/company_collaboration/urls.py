@@ -40,6 +40,10 @@ urlpatterns = [
     # Final license / certificate (Form D-11)
     path('final-license/<everything:application_id>/', views.final_license_detail, name='final-license-detail'),
     path('final-license/<everything:application_id>/qr-code/', views.final_license_qr_code, name='final-license-qr-code'),
+
+    # Document downloads
+    path('<everything:application_id>/document/<str:document_field>/', views.download_collaboration_document, name='download_collaboration_document'),
+    path('document/<everything:application_id>/<str:document_field>/', views.download_collaboration_document, name='download_collaboration_document_alt'),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

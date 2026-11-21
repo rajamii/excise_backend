@@ -62,6 +62,7 @@ class CompanyRegistrationSerializer(serializers.ModelSerializer):
     license_id = serializers.SerializerMethodField()
     applicant_name = serializers.SerializerMethodField()
     payment_details = serializers.SerializerMethodField()
+    dms_documents = serializers.SerializerMethodField()
 
     def get_allowed_actions(self, obj):
         request = self.context.get('request')
@@ -174,6 +175,45 @@ class CompanyRegistrationSerializer(serializers.ModelSerializer):
                 'remarks': obj.payment_remarks or f'Company Registration fee paid for {obj.application_id}'
             }
         return None
+
+    def get_dms_documents(self, obj):
+        try:
+            from models.transactional.dms_documents.models import DMSDocumentCompany
+            docs = list(DMSDocumentCompany.objects.filter(application_id=obj.application_id))
+            return [
+                {
+                    "document_field": doc.document_field,
+                    "dms_reference": doc.dms_reference,
+                    "original_filename": doc.original_filename,
+                    "file_size": doc.file_size,
+                    "mime_type": doc.mime_type,
+                    "storage_type": doc.storage_type,
+                    "dms_registration_no": doc.dms_registration_no,
+                    "transaction_signature": doc.transaction_signature,
+                    "uploaded_at": doc.created_at.isoformat() if doc.created_at else None,
+                    "download_url": f"/transactional/company-registration/{obj.application_id}/document/{doc.document_field}/"
+                }
+                for doc in docs
+            ]
+        except Exception:
+            return []
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        # Ensure document fields link to DMS download if uploaded to MongoDB GridFS
+        try:
+            from models.transactional.dms_documents.models import DMSDocumentCompany
+            docs = list(DMSDocumentCompany.objects.filter(application_id=instance.application_id))
+            dms_map = {
+                d.document_field: f"/transactional/company-registration/{instance.application_id}/document/{d.document_field}/"
+                for d in docs
+            }
+            for field, dms_url in dms_map.items():
+                if not rep.get(field):
+                    rep[field] = dms_url
+        except Exception:
+            pass
+        return rep
 
     class Meta:
         model = CompanyRegistration

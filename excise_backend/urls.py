@@ -17,6 +17,7 @@ urlpatterns = [
     path('masters/', include('models.masters.urls')),
     path('transactional/', include('models.transactional.urls')),
     path('api/transactional/new_license_application/', include('models.transactional.new_license_application.urls')),
+    path('api/transactional/company-registration/', include(('models.transactional.company_registration.urls', 'company_registration_api'), namespace='company_registration_api')),
     path('api/secretary/', include('models.transactional.secretary.urls')),
     path('secretary/', include('models.transactional.secretary.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

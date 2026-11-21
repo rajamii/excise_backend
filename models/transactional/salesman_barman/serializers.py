@@ -54,6 +54,7 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
     renewal_application_id = serializers.SerializerMethodField()
     is_parent_license_fee_paid = serializers.SerializerMethodField()
     payment_details = serializers.SerializerMethodField()
+    dms_documents = serializers.SerializerMethodField()
 
     class Meta:
         model = SalesmanBarmanModel
@@ -292,6 +293,59 @@ class SalesmanBarmanSerializer(serializers.ModelSerializer):
                 'remarks': f'Salesman/Barman registration fee paid for {obj.application_id}'
             }
         return None
+
+    def get_dms_documents(self, obj):
+        try:
+            from models.transactional.dms_documents.models import DMSUploadedDocument
+            docs = list(DMSUploadedDocument.objects.filter(application_id=obj.application_id))
+            return [
+                {
+                    "document_field": doc.document_field,
+                    "dms_reference": doc.dms_reference,
+                    "original_filename": doc.original_filename,
+                    "file_size": doc.file_size,
+                    "mime_type": doc.mime_type,
+                    "storage_type": doc.storage_type,
+                    "dms_registration_no": doc.dms_registration_no,
+                    "transaction_signature": doc.transaction_signature,
+                    "uploaded_at": doc.created_at.isoformat() if doc.created_at else None,
+                    "download_url": f"/transactional/salesman_barman/{obj.application_id}/document/{doc.document_field}/"
+                }
+                for doc in docs
+            ]
+        except Exception:
+            return []
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        try:
+            from models.transactional.dms_documents.models import DMSUploadedDocument
+            docs = list(DMSUploadedDocument.objects.filter(application_id=instance.application_id))
+            dms_map = {
+                d.document_field: f"/transactional/salesman_barman/{instance.application_id}/document/{d.document_field}/"
+                for d in docs
+            }
+            for field, dms_url in dms_map.items():
+                rep[field] = dms_url
+                if field == 'passPhoto':
+                    rep['pass_photo'] = dms_url
+                elif field == 'pass_photo':
+                    rep['passPhoto'] = dms_url
+                elif field == 'aadhaarCard':
+                    rep['aadhaar_card'] = dms_url
+                elif field == 'aadhaar_card':
+                    rep['aadhaarCard'] = dms_url
+                elif field == 'residentialCertificate':
+                    rep['residential_certificate'] = dms_url
+                elif field == 'residential_certificate':
+                    rep['residentialCertificate'] = dms_url
+                elif field == 'dateofBirthProof':
+                    rep['dateof_birth_proof'] = dms_url
+                elif field == 'dateof_birth_proof':
+                    rep['dateofBirthProof'] = dms_url
+        except Exception:
+            pass
+        return rep
 
     def validate(self, attrs):
         """

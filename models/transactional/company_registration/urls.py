@@ -39,6 +39,10 @@ urlpatterns = [
     # Final license QR code (GET)
     path('final-license/<everything:application_id>/qr-code/', views.final_license_qr_code, name='final-license-qr-code'),
 
+    # Document download endpoints (MongoDB GridFS / DMS)
+    path('document/<everything:application_id>/<str:document_field>/', views.download_company_registration_dms_document, name='download-dms-document'),
+    path('<everything:application_id>/document/<str:document_field>/', views.download_company_registration_dms_document, name='download-dms-document-alt'),
+
     # Retrieve details of a specific company registration by application ID (GET)
     path('detail/<everything:application_id>/', views.company_registration_detail, name='detail'),
 ]
