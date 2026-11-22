@@ -708,47 +708,87 @@ def secretary_licenses_overview(request):
             'created_at': cc.created_at.strftime('%Y-%m-%d %H:%M') if cc.created_at else '2026-08-12 14:20'
         })
 
-    # 4. Dry Day Permits (Special Permits + Master Dry Days)
-    sp_qs = SpecialPermitApplication.objects.all().order_by('-created_at')
+    # 4. Dry Day Permits (Special Permits from database)
+    sp_qs = (
+        SpecialPermitApplication.objects.select_related(
+            'applicant',
+            'license',
+            'excise_district',
+            'license_category',
+            'license_sub_category',
+            'current_stage',
+        )
+        .all()
+        .order_by('-created_at')
+    )
     dry_day_list = []
     for sp in sp_qs:
-        app_id = getattr(sp, 'application_id', None) or f"DDP/2026-27/{getattr(sp, 'pk', 1)}"
+        # Dynamic applicant & establishment name resolution
         applicant_name = ""
-        if sp.applicant:
-            applicant_name = getattr(sp.applicant, 'username', '') or getattr(sp.applicant, 'first_name', '') or getattr(sp.applicant, 'email', '')
-        if not applicant_name or len(applicant_name) < 2:
-            applicant_name = getattr(sp, 'applicant_name', '') or "Mount Distilleries Limited"
+        source_app = getattr(getattr(sp, 'license', None), 'source_application', None)
+        if source_app:
+            for field in ('establishment_name', 'business_premises_name', 'company_name', 'applicant_name'):
+                val = getattr(source_app, field, None)
+                if val:
+                    applicant_name = str(val).strip()
+                    break
+
+        if not applicant_name and sp.applicant:
+            full_name = f"{getattr(sp.applicant, 'first_name', '') or ''} {getattr(sp.applicant, 'last_name', '') or ''}".strip()
+            applicant_name = full_name or getattr(sp.applicant, 'username', '') or getattr(sp.applicant, 'email', '')
+
+        if not applicant_name and sp.license:
+            applicant_name = f"Licensee ({sp.license.license_id})"
+
+        # Dynamic district resolution
+        district_name = ""
+        if sp.excise_district:
+            district_name = getattr(sp.excise_district, 'district', None) or str(sp.excise_district)
+        elif sp.license and sp.license.excise_district:
+            district_name = getattr(sp.license.excise_district, 'district', None) or str(sp.license.excise_district)
+        normalized_district = _normalize_district(district_name) if district_name else "Sikkim"
+
+        # Dynamic duration resolution
+        if sp.permission_duration == SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM:
+            duration_days = "Per Annum"
+        elif isinstance(sp.selected_dates, list) and sp.selected_dates:
+            duration_days = f"{len(sp.selected_dates)} Days"
+        elif sp.permission_duration:
+            duration_days = sp.permission_duration.replace('_', ' ').title()
+        else:
+            duration_days = "1 Day"
+
+        # Dynamic dates requested resolution
+        if isinstance(sp.selected_dates, list) and sp.selected_dates:
+            dates_requested = ", ".join(str(d) for d in sp.selected_dates)
+        elif sp.permission_duration == SpecialPermitApplication.PERMISSION_DURATION_PER_ANNUM:
+            dates_requested = f"All Dry Days (FY {sp.financial_year or '2026-27'})"
+        elif sp.selected_dates:
+            dates_requested = str(sp.selected_dates)
+        else:
+            dates_requested = f"FY {sp.financial_year or '2026-27'}"
+
+        # Dynamic status & stage
+        if sp.is_approved:
+            status_str = "Approved"
+        elif sp.current_stage and sp.current_stage.name:
+            status_str = sp.current_stage.name
+        else:
+            status_str = "Under Review"
 
         dry_day_list.append({
-            'application_id': str(app_id),
-            'applicant_name': applicant_name,
-            'excise_district': _normalize_district(sp.excise_district) or 'Gangtok (East Sikkim)',
-            'reason_remarks': sp.remarks or 'Exemption & warehouse maintenance request',
-            'duration_days': sp.permission_duration or '1 Day',
-            'dates_requested': sp.selected_dates or '2026-08-15 (State Dry Day)',
+            'application_id': str(sp.application_id),
+            'applicant_name': applicant_name or "Authorized Applicant",
+            'excise_district': normalized_district,
+            'reason_remarks': sp.remarks or f"Special permit exemption request for FY {sp.financial_year or '2026-27'}",
+            'duration_days': duration_days,
+            'dates_requested': dates_requested,
             'financial_year': sp.financial_year or '2026-27',
-            'status': 'Approved' if sp.is_approved else 'Under Review',
+            'status': status_str,
             'is_approved': bool(sp.is_approved),
             'is_fee_paid': bool(sp.is_fee_paid),
-            'created_at': sp.created_at.strftime('%Y-%m-%d %H:%M') if sp.created_at else '2026-08-15 10:00'
+            'created_at': sp.created_at.strftime('%Y-%m-%d %H:%M') if sp.created_at else ''
         })
-
-    if not dry_day_list:
-        for dd in MasterDryDay.objects.all():
-            dates_str = ", ".join(dd.allowed_dates) if isinstance(dd.allowed_dates, list) else str(dd.allowed_dates or '')
-            dry_day_list.append({
-                'application_id': f"DDP/{dd.financial_year}/000{dd.pk}",
-                'applicant_name': 'State Gazetted Exemption',
-                'excise_district': 'All Sikkim Districts',
-                'reason_remarks': f"Gazetted State Dry Day Exemption Calendar for FY {dd.financial_year}",
-                'duration_days': f"{len(dd.allowed_dates) if isinstance(dd.allowed_dates, list) else 1} Days",
-                'dates_requested': dates_str or f"FY {dd.financial_year}",
-                'financial_year': dd.financial_year,
-                'status': 'Approved',
-                'is_approved': True,
-                'is_fee_paid': True,
-                'created_at': dd.created_at.strftime('%Y-%m-%d %H:%M') if dd.created_at else '2026-08-01 10:00'
-            })
 
     # 5. New License Applications (new_license_applications)
     from models.transactional.new_license_application.models import NewLicenseApplication
