@@ -615,12 +615,10 @@ def secretary_licenses_overview(request):
     from models.transactional.special_permit.models import SpecialPermitApplication, MasterDryDay
 
     # 1. Salesman / Barman Applications
-    sbm_qs = SalesmanBarmanModel.objects.all().order_by('-created_at')
+    sbm_qs = SalesmanBarmanModel.objects.select_related('new_license_application', 'license', 'excise_district', 'current_stage').all().order_by('-created_at')
     salesman_barman_list = []
     for sb in sbm_qs:
         full_name = " ".join(filter(None, [sb.firstName, sb.middleName, sb.lastName])).strip() or "Applicant"
-        if len(full_name) < 2:
-            full_name = "Rajesh Kumar Sharma"
         est_name = ""
         if sb.new_license_application:
             est_name = sb.new_license_application.establishment_name or sb.new_license_application.company_name or ""
@@ -629,83 +627,120 @@ def secretary_licenses_overview(request):
 
         app_id = getattr(sb, 'application_id', None) or f"SBM/2026-27/{getattr(sb, 'pk', 1)}"
 
+        dist_name = ""
+        if sb.excise_district:
+            dist_name = getattr(sb.excise_district, 'district', None) or str(sb.excise_district)
+
+        status_display = 'Approved' if sb.is_approved else (sb.current_stage.name if sb.current_stage else 'Pending Approval')
+
         salesman_barman_list.append({
             'application_id': str(app_id),
             'applicant_name': full_name,
-            'role': sb.role or 'Barman',
-            'establishment_name': est_name or 'Mayfair Spa Resort & Lounge, Gangtok',
-            'excise_district': _normalize_district(sb.excise_district) or 'Gangtok (East Sikkim)',
-            'mobile_number': str(sb.mobileNumber) if sb.mobileNumber else '9800012345',
-            'email': sb.emailId or 'applicant@excise.sikkim.gov.in',
-            'gender': sb.gender or 'Male',
-            'dob': str(sb.dob) if sb.dob else '1992-05-15',
-            'aadhaar': str(sb.aadhaar) if sb.aadhaar else '9821-4432-8921',
-            'pan': sb.pan or 'ABCPS1234F',
-            'status': 'Approved' if sb.is_approved else ('Under Review' if sb.current_stage else 'Pending Approval'),
+            'role': sb.role or 'Salesman',
+            'establishment_name': est_name,
+            'excise_district': _normalize_district(dist_name) if dist_name else '',
+            'mobile_number': str(sb.mobileNumber) if sb.mobileNumber else '',
+            'email': sb.emailId or '',
+            'gender': sb.gender or '',
+            'dob': str(sb.dob) if sb.dob else '',
+            'aadhaar': str(sb.aadhaar) if sb.aadhaar else '',
+            'pan': sb.pan or '',
+            'status': status_display,
             'is_approved': bool(sb.is_approved),
-            'current_stage': _to_json_safe(sb.current_stage) or 'Inspector Scrutiny',
-            'created_at': sb.created_at.strftime('%Y-%m-%d %H:%M') if sb.created_at else '2026-08-10 10:00',
+            'current_stage': sb.current_stage.name if sb.current_stage else 'Pending Scrutiny',
+            'created_at': sb.created_at.strftime('%Y-%m-%d %H:%M') if sb.created_at else '',
             'documents': {
-                'passPhoto': True,
-                'aadhaarCard': True,
-                'residentialCertificate': True,
-                'dateofBirthProof': True
+                'passPhoto': bool(sb.passPhoto),
+                'aadhaarCard': bool(sb.aadhaarCard),
+                'residentialCertificate': bool(sb.residentialCertificate),
+                'dateofBirthProof': bool(sb.dateofBirthProof)
             }
         })
 
     # 2. Company Registrations
-    cr_qs = CompanyRegistration.objects.all().order_by('-created_at')
+    cr_qs = CompanyRegistration.objects.select_related('current_stage', 'applicant').all().order_by('-created_at')
     company_reg_list = []
     for cr in cr_qs:
         app_id = getattr(cr, 'application_id', None) or f"COMP/2026-27/{getattr(cr, 'pk', 1)}"
-        c_name = cr.company_name or 'FLR Sikkim Distilleries & Beverages Pvt Ltd'
-        if c_name in ['sa', 'flr test', 'sd', 'test', '']:
-            c_name = 'FLR Sikkim Distilleries & Beverages Pvt Ltd'
+
+        # Factory address formatting with pin code if available
+        f_addr = (cr.factory_address or '').strip()
+        if cr.pin_code and str(cr.pin_code) not in f_addr:
+            f_addr = f"{f_addr}, PIN: {cr.pin_code}" if f_addr else f"PIN: {cr.pin_code}"
+
+        # Status and workflow stage
+        if cr.is_approved:
+            status_str = 'Approved'
+        elif cr.current_stage and cr.current_stage.name:
+            status_str = cr.current_stage.name
+        else:
+            status_str = 'Pending Review'
+
+        # Payment amount calculation from record or MasterFixedFee
+        if cr.payment_amount is not None:
+            p_amount = float(cr.payment_amount)
+        else:
+            from models.masters.core.models import MasterFixedFee
+            comp_fee = MasterFixedFee.objects.filter(fee_code='COMP_REG', is_active=True).first()
+            p_amount = float(comp_fee.amount) if comp_fee else 5000.0
 
         company_reg_list.append({
             'application_id': str(app_id),
-            'company_name': c_name,
-            'brand_type': cr.brand_type or 'Bottled in Sikkim (BIS)',
-            'factory_address': cr.factory_address if cr.factory_address and len(cr.factory_address) > 3 else f"Industrial Growth Centre, Rangpo, East Sikkim PIN: {cr.pin_code or '737132'}",
-            'country': cr.country or 'India',
-            'state': cr.state or 'Sikkim',
-            'company_phone': str(cr.company_mobile_number) if cr.company_mobile_number else '9800098765',
-            'company_email': cr.company_email_id or 'info@company.com',
-            'key_member': cr.member_name if cr.member_name and len(cr.member_name) > 2 else 'Samir Sharma',
-            'designation': cr.member_designation if cr.member_designation and len(cr.member_designation) > 2 else 'Managing Director',
-            'member_phone': str(cr.member_mobile_number) if cr.member_mobile_number else '9800098765',
-            'status': 'Approved' if cr.is_approved else 'Under Scrutiny',
+            'company_name': (cr.company_name or '').strip(),
+            'brand_type': (cr.brand_type or '').strip(),
+            'factory_address': f_addr,
+            'country': (cr.country or 'India').strip(),
+            'state': (cr.state or 'Sikkim').strip(),
+            'company_phone': str(cr.company_mobile_number or '').strip(),
+            'company_email': (cr.company_email_id or '').strip(),
+            'key_member': (cr.member_name or '').strip(),
+            'designation': (cr.member_designation or '').strip(),
+            'member_phone': str(cr.member_mobile_number or '').strip(),
+            'status': status_str,
             'is_approved': bool(cr.is_approved),
-            'payment_amount': float(cr.payment_amount) if cr.payment_amount else 50000.0,
-            'created_at': cr.created_at.strftime('%Y-%m-%d %H:%M') if cr.created_at else '2026-08-01 11:30'
+            'payment_amount': p_amount,
+            'created_at': cr.created_at.strftime('%Y-%m-%d %H:%M') if cr.created_at else ''
         })
 
     # 3. Company Collaborations
-    cc_qs = CompanyCollaboration.objects.all().order_by('-created_at')
+    cc_qs = CompanyCollaboration.objects.select_related('current_stage', 'applicant').all().order_by('-created_at')
     company_collab_list = []
     for cc in cc_qs:
         app_id = getattr(cc, 'application_id', None) or f"CCOL/2026-27/{getattr(cc, 'pk', 1)}"
-        bo_name = cc.brand_owner_name or cc.brand_owner or 'Himalayan Distillers Corp'
-        if bo_name in ['sa', 'same', 'test', '']:
-            bo_name = 'Himalayan Distillers & Breweries Corp'
-        lic_name = cc.licensee_name or 'Mount Distilleries Limited (Sikkim Unit)'
-        if lic_name in ['flr test', 'zzzz', 'ss', 'sd', '']:
-            lic_name = 'Mount Distilleries Limited (Sikkim Unit)'
+        bo_name = (cc.brand_owner_name or cc.brand_owner or '').strip()
+        lic_name = (cc.licensee_name or '').strip()
 
-        brands_str = ', '.join([b.get('brand_name', '') for b in cc.selected_brands if isinstance(b, dict) and b.get('brand_name')]) if (cc.selected_brands and isinstance(cc.selected_brands, list)) else 'Gold Medal Gin, Ruby Gold Orange Gin'
+        brand_names = []
+        if cc.selected_brands and isinstance(cc.selected_brands, list):
+            for b in cc.selected_brands:
+                if isinstance(b, dict):
+                    name = b.get('name') or b.get('brand_name') or b.get('title')
+                    if name:
+                        brand_names.append(str(name))
+                elif isinstance(b, str):
+                    brand_names.append(b)
+        brands_str = ', '.join(brand_names) if brand_names else (cc.brand_owner or '')
+
+        if cc.is_approved:
+            cc_status = 'Approved'
+        elif cc.current_stage and cc.current_stage.name:
+            cc_status = cc.current_stage.name
+        else:
+            cc_status = 'Pending Secretary Approval'
+
         company_collab_list.append({
             'application_id': str(app_id),
             'brand_owner_name': bo_name,
-            'brand_owner_code': cc.brand_owner_code or f"BOC/2026/001",
-            'brand_owner_pan': cc.brand_owner_pan or 'AAAAA1234A',
+            'brand_owner_code': (cc.brand_owner_code or '').strip(),
+            'brand_owner_pan': (cc.brand_owner_pan or '').strip(),
             'licensee_name': lic_name,
-            'license_number': cc.license_number or 'COMP/2026-27/0001',
-            'factory_address': cc.brand_owner_factory_address or 'Rangpo Industrial Complex, East Sikkim',
+            'license_number': (cc.license_number or '').strip(),
+            'factory_address': (cc.brand_owner_factory_address or cc.brand_owner_office_address or '').strip(),
             'brands_collaborated': brands_str,
-            'status': 'Approved' if cc.is_approved else 'Pending Secretary Approval',
+            'status': cc_status,
             'is_approved': bool(cc.is_approved),
-            'financial_year': cc.financial_year or '2026-27',
-            'created_at': cc.created_at.strftime('%Y-%m-%d %H:%M') if cc.created_at else '2026-08-12 14:20'
+            'financial_year': (cc.financial_year or cc.application_year or '2026-27').strip(),
+            'created_at': cc.created_at.strftime('%Y-%m-%d %H:%M') if cc.created_at else ''
         })
 
     # 4. Dry Day Permits (Special Permits from database)
