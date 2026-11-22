@@ -1725,7 +1725,7 @@ def secretary_revenue_overview(request):
         print(f"[secretary_revenue_overview ERROR]: {e}\n{traceback.format_exc()}")
         return Response(EMPTY_RESPONSE)
 
-def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_approved, created_date_str, updated_date_str):
+def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_approved, created_date_str, updated_date_str, license_no=None):
     """
     Generates the complete Excise License Workflow Audit Trail:
     1. Normal Progression (7 stages: Submitted -> District Scrutiny -> Site Enquiry -> JC Recommendation -> Commissioner Grant -> Fee Payment -> Final Certificate)
@@ -2135,6 +2135,8 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
                     'forwarded_info': forwarded_info,
                     'objection_info': objection_info,
                     'payment_breakdown': payment_breakdown,
+                    'license_no': license_no,
+                    'licenseNo': license_no,
                     'time_taken': s['time'],
                     'status_text': 'FINAL APPROVED'
                 })
@@ -2187,6 +2189,7 @@ def secretary_timeline_overview(request):
     from models.transactional.new_license_application.models import NewLicenseApplication
     from models.transactional.license_renewal_application.models import LicenseApplication as LicenseRenewalApplication
     from models.transactional.salesman_barman.models import SalesmanBarmanModel
+    from models.masters.license.models import License
     from auth.workflow.models import Objection, Rejection, Transaction
 
     timeline_records = []
@@ -2232,7 +2235,19 @@ def secretary_timeline_overview(request):
             created_date_str = app.created_at.strftime('%Y-%m-%d %H:%M') if getattr(app, 'created_at', None) else '2026-05-28 11:59'
             updated_date_str = app.updated_at.strftime('%Y-%m-%d %H:%M') if getattr(app, 'updated_at', None) else created_date_str
 
-            steps = _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, app.is_approved, created_date_str, updated_date_str)
+            clean_app_id = app_id.replace('NLI/', '').replace('NLA/', '')
+            matched_license = (
+                License.objects.filter(source_object_id=app_id).first()
+                or License.objects.filter(license_id__icontains=clean_app_id).first()
+            )
+            if matched_license and matched_license.license_id:
+                lic_no = matched_license.license_id
+            elif app.is_approved:
+                lic_no = f"NA/{clean_app_id}"
+            else:
+                lic_no = 'Awaiting Grant'
+
+            steps = _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, app.is_approved, created_date_str, updated_date_str, license_no=lic_no)
 
             # Calculate real time taken from submission till decision
             real_time_taken = "12 Minutes"
@@ -2301,6 +2316,8 @@ def secretary_timeline_overview(request):
 
             record = {
                 'application_id': app_id,
+                'license_no': lic_no,
+                'licenseNo': lic_no,
                 'applicant_name': applicant,
                 'mobile_no': mobile,
                 'establishment_name': est_name,
@@ -2323,6 +2340,8 @@ def secretary_timeline_overview(request):
             if not app.is_approved and not is_rejected:
                 pending_queue.append({
                     'application_id': app_id,
+                    'license_no': lic_no,
+                    'licenseNo': lic_no,
                     'applicant_name': applicant,
                     'mobile_no': mobile,
                     'establishment_name': est_name,
@@ -2363,10 +2382,24 @@ def secretary_timeline_overview(request):
             created_date_str = '2026-05-28 12:00'
             updated_date_str = created_date_str
 
-            steps = _build_complete_workflow_steps(app_id, full_name, f"{role_str} Badge Registration", stage_name, app.is_approved, created_date_str, updated_date_str)
+            clean_sb_id = app_id.replace('SBM/', '').replace('SB/', '')
+            matched_sb_lic = (
+                License.objects.filter(source_object_id=app_id).first()
+                or License.objects.filter(license_id__icontains=clean_sb_id).first()
+            )
+            if matched_sb_lic and matched_sb_lic.license_id:
+                lic_no = matched_sb_lic.license_id
+            elif app.is_approved:
+                lic_no = f"SB/{clean_sb_id}"
+            else:
+                lic_no = 'Awaiting Grant'
+
+            steps = _build_complete_workflow_steps(app_id, full_name, f"{role_str} Badge Registration", stage_name, app.is_approved, created_date_str, updated_date_str, license_no=lic_no)
 
             record = {
                 'application_id': app_id,
+                'license_no': lic_no,
+                'licenseNo': lic_no,
                 'applicant_name': full_name,
                 'mobile_no': mobile,
                 'establishment_name': f"{role_str} Badge Registration ({app_id})",
@@ -2389,6 +2422,8 @@ def secretary_timeline_overview(request):
             if not app.is_approved and not is_rejected:
                 pending_queue.append({
                     'application_id': app_id,
+                    'license_no': lic_no,
+                    'licenseNo': lic_no,
                     'applicant_name': full_name,
                     'mobile_no': mobile,
                     'establishment_name': f"{role_str} Badge Registration ({app_id})",
@@ -2426,6 +2461,17 @@ def secretary_timeline_overview(request):
             is_rejected = 'reject' in stage_name.lower()
             cat_norm = 'Manufacturing' if ('manufacturing' in cat_name.lower() or 'brew' in cat_name.lower() or 'distill' in cat_name.lower()) else ('Retailer' if 'retail' in cat_name.lower() else 'General')
 
+            lic_no = getattr(app, 'old_license_id', None) or (app.license.license_id if getattr(app, 'license', None) else None) or ''
+            if not lic_no:
+                matched_ren_lic = License.objects.filter(source_object_id=app_id).first()
+                if matched_ren_lic and matched_ren_lic.license_id:
+                    lic_no = matched_ren_lic.license_id
+            if not lic_no and app.is_approved:
+                clean_ren_id = app_id.replace('LRA/', '').replace('LR/', '')
+                lic_no = f"NA/{clean_ren_id}"
+            elif not lic_no:
+                lic_no = 'Awaiting Grant'
+
             steps = [
                 {
                     'step_no': 1,
@@ -2434,11 +2480,13 @@ def secretary_timeline_overview(request):
                     'badge_class': 'status-completed',
                     'event_title': 'Renewal Application Submitted',
                     'event_date': '2026-04-01 10:00 AM',
-                    'event_description': f'License renewal application submitted for Old License #{app.old_license_id or app_id}.',
+                    'event_description': f'License renewal application submitted for Old License #{lic_no or app_id}.',
                     'user_details': f'{applicant} (Licensee)',
                     'forwarded_info': None,
                     'objection_info': None,
                     'payment_breakdown': None,
+                    'license_no': lic_no,
+                    'licenseNo': lic_no,
                     'time_taken': 'Day 1',
                     'status_text': 'Completed'
                 },
@@ -2454,6 +2502,8 @@ def secretary_timeline_overview(request):
                     'forwarded_info': None,
                     'objection_info': None,
                     'payment_breakdown': None,
+                    'license_no': lic_no,
+                    'licenseNo': lic_no,
                     'time_taken': 'Ongoing',
                     'status_text': 'Completed' if app.is_approved else ('REJECTED' if is_rejected else 'In Progress')
                 }
@@ -2461,9 +2511,11 @@ def secretary_timeline_overview(request):
 
             record = {
                 'application_id': app_id,
+                'license_no': lic_no,
+                'licenseNo': lic_no,
                 'applicant_name': applicant,
                 'mobile_no': mobile,
-                'establishment_name': f"Renewed Unit (#{app.old_license_id or app_id})",
+                'establishment_name': f"Renewed Unit (#{lic_no or app_id})",
                 'license_type': lic_type_str,
                 'category': cat_norm,
                 'current_status': stage_name,
@@ -2483,6 +2535,8 @@ def secretary_timeline_overview(request):
             if not app.is_approved and not is_rejected:
                 pending_queue.append({
                     'application_id': app_id,
+                    'license_no': lic_no,
+                    'licenseNo': lic_no,
                     'applicant_name': applicant,
                     'mobile_no': mobile,
                     'establishment_name': f"Renewed Unit (#{app.old_license_id or app_id})",
