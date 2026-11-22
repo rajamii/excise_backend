@@ -2191,6 +2191,7 @@ def secretary_timeline_overview(request):
     from models.transactional.salesman_barman.models import SalesmanBarmanModel
     from models.masters.license.models import License
     from auth.workflow.models import Objection, Rejection, Transaction
+    from datetime import datetime, timedelta
 
     timeline_records = []
     pending_queue = []
@@ -2297,6 +2298,33 @@ def secretary_timeline_overview(request):
                 ]
                 real_time_taken = durations_list[val_num % len(durations_list)]
 
+            pending_duration_str = None
+            if not app.is_approved and not is_rejected:
+                now_dt = datetime.now()
+                s_dt = app.created_at.replace(tzinfo=None) if getattr(app, 'created_at', None) else None
+                if not s_dt and steps:
+                    try:
+                        s_dt = datetime.strptime(steps[0]['event_date'], '%Y-%m-%d %H:%M')
+                    except Exception:
+                        s_dt = None
+                if not s_dt:
+                    try:
+                        s_dt = datetime.strptime(created_date_str, '%Y-%m-%d %H:%M')
+                    except Exception:
+                        s_dt = now_dt
+                diff = now_dt - s_dt
+                d = max(0, diff.days)
+                h = (diff.seconds // 3600)
+                m = (diff.seconds % 3600) // 60
+                if d > 0:
+                    pending_duration_str = f"{d} Day{'s' if d > 1 else ''} {h} Hr{'s' if h > 1 else ''}"
+                elif h > 0:
+                    pending_duration_str = f"{h} Hr{'s' if h > 1 else ''} {m} Min{'s' if m > 1 else ''}"
+                else:
+                    pending_duration_str = f"{m} Minute{'s' if m > 1 else ''}"
+
+                real_time_taken = f"{pending_duration_str} (Ongoing)"
+
             if app.is_approved:
                 approved_by_str = 'Excise Commissioner (IAS)'
                 approval_date_str = steps[4]['event_date'] if (steps and len(steps) >= 5) else (updated_date_str or 'Approved')
@@ -2325,7 +2353,9 @@ def secretary_timeline_overview(request):
                 'category': cat_norm,
                 'current_status': stage_name,
                 'status_code': status_code,
-                'days_elapsed': real_time_taken,
+                'days_elapsed': pending_duration_str or real_time_taken,
+                'pending_duration': pending_duration_str,
+                'pendingDuration': pending_duration_str,
                 'approval_status': approval_status,
                 'approved_by': approved_by_str,
                 'approval_date': approval_date_str,
@@ -2349,7 +2379,9 @@ def secretary_timeline_overview(request):
                     'category': cat_norm,
                     'current_stage': stage_name,
                     'pending_officer_name': stage_name,
-                    'days_elapsed': 'Pending Review',
+                    'days_elapsed': pending_duration_str or 'Pending Review',
+                    'pending_duration': pending_duration_str,
+                    'pendingDuration': pending_duration_str,
                     'sla_status': 'On Track (SLA: 7 Days)',
                     'submission_date': created_date_str.split(' ')[0]
                 })
@@ -2379,8 +2411,8 @@ def secretary_timeline_overview(request):
             cat_name = app.license_category.license_category if hasattr(app, 'license_category') and app.license_category else 'Retailer'
             cat_norm = 'Retailer'
 
-            created_date_str = '2026-05-28 12:00'
-            updated_date_str = created_date_str
+            created_date_str = app.created_at.strftime('%Y-%m-%d %H:%M') if getattr(app, 'created_at', None) else '2026-11-21 08:11'
+            updated_date_str = app.updated_at.strftime('%Y-%m-%d %H:%M') if getattr(app, 'updated_at', None) else created_date_str
 
             clean_sb_id = app_id.replace('SBM/', '').replace('SB/', '')
             matched_sb_lic = (
@@ -2396,6 +2428,35 @@ def secretary_timeline_overview(request):
 
             steps = _build_complete_workflow_steps(app_id, full_name, f"{role_str} Badge Registration", stage_name, app.is_approved, created_date_str, updated_date_str, license_no=lic_no)
 
+            pending_duration_str = None
+            if not app.is_approved and not is_rejected:
+                now_dt = datetime.now()
+                s_dt = app.created_at.replace(tzinfo=None) if getattr(app, 'created_at', None) else None
+                if not s_dt and steps:
+                    try:
+                        s_dt = datetime.strptime(steps[0]['event_date'], '%Y-%m-%d %H:%M')
+                    except Exception:
+                        s_dt = None
+                if not s_dt:
+                    try:
+                        s_dt = datetime.strptime(created_date_str, '%Y-%m-%d %H:%M')
+                    except Exception:
+                        s_dt = now_dt
+                diff = now_dt - s_dt
+                d = max(0, diff.days)
+                h = (diff.seconds // 3600)
+                m = (diff.seconds % 3600) // 60
+                if d > 0:
+                    pending_duration_str = f"{d} Day{'s' if d > 1 else ''} {h} Hr{'s' if h > 1 else ''}"
+                elif h > 0:
+                    pending_duration_str = f"{h} Hr{'s' if h > 1 else ''} {m} Min{'s' if m > 1 else ''}"
+                else:
+                    pending_duration_str = f"{m} Minute{'s' if m > 1 else ''}"
+
+                real_time_taken = f"{pending_duration_str} (Ongoing)"
+            else:
+                real_time_taken = 'Within SLA'
+
             record = {
                 'application_id': app_id,
                 'license_no': lic_no,
@@ -2407,11 +2468,13 @@ def secretary_timeline_overview(request):
                 'category': cat_norm,
                 'current_status': stage_name,
                 'status_code': 'APPROVED' if app.is_approved else ('REJECTED' if is_rejected else 'PENDING'),
-                'days_elapsed': 'Recent',
+                'days_elapsed': pending_duration_str or 'Recent',
+                'pending_duration': pending_duration_str,
+                'pendingDuration': pending_duration_str,
                 'approval_status': 'APPROVED' if app.is_approved else ('REJECTED' if is_rejected else 'PENDING'),
                 'approved_by': 'Excise Authority' if app.is_approved else (f'Rejected ({stage_name})' if is_rejected else f'Pending with {stage_name}'),
                 'approval_date': updated_date_str if (app.is_approved or is_rejected) else 'Pending Order',
-                'time_taken': 'Within SLA',
+                'time_taken': real_time_taken,
                 'current_stage': stage_name,
                 'pending_officer_name': 'N/A' if (app.is_approved or is_rejected) else stage_name,
                 'steps': steps
@@ -2431,9 +2494,11 @@ def secretary_timeline_overview(request):
                     'category': cat_norm,
                     'current_stage': stage_name,
                     'pending_officer_name': stage_name,
-                    'days_elapsed': 'Pending Review',
+                    'days_elapsed': pending_duration_str or 'Pending Review',
+                    'pending_duration': pending_duration_str,
+                    'pendingDuration': pending_duration_str,
                     'sla_status': 'On Track (SLA: 7 Days)',
-                    'submission_date': '2026-05-28'
+                    'submission_date': created_date_str.split(' ')[0]
                 })
     except Exception as e:
         print(f"Error querying SalesmanBarmanModel: {e}")
@@ -2509,6 +2574,27 @@ def secretary_timeline_overview(request):
                 }
             ]
 
+            pending_duration_str = None
+            if not app.is_approved and not is_rejected:
+                now_dt = datetime.now()
+                s_dt = app.created_at.replace(tzinfo=None) if getattr(app, 'created_at', None) else None
+                if not s_dt:
+                    s_dt = now_dt
+                diff = now_dt - s_dt
+                d = max(0, diff.days)
+                h = (diff.seconds // 3600)
+                m = (diff.seconds % 3600) // 60
+                if d > 0:
+                    pending_duration_str = f"{d} Day{'s' if d > 1 else ''} {h} Hr{'s' if h > 1 else ''}"
+                elif h > 0:
+                    pending_duration_str = f"{h} Hr{'s' if h > 1 else ''} {m} Min{'s' if m > 1 else ''}"
+                else:
+                    pending_duration_str = f"{m} Minute{'s' if m > 1 else ''}"
+
+                real_time_taken = f"{pending_duration_str} (Ongoing)"
+            else:
+                real_time_taken = 'Within SLA'
+
             record = {
                 'application_id': app_id,
                 'license_no': lic_no,
@@ -2520,11 +2606,13 @@ def secretary_timeline_overview(request):
                 'category': cat_norm,
                 'current_status': stage_name,
                 'status_code': 'APPROVED' if app.is_approved else ('REJECTED' if is_rejected else 'PENDING'),
-                'days_elapsed': 'Recent',
+                'days_elapsed': pending_duration_str or 'Recent',
+                'pending_duration': pending_duration_str,
+                'pendingDuration': pending_duration_str,
                 'approval_status': 'APPROVED' if app.is_approved else ('REJECTED' if is_rejected else 'PENDING'),
                 'approved_by': 'Excise Commissioner (IAS)' if app.is_approved else (f'Rejected ({stage_name})' if is_rejected else f'Pending with {stage_name}'),
                 'approval_date': 'Completed' if app.is_approved else ('Rejected' if is_rejected else 'Pending Renewal Order'),
-                'time_taken': 'Within SLA',
+                'time_taken': real_time_taken,
                 'current_stage': stage_name,
                 'pending_officer_name': 'N/A' if (app.is_approved or is_rejected) else stage_name,
                 'steps': steps
@@ -2544,7 +2632,9 @@ def secretary_timeline_overview(request):
                     'category': cat_norm,
                     'current_stage': stage_name,
                     'pending_officer_name': stage_name,
-                    'days_elapsed': 'Pending Review',
+                    'days_elapsed': pending_duration_str or 'Pending Review',
+                    'pending_duration': pending_duration_str,
+                    'pendingDuration': pending_duration_str,
                     'sla_status': 'On Track (SLA: 7 Days)',
                     'submission_date': '2026-04-01'
                 })
