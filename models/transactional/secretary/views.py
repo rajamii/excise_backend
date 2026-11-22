@@ -2068,15 +2068,39 @@ def _build_complete_workflow_steps(app_id, applicant, est_name, stage_name, is_a
         if step_num == 6 and (is_approved or step_num <= active_step_idx):
             license_fee_val = 25000.0 if ('manufacturing' in str(app_id).lower() or 'distill' in str(est_name).lower()) else 15000.0
             security_fd_val = 50000.0 if ('manufacturing' in str(app_id).lower() or 'distill' in str(est_name).lower()) else 25000.0
+            try:
+                from models.transactional.new_license_application.models import NewLicenseApplication
+                from models.masters.core.models import LicenseFee
+                target_nla = NewLicenseApplication.objects.filter(application_id=str(app_id)).first()
+                if target_nla and target_nla.licensee_fee_id:
+                    lf_obj = LicenseFee.objects.filter(id=target_nla.licensee_fee_id).first()
+                    if lf_obj:
+                        if lf_obj.license_fee:
+                            license_fee_val = float(lf_obj.license_fee)
+                        if lf_obj.security_amount:
+                            security_fd_val = float(lf_obj.security_amount)
+            except Exception:
+                pass
+
             payment_breakdown = {
                 'license_fee': {
                     'amount': license_fee_val,
                     'paid_at': step_dt_str,
                     'status': 'Payment Completed (Online Wallet Settlement)'
                 },
+                'licenseFee': {
+                    'amount': license_fee_val,
+                    'paidAt': step_dt_str,
+                    'status': 'Payment Completed (Online Wallet Settlement)'
+                },
                 'security_deposit': {
                     'amount': security_fd_val,
                     'paid_at': step_dt_str,
+                    'status': 'Security FD Escrow Deposit Verified'
+                },
+                'securityDeposit': {
+                    'amount': security_fd_val,
+                    'paidAt': step_dt_str,
                     'status': 'Security FD Escrow Deposit Verified'
                 }
             }
