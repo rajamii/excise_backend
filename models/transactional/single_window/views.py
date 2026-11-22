@@ -5,14 +5,58 @@ from rest_framework.decorators import api_view, permission_classes, renderer_cla
 from rest_framework.renderers import JSONRenderer, BrowsableAPIRenderer
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status as http_status
 
 from auth.user.models import CustomUser
 from models.masters.license.models import License
 from models.transactional.new_license_application.models import NewLicenseApplication
 from models.transactional.license_renewal_application.models import LicenseApplication as RenewalApplication
 from models.transactional.salesman_barman.models import SalesmanBarmanModel
-from models.transactional.helpers import _filter_by_user_district, _is_district_scoped_role
+from models.transactional.helpers import _filter_by_user_district, _is_district_scoped_role, _normalize_role, _get_user_district_code
+
+
+def _is_admin_or_officer(user):
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+    if getattr(user, 'is_superuser', False) or getattr(user, 'is_staff', False):
+        return True
+    role = _normalize_role(getattr(getattr(user, 'role', None), 'name', None))
+    admin_roles = {
+        'commissioner', 'secretary', 'deputy_commissioner', 'joint_commissioner',
+        'district_user', 'district_collector', 'district_admin',
+        'sub_enquiry_officer', 'site_inquiry_officer', 'site_enquiry_officer', 'site_inquiry',
+        'officer_in_charge', 'offcier_in_charge', 'it_cell', 'permit_section',
+        'single_window', 'site_admin'
+    }
+    return role in admin_roles
+
+
+def _can_access_user_profile(request_user, target_user):
+    if _is_admin_or_officer(request_user):
+        if _is_district_scoped_role(request_user):
+            user_dist = _get_user_district_code(request_user)
+            target_dist = _get_user_district_code(target_user)
+            if user_dist and target_dist and str(user_dist) != str(target_dist):
+                return False
+        return True
+    return getattr(request_user, 'id', None) == getattr(target_user, 'id', None)
+
+
+def _can_access_application(request_user, app_or_lic):
+    if _is_admin_or_officer(request_user):
+        if _is_district_scoped_role(request_user):
+            user_dist = _get_user_district_code(request_user)
+            dist_obj = (
+                getattr(app_or_lic, 'site_district', None) or
+                getattr(app_or_lic, 'excise_district', None) or
+                getattr(app_or_lic, 'district', None)
+            )
+            app_dist_code = getattr(dist_obj, 'district_code', None) or getattr(dist_obj, 'pk', None) or getattr(app_or_lic, 'district_id', None)
+            if user_dist and app_dist_code and str(user_dist) != str(app_dist_code):
+                return False
+        return True
+    applicant_id = getattr(app_or_lic, 'applicant_id', None)
+    return applicant_id is not None and applicant_id == getattr(request_user, 'id', None)
 
 
 def get_current_run_start_time(content_type, object_id):
@@ -350,6 +394,12 @@ def serialize_payment_transactions(app_id):
 @renderer_classes([JSONRenderer, BrowsableAPIRenderer])
 @permission_classes([IsAuthenticated])
 def single_window_search(request):
+    if not _is_admin_or_officer(request.user):
+        return Response(
+            {"detail": "You do not have permission to access the Single Window search registry."},
+            status=http_status.HTTP_403_FORBIDDEN
+        )
+
     raw_query = request.query_params.get("query", "").strip()
     if not raw_query:
         return Response({"results": []})
@@ -1377,6 +1427,12 @@ def single_window_licensee_detail(request, user_id):
     else:
         u = get_object_or_404(CustomUser, username__iexact=user_id_str)
 
+    if not _can_access_user_profile(request.user, u):
+        return Response(
+            {"detail": "You do not have permission to access another user's records."},
+            status=http_status.HTTP_403_FORBIDDEN
+        )
+
     user_data = {
         "id": u.id,
         "username": u.username,
@@ -1463,6 +1519,12 @@ def single_window_licensee_detail(request, user_id):
 @permission_classes([IsAuthenticated])
 def single_window_new_app_detail(request, application_id):
     app = get_object_or_404(NewLicenseApplication, application_id=application_id)
+
+    if not _can_access_application(request.user, app):
+        return Response(
+            {"detail": "You do not have permission to view this application."},
+            status=http_status.HTTP_403_FORBIDDEN
+        )
 
     # Pending stage/role info
     stage_obj = app.current_stage
@@ -1666,6 +1728,12 @@ def single_window_new_app_detail(request, application_id):
 def single_window_renewal_app_detail(request, application_id):
     app = get_object_or_404(RenewalApplication, application_id=application_id)
 
+    if not _can_access_application(request.user, app):
+        return Response(
+            {"detail": "You do not have permission to view this application."},
+            status=http_status.HTTP_403_FORBIDDEN
+        )
+
     r_stage_name = app.current_stage.name if app.current_stage else "Draft"
     r_stage_lower = r_stage_name.lower()
     if "terminat" in r_stage_lower:
@@ -1726,6 +1794,12 @@ def single_window_renewal_app_detail(request, application_id):
 def single_window_license_detail(request, license_id):
     lic = get_object_or_404(License, license_id=license_id)
 
+    if not _can_access_application(request.user, lic):
+        return Response(
+            {"detail": "You do not have permission to view this license."},
+            status=http_status.HTTP_403_FORBIDDEN
+        )
+
     data = {
         "license_id": lic.license_id,
         "applicant_name": f"{lic.applicant.first_name} {lic.applicant.last_name}" if lic.applicant else "N/A",
@@ -1747,6 +1821,12 @@ def single_window_license_detail(request, license_id):
 @permission_classes([IsAuthenticated])
 def single_window_salesman_barman_detail(request, application_id):
     app = get_object_or_404(SalesmanBarmanModel, application_id=application_id)
+
+    if not _can_access_application(request.user, app):
+        return Response(
+            {"detail": "You do not have permission to view this application."},
+            status=http_status.HTTP_403_FORBIDDEN
+        )
 
     s_stage_name = app.current_stage.name if app.current_stage else "Draft"
     s_stage_lower = s_stage_name.lower()
@@ -1801,6 +1881,12 @@ def single_window_salesman_barman_detail(request, application_id):
 @renderer_classes([JSONRenderer, BrowsableAPIRenderer])
 @permission_classes([IsAuthenticated])
 def single_window_latest_created(request):
+    if not _is_admin_or_officer(request.user):
+        return Response(
+            {"detail": "You do not have permission to access registry counts."},
+            status=http_status.HTTP_403_FORBIDDEN
+        )
+
     try:
         users_count = CustomUser.objects.exclude(role__name='Licensee').count()
         records_count = NewLicenseApplication.objects.count()
@@ -1817,5 +1903,5 @@ def single_window_latest_created(request):
     except Exception as e:
         return Response({
             "error": str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        }, status=http_status.HTTP_500_INTERNAL_SERVER_ERROR)
 
