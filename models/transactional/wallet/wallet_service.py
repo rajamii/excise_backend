@@ -659,14 +659,47 @@ def create_or_update_security_deposit_record(
                         .order_by("-id")
                         .first()
                     )
+                if not fee and getattr(app_obj, "license_category", None):
+                    fee = (
+                        LicenseFee.objects.filter(
+                            license_category=app_obj.license_category
+                        )
+                        .order_by("-id")
+                        .first()
+                    )
                 if fee and getattr(fee, "security_amount", None) is not None:
                     resolved_amount = Decimal(str(fee.security_amount)).quantize(Decimal("0.01"))
             except Exception:
                 pass
 
+        if resolved_amount is None:
+            resolved_amount = Decimal("25000.00")
+
         txn_id = str(transaction_id or "").strip()
         ref_no = str(reference_no or app_id or txn_id).strip()
-        pay_date = payment_date or timezone.now()
+        pay_date = payment_date
+        if not pay_date and app_obj:
+            try:
+                from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+                bd_tx = (
+                    PaymentBilldeskTransaction.objects.filter(
+                        payer_id__iexact=app_id,
+                        payment_status="S",
+                    )
+                    .order_by("-transaction_date")
+                    .first()
+                )
+                if bd_tx and bd_tx.transaction_date:
+                    pay_date = bd_tx.transaction_date
+                    if not txn_id:
+                        txn_id = str(bd_tx.utr or bd_tx.transaction_id_no_hoa or "")
+            except Exception:
+                pass
+            if not pay_date:
+                pay_date = getattr(app_obj, "updated_at", None) or getattr(app_obj, "created_at", None)
+        if not pay_date:
+            pay_date = timezone.now()
+
         rem = str(remarks or f"Security deposit paid for {app_id}").strip()
 
         with transaction.atomic():
@@ -686,10 +719,12 @@ def create_or_update_security_deposit_record(
                 elif amount is not None:
                     record.amount = Decimal(str(amount)).quantize(Decimal("0.01"))
                 else:
-                    record.amount = Decimal("5000.00")
+                    record.amount = Decimal("25000.00")
             else:
-                if amount is not None and resolved_amount is not None:
+                if resolved_amount is not None and resolved_amount > Decimal("0.00") and (not record.amount or record.amount <= Decimal("5000.00")):
                     record.amount = resolved_amount
+                elif amount is not None:
+                    record.amount = Decimal(str(amount)).quantize(Decimal("0.01"))
                 elif (not record.amount or record.amount <= Decimal("0.00")) and resolved_amount is not None:
                     record.amount = resolved_amount
 

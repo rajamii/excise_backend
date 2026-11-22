@@ -177,3 +177,40 @@ class LicenseValidationToken(models.Model):
             models.Index(fields=['license']),
             models.Index(fields=['created_at']),
         ]
+
+
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+
+
+@receiver(post_save, sender=License)
+def sync_license_to_security_deposit_record(sender, instance, **kwargs):
+    """
+    As soon as a License is generated and saved (active), automatically
+    links its license_id to the applicant's SecurityDepositRecord.
+    """
+    try:
+        if not instance.license_id:
+            return
+        from models.transactional.wallet.models import SecurityDepositRecord
+        from django.db.models import Q
+
+        rec = None
+        # Match by application ID if source_object_id is present
+        if instance.source_object_id:
+            rec = SecurityDepositRecord.objects.filter(
+                Q(application_id__iexact=str(instance.source_object_id))
+            ).first()
+
+        # Or match by applicant if license_id not set yet
+        if not rec and instance.applicant_id:
+            rec = SecurityDepositRecord.objects.filter(
+                Q(applicant_user_id=str(instance.applicant_id)) | Q(user_id=instance.applicant_id),
+                Q(license_id__isnull=True) | Q(license_id="")
+            ).order_by("-created_at").first()
+
+        if rec and (not rec.license_id or rec.license_id != instance.license_id):
+            rec.license_id = str(instance.license_id).strip()
+            rec.save(update_fields=["license_id"])
+    except Exception:
+        pass

@@ -565,6 +565,45 @@ def wallet_recharge_credit(request, licensee_id):
     )
 
 
+def _sync_security_deposit_records():
+    """
+    Ensures that any NewLicenseApplication or RenewalApplication where
+    is_security_fee_paid=True is automatically synchronized into the
+    SecurityDepositRecord table so that the admin dashboard reflects all paid deposits.
+    Also automatically links any newly generated license_id as soon as the license becomes active.
+    """
+    try:
+        from models.transactional.new_license_application.models import NewLicenseApplication
+        from models.masters.license.models import License
+        from .wallet_service import create_or_update_security_deposit_record
+
+        existing_app_ids = set(
+            SecurityDepositRecord.objects.values_list("application_id", flat=True)
+        )
+        paid_apps = NewLicenseApplication.objects.filter(is_security_fee_paid=True)
+        for app in paid_apps:
+            if app.application_id and app.application_id not in existing_app_ids:
+                create_or_update_security_deposit_record(
+                    application=app,
+                    user=app.applicant,
+                    remarks=f"Synchronized security deposit for application {app.application_id}",
+                )
+
+        # Also link license_id for any existing records where the license was generated after deposit payment
+        unlinked_records = SecurityDepositRecord.objects.filter(
+            Q(license_id__isnull=True) | Q(license_id="")
+        )
+        for rec in unlinked_records:
+            lic = License.objects.filter(
+                Q(source_object_id=rec.application_id) | Q(applicant_id=rec.user_id)
+            ).order_by("-issue_date").first()
+            if lic and lic.license_id:
+                rec.license_id = str(lic.license_id).strip()
+                rec.save(update_fields=["license_id"])
+    except Exception as e:
+        logger.warning("Failed to auto-sync security deposit records: %s", e)
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def security_deposit_record_list(request):
@@ -574,6 +613,8 @@ def security_deposit_record_list(request):
     """
     from django.db.models import Sum, Count
     from .serializers import SecurityDepositRecordSerializer
+
+    _sync_security_deposit_records()
 
     qs = SecurityDepositRecord.objects.all().order_by("-payment_date", "-created_at")
 
