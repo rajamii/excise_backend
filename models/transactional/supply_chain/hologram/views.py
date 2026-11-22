@@ -3234,7 +3234,8 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
         Shows: Applied, Under Process, Completed On Time, Completed Late, Overdue
         """
         from django.db.models import Q
-        from datetime import datetime, time
+        from datetime import datetime, time, timedelta, timezone
+        from zoneinfo import ZoneInfo
         from django.utils import timezone as django_timezone
         from models.masters.core.models import SupplyChainTimerConfig
         
@@ -3302,6 +3303,8 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
             deadline_minutes = int(deadline_minutes or 0) % (24 * 60)
             deadline_time = time(hour=deadline_minutes // 60, minute=deadline_minutes % 60)
             deadline_label = datetime.combine(datetime.today().date(), deadline_time).strftime('%I:%M %p')
+            ist_tz = ZoneInfo('Asia/Kolkata')
+            now = django_timezone.now()
 
             result_data = []
             
@@ -3396,97 +3399,116 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                     else:
                         status_message = 'Rejected'
                 
-                # Calculate deadline and SLA if approved
-                if approval_txn:
-                    # Deadline is configurable time on approval date
-                    approval_date = approval_txn.timestamp.date()
-                    deadline_naive = datetime.combine(approval_date, deadline_time)
-                    deadline = django_timezone.make_aware(deadline_naive) if django_timezone.is_naive(deadline_naive) else deadline_naive
+                # Calculate deadline and SLA based on application submission date (deadline: Next Day 5:00 PM IST)
+                base_dt = submission_txn.timestamp if submission_txn else getattr(req, 'submission_date', None)
+                if not base_dt and approval_txn:
+                    base_dt = approval_txn.timestamp
+
+                if base_dt:
+                    if django_timezone.is_naive(base_dt):
+                        base_dt = django_timezone.make_aware(base_dt, timezone.utc)
+                    base_dt_ist = base_dt.astimezone(ist_tz)
+                    target_date = base_dt_ist.date() + timedelta(days=1)
+                    deadline_ist = datetime.combine(target_date, deadline_time, tzinfo=ist_tz)
+                    deadline = deadline_ist.astimezone(timezone.utc)
+
+                # If status is REJECTED, deadline SLA does not mark it overdue
+                if status == 'REJECTED':
+                    completed_on_time = None
+                    is_overdue = False
+                    time_remaining = status_message
+                # Completed: decide on-time vs late based on OIC save timestamp (created_at)
+                elif status == 'COMPLETED' and daily_entries.exists():
+                    last_entry = daily_entries.order_by('-created_at', '-id').first()
+                    completion_datetime = last_entry.created_at if last_entry and last_entry.created_at else None
                     
-                    now = django_timezone.now()
+                    if completion_datetime is None and last_entry and last_entry.usage_date:
+                        fallback_naive = datetime.combine(last_entry.usage_date, datetime.strptime('00:00', '%H:%M').time())
+                        completion_datetime = django_timezone.make_aware(fallback_naive) if django_timezone.is_naive(fallback_naive) else fallback_naive
+                    elif completion_datetime is not None and django_timezone.is_naive(completion_datetime):
+                        completion_datetime = django_timezone.make_aware(completion_datetime)
+                    
+                    completion_date = last_entry.usage_date.isoformat() if last_entry and last_entry.usage_date else None
+                    completion_time = completion_datetime.astimezone(ist_tz).strftime('%H:%M:%S') if completion_datetime else None
+                    completed_on_time = completion_datetime <= deadline if (completion_datetime and deadline) else None
+                    is_overdue = False
+                    if completed_on_time is False:
+                        time_remaining = f"Completed Late (saved at {completion_time})"
+                    elif completed_on_time is True:
+                        time_remaining = f"Completed On Time (saved at {completion_time})"
+                    
+                    # Get officer who entered the data
+                    if last_entry and last_entry.licensee:
+                        officer_name = last_entry.licensee.manufacturing_unit_name
+                    
+                    # Get brands entered with allocated/issued/wastage and roll details
+                    for entry in daily_entries:
+                        rolls_assigned = []
+                        for roll in entry.rolls_used.all():
+                            rolls_assigned.append({
+                                'rollId': roll.id,
+                                'cartoonNumber': roll.carton_number,
+                                'rollNumber': roll.roll_no,
+                                'quantity': roll.available,
+                                'fromSerial': roll.from_serial,
+                                'toSerial': roll.to_serial,
+                            })
 
-                    # Completed: decide on-time vs late based on OIC save timestamp (created_at)
-                    if status == 'COMPLETED' and daily_entries.exists():
-                        last_entry = daily_entries.order_by('-created_at', '-id').first()
-                        completion_datetime = last_entry.created_at if last_entry and last_entry.created_at else None
-                        
-                        if completion_datetime is None and last_entry and last_entry.usage_date:
-                            fallback_naive = datetime.combine(last_entry.usage_date, datetime.strptime('00:00', '%H:%M').time())
-                            completion_datetime = django_timezone.make_aware(fallback_naive) if django_timezone.is_naive(fallback_naive) else fallback_naive
-                        elif completion_datetime is not None and django_timezone.is_naive(completion_datetime):
-                            completion_datetime = django_timezone.make_aware(completion_datetime)
-                        
-                        completion_date = last_entry.usage_date.isoformat() if last_entry and last_entry.usage_date else None
-                        completion_time = completion_datetime.strftime('%H:%M:%S') if completion_datetime else None
-                        completed_on_time = completion_datetime <= deadline if completion_datetime else None
-                        is_overdue = False
-                        if completed_on_time is False:
-                            time_remaining = f"Completed Late (saved at {completion_time})"
-                        elif completed_on_time is True:
-                            time_remaining = f"Completed On Time (saved at {completion_time})"
-                        
-                        # Get officer who entered the data
-                        if last_entry and last_entry.licensee:
-                            officer_name = last_entry.licensee.manufacturing_unit_name
-                        
-                        # Get brands entered with allocated/issued/wastage and roll details
-                        for entry in daily_entries:
-                            rolls_assigned = []
-                            for roll in entry.rolls_used.all():
-                                rolls_assigned.append({
-                                    'rollId': roll.id,
-                                    'cartoonNumber': roll.carton_number,
-                                    'rollNumber': roll.roll_no,
-                                    'quantity': roll.available,
-                                    'fromSerial': roll.from_serial,
-                                    'toSerial': roll.to_serial,
-                                })
+                        serial_ranges = []
+                        for r in (entry.issued_ranges or []):
+                            serial_ranges.append({
+                                'from': r.get('fromSerial') or r.get('from') or r.get('issuedFromSerial') or '',
+                                'to': r.get('toSerial') or r.get('to') or r.get('issuedToSerial') or '',
+                                'count': r.get('quantity') or r.get('count') or 0,
+                                'type': 'ISSUED',
+                            })
+                        for r in (entry.wastage_ranges or []):
+                            serial_ranges.append({
+                                'from': r.get('fromSerial') or r.get('from') or r.get('wastageFromSerial') or '',
+                                'to': r.get('toSerial') or r.get('to') or r.get('wastageToSerial') or '',
+                                'count': r.get('quantity') or r.get('count') or 0,
+                                'type': 'WASTAGE',
+                            })
 
-                            serial_ranges = []
-                            for r in (entry.issued_ranges or []):
-                                serial_ranges.append({
-                                    'from': r.get('fromSerial') or r.get('from') or r.get('issuedFromSerial') or '',
-                                    'to': r.get('toSerial') or r.get('to') or r.get('issuedToSerial') or '',
-                                    'count': r.get('quantity') or r.get('count') or 0,
-                                    'type': 'ISSUED',
-                                })
-                            for r in (entry.wastage_ranges or []):
-                                serial_ranges.append({
-                                    'from': r.get('fromSerial') or r.get('from') or r.get('wastageFromSerial') or '',
-                                    'to': r.get('toSerial') or r.get('to') or r.get('wastageToSerial') or '',
-                                    'count': r.get('quantity') or r.get('count') or 0,
-                                    'type': 'WASTAGE',
-                                })
-
-                            if entry.brand_details:
-                                brands_entered.append({
-                                    'brand': entry.brand_details,
-                                    'brandCode': entry.brand_details,
-                                    'bottleSize': entry.bottle_size or '',
-                                    'allocatedQty': entry.hologram_qty or 0,
-                                    'issuedQty': entry.issued_qty or 0,
-                                    'wastageQty': entry.wastage_qty or 0,
-                                    'damageReason': entry.damage_reason or '',
-                                    'rollRange': entry.roll_range or '',
-                                    'quantity': entry.issued_qty or 0,  # backward-compatible
-                                    'usageDate': entry.usage_date.isoformat(),
-                                    'savedAt': entry.created_at.isoformat() if entry.created_at else '',
-                                    'rollsAssigned': rolls_assigned,
-                                    'serialRanges': serial_ranges,
-                                })
-                    elif status in {'UNDER_PROCESS', 'APPLIED'}:
-                        # OIC has not saved daily entry yet; track remaining time vs configured deadline
+                        if entry.brand_details:
+                            brands_entered.append({
+                                'brand': entry.brand_details,
+                                'brandCode': entry.brand_details,
+                                'bottleSize': entry.bottle_size or '',
+                                'allocatedQty': entry.hologram_qty or 0,
+                                'issuedQty': entry.issued_qty or 0,
+                                'wastageQty': entry.wastage_qty or 0,
+                                'damageReason': entry.damage_reason or '',
+                                'rollRange': entry.roll_range or '',
+                                'quantity': entry.issued_qty or 0,  # backward-compatible
+                                'usageDate': entry.usage_date.isoformat(),
+                                'savedAt': entry.created_at.isoformat() if entry.created_at else '',
+                                'rollsAssigned': rolls_assigned,
+                                'serialRanges': serial_ranges,
+                            })
+                elif status in {'UNDER_PROCESS', 'APPLIED'}:
+                    # OIC has not saved daily entry yet; track remaining time vs configured deadline
+                    if deadline:
                         if now > deadline:
                             is_overdue = True
                             overdue_seconds = int((now - deadline).total_seconds())
-                            overdue_hours = overdue_seconds // 3600
+                            overdue_days = overdue_seconds // 86400
+                            overdue_hours = (overdue_seconds % 86400) // 3600
                             overdue_minutes = (overdue_seconds % 3600) // 60
-                            time_remaining = f"Overdue by {overdue_hours}h {overdue_minutes}m (deadline {deadline_label})"
+                            if overdue_days > 0:
+                                time_remaining = f"Overdue by {overdue_days}d {overdue_hours}h"
+                            else:
+                                time_remaining = f"Overdue by {overdue_hours}h {overdue_minutes}m"
                         else:
+                            is_overdue = False
                             remaining_seconds = int((deadline - now).total_seconds())
-                            hours_left = remaining_seconds // 3600
+                            days_left = remaining_seconds // 86400
+                            hours_left = (remaining_seconds % 86400) // 3600
                             minutes_left = (remaining_seconds % 3600) // 60
-                            time_remaining = f"{hours_left}h {minutes_left}m remaining (deadline {deadline_label})"
+                            if days_left > 0:
+                                time_remaining = f"{days_left}d {hours_left}h remaining"
+                            else:
+                                time_remaining = f"{hours_left}h {minutes_left}m remaining"
                 
                 
                 result_data.append({
@@ -3494,9 +3516,9 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                     'referenceNo': req.ref_no,
                     'distilleryName': req.licensee.manufacturing_unit_name if req.licensee else 'Unknown',
                     'submissionDate': submission_txn.timestamp.isoformat() if submission_txn else req.submission_date.isoformat(),
-                    'submissionTime': submission_txn.timestamp.strftime('%H:%M:%S') if submission_txn else '00:00:00',
-                    'approvalDate': approval_txn.timestamp.date().isoformat() if approval_txn else None,
-                    'approvalTime': approval_txn.timestamp.strftime('%H:%M:%S') if approval_txn else None,
+                    'submissionTime': submission_txn.timestamp.astimezone(ist_tz).strftime('%H:%M:%S') if submission_txn else (req.submission_date.astimezone(ist_tz).strftime('%H:%M:%S') if req.submission_date else '00:00:00'),
+                    'approvalDate': approval_txn.timestamp.isoformat() if approval_txn else None,
+                    'approvalTime': approval_txn.timestamp.astimezone(ist_tz).strftime('%H:%M:%S') if approval_txn else None,
                     'usageDate': req.usage_date.isoformat(),
                     'hologramType': req.hologram_type,
                     'quantity': req.quantity,
@@ -3508,6 +3530,7 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                     'deadline': deadline.isoformat() if deadline else None,
                     'completionDate': completion_date,
                     'completionTime': completion_time,
+                    'completionDateTime': completion_datetime.isoformat() if completion_datetime else None,
                     'officerName': officer_name,
                     'brandsEntered': brands_entered,
                     'currentStage': req.current_stage.name if req.current_stage else 'Unknown'
