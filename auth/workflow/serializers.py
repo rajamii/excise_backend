@@ -67,6 +67,29 @@ class WorkflowTransactionSerializer(serializers.ModelSerializer):
             return None
         return str(getattr(role, 'name', '') or '').strip() or None
 
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        remarks = str(ret.get('remarks') or '').strip()
+        if remarks:
+            lower = remarks.lower()
+            if lower in ['approved', 'action: approve'] or lower.startswith('approved'):
+                forwarded_by_role = getattr(instance, 'forwarded_by', None)
+                f_name = str(getattr(forwarded_by_role, 'name', '') or '').lower().strip()
+                performed_by_user = getattr(instance, 'performed_by', None)
+                p_role = getattr(performed_by_user, 'role', None)
+                p_name = str(getattr(p_role, 'name', '') or '').lower().strip()
+
+                def is_strict_commissioner(name):
+                    if not name or name == '-':
+                        return False
+                    if any(sub in name for sub in ['joint', 'deputy', 'assistant', 'sub']):
+                        return False
+                    return 'commissioner' in name
+
+                if not (is_strict_commissioner(f_name) or is_strict_commissioner(p_name)):
+                    ret['remarks'] = 'Forwarded'
+        return ret
+
 class WorkflowObjectionSerializer(serializers.ModelSerializer):
     raisedByName = serializers.SerializerMethodField()
     resolvedByName = serializers.SerializerMethodField()

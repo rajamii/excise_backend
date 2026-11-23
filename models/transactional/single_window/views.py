@@ -184,6 +184,19 @@ def serialize_workflow_history(obj):
             remarks_str = (tx.remarks or "").strip()
             rem_lower = remarks_str.lower()
             stage_lower = stage_name.lower()
+
+            def is_strict_comm(name):
+                if not name or name == '-':
+                    return False
+                r = name.lower()
+                if any(sub in r for sub in ['joint', 'deputy', 'assistant', 'sub']):
+                    return False
+                return 'commissioner' in r
+
+            # If an approval remark is recorded for a non-commissioner role, treat it as Forwarded
+            if (rem_lower in ['approved', 'action: approve'] or rem_lower.startswith('approved')) and not is_strict_comm(from_role):
+                remarks_str = "Forwarded"
+                rem_lower = "forwarded"
             
             # Action classification
             is_reverted = "revert" in rem_lower or "revert" in stage_lower

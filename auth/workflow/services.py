@@ -859,6 +859,20 @@ class WorkflowService:
 
         # ---------- Log ----------
         user_for_txn = user if (user and getattr(user, 'is_authenticated', False)) else (getattr(application, 'applicant', None) or user)
+        txn_remarks = remarks or context.get("remarks", "")
+        if txn_remarks:
+            lower_rem = str(txn_remarks).strip().lower()
+            if lower_rem in ['approved', 'action: approve'] or lower_rem.startswith('approved'):
+                user_role_name = str(getattr(getattr(user_for_txn, "role", None), "name", "") or "").lower().strip()
+                def is_strict_comm(name):
+                    if not name or name == '-':
+                        return False
+                    if any(sub in name for sub in ['joint', 'deputy', 'assistant', 'sub']):
+                        return False
+                    return 'commissioner' in name
+                if not is_strict_comm(user_role_name):
+                    txn_remarks = "Forwarded"
+
         Transaction.objects.create(
             content_type=ContentType.objects.get_for_model(application),
             object_id=str(application.pk),
@@ -866,7 +880,7 @@ class WorkflowService:
             forwarded_by=getattr(user_for_txn, "role", None),
             forwarded_to=forwarded_to,
             stage=target_stage,
-            remarks=remarks or context.get("remarks", "")
+            remarks=txn_remarks
         )
 
         action = str((context or {}).get("action") or "").strip().upper()
