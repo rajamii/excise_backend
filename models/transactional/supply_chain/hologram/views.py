@@ -699,8 +699,7 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                 if normalized_action == 'pay':
                     wallet_result = self._debit_hologram_wallet_for_payment(instance, request.user)
 
-                instance.current_stage = selected_transition.to_stage
-                
+                is_partial_assignment = False
                 # CRITICAL: Save carton_details if provided with the action
                 if normalized_action == 'assign_cartons':
                     carton_details = request.data.get('carton_details')
@@ -729,6 +728,24 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                         # Sync to new table
                         # OIC UX: the officer who assigns/saves cartons is effectively the receiver of the rolls.
                         self._sync_rolls_details(instance, carton_details, acting_user=request.user, mark_received_by=True)
+
+                        # Determine if this is a partial carton assignment
+                        expected_qty = (instance.local_qty or 0) + (instance.export_qty or 0) + (instance.defence_qty or 0)
+                        carton_total = sum([
+                            int(item.get('numberOfHolograms') or item.get('number_of_holograms') or item.get('total_count') or 0)
+                            for item in carton_details if isinstance(item, dict)
+                        ])
+                        is_partial_param = request.data.get('is_partial')
+                        if is_partial_param is not None:
+                            is_partial_assignment = bool(is_partial_param)
+                        else:
+                            is_partial_assignment = (carton_total < expected_qty)
+
+                if is_partial_assignment:
+                    # Keep in current stage (Payment Completed) so OIC can continue updating remaining cartons
+                    pass
+                else:
+                    instance.current_stage = selected_transition.to_stage
 
                 instance.save()
                 
@@ -785,9 +802,9 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
 
                 Transaction.objects.create(
                     application=instance,
-                    stage=selected_transition.to_stage,
+                    stage=instance.current_stage,
                     performed_by=self.request.user,
-                    remarks=remarks or f"Action '{action_name}' performed"
+                    remarks=remarks or (f"Partial cartons assigned" if is_partial_assignment else f"Action '{action_name}' performed")
                 )
         else:
             # ALLOW UPDATE: If action is 'assign_cartons' and we have details, allow update without transition
@@ -1401,7 +1418,21 @@ class HologramProcurementViewSet(viewsets.ModelViewSet):
                             changed = True
                         if changed:
                             obj.save(update_fields=['received_by', 'received_by_display_name', 'confirmed_at', 'updated_by'])
-                    
+
+            # Clean up rolls belonging to this procurement that were removed from carton_details
+            # (only if completely untouched/unissued, i.e. status='AVAILABLE' and used=0)
+            incoming_carton_numbers = [
+                item.get('cartoonNumber') or item.get('cartoon_number') or item.get('carton_number')
+                for item in carton_details
+                if isinstance(item, dict) and (item.get('cartoonNumber') or item.get('cartoon_number') or item.get('carton_number'))
+            ]
+            if incoming_carton_numbers:
+                HologramRollsDetails.objects.filter(
+                    procurement=procurement,
+                    status='AVAILABLE',
+                    used=0,
+                    damaged=0
+                ).exclude(carton_number__in=incoming_carton_numbers).delete()
         except Exception as e:
             logger.exception("Unhandled error while updating hologram rolls details")
 
