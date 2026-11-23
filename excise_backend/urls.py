@@ -20,6 +20,7 @@ urlpatterns = [
     path('api/transactional/company-registration/', include(('models.transactional.company_registration.urls', 'company_registration_api'), namespace='company_registration_api')),
     path('api/secretary/', include('models.transactional.secretary.urls')),
     path('secretary/', include('models.transactional.secretary.urls')),
+    path('api/documents/', include(('models.transactional.dms_documents.urls', 'api_dms_documents'), namespace='api_dms_documents')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 
 if settings.DEBUG:

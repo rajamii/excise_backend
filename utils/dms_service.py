@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import mimetypes
 import requests
@@ -54,6 +55,7 @@ class DMSService:
 
         self._mongo_client = None
         self._grid_fs = None
+        self._temp_grid_fs = None
         self._crypto = None
 
         if HAS_CRYPTO:
@@ -78,12 +80,34 @@ class DMSService:
             self._mongo_client = MongoClient(self.mongo_uri, serverSelectionTimeoutMS=1000)
             self._mongo_client.admin.command('ping')
             db = self._mongo_client[self.mongo_db_name]
+            self.mongo_db = db
             self._grid_fs = gridfs.GridFS(db)
             return self._grid_fs
         except Exception as exc:
             print(f"[DMS WARNING] MongoDB connection failed: {exc}")
             logger.warning("MongoDB connection failed or unavailable (%s)", exc)
             return None
+
+    def _get_temp_gridfs(self):
+        """
+        Returns the dedicated GridFS bucket for temporary/draft uploads.
+        Stores files in:
+        - fs_temp.files
+        - fs_temp.chunks
+        """
+        if self._temp_grid_fs is not None:
+            return self._temp_grid_fs
+        try:
+            self._get_gridfs()
+            mdb = getattr(self, 'mongo_db', None)
+            if mdb is None and self._mongo_client is not None:
+                mdb = self._mongo_client[self.mongo_db_name]
+            if mdb is not None:
+                self._temp_grid_fs = gridfs.GridFS(mdb, collection='fs_temp')
+                return self._temp_grid_fs
+        except Exception as exc:
+            logger.warning("Temporary GridFS (fs_temp) initialization failed: %s", exc)
+        return None
 
     def sign_and_encrypt_payload(
         self,
@@ -284,18 +308,25 @@ class DMSService:
     def download_document(self, dms_reference: str, storage_type: str = "DMS_MONGODB", application_id: str = None) -> tuple[bytes | None, str, str]:
         """
         Retrieves document bytes, filename, and mime_type from MongoDB GridFS or DMS.
+        Supports both permanent bucket (fs) and temporary bucket (fs_temp).
         """
-        # 1. Check if stored in MongoDB GridFS
-        fs = self._get_gridfs()
-        if fs is not None and dms_reference and len(dms_reference) == 24:
-            try:
-                grid_out = fs.get(ObjectId(dms_reference))
-                content = grid_out.read()
-                filename = getattr(grid_out, "filename", f"document_{dms_reference}")
-                mime = getattr(grid_out, "content_type", None) or mimetypes.guess_type(filename)[0] or "application/octet-stream"
-                return content, filename, mime
-            except Exception as exc:
-                logger.warning("Could not find file in MongoDB GridFS by ID %s: %s", dms_reference, exc)
+        # 1. Check if stored in MongoDB GridFS (fs or fs_temp)
+        if dms_reference and len(dms_reference) == 24:
+            if storage_type == "DMS_MONGODB_TEMP":
+                buckets = [self._get_temp_gridfs(), self._get_gridfs()]
+            else:
+                buckets = [self._get_gridfs(), self._get_temp_gridfs()]
+
+            for fs_inst in buckets:
+                if fs_inst is not None:
+                    try:
+                        grid_out = fs_inst.get(ObjectId(dms_reference))
+                        content = grid_out.read()
+                        filename = getattr(grid_out, "filename", f"document_{dms_reference}")
+                        mime = getattr(grid_out, "content_type", None) or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                        return content, filename, mime
+                    except Exception:
+                        pass
 
         # 2. Check Local Fallback
         if storage_type == "LOCAL_FALLBACK" or (dms_reference and ("/" in dms_reference or "\\" in dms_reference)):
@@ -388,6 +419,481 @@ class DMSService:
         except Exception as exc:
             logger.error("Failed to record document (%s, %s): %s", application_type, application_id, exc)
             return None
+
+    @staticmethod
+    def _get_field_candidates(field_name: str) -> list[str]:
+        raw = str(field_name).strip()
+        candidates = {raw, raw.lower()}
+        # camelCase -> snake_case
+        snake = re.sub(r'(?<!^)(?=[A-Z])', '_', raw).lower()
+        candidates.add(snake)
+        # snake_case -> camelCase
+        camel = re.sub(r'_([a-z])', lambda m: m.group(1).upper(), raw)
+        candidates.add(camel)
+
+        alias_groups = [
+            {'passport_photo', 'pass_photo', 'passportPhoto', 'passPhoto', 'applicant_photo', 'applicantPhoto', 'photo'},
+            {'pan_card', 'pancard', 'panCard'},
+            {'aadhar_card', 'aadhar', 'aadharcard', 'aadharCard'},
+            {'treasury_challan', 'challan', 'treasuryChallan', 'challan_doc', 'challanDoc'},
+            {'site_plan', 'sitePlan', 'site_plan_doc', 'sitePlanDoc'},
+            {'salesman_photo', 'salesmanPhoto', 'salesman_image'},
+            {'certificate_of_incorporation', 'certificateOfIncorporation', 'incorporation_certificate'},
+            {'trademark_registration', 'trade_mark_registration', 'tradeMarkRegistration', 'trademarkRegistration'},
+            {'fssai_license', 'fssaiLicense', 'fssai'},
+            {'moa', 'memorandum_of_association', 'memorandumOfAssociation'},
+            {'aoa', 'articles_of_association', 'articlesOfAssociation'},
+            {'board_resolution', 'boardResolution'},
+            {'affidavit', 'affidavit_doc', 'affidavitDoc'},
+            {'power_of_attorney', 'powerOfAttorney'},
+        ]
+        raw_lower = raw.lower()
+        for group in alias_groups:
+            if any(raw_lower == item.lower() for item in group):
+                candidates.update(group)
+        return list(candidates)
+
+    def save_temporary_upload(
+        self,
+        username: str,
+        application_type: str,
+        document_field: str,
+        file_obj,
+        user=None
+    ) -> dict:
+        """
+        Temporarily stores an uploaded document in MongoDB GridFS and PostgreSQL table dms_temperary_uploads.
+        Allows the user to leave the form and come back later with their draft files intact.
+        """
+        if not file_obj:
+            return {"success": False, "error": "No file provided"}
+
+        filename = getattr(file_obj, "name", "document.pdf")
+        clean_user = str(username or getattr(user, "username", "anonymous")).strip()
+        app_type = str(application_type).strip().lower()
+        clean_field = str(document_field).strip()
+
+        # Read file bytes safely
+        try:
+            if hasattr(file_obj, "seek"):
+                file_obj.seek(0)
+            file_bytes = file_obj.read()
+            if hasattr(file_obj, "seek"):
+                file_obj.seek(0)
+        except Exception as read_err:
+            logger.error("Failed to read file bytes: %s", read_err)
+            return {"success": False, "error": str(read_err)}
+
+        if not file_bytes:
+            return {"success": False, "error": "File content is empty"}
+
+        mime = mimetypes.guess_type(filename)[0] or getattr(file_obj, "content_type", None) or "application/octet-stream"
+
+        # Generate HMAC signature
+        signature = ""
+        if self._crypto is not None:
+            try:
+                _, signature = self.sign_and_encrypt_payload(
+                    arn=f"TEMP_{clean_user}_{app_type}",
+                    document_id=clean_field,
+                    doc_type_name=filename,
+                    file_bytes=file_bytes,
+                    beneficiary_mobile=clean_user,
+                    doc_number="07"
+                )
+            except Exception as crypto_err:
+                logger.warning("DMS signing for temporary file failed: %s", crypto_err)
+
+        # Save or update into dms_temperary_uploads table in PostgreSQL
+        try:
+            from models.transactional.dms_documents.models import DMSTemporaryUpload
+            from django.core.files.base import ContentFile
+
+            # 1. Search for existing temporary record for this user, module, and document field (matching aliases and case)
+            candidates = self._get_field_candidates(clean_field)
+            existing = DMSTemporaryUpload.objects.filter(
+                username__iexact=clean_user,
+                application_type=app_type,
+                document_field__in=candidates
+            ).first()
+
+            if not existing:
+                existing = DMSTemporaryUpload.objects.filter(
+                    username__iexact=clean_user,
+                    application_type=app_type,
+                    document_field__iexact=clean_field
+                ).first()
+
+            # 2. If user is replacing an already uploaded file, remove previous file and chunks from MongoDB fs_temp
+            fs_temp = self._get_temp_gridfs()
+            fs_perm = self._get_gridfs()
+
+            if existing and existing.dms_reference and len(existing.dms_reference) == 24:
+                old_ref = existing.dms_reference
+                if fs_temp is not None:
+                    try:
+                        fs_temp.delete(ObjectId(old_ref))
+                        logger.info("Purged previous temporary MongoDB GridFS file (MRN: %s) for user %s, field %s",
+                                    old_ref, clean_user, clean_field)
+                    except Exception as e:
+                        logger.warning("Could not delete previous temp GridFS file %s: %s", old_ref, e)
+                if fs_perm is not None:
+                    try:
+                        fs_perm.delete(ObjectId(old_ref))
+                    except Exception:
+                        pass
+
+            # 3. Clean up previous physical file on disk if any
+            if existing and existing.file:
+                try:
+                    existing.file.delete(save=False)
+                except Exception as e:
+                    logger.warning("Could not delete previous temp physical file: %s", e)
+
+            # 4. Store new file in dedicated temporary MongoDB GridFS bucket (fs_temp.files and fs_temp.chunks)
+            grid_id = None
+            mrn_str = ""
+            storage_type = "LOCAL_FALLBACK"
+
+            if fs_temp is not None:
+                try:
+                    new_id = ObjectId()
+                    mrn_str = str(new_id)
+                    grid_id = fs_temp.put(
+                        file_bytes,
+                        _id=new_id,
+                        mrn=mrn_str,
+                        filename=filename,
+                        application_id=f"TEMP_{clean_user}",
+                        application_type=app_type,
+                        document_field=clean_field,
+                        doc_type_name=filename,
+                        uploaded_by=clean_user,
+                        content_type=mime,
+                        dms_registration_no=self.registration_no,
+                        transaction_signature=signature or None,
+                        is_signed=bool(signature),
+                        status="TEMPORARY"
+                    )
+                    storage_type = "DMS_MONGODB_TEMP"
+                    logger.info("Saved temporary file %s to MongoDB GridFS fs_temp (MRN: %s) for user %s",
+                                clean_field, mrn_str, clean_user)
+                except Exception as mongo_err:
+                    logger.warning("MongoDB GridFS temporary upload failed: %s", mongo_err)
+
+            safe_path = f"dms_temporary_uploads/{clean_user}/{app_type}/{clean_field}_{filename}"
+            content_file = ContentFile(file_bytes, name=filename)
+
+            # 5. In-place update existing row in dms_temperary_uploads, or create new row if none existed
+            if existing:
+                temp_record = existing
+                temp_record.document_field = clean_field
+                temp_record.file = content_file
+                temp_record.dms_reference = mrn_str or safe_path
+                temp_record.dms_registration_no = self.registration_no
+                temp_record.transaction_signature = signature
+                temp_record.original_filename = filename
+                temp_record.file_size = len(file_bytes)
+                temp_record.mime_type = mime
+                temp_record.storage_type = storage_type
+                temp_record.is_signed = bool(signature)
+                temp_record.save()
+                logger.info("In-place updated existing temporary upload row (id: %s) in dms_temperary_uploads for %s/%s",
+                            temp_record.id, clean_user, clean_field)
+            else:
+                temp_record = DMSTemporaryUpload.objects.create(
+                    username=clean_user,
+                    application_type=app_type,
+                    document_field=clean_field,
+                    file=content_file,
+                    dms_reference=mrn_str or safe_path,
+                    dms_registration_no=self.registration_no,
+                    transaction_signature=signature,
+                    original_filename=filename,
+                    file_size=len(file_bytes),
+                    mime_type=mime,
+                    storage_type=storage_type,
+                    is_signed=bool(signature),
+                )
+                logger.info("Created new temporary upload row (id: %s) in dms_temperary_uploads for %s/%s",
+                            temp_record.id, clean_user, clean_field)
+
+            download_url = f"/transactional/dms/temporary-download/{app_type}/{clean_field}/"
+            return {
+                "success": True,
+                "msg": "Temporary document uploaded successfully",
+                "id": temp_record.id,
+                "username": clean_user,
+                "application_type": app_type,
+                "document_field": clean_field,
+                "mrn": mrn_str,
+                "dms_reference": temp_record.dms_reference,
+                "original_filename": filename,
+                "file_size": len(file_bytes),
+                "mime_type": mime,
+                "storage_type": storage_type,
+                "download_url": download_url,
+                "uploaded_at": temp_record.updated_at.isoformat() if temp_record.updated_at else None
+            }
+        except Exception as db_err:
+            logger.error("Failed to save DMSTemporaryUpload record: %s", db_err)
+            return {"success": False, "error": str(db_err)}
+
+    def list_temporary_uploads(self, username: str = None, application_type: str = None) -> list:
+        """
+        Lists active draft/temporary documents uploaded by a user (or for a module).
+        Provides both snake_case and camelCase keys for seamless DRF / frontend binding.
+        """
+        try:
+            from models.transactional.dms_documents.models import DMSTemporaryUpload
+            qs = DMSTemporaryUpload.objects.all()
+
+            if username:
+                clean_user = str(username).strip()
+                if clean_user.lower() in ('anon', 'anonymous'):
+                    qs = qs.filter(username__in=['anonymous', 'anon', ''])
+                else:
+                    qs = qs.filter(username__iexact=clean_user)
+
+            if application_type:
+                qs = qs.filter(application_type__iexact=str(application_type).strip().lower())
+
+            qs = qs.order_by('-updated_at')
+
+            results = []
+            for item in qs:
+                download_path = f"/transactional/dms/temporary-download/{item.application_type}/{item.document_field}/"
+                results.append({
+                    "id": item.id,
+                    "username": item.username,
+                    "application_type": item.application_type,
+                    "applicationType": item.application_type,
+                    "document_field": item.document_field,
+                    "documentField": item.document_field,
+                    "mrn": item.dms_reference,
+                    "dms_reference": item.dms_reference,
+                    "dmsReference": item.dms_reference,
+                    "original_filename": item.original_filename,
+                    "originalFilename": item.original_filename,
+                    "file_size": item.file_size,
+                    "fileSize": item.file_size,
+                    "mime_type": item.mime_type,
+                    "mimeType": item.mime_type,
+                    "storage_type": item.storage_type,
+                    "storageType": item.storage_type,
+                    "download_url": download_path,
+                    "downloadUrl": download_path,
+                    "created_at": item.created_at.isoformat() if item.created_at else None,
+                    "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+                })
+            return results
+        except Exception as exc:
+            logger.error("Failed to list temporary uploads for %s: %s", username, exc)
+            return []
+
+    def delete_temporary_upload(self, username: str, application_type: str, document_field: str) -> bool:
+        """
+        Deletes a single temporary upload from PostgreSQL and MongoDB GridFS.
+        """
+        try:
+            from models.transactional.dms_documents.models import DMSTemporaryUpload
+            clean_user = str(username).strip()
+            app_type = str(application_type).strip().lower()
+            clean_field = str(document_field).strip()
+            candidates = self._get_field_candidates(clean_field)
+
+            record = DMSTemporaryUpload.objects.filter(
+                username__iexact=clean_user,
+                application_type=app_type,
+                document_field__in=candidates
+            ).first()
+
+            if not record:
+                record = DMSTemporaryUpload.objects.filter(
+                    username__iexact=clean_user,
+                    application_type=app_type,
+                    document_field__iexact=clean_field
+                ).first()
+
+            if not record:
+                return False
+
+            # Delete from MongoDB GridFS (both fs_temp and fs fallback)
+            if record.dms_reference and len(record.dms_reference) == 24:
+                fs_temp = self._get_temp_gridfs()
+                if fs_temp is not None:
+                    try:
+                        fs_temp.delete(ObjectId(record.dms_reference))
+                    except Exception:
+                        pass
+                fs = self._get_gridfs()
+                if fs is not None:
+                    try:
+                        fs.delete(ObjectId(record.dms_reference))
+                    except Exception:
+                        pass
+
+            # Delete physical file
+            if record.file:
+                try:
+                    record.file.delete(save=False)
+                except Exception:
+                    pass
+
+            record.delete()
+            return True
+        except Exception as exc:
+            logger.error("Error deleting temporary upload (%s, %s, %s): %s", username, application_type, document_field, exc)
+            return False
+
+    def promote_temporary_uploads(self, username: str, application_type: str, permanent_app_id: str) -> int:
+        """
+        Promotes all temporary documents for (username, application_type) to the permanent DMS table
+        and deletes them from dms_temperary_uploads and fs_temp.
+        """
+        try:
+            from models.transactional.dms_documents.models import DMSTemporaryUpload
+            clean_user = str(username).strip()
+            app_type = str(application_type).strip().lower()
+
+            temp_records = list(DMSTemporaryUpload.objects.filter(
+                username=clean_user,
+                application_type=app_type
+            ))
+
+            if not temp_records:
+                return 0
+
+            promoted_count = 0
+            fs_perm = self._get_gridfs()
+            fs_temp = self._get_temp_gridfs()
+
+            for temp_doc in temp_records:
+                # Check if this document field was already uploaded directly in permanent table
+                perm_doc = None
+                if app_type in ('new_license', 'salesman_barman'):
+                    from models.transactional.dms_documents.models import DMSUploadedDocument
+                    perm_doc = DMSUploadedDocument.objects.filter(application_id=str(permanent_app_id), document_field=temp_doc.document_field).first()
+                elif app_type in ('company_registration', 'company_collaboration'):
+                    from models.transactional.dms_documents.models import DMSDocumentCompany
+                    perm_doc = DMSDocumentCompany.objects.filter(application_id=str(permanent_app_id), document_field=temp_doc.document_field).first()
+                elif app_type == 'label_registration':
+                    from models.transactional.dms_documents.models import DMSDocumentLabel
+                    perm_doc = DMSDocumentLabel.objects.filter(application_id=str(permanent_app_id), document_field=temp_doc.document_field).first()
+
+                if not perm_doc:
+                    # 1. Retrieve bytes from fs_temp
+                    file_bytes = None
+                    if fs_temp is not None and temp_doc.dms_reference and len(temp_doc.dms_reference) == 24:
+                        try:
+                            grid_out = fs_temp.get(ObjectId(temp_doc.dms_reference))
+                            file_bytes = grid_out.read()
+                        except Exception:
+                            pass
+
+                    if not file_bytes and fs_perm is not None and temp_doc.dms_reference and len(temp_doc.dms_reference) == 24:
+                        try:
+                            grid_out = fs_perm.get(ObjectId(temp_doc.dms_reference))
+                            file_bytes = grid_out.read()
+                        except Exception:
+                            pass
+
+                    if not file_bytes and temp_doc.file:
+                        try:
+                            temp_doc.file.open('rb')
+                            file_bytes = temp_doc.file.read()
+                        except Exception:
+                            pass
+
+                    perm_mrn = temp_doc.dms_reference
+                    storage_type = "DMS_MONGODB"
+
+                    # 2. Put file into permanent GridFS (fs.files and fs.chunks)
+                    if fs_perm is not None and file_bytes:
+                        try:
+                            new_id = ObjectId()
+                            perm_mrn = str(new_id)
+                            fs_perm.put(
+                                file_bytes,
+                                _id=new_id,
+                                mrn=perm_mrn,
+                                filename=temp_doc.original_filename or f"{temp_doc.document_field}.pdf",
+                                application_id=str(permanent_app_id),
+                                application_type=app_type,
+                                document_field=temp_doc.document_field,
+                                doc_type_name=temp_doc.original_filename or temp_doc.document_field,
+                                uploaded_by=clean_user,
+                                content_type=temp_doc.mime_type or "application/pdf",
+                                dms_registration_no=self.registration_no,
+                                transaction_signature=temp_doc.transaction_signature,
+                                is_signed=temp_doc.is_signed,
+                                status="PERMANENT",
+                                promoted_from_temp=True
+                            )
+                            logger.info("Promoted document %s to permanent GridFS (MRN: %s) for app %s",
+                                        temp_doc.document_field, perm_mrn, permanent_app_id)
+                        except Exception as p_err:
+                            logger.warning("Could not transfer to permanent GridFS: %s", p_err)
+
+                    upload_result = {
+                        "success": True,
+                        "storage_type": storage_type,
+                        "mrn": perm_mrn,
+                        "dms_reference": perm_mrn,
+                        "dms_arn": str(permanent_app_id),
+                        "original_filename": temp_doc.original_filename,
+                        "file_size": temp_doc.file_size,
+                        "mime_type": temp_doc.mime_type,
+                        "is_signed": temp_doc.is_signed,
+                        "signature": temp_doc.transaction_signature,
+                        "details": {
+                            "mrn": perm_mrn,
+                            "dms_registration_no": temp_doc.dms_registration_no,
+                        }
+                    }
+
+                    # 3. Record into permanent table
+                    self.record_document(
+                        application_type=app_type,
+                        application_id=str(permanent_app_id),
+                        document_field=temp_doc.document_field,
+                        upload_result=upload_result,
+                        original_filename=temp_doc.original_filename,
+                        file_size=temp_doc.file_size,
+                        mime_type=temp_doc.mime_type
+                    )
+
+                    # 4. Delete temporary document from fs_temp bucket
+                    if fs_temp is not None and temp_doc.dms_reference and len(temp_doc.dms_reference) == 24:
+                        try:
+                            fs_temp.delete(ObjectId(temp_doc.dms_reference))
+                        except Exception:
+                            pass
+                    promoted_count += 1
+                else:
+                    logger.info("Field %s already present in permanent table for %s; discarding temp entry",
+                                temp_doc.document_field, permanent_app_id)
+                    if fs_temp is not None and temp_doc.dms_reference and len(temp_doc.dms_reference) == 24:
+                        try:
+                            fs_temp.delete(ObjectId(temp_doc.dms_reference))
+                        except Exception:
+                            pass
+
+                # 5. Clean up physical temp file
+                if temp_doc.file:
+                    try:
+                        temp_doc.file.delete(save=False)
+                    except Exception:
+                        pass
+
+                temp_doc.delete()
+
+            logger.info("Promoted %d temporary documents for %s to permanent app %s",
+                        promoted_count, clean_user, permanent_app_id)
+            return promoted_count
+        except Exception as exc:
+            logger.error("Failed to promote temporary uploads for (%s, %s): %s", username, application_type, exc)
+            return 0
 
 
 dms_client = DMSService()

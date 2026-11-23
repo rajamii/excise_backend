@@ -107,6 +107,16 @@ def _process_company_collaboration_dms_uploads(application, request_files, user=
             logger.error("Error processing DMS upload for %s on company collaboration application %s: %s",
                          field_name, application.application_id, exc)
 
+    try:
+        dms_client.promote_temporary_uploads(
+            username=user_identifier,
+            application_type='company_collaboration',
+            permanent_app_id=str(application.application_id)
+        )
+    except Exception as promo_err:
+        logger.warning("Could not promote temporary uploads for company collaboration %s: %s",
+                       application.application_id, promo_err)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------

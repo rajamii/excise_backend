@@ -105,6 +105,16 @@ def _process_salesman_barman_dms_uploads(application, request_files, user=None):
         except Exception as exc:
             logger.error("Error processing DMS upload for %s on salesman/barman application %s: %s", field_name, application.application_id, exc)
 
+    try:
+        dms_client.promote_temporary_uploads(
+            username=user_identifier,
+            application_type='salesman_barman',
+            permanent_app_id=str(application.application_id)
+        )
+    except Exception as promo_err:
+        logger.warning("Could not promote temporary uploads for salesman/barman application %s: %s",
+                       application.application_id, promo_err)
+
 
 def _normalize_role(role_name):
     if not role_name:

@@ -316,6 +316,16 @@ def _process_dms_uploads(application, request_files, user):
         except Exception as exc:
             logger.error("Error processing DMS upload for %s on application %s: %s", field_name, application.application_id, exc)
 
+    try:
+        dms_client.promote_temporary_uploads(
+            username=user_identifier,
+            application_type='new_license',
+            permanent_app_id=str(application.application_id)
+        )
+    except Exception as promo_err:
+        logger.warning("Could not promote temporary uploads for new license application %s: %s",
+                       application.application_id, promo_err)
+
 
 def _create_application(request, workflow_id: int, serializer_cls, *, auto_submit: bool = True):
 

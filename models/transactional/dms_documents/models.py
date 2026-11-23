@@ -105,3 +105,37 @@ class DMSDocumentLabel(models.Model):
 
     def __str__(self):
         return f"[label_registration] {self.application_id} - {self.document_field} ({self.storage_type})"
+
+
+class DMSTemporaryUpload(models.Model):
+    """
+    Dedicated table for tracking draft / temporary document uploads in progress.
+    Scoped by (username, application_type, document_field) so draft files are remembered
+    even before a final application ID is assigned, and automatically removed upon final submit.
+    """
+    username = models.CharField(max_length=150, db_index=True)
+    application_type = models.CharField(max_length=50, db_index=True)  # 'new_license', 'salesman_barman', 'company_registration', 'company_collaboration', 'label_registration'
+    document_field = models.CharField(max_length=100, db_index=True)
+    file = models.FileField(upload_to='dms_temporary_uploads/%Y/%m/%d/', blank=True, null=True)
+    dms_reference = models.CharField(max_length=255, blank=True, null=True)  # MongoDB GridFS ObjectId / MRN
+    dms_registration_no = models.CharField(max_length=50, default='DMS20260006', blank=True, null=True)
+    transaction_signature = models.TextField(blank=True, null=True)
+    original_filename = models.CharField(max_length=255)
+    file_size = models.BigIntegerField(default=0)
+    mime_type = models.CharField(max_length=100, blank=True, null=True)
+    storage_type = models.CharField(max_length=50, default='DMS_MONGODB')
+    is_signed = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'dms_temperary_uploads'
+        indexes = [
+            models.Index(fields=['username', 'application_type']),
+            models.Index(fields=['username', 'application_type', 'document_field']),
+        ]
+        unique_together = [('username', 'application_type', 'document_field')]
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        return f"[temp:{self.application_type}] {self.username} - {self.document_field} ({self.original_filename})"

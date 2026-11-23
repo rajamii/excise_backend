@@ -85,6 +85,16 @@ def _process_company_registration_dms_uploads(application, request_files, user=N
         except Exception as exc:
             logger.error("Error processing DMS upload for %s on company application %s: %s", field_name, application.application_id, exc)
 
+    try:
+        dms_client.promote_temporary_uploads(
+            username=user_identifier,
+            application_type='company_registration',
+            permanent_app_id=str(application.application_id)
+        )
+    except Exception as promo_err:
+        logger.warning("Could not promote temporary uploads for company registration %s: %s",
+                       application.application_id, promo_err)
+
 
 def _create_application(request, workflow_name: str, serializer_cls):
     

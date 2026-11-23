@@ -144,6 +144,16 @@ def _process_label_registration_dms_uploads(application, request_files, user=Non
             logger.error("Error processing DMS upload for %s on label application %s: %s",
                          target_field, application.application_id, exc)
 
+    try:
+        dms_client.promote_temporary_uploads(
+            username=user_identifier,
+            application_type='label_registration',
+            permanent_app_id=str(application.application_id)
+        )
+    except Exception as promo_err:
+        logger.warning("Could not promote temporary uploads for label application %s: %s",
+                       application.application_id, promo_err)
+
 
 STAGE_APPLICANT_APPLIED = 'applicant_applied'
 STAGE_PERMIT_SECTION = 'permit_section'
