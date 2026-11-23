@@ -2422,6 +2422,10 @@ def application_group(request):
             | Q(applicant__first_name__icontains=search)
             | Q(applicant__last_name__icontains=search)
             | Q(site_district__district__icontains=search)
+            | Q(business_address__icontains=search)
+            | Q(pin_code__icontains=search)
+            | Q(location_name__icontains=search)
+            | Q(ward_name__icontains=search)
         )
 
     # Apply date filter
