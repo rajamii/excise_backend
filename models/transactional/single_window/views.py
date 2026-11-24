@@ -147,7 +147,18 @@ def serialize_workflow_history(obj):
         except Exception:
             pass
 
-        # If no department workflow transactions exist, synthesize the step strictly at the Licensee stage
+        # If no department workflow transactions exist, check if fee is paid and auto-advance
+        if not txs:
+            if app_payment_info and app_payment_info.get("is_success"):
+                try:
+                    from models.transactional.payment_gateway.views import _ensure_new_license_app_submitted
+                    applicant = getattr(obj, "applicant", None)
+                    _ensure_new_license_app_submitted(obj, applicant)
+                    obj.refresh_from_db()
+                    txs = list(Transaction.objects.filter(content_type=ct, object_id=str(obj.pk)).order_by("timestamp"))
+                except Exception as auto_adv_err:
+                    logger.warning("serialize_workflow_history: auto-submission failed for %s: %s", getattr(obj, "application_id", ""), auto_adv_err)
+
         if not txs:
             applicant = getattr(obj, "applicant", None)
             applicant_username = applicant.username if applicant else "Licensee"
@@ -1538,6 +1549,29 @@ def single_window_new_app_detail(request, application_id):
             {"detail": "You do not have permission to view this application."},
             status=http_status.HTTP_403_FORBIDDEN
         )
+
+    # Auto-heal: if application fee was successfully paid but stage is still initial, advance it now
+    curr_st = getattr(app, "current_stage", None)
+    curr_st_name = str(getattr(curr_st, "name", "") or "").strip().lower()
+    is_initial_stage = bool(
+        curr_st is None
+        or getattr(curr_st, "is_initial", False)
+        or "applied" in curr_st_name
+        or getattr(curr_st, "id", None) == 1
+    )
+    if is_initial_stage:
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+        has_success_tx = PaymentBilldeskTransaction.objects.filter(
+            payer_id__iexact=str(app.application_id),
+            payment_status="S"
+        ).exists()
+        if getattr(app, "is_application_fee_paid", False) or has_success_tx:
+            try:
+                from models.transactional.payment_gateway.views import _ensure_new_license_app_submitted
+                _ensure_new_license_app_submitted(app, getattr(app, "applicant", None))
+                app.refresh_from_db()
+            except Exception as auto_err:
+                logger.warning("single_window_new_app_detail: auto-submission failed for %s: %s", app.application_id, auto_err)
 
     # Pending stage/role info
     stage_obj = app.current_stage

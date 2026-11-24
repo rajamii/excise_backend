@@ -691,8 +691,28 @@ def check_new_license_payment_status(request, application_id):
         _process_billdesk_transaction,
     )
 
-    # 1. If already marked paid and submitted, return Success immediately
+    # 1. Check if application fee is already marked paid
+    stage = getattr(app, "current_stage", None)
+    stage_name = str(getattr(stage, "name", "") or "").strip().lower()
+    is_initial = bool(
+        not stage
+        or getattr(stage, "is_initial", False)
+        or "applied" in stage_name
+        or getattr(stage, "id", None) == 1
+    )
+
     if getattr(app, "is_application_fee_paid", False):
+        if is_initial:
+            _ensure_new_license_app_submitted(app, user)
+            app.refresh_from_db()
+            return Response({
+                "application_id": app.application_id,
+                "status": "S",
+                "payment_status": "S",
+                "status_label": "Successful",
+                "is_application_fee_paid": True,
+                "detail": "Application fee verified. Application submitted to District User.",
+            })
         return Response({
             "application_id": app.application_id,
             "status": "S",
@@ -1173,6 +1193,29 @@ def license_application_detail(request, pk):
     role = _normalize_role(getattr(getattr(request.user, 'role', None), 'name', None))
     if role == "licensee" and application.applicant_id != request.user.id:
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    # Auto-heal: if application fee was successfully paid but stage is still initial, advance it now
+    curr_st = getattr(application, "current_stage", None)
+    curr_st_name = str(getattr(curr_st, "name", "") or "").strip().lower()
+    is_initial_stage = bool(
+        curr_st is None
+        or getattr(curr_st, "is_initial", False)
+        or "applied" in curr_st_name
+        or getattr(curr_st, "id", None) == 1
+    )
+    if is_initial_stage:
+        from models.transactional.payment_gateway.models import PaymentBilldeskTransaction
+        has_success_tx = PaymentBilldeskTransaction.objects.filter(
+            payer_id__iexact=str(application.application_id),
+            payment_status="S"
+        ).exists()
+        if getattr(application, "is_application_fee_paid", False) or has_success_tx:
+            try:
+                from models.transactional.payment_gateway.views import _ensure_new_license_app_submitted
+                _ensure_new_license_app_submitted(application, getattr(application, "applicant", None))
+                application.refresh_from_db()
+            except Exception as auto_err:
+                logger.warning("license_application_detail: auto-submission failed for %s: %s", application.application_id, auto_err)
 
     # Attach latest application-fee payment info for details view too.
     application = _with_application_fee_payment_annotations(NewLicenseApplication.objects.filter(pk=application.pk)).first() or application

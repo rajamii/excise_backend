@@ -1243,7 +1243,14 @@ def _ensure_new_license_app_submitted(app, user=None, remarks="Application fee p
 
     # 4. Auto-submit if still at initial stage
     stage = getattr(app, "current_stage", None)
-    if not stage or getattr(stage, "is_initial", False):
+    stage_name = str(getattr(stage, "name", "") or "").strip().lower()
+    is_initial = bool(
+        not stage
+        or getattr(stage, "is_initial", False)
+        or "applied" in stage_name
+        or getattr(stage, "id", None) == 1
+    )
+    if is_initial:
         submitted = False
         try:
             from auth.workflow.services import WorkflowService
@@ -1258,28 +1265,56 @@ def _ensure_new_license_app_submitted(app, user=None, remarks="Application fee p
 
         if not submitted and getattr(app, "workflow", None):
             try:
-                from auth.workflow.models import WorkflowTransition, Transaction as WorkflowTransaction
+                from auth.workflow.models import WorkflowTransition, Transaction as WorkflowTransaction, StagePermission
                 from django.contrib.contenttypes.models import ContentType
 
                 initial_stage = app.workflow.stages.filter(is_initial=True).order_by("id").first()
+                if not initial_stage:
+                    initial_stage = app.workflow.stages.filter(name__icontains="applied").first() or stage
+
+                target_stage = None
                 if initial_stage:
                     transition = WorkflowTransition.objects.filter(
                         workflow=app.workflow, from_stage=initial_stage
                     ).select_related("to_stage").first()
                     if transition and transition.to_stage:
-                        app.current_stage = transition.to_stage
-                        app.save(update_fields=["current_stage"])
-                        ct = ContentType.objects.get_for_model(app)
+                        target_stage = transition.to_stage
+
+                if not target_stage:
+                    target_stage = (
+                        app.workflow.stages.filter(name__icontains="district").first()
+                        or app.workflow.stages.filter(id=2).first()
+                    )
+
+                if target_stage:
+                    app.current_stage = target_stage
+                    app.save(update_fields=["current_stage"])
+                    ct = ContentType.objects.get_for_model(app)
+
+                    # 1. Log submission at initial stage
+                    if initial_stage:
                         WorkflowTransaction.objects.create(
                             content_type=ct,
                             object_id=str(app.pk),
                             performed_by=user,
                             forwarded_by=getattr(user, "role", None),
                             forwarded_to=None,
-                            stage=transition.to_stage,
-                            remarks=f"{remarks} (fallback)",
+                            stage=initial_stage,
+                            remarks=remarks or "Application submitted by applicant",
                         )
-                        submitted = True
+
+                    # 2. Log forwarding to next stage
+                    perm = StagePermission.objects.filter(stage=target_stage, can_process=True).first()
+                    WorkflowTransaction.objects.create(
+                        content_type=ct,
+                        object_id=str(app.pk),
+                        performed_by=user,
+                        forwarded_by=perm.role if perm else getattr(user, "role", None),
+                        forwarded_to=perm.role if perm else None,
+                        stage=target_stage,
+                        remarks="Application forwarded to Level 1 for review",
+                    )
+                    submitted = True
             except Exception as e:
                 logger.exception("Fallback transition advance failed for %s: %s", getattr(app, "application_id", ""), e)
 
