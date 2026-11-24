@@ -1,6 +1,7 @@
 from django.urls import include, path, register_converter
 
 from models.masters.supply_chain.liquor_data import views as liquor_data_views
+from models.masters.core import views as core_views
 from models.transactional.public_validation import views as public_validation_views
 from models.transactional.wallet import views as wallet_views
 
@@ -23,6 +24,8 @@ if 'everything' not in get_converters():
 
 urlpatterns = [
     # Liquor-data master tables (short aliases)
+    path('masters/districts/<str:identifier>/site-enquiry-officers/', core_views.district_site_enquiry_officers, name='root-district-site-enquiry-officers'),
+    path('masters/core/districts/<str:identifier>/site-enquiry-officers/', core_views.district_site_enquiry_officers, name='root-district-site-enquiry-officers-core'),
     path('bottle-types/', liquor_data_views.master_bottle_type_list, name='short-bottle-types'),
     path('bottle-types/<int:pk>/', liquor_data_views.master_bottle_type_detail, name='short-bottle-types-detail'),
     path('liquor-types/', liquor_data_views.MasterLiquorTypeListView.as_view(), name='short-liquor-types'),

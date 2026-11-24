@@ -109,6 +109,10 @@ class District(models.Model):
     )
     district_code = models.IntegerField(unique=True, default=225)
     is_active = models.BooleanField(default=True)
+    multiple_site_enquiry = models.BooleanField(
+        default=False,
+        help_text="Allow district user to select from multiple site enquiry officers"
+    )
     state_code = models.ForeignKey(
         State,
         to_field='state_code',
@@ -764,3 +768,28 @@ class WhatsCurrent(models.Model):
 
     def __str__(self):
         return f"{self.category} - {self.title}"
+
+
+class SiteEnquiryStageConfig(models.Model):
+    district = models.OneToOneField(
+        District,
+        on_delete=models.CASCADE,
+        related_name='site_enquiry_stage_config',
+        db_column='district_id'
+    )
+    multiple_site_enquiry = models.BooleanField(
+        default=False,
+        help_text="True if district user can select from multiple site enquiry officers, False for direct routing"
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'site_enquiry_stage_config'
+        verbose_name = 'Site Enquiry Stage Config'
+        verbose_name_plural = 'Site Enquiry Stage Configs'
+
+    def __str__(self):
+        return f"{self.district.district} - Multiple Site Enquiry: {self.multiple_site_enquiry}"
+

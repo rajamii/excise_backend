@@ -1171,6 +1171,11 @@ def list_license_applications(request):
         ).distinct()
 
     applications = _filter_by_user_district(applications, request.user, 'site_district')
+    role_token = str(getattr(getattr(request.user, 'role', None), 'name', '') or '').lower()
+    if 'site' in role_token and ('inq' in role_token or 'enq' in role_token):
+        applications = applications.filter(
+            Q(site_enquiry_officer__isnull=True) | Q(site_enquiry_officer=request.user)
+        )
     applications = _with_application_fee_payment_annotations(applications)
     serializer = NewLicenseApplicationSerializer(applications, many=True)
     return Response(serializer.data)
@@ -2358,7 +2363,15 @@ def dashboard_counts(request):
         pending_stages = set(role_stage_names) - role_objection_stages
         role_rejected_stages = set(stage_sets['rejected'])
 
-        pending_count = all_qs.filter(current_stage__name__in=pending_stages).exclude(is_negative_stage).count()
+        role_token = str(getattr(getattr(request.user, 'role', None), 'name', '') or '').lower()
+        is_site_inq = 'site' in role_token and ('inq' in role_token or 'enq' in role_token)
+
+        if is_site_inq:
+            pending_count = all_qs.filter(current_stage__name__in=pending_stages).filter(
+                Q(site_enquiry_officer__isnull=True) | Q(site_enquiry_officer=request.user)
+            ).exclude(is_negative_stage).count()
+        else:
+            pending_count = all_qs.filter(current_stage__name__in=pending_stages).exclude(is_negative_stage).count()
         approved_count = (
             all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
             .exclude(is_negative_stage)
@@ -2604,7 +2617,15 @@ def application_group(request):
         payment_stages = set(stage_sets.get('payment', []))
         pending_stages = (set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages) | payment_stages
 
-        pending_qs = all_qs.filter(current_stage__name__in=pending_stages).exclude(is_negative_stage)
+        role_token = str(getattr(getattr(request.user, 'role', None), 'name', '') or '').lower()
+        is_site_inq = 'site' in role_token and ('inq' in role_token or 'enq' in role_token)
+
+        if is_site_inq:
+            pending_qs = all_qs.filter(current_stage__name__in=pending_stages).filter(
+                Q(site_enquiry_officer__isnull=True) | Q(site_enquiry_officer=request.user)
+            )
+        else:
+            pending_qs = all_qs.filter(current_stage__name__in=pending_stages).exclude(is_negative_stage)
         approved_qs = all_qs.filter(current_stage__name__in=approved_stages, is_approved=True).exclude(is_negative_stage)
         objection_qs = all_qs.filter(current_stage__name__in=objection_stages).exclude(is_negative_stage)
         rejected_qs = all_qs.filter(is_negative_stage)
@@ -2695,7 +2716,15 @@ def application_group(request):
         pending_stages = set(role_stage_names) - role_objection_stages
         role_rejected_stages = set(stage_sets['rejected'])
         
-        pending_qs = all_qs.filter(current_stage__name__in=pending_stages)
+        role_token = str(getattr(getattr(request.user, 'role', None), 'name', '') or '').lower()
+        is_site_inq = 'site' in role_token and ('inq' in role_token or 'enq' in role_token)
+
+        if is_site_inq:
+            pending_qs = all_qs.filter(current_stage__name__in=pending_stages).filter(
+                Q(site_enquiry_officer__isnull=True) | Q(site_enquiry_officer=request.user)
+            )
+        else:
+            pending_qs = all_qs.filter(current_stage__name__in=pending_stages)
         approved_qs = (
             all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
             .annotate(_acted_by_role=acted_by_role)
@@ -2722,9 +2751,14 @@ def application_group(request):
             elif status_filter == 'rejected':
                 target_qs = rejected_qs
             else:
-                target_qs = all_qs.annotate(_acted_by_role=acted_by_role).filter(
-                    Q(current_stage__name__in=pending_stages) | Q(_acted_by_role=True)
-                )
+                if is_site_inq:
+                    target_qs = all_qs.annotate(_acted_by_role=acted_by_role).filter(
+                        (Q(current_stage__name__in=pending_stages) & (Q(site_enquiry_officer__isnull=True) | Q(site_enquiry_officer=request.user))) | Q(_acted_by_role=True)
+                    )
+                else:
+                    target_qs = all_qs.annotate(_acted_by_role=acted_by_role).filter(
+                        Q(current_stage__name__in=pending_stages) | Q(_acted_by_role=True)
+                    )
 
             target_qs = _with_site_enquiry_revert_annotations(_with_application_fee_payment_annotations(target_qs))
             target_qs = target_qs.select_related(

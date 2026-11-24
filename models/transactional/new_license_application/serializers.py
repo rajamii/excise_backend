@@ -180,6 +180,8 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
     # Site enquiry revert badge (annotated in views).
     site_enquiry_is_reverted = serializers.BooleanField(read_only=True, default=False)
     site_enquiry_reverted_remarks = serializers.CharField(read_only=True, allow_blank=True, allow_null=True)
+    site_enquiry_officer_name = serializers.SerializerMethodField()
+    district_has_multiple_site_enquiry = serializers.SerializerMethodField()
 
     # Commissioner revert remarks
     commissioner_revert_remarks = serializers.SerializerMethodField()
@@ -619,6 +621,18 @@ class NewLicenseApplicationSerializer(serializers.ModelSerializer):
             return max(0, int(diff))
         except Exception:
             return None
+
+    def get_site_enquiry_officer_name(self, obj):
+        officer = getattr(obj, 'site_enquiry_officer', None)
+        if officer:
+            return f"{officer.first_name} {officer.last_name}".strip() or officer.username
+        return None
+
+    def get_district_has_multiple_site_enquiry(self, obj):
+        district = getattr(obj, 'site_district', None)
+        if district:
+            return bool(getattr(district, 'multiple_site_enquiry', False))
+        return False
 
     def get_rejection_reason(self, obj):
         stage = getattr(obj, 'current_stage', None)

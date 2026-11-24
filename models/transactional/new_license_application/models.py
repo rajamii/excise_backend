@@ -141,6 +141,15 @@ class NewLicenseApplication(models.Model):
         null=True, blank=True,
         related_name='license_applications'
     )
+    site_enquiry_officer = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='assigned_site_enquiry_applications',
+        db_column='site_enquiry_officer_id',
+        help_text="CustomUser ID of the assigned Site Enquiry Officer"
+    )
 
     renewal_of = models.ForeignKey(
         License,

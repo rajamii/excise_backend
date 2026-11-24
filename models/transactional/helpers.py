@@ -147,6 +147,13 @@ def _filter_by_user_district(qs, user, primary_field=None):
         district_obj = getattr(user, 'district', None)
         if district_obj:
             q_filter |= Q(**{target_field: district_obj})
+
+        role_name = _normalize_role(getattr(getattr(user, 'role', None), 'name', None))
+        role_id = getattr(getattr(user, 'role', None), 'id', None) or getattr(user, 'role_id', None)
+        if role_id == 8 or role_name in ['sub_enquiry_officer', 'site_inquiry_officer', 'site_enquiry_officer', 'site_inquiry']:
+            if 'site_enquiry_officer' in model_fields:
+                q_filter &= (Q(site_enquiry_officer=user) | Q(site_enquiry_officer__isnull=True))
+
         return qs.filter(q_filter).distinct()
 
     # 2. Relation via license / old_license if application relates to License model

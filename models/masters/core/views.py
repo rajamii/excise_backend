@@ -371,6 +371,107 @@ def district_delete(request, pk):
     )
 
 
+@api_view(['GET'])
+def district_site_enquiry_officers(request, identifier):
+    """
+    Retrieve active Site Enquiry Officers for a district.
+    `identifier` can be either District PK (id) or district_code.
+    """
+    from auth.user.models import CustomUser
+    district = None
+    if str(identifier).isdigit():
+        val = int(identifier)
+        district = masters_model.District.objects.filter(pk=val).first() or masters_model.District.objects.filter(district_code=val).first()
+    if not district:
+        district = masters_model.District.objects.filter(district__iexact=str(identifier).strip()).first()
+    if not district:
+        return Response({"detail": "District not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    officers = CustomUser.objects.filter(
+        district__district_code=district.district_code,
+        role__name__icontains='site inq',
+        is_active=True
+    ).order_by('first_name', 'last_name')
+
+    # Read from dedicated site_enquiry_stage_config table
+    cfg = getattr(district, 'site_enquiry_stage_config', None)
+    if not cfg:
+        cfg = masters_model.SiteEnquiryStageConfig.objects.filter(district=district).first()
+    multiple_val = bool(cfg.multiple_site_enquiry) if cfg else bool(district.multiple_site_enquiry)
+
+    data = {
+        'district_id': district.id,
+        'district_name': district.district,
+        'district_code': district.district_code,
+        'multiple_site_enquiry': multiple_val,
+        'officers_count': officers.count(),
+        'officers': [
+            {
+                'id': u.id,
+                'username': u.username,
+                'name': f"{u.first_name} {u.last_name}".strip(),
+                'first_name': u.first_name,
+                'last_name': u.last_name,
+                'email': u.email,
+                'phone_number': u.phone_number,
+                'district_name': district.district,
+                'district_code': district.district_code,
+            }
+            for u in officers
+        ]
+    }
+    return Response(data)
+
+
+@permission_classes([HasAppPermission('masters', 'view')])
+@api_view(['GET'])
+def site_enquiry_stage_config_list(request):
+    """
+    List all site enquiry stage configurations per district from the dedicated table.
+    Auto-creates missing district rows in site_enquiry_stage_config if needed.
+    """
+    from models.masters.core.serializers.site_enquiry_stage_config_serializer import SiteEnquiryStageConfigSerializer
+    for d in masters_model.District.objects.filter(is_active=True):
+        masters_model.SiteEnquiryStageConfig.objects.get_or_create(district=d)
+
+    queryset = masters_model.SiteEnquiryStageConfig.objects.select_related('district').filter(is_active=True).order_by('district__district_code')
+    serializer = SiteEnquiryStageConfigSerializer(queryset, many=True, context={'request': request})
+    return Response(serializer.data)
+
+
+@permission_classes([HasAppPermission('masters', 'update')])
+@api_view(['PUT', 'PATCH'])
+def site_enquiry_stage_config_update(request, identifier):
+    """
+    Update multiple_site_enquiry toggle for a district in the dedicated site_enquiry_stage_config table.
+    `identifier` can be config ID or district ID / code.
+    """
+    from models.masters.core.serializers.site_enquiry_stage_config_serializer import SiteEnquiryStageConfigSerializer
+    cfg = None
+    if str(identifier).isdigit():
+        val = int(identifier)
+        cfg = masters_model.SiteEnquiryStageConfig.objects.filter(pk=val).first() or \
+              masters_model.SiteEnquiryStageConfig.objects.filter(district_id=val).first() or \
+              masters_model.SiteEnquiryStageConfig.objects.filter(district__district_code=val).first()
+    if not cfg:
+        district = masters_model.District.objects.filter(district__iexact=str(identifier).strip()).first()
+        if district:
+            cfg, _ = masters_model.SiteEnquiryStageConfig.objects.get_or_create(district=district)
+    if not cfg:
+        return Response({"detail": "Site Enquiry Stage Config not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    multiple_val = request.data.get('multiple_site_enquiry')
+    if multiple_val is not None:
+        cfg.multiple_site_enquiry = bool(multiple_val)
+        cfg.save(update_fields=['multiple_site_enquiry', 'updated_at'])
+        if hasattr(cfg.district, 'multiple_site_enquiry'):
+            cfg.district.multiple_site_enquiry = cfg.multiple_site_enquiry
+            cfg.district.save(update_fields=['multiple_site_enquiry'])
+
+    serializer = SiteEnquiryStageConfigSerializer(cfg, context={'request': request})
+    return Response(serializer.data)
+
+
 #################################################
 #           Subdivision                         #
 #################################################

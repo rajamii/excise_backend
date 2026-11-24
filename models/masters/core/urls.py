@@ -38,6 +38,7 @@ district_patterns = [
     path('<int:pk>/',        views.district_detail, name='district-detail'),
     path('<int:pk>/update/', views.district_update, name='district-update'),
     path('<int:pk>/delete/', views.district_delete, name='district-delete'),
+    path('<str:identifier>/site-enquiry-officers/', views.district_site_enquiry_officers, name='district-site-enquiry-officers'),
 ]
 
 # Subdivision URLs
@@ -220,6 +221,9 @@ urlpatterns = [
     path('additional-charge-configs/', include(additional_charge_config_patterns)),
     path('fixed-fees/',             include(fixed_fee_patterns)),
     path('whats-current/',          include(whatscurrent_patterns)),
+    path('site-enquiry-stages/',    views.site_enquiry_stage_config_list, name='site-enquiry-stage-list'),
+    path('site-enquiry-stages/<str:identifier>/', views.site_enquiry_stage_config_update, name='site-enquiry-stage-update'),
+    path('site-enquiry-stages/<str:identifier>/update/', views.site_enquiry_stage_config_update, name='site-enquiry-stage-update-alt'),
 ]
 
 

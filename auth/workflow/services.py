@@ -660,6 +660,14 @@ class WorkflowService:
                     report = SiteEnquiryReport.objects.filter(content_type=ct, object_id=str(getattr(application, "application_id", "") or "")).first()
                     if report and getattr(report, "is_reverted", False):
                         raise ValidationError("Site enquiry report was reverted. Please re-submit the Site Enquiry Form before proceeding.")
+
+                # If assigned to a specific Site Enquiry Officer, ensure only that officer or admin can process
+                if ("site enquiry" in from_name or "site_enquiry" in from_name or getattr(application, "current_stage_id", None) == 3):
+                    assigned_officer_id = getattr(application, "site_enquiry_officer_id", None)
+                    if assigned_officer_id and getattr(user, "id", None) != assigned_officer_id:
+                        role_token = WorkflowService._normalize_token(getattr(getattr(user, "role", None), "name", ""))
+                        if not (getattr(user, "is_superuser", False) or getattr(user, "is_staff", False) or role_token in {"siteadmin", "superadmin", "admin", "administrator"}):
+                            raise PermissionDenied("This application is assigned to another Site Enquiry Officer.")
             except ValidationError:
                 raise
             except Exception:
@@ -797,6 +805,34 @@ class WorkflowService:
             except Exception:
                 pass
 
+            # Handle Site Enquiry Officer assignment
+            try:
+                target_name = str(getattr(target_stage, "name", "") or "").strip().lower()
+                if "site enquiry" in target_name or "site_enquiry" in target_name or getattr(target_stage, "id", None) == 3:
+                    selected_officer_id = (
+                        (context or {}).get("site_enquiry_officer_id")
+                        or (context or {}).get("site_enquiry_officer")
+                    )
+                    if selected_officer_id:
+                        application.site_enquiry_officer_id = int(selected_officer_id)
+                    else:
+                        district = getattr(application, "site_district", None)
+                        if district:
+                            from models.masters.core.models import SiteEnquiryStageConfig
+                            cfg = SiteEnquiryStageConfig.objects.filter(district=district).first()
+                            is_multiple = bool(cfg.multiple_site_enquiry) if cfg else bool(getattr(district, "multiple_site_enquiry", False))
+                            if not is_multiple:
+                                from auth.user.models import CustomUser
+                                available_officer = CustomUser.objects.filter(
+                                    district__district_code=district.district_code,
+                                    role__name__icontains="site inq",
+                                    is_active=True
+                                ).order_by("id").first()
+                                if available_officer:
+                                    application.site_enquiry_officer = available_officer
+            except Exception as ex:
+                logger.warning("Failed to assign site_enquiry_officer: %s", ex)
+
         application.current_stage = target_stage
         update_fields = ['current_stage']
         target_name = str(getattr(target_stage, "name", "") or "").strip().lower()
@@ -804,7 +840,7 @@ class WorkflowService:
             application.is_approved = target_name == 'approved'
             update_fields.append('is_approved')
         if is_new_license_application:
-            for f in ("licensee_fee_id", "license_category", "license_sub_category", "location_category", "location_name", "is_fee_calculated", "is_license_category_updated"):
+            for f in ("licensee_fee_id", "license_category", "license_sub_category", "location_category", "location_name", "is_fee_calculated", "is_license_category_updated", "site_enquiry_officer"):
                 if hasattr(application, f):
                     update_fields.append(f)
 
