@@ -3370,6 +3370,7 @@ class CommissionerDashboardViewSet(viewsets.ViewSet):
                 deadline = None
                 completion_date = None
                 completion_time = None
+                completion_datetime = None
                 officer_name = None
                 brands_entered = []
                 
