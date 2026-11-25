@@ -409,8 +409,13 @@ def district_site_enquiry_officers(request, identifier):
             {
                 'id': u.id,
                 'username': u.username,
-                'name': f"{u.first_name} {u.last_name}".strip(),
+                'name': ' '.join(
+                    str(part).strip()
+                    for part in (u.first_name, getattr(u, 'middle_name', None), u.last_name)
+                    if part and str(part).strip()
+                ),
                 'first_name': u.first_name,
+                'middle_name': getattr(u, 'middle_name', ''),
                 'last_name': u.last_name,
                 'email': u.email,
                 'phone_number': u.phone_number,
