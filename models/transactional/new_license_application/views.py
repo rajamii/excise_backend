@@ -2312,7 +2312,7 @@ def dashboard_counts(request):
         approved_stages = set(stage_sets['approved'])
         rejected_stages = set(stage_sets['rejected'])
         payment_stages = set(stage_sets['payment'])
-        pending_stages = (set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages) | payment_stages
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
 
         unpaid_qs = base_qs.filter(is_application_fee_paid=False).exclude(is_negative_stage)
         paid_qs = base_qs.filter(is_application_fee_paid=True)
@@ -2333,7 +2333,7 @@ def dashboard_counts(request):
         approved_stages = set(stage_sets['approved'])
         rejected_stages = set(stage_sets['rejected'])
         payment_stages = set(stage_sets.get('payment', []))
-        pending_stages = (set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages) | payment_stages
+        pending_stages = set(stage_sets['all']) - applied_stages - approved_stages - rejected_stages - objection_stages - payment_stages
 
         return Response({
             "applied": all_qs.count(),
