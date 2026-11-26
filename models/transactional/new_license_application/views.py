@@ -2367,31 +2367,57 @@ def dashboard_counts(request):
         is_site_inq = 'site' in role_token and ('inq' in role_token or 'enq' in role_token)
 
         if is_site_inq:
+            acted_by_user = Exists(
+                WorkflowTransaction.objects.filter(
+                    content_type=content_type, 
+                    object_id=OuterRef('application_id'),
+                    performed_by=request.user
+                )
+            )
+            inq_acted_filter = Q(site_enquiry_officer=request.user) | Q(_acted_by_user=True) | Q(_acted_by_role=True)
             pending_count = all_qs.filter(current_stage__name__in=pending_stages).filter(
                 Q(site_enquiry_officer__isnull=True) | Q(site_enquiry_officer=request.user)
             ).exclude(is_negative_stage).count()
+            approved_count = (
+                all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
+                .exclude(is_negative_stage)
+                .annotate(_acted_by_user=acted_by_user, _acted_by_role=acted_by_role)
+                .filter(inq_acted_filter)
+                .count()
+            )
+            rejected_count = (
+                all_qs.filter(is_negative_stage)
+                .annotate(_acted_by_user=acted_by_user, _acted_by_role=acted_by_role)
+                .filter(inq_acted_filter)
+                .count()
+            )
+            objection_count = (
+                all_qs.filter(current_stage__name__in=role_objection_stages).exclude(is_negative_stage)
+                .annotate(_acted_by_user=acted_by_user, _acted_by_role=acted_by_role)
+                .filter(inq_acted_filter)
+                .count()
+            )
         else:
             pending_count = all_qs.filter(current_stage__name__in=pending_stages).exclude(is_negative_stage).count()
-        approved_count = (
-            all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
-            .exclude(is_negative_stage)
-            .filter(is_approved=True)
-            .annotate(_acted_by_role=acted_by_role)
-            .filter(_acted_by_role=True)
-            .count()
-        )
-        rejected_count = (
-            all_qs.filter(is_negative_stage)
-            .annotate(_acted_by_role=acted_by_role)
-            .filter(_acted_by_role=True)
-            .count()
-        )
-        objection_count = (
-            all_qs.filter(current_stage__name__in=role_objection_stages).exclude(is_negative_stage)
-            .annotate(_acted_by_role=acted_by_role)
-            .filter(_acted_by_role=True)
-            .count()
-        )
+            approved_count = (
+                all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
+                .exclude(is_negative_stage)
+                .annotate(_acted_by_role=acted_by_role)
+                .filter(_acted_by_role=True)
+                .count()
+            )
+            rejected_count = (
+                all_qs.filter(is_negative_stage)
+                .annotate(_acted_by_role=acted_by_role)
+                .filter(_acted_by_role=True)
+                .count()
+            )
+            objection_count = (
+                all_qs.filter(current_stage__name__in=role_objection_stages).exclude(is_negative_stage)
+                .annotate(_acted_by_role=acted_by_role)
+                .filter(_acted_by_role=True)
+                .count()
+            )
 
         return Response({
             "applied": pending_count + approved_count + rejected_count + objection_count,
@@ -2720,26 +2746,51 @@ def application_group(request):
         is_site_inq = 'site' in role_token and ('inq' in role_token or 'enq' in role_token)
 
         if is_site_inq:
+            acted_by_user = Exists(
+                WorkflowTransaction.objects.filter(
+                    content_type=content_type, 
+                    object_id=OuterRef('application_id'),
+                    performed_by=request.user
+                )
+            )
+            inq_acted_filter = Q(site_enquiry_officer=request.user) | Q(_acted_by_user=True) | Q(_acted_by_role=True)
             pending_qs = all_qs.filter(current_stage__name__in=pending_stages).filter(
                 Q(site_enquiry_officer__isnull=True) | Q(site_enquiry_officer=request.user)
+            ).exclude(is_negative_stage)
+            approved_qs = (
+                all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
+                .exclude(is_negative_stage)
+                .annotate(_acted_by_user=acted_by_user, _acted_by_role=acted_by_role)
+                .filter(inq_acted_filter)
+            )
+            rejected_qs = (
+                all_qs.filter(is_negative_stage)
+                .annotate(_acted_by_user=acted_by_user, _acted_by_role=acted_by_role)
+                .filter(inq_acted_filter)
+            )
+            objection_qs = (
+                all_qs.filter(current_stage__name__in=role_objection_stages).exclude(is_negative_stage)
+                .annotate(_acted_by_user=acted_by_user, _acted_by_role=acted_by_role)
+                .filter(inq_acted_filter)
             )
         else:
-            pending_qs = all_qs.filter(current_stage__name__in=pending_stages)
-        approved_qs = (
-            all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
-            .annotate(_acted_by_role=acted_by_role)
-            .filter(_acted_by_role=True)
-        )
-        rejected_qs = (
-            all_qs.filter(current_stage__name__in=role_rejected_stages)
-            .annotate(_acted_by_role=acted_by_role)
-            .filter(_acted_by_role=True)
-        )
-        objection_qs = (
-            all_qs.filter(current_stage__name__in=role_objection_stages)
-            .annotate(_acted_by_role=acted_by_role)
-            .filter(_acted_by_role=True)
-        )
+            pending_qs = all_qs.filter(current_stage__name__in=pending_stages).exclude(is_negative_stage)
+            approved_qs = (
+                all_qs.exclude(current_stage__name__in=pending_stages | role_rejected_stages | role_objection_stages)
+                .exclude(is_negative_stage)
+                .annotate(_acted_by_role=acted_by_role)
+                .filter(_acted_by_role=True)
+            )
+            rejected_qs = (
+                all_qs.filter(is_negative_stage)
+                .annotate(_acted_by_role=acted_by_role)
+                .filter(_acted_by_role=True)
+            )
+            objection_qs = (
+                all_qs.filter(current_stage__name__in=role_objection_stages).exclude(is_negative_stage)
+                .annotate(_acted_by_role=acted_by_role)
+                .filter(_acted_by_role=True)
+            )
 
         if is_paginated:
             if status_filter == 'pending':
@@ -2752,8 +2803,11 @@ def application_group(request):
                 target_qs = rejected_qs
             else:
                 if is_site_inq:
-                    target_qs = all_qs.annotate(_acted_by_role=acted_by_role).filter(
-                        (Q(current_stage__name__in=pending_stages) & (Q(site_enquiry_officer__isnull=True) | Q(site_enquiry_officer=request.user))) | Q(_acted_by_role=True)
+                    target_qs = all_qs.annotate(
+                        _acted_by_user=acted_by_user, _acted_by_role=acted_by_role
+                    ).filter(
+                        (Q(current_stage__name__in=pending_stages) & (Q(site_enquiry_officer__isnull=True) | Q(site_enquiry_officer=request.user)))
+                        | inq_acted_filter
                     )
                 else:
                     target_qs = all_qs.annotate(_acted_by_role=acted_by_role).filter(
@@ -2780,13 +2834,34 @@ def application_group(request):
             offset = (page - 1) * page_size
             items = target_qs[offset : offset + page_size]
 
-            serializer = NewLicenseApplicationSerializer(items, many=True)
+            serializer = NewLicenseApplicationSerializer(items, many=True, context={'request': request})
+            results = list(serializer.data)
+            for item in results:
+                stage_name = str(item.get('current_stage_name') or item.get('status') or '').strip()
+                if status_filter == 'approved':
+                    item['status_group'] = 'approved'
+                elif status_filter == 'pending':
+                    item['status_group'] = 'pending'
+                elif status_filter == 'objection':
+                    item['status_group'] = 'objection'
+                elif status_filter == 'rejected':
+                    item['status_group'] = 'rejected'
+                else:
+                    if stage_name in pending_stages:
+                        item['status_group'] = 'pending'
+                    elif stage_name in role_rejected_stages or any(k in stage_name.lower() for k in ['reject', 'terminat', 'cancel', 'revoke', 'suspend', 'forfeit']):
+                        item['status_group'] = 'rejected'
+                    elif stage_name in role_objection_stages:
+                        item['status_group'] = 'objection'
+                    else:
+                        item['status_group'] = 'approved'
+
             return Response({
                 'count': total_count,
                 'page': page,
                 'page_size': page_size,
                 'total_pages': (total_count + page_size - 1) // page_size if page_size > 0 else 1,
-                'results': serializer.data,
+                'results': results,
             })
 
         # Legacy unpaginated fallback
