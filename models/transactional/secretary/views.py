@@ -1564,6 +1564,68 @@ def secretary_revenue_overview(request):
             final_revenue_heads.append(head_entry)
 
         # 8. Top Contributors (Big Accounts) with filters
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        user_id_to_username = {u.id: u.username for u in User.objects.all()}
+
+        # Build accurate map from User (id & username & name) to total FD from SecurityDepositRecord table
+        sd_by_user = {}
+        for sd in SecurityDepositRecord.objects.all():
+            uname = None
+            if sd.applicant_user_id:
+                try:
+                    uname = user_id_to_username.get(int(sd.applicant_user_id))
+                except (ValueError, TypeError):
+                    uname = str(sd.applicant_user_id).strip()
+            if not uname and sd.username:
+                uname = str(sd.username).strip()
+            if uname:
+                sd_by_user[uname] = sd_by_user.get(uname, 0.0) + as_float(sd.amount)
+            if sd.establishment_name:
+                est_k = str(sd.establishment_name).lower().strip()
+                sd_by_user[est_k] = sd_by_user.get(est_k, 0.0) + as_float(sd.amount)
+            if sd.applicant_name:
+                app_k = str(sd.applicant_name).lower().strip()
+                sd_by_user[app_k] = sd_by_user.get(app_k, 0.0) + as_float(sd.amount)
+
+        # Pre-query user licenses and module types for fast accurate category resolution
+        from models.masters.license.models import License
+        user_licenses = {
+            lic.applicant.username: lic
+            for lic in License.objects.select_related('license_category', 'license_sub_category', 'applicant').all()
+            if getattr(lic, 'applicant', None) and getattr(lic.applicant, 'username', None)
+        }
+        user_module_types = {
+            wb['user_id']: wb['module_type'].lower().strip()
+            for wb in WalletBalance.objects.exclude(module_type__isnull=True).exclude(module_type='').values('user_id', 'module_type')
+            if wb.get('user_id') and wb.get('module_type')
+        }
+
+        def resolve_entity_category(uid, unit_name, lic_name):
+            mod_type = user_module_types.get(uid, '')
+            user_lic = user_licenses.get(uid)
+            lic_cat = (getattr(getattr(user_lic, 'license_category', None), 'license_category', '') or '').strip()
+            lic_subcat = (getattr(getattr(user_lic, 'license_sub_category', None), 'description', '') or '').strip()
+
+            if mod_type == 'distillery' or 'distill' in lic_cat.lower() or 'distill' in lic_subcat.lower():
+                return 'Manufacturing', 'Distillery'
+            if mod_type == 'brewery' or 'brew' in lic_cat.lower() or 'brew' in lic_subcat.lower():
+                return 'Manufacturing', 'Brewery'
+            if mod_type in ('distributor', 'distribution') or 'distribut' in lic_cat.lower():
+                return 'Distributor', 'Distributor'
+            if mod_type in ('retail', 'retailer', 'other') or 'retail' in lic_cat.lower() or 'shop' in lic_cat.lower():
+                return 'Retail', 'Retailer'
+            if lic_cat:
+                return lic_cat, (lic_subcat or 'General')
+
+            # Intelligent text fallback
+            combined_text = f"{unit_name} {lic_name}".lower()
+            if any(w in combined_text for w in ['distiller', 'brew', 'albrew', 'spirit']):
+                return 'Manufacturing', ('Brewery' if 'brew' in combined_text else 'Distillery')
+            if 'dist' in combined_text:
+                return 'Distributor', 'Distributor'
+            return 'Retail', 'Retailer'
+
         user_bal_qs = bal_qs
         user_rows = (
             user_bal_qs
@@ -1580,20 +1642,31 @@ def secretary_revenue_overview(request):
         )
         sorted_contributors = []
         for row in user_rows:
-            unit_name = row.get('manufacturing_unit') or row.get('licensee_name') or row.get('user_id') or 'Unknown Entity'
-            unit_lower = str(unit_name).lower()
-            category = 'Manufacturing' if any(w in unit_lower for w in ['distiller', 'brew', 'albrew', 'spirt']) else ('Distributor' if 'dist' in unit_lower else 'Retail')
-            sub_category = 'Distillery' if 'distiller' in unit_lower else ('Brewery' if 'brew' in unit_lower else ('Distributor' if 'dist' in unit_lower else 'Retailer'))
+            uid = row.get('user_id') or ''
+            lic_name = row.get('licensee_name') or uid or 'Unknown Entity'
+            unit_name = row.get('manufacturing_unit') or lic_name
+
+            category, sub_category = resolve_entity_category(uid, unit_name, lic_name)
+
+            # Accurate FD amount from SecurityDepositRecord and wallet
+            sd_from_rec = (
+                sd_by_user.get(uid) or
+                sd_by_user.get(str(unit_name).lower().strip()) or
+                sd_by_user.get(str(lic_name).lower().strip()) or
+                0.0
+            )
+            final_fd_amt = max(sd_from_rec, as_float(row.get('total_fd_amount')))
+
             updated_at = row.get('updated_at')
             sorted_contributors.append({
-                'user_id': row.get('user_id') or row.get('licensee_name') or 'Unknown Entity',
-                'licensee_name': row.get('licensee_name') or row.get('user_id') or 'Unknown Entity',
+                'user_id': uid or lic_name,
+                'licensee_name': lic_name,
                 'manufacturing_unit': unit_name,
                 'category': category,
                 'sub_category': sub_category,
                 'total_revenue_contributed': round(as_float(row.get('total_revenue_contributed')), 2),
                 'total_recharged': round(as_float(row.get('total_recharged')), 2),
-                'total_fd_amount': round(as_float(row.get('total_fd_amount')), 2),
+                'total_fd_amount': round(final_fd_amt, 2),
                 'current_balance': round(as_float(row.get('current_balance')), 2),
                 'wallets_count': int(row.get('wallets_count') or 0),
                 'updated_at': updated_at.strftime('%Y-%m-%d') if updated_at else '2026-08-01',
@@ -1610,15 +1683,22 @@ def secretary_revenue_overview(request):
         if sd_count > 0:
             for sd in sd_qs.order_by('-payment_date', '-id')[:50]:
                 unit_name = sd.establishment_name or sd.applicant_name or sd.username or 'Unknown Entity'
-                unit_lower = str(unit_name).lower()
-                category = 'Manufacturing' if any(w in unit_lower for w in ['distiller', 'brew', 'albrew', 'spirt']) else ('Distributor' if 'dist' in unit_lower else 'Retail')
-                sub_category = 'Distillery' if 'distiller' in unit_lower else ('Brewery' if 'brew' in unit_lower else ('Distributor' if 'dist' in unit_lower else 'Retailer'))
+                sd_uid = None
+                if sd.applicant_user_id:
+                    try:
+                        sd_uid = user_id_to_username.get(int(sd.applicant_user_id))
+                    except (ValueError, TypeError):
+                        sd_uid = str(sd.applicant_user_id).strip()
+                if not sd_uid and sd.username:
+                    sd_uid = str(sd.username).strip()
+
+                category, sub_category = resolve_entity_category(sd_uid or '', unit_name, sd.applicant_name or '')
                 p_date = sd.payment_date or sd.created_at
                 
                 security_deposits.append({
                     'id': sd.id,
-                    'licensee_id': sd.license_id or sd.application_id or sd.reference_no or sd.applicant_user_id or sd.username or f'SD-{sd.id}',
-                    'user_id': sd.applicant_user_id or sd.username or 'N/A',
+                    'licensee_id': sd.license_id or sd.application_id or sd.reference_no or sd_uid or sd.applicant_user_id or sd.username or f'SD-{sd.id}',
+                    'user_id': sd_uid or sd.applicant_user_id or sd.username or 'N/A',
                     'licensee_name': sd.applicant_name or sd.establishment_name or 'N/A',
                     'manufacturing_unit': unit_name,
                     'category': category,
